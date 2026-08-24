@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes.local/dfm/discovery-snapshot.schema.json",
+  "title": "Hermes DFM Immutable Discovery Snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["snapshot_id", "created_at", "input_hashes", "observation_refs", "feature_refs", "region_refs", "fusion_link_refs", "provider_versions", "content_sha256", "status", "process", "confirmed_fact_refs", "geometry_snapshot_ref", "topology_snapshot_id", "render_mesh_snapshot_id", "artifact_refs"],
+  "properties": {
+    "snapshot_id": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string", "minLength": 1},
+    "input_hashes": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+    "observation_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "feature_refs": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "region_refs": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "fusion_link_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "provider_versions": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string", "minLength": 1}},
+    "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "status": {"const": "frozen"},
+    "process": {"type": "string", "minLength": 1},
+    "confirmed_fact_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "geometry_snapshot_ref": {"type": "string"},
+    "topology_snapshot_id": {"type": "string", "minLength": 1},
+    "render_mesh_snapshot_id": {"type": "string", "minLength": 1},
+    "artifact_refs": {"type": "array", "minItems": 3, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+  }
+}
