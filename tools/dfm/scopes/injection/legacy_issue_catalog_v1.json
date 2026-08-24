@@ -1,0 +1,31 @@
+{
+  "catalog_id": "injection.legacy-issues",
+  "version": "1.0.0",
+  "algorithm_version": "step-m12-v1",
+  "issues": [
+    {"code": "invalid_brep", "family": "topology", "metric": "valid_brep", "parameter": null},
+    {"code": "tiny_edge", "family": "small_features", "metric": "length_mm", "parameter": "min_edge_mm"},
+    {"code": "small_cylindrical_feature", "family": "small_features", "metric": "diameter_mm", "parameter": "min_hole_diameter_mm"},
+    {"code": "small_tool_radius", "family": "small_features", "metric": "radius_mm", "parameter": "min_tool_radius_mm"},
+    {"code": "small_circular_edge", "family": "small_features", "metric": "diameter_mm", "parameter": "min_hole_diameter_mm"},
+    {"code": "narrow_machining_gap", "family": "planar_spacing", "metric": "distance_mm", "parameter": "min_machining_gap_mm"},
+    {"code": "thin_wall", "family": "planar_spacing", "metric": "distance_mm", "parameter": "min_wall_mm"},
+    {"code": "narrow_slot", "family": "planar_spacing", "metric": "distance_mm", "parameter": "min_slot_width_mm"},
+    {"code": "planar_step", "family": "planar_spacing", "metric": "distance_mm", "parameter": "max_planar_step_mm"},
+    {"code": "local_boss_thick", "family": "planar_spacing", "metric": "thickness_ratio", "parameter": "local_boss_thickness_ratio"},
+    {"code": "small_face", "family": "face_quality", "metric": "area_mm2", "parameter": "min_face_area_mm2"},
+    {"code": "sliver_face", "family": "face_quality", "metric": "estimated_width_mm", "parameter": "max_sliver_face_width_mm"},
+    {"code": "hole_edge_clearance", "family": "cylindrical", "metric": "clearance_mm", "parameter": "min_hole_edge_distance_mm"},
+    {"code": "hole_web_thin", "family": "cylindrical", "metric": "web_mm", "parameter": "min_hole_web_mm"},
+    {"code": "deep_hole_ratio", "family": "cylindrical", "metric": "depth_diameter_ratio", "parameter": "max_hole_depth_ratio"},
+    {"code": "thin_wall_field", "family": "thickness", "metric": "thickness_mm", "parameter": "min_wall_mm"},
+    {"code": "thick_section", "family": "thickness", "metric": "thickness_mm", "parameter": "max_wall_mm"},
+    {"code": "thickness_variation", "family": "thickness", "metric": "ratio", "parameter": "thickness_variation_ratio"},
+    {"code": "low_draft", "family": "draft", "metric": "draft_angle_deg", "parameter": "min_draft_deg"},
+    {"code": "surface_g1_break", "family": "continuity", "metric": "normal_angle_deg", "parameter": "continuity_g1_angle_deg"},
+    {"code": "surface_g2_jump", "family": "continuity", "metric": "curvature_jump", "parameter": "continuity_g2_curvature_jump"},
+    {"code": "hole_draft_undercut", "family": "undercut", "metric": "worst_reverse_draft_deg", "parameter": "undercut_negative_draft_deg"},
+    {"code": "undercut_negative_draft", "family": "undercut", "metric": "signed_draft_deg", "parameter": "undercut_negative_draft_deg"},
+    {"code": "side_action_cylinder", "family": "undercut", "metric": "axis_pull_alignment", "parameter": "side_core_axis_pull_abs_dot_max"}
+  ]
+}
