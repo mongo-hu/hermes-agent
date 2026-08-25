@@ -16,40 +16,62 @@ traceable results.
 
 ## Workflow
 
-1. Call `dfm_project` with `action=create` or resume a known project.
-2. Call `dfm_project` with `action=add_input` for each STEP/STP or drawing
-   reference. New NX/Parasolid input is not
-   supported.
-3. Inspect project `status` and the `occt` capability before planning.
-4. Use `process=injection` for native geometry analysis. Ask only the
-   clarification questions returned by the service. Never answer or confirm a
-   fact on the user's behalf.
-5. Call `dfm_analysis` with `action=plan`, `analyzer_key=occt` and an explicit
-   `verification_level=experimental`. Version 0.1.0 has no certified
-   calculators and never silently downgrades a certified request.
-6. Inspect the persisted input hashes, `injection.geometry-core@4.0.0`
-   operation DAG, rule provenance and `assumed_pull_direction`. If the pull
-   direction was not confirmed, explain that the frozen `+Z` default was used.
-7. Use `action=start` only for an available plan. Save the returned `run_id`
-   and pass that exact ID to `status`, `result` or `cancel`. Start is
-   non-blocking; do not busy-poll. Native OCCT measurements can legitimately
-   remain in one named stage for several minutes. An unchanged percentage is
-   not evidence that Hermes disconnected or that the worker is deadlocked.
-8. Summarize measurements, Evaluation/Findings, recognized features, quality,
-   topology references and artifact paths. State unresolved or experimental
-   checks explicitly.
+The control boundary is `Agent -> discover -> Agent -> plan -> Agent -> start`.
+Discovery and planning are deterministic service operations. The Agent must
+inspect the frozen DiscoverySnapshot, persisted analysis plan, and capability
+before deciding whether execution is valid. Starting a plan does not bypass
+those decisions or return control to the Agent Loop from inside the worker.
+
+1. Call `dfm_project` with `create`, unless continuing a known `project_id`.
+2. Call `dfm_project` with `add_input` for every STEP/STP or drawing `@file:` reference. Parasolid x_t and NX inputs are deferred and are rejected explicitly; do not rename, convert, or silently route them through the STEP path.
+3. Call project `status`. Inspect the input mode and every analyzer `capability`.
+4. Pass `process=injection` or `process=die_casting` when the user has selected it; never infer the process from part shape. Call `dfm_analysis` with `discover`. If it returns `status=clarification_required`, it is a hard stop: do **not** answer the questions yourself and do **not** call `confirm_fact` in the same turn. Call the Hermes `clarify` tool for each open question so Desktop shows its blocking question panel; wait for the user's response, then call `confirm_fact` with exactly that response and rerun `discover`. Use the canonical fact names returned by the service; keep them `confirmed`, not inferred.
+5. Inspect the returned DiscoverySnapshot, Feature/Region coverage, provider statuses, and open analysis clarifications. Ask only the process adapter's returned missing analysis facts, using the same wait-then-`confirm_fact` rule. Never continue with a stale DiscoverySnapshot.
+6. Call `dfm_analysis` with `plan`. Omitted process selection keeps the project's
+   current process; a new project defaults to the compatible `injection` adapter
+   and published `injection.default@1.1.0` Snapshot Schema 2 ontology/rule snapshot. The current publication
+   contains only main-wall thickness and draft-angle Checks. Die casting currently exposes only its
+   approved topology gate. Inspect the returned process, scope version, input hashes, operations,
+   ontology snapshot ID/hash, DiscoverySnapshot reference, RuleBindings, and parameter provenance. Explain blocked checks and assumptions before
+   execution.
+7. The external Analysis Situs/OCCT engine is currently an objective, experimental backend. Request `verification_level=experimental` explicitly in `plan`, then call `start` only when that exact plan reports capability `available`. A certified request must stay blocked and must never silently downgrade. Preserve the returned `run_id`.
+8. `start` is non-blocking. Immediately save the returned `run_id` and pass that exact ID to every subsequent `status`, `result`, or `cancel` call; never omit it or invent a replacement. The run publishes background stage, percentage,
+   heartbeat, and incremental artifact updates to supported clients. Return
+   control to the user after starting; do not spend Agent turns on terminal
+   sleep loops or rapid status polling. Use `status` when the user asks, after
+   reconnecting, or after a meaningful external wait. Use `cancel` when
+   requested. Call `result` only after `succeeded`.
+9. Summarize Findings with measurement, rule, evidence, confidence, backend quality, and artifact path. State unresolved checks separately. Present `dfm_report.pptx`, when available, as the primary human-readable report for either geometry backend; retain JSON and Markdown as traceable engineering artifacts. Do not ask the model to recreate the deterministic PPTX.
+10. Call `dfm_analysis` with `action=context` and a returned `check_id` only when
+   you need to explain that Check, its Factors, or its candidate rules. Treat this
+   bounded response as the semantic source; do not infer ontology relationships
+   from names and do not request the complete ontology when one Check is enough.
 
 ## Capability handling
 
-- `geometry_engine_missing`: suggest `hermes dfm doctor`; never install system
-  dependencies automatically.
-- `verification_unavailable`: ask whether the user accepts an experimental
-  plan; never imply certified coverage.
-- `not_implemented`, `unsupported_capability`, `disabled`, `unhealthy`: report
-  the exact limitation and preserve project/run IDs.
+- `dependency_missing` with `geometry_engine_missing`: explain that the configured external `dfm-geometry` executable is absent or cannot be started, suggest `hermes dfm doctor`, and never install or substitute a geometry backend automatically. Optional reporting dependencies must be diagnosed separately.
+- `not_implemented` or `unsupported_capability`: state the limitation and offer supported partial analysis.
+- `disabled`: ask the user to configure and enable the capability in a new session.
+- `unhealthy`: preserve project and Run IDs and report diagnostics.
 
-Drawing-only and fusion execution remain explicit unavailable capabilities.
-The initial native engine supports injection only.
+The connected geometry backend is the separately built Analysis Situs/OCCT
+`dfm-geometry` executable. Its current calculator contract is experimental, not
+certified. Hermes already uses it for objective STEP preflight, topology,
+recognition, and measurements; it must fail explicitly with
+`geometry_engine_missing` or another capability error when unavailable. There
+is no PythonOCC or NX execution fallback. Discovery currently freezes an honest
+whole-model ordinary-region fallback until the external two-stage recognizer
+contract is connected; never present that fallback as a detected process
+feature. Every objective backend returns Measurements and geometry artifacts;
+Hermes alone performs ontology/rule selection, Evaluation, evidence rendering,
+Finding, and reporting.
+The initial die-casting scope remains a topology gate. Do not run injection
+thresholds under a die-casting label. If the
+user requests machining, sheet metal, or another process, report
+`unsupported_capability` and the supported process list. Parasolid x_t and the
+NX path remain deferred and must not be reintroduced as a fallback for the
+OCCT STEP milestone.
+Drawing-only and Fusion execution remain explicit unavailable capabilities.
 
 ## Engineering integrity
 

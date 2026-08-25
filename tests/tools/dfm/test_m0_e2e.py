@@ -156,6 +156,7 @@ def test_injected_analyzer_vertical_slice_returns_desktop_compatible_artifact(tm
             path=f"@file:{source}",
         )
         for name, value in {
+            "material": "ABS",
             "pull_dir": [0, 0, 1],
             "model_units": "mm",
         }.items():
@@ -165,6 +166,7 @@ def test_injected_analyzer_vertical_slice_returns_desktop_compatible_artifact(tm
                 fact_name=name,
                 fact_value=value,
             )
+        service.analysis("discover", project_id=project_id)
         plan = service.analysis("plan", project_id=project_id)
         started = service.analysis(
             "start",

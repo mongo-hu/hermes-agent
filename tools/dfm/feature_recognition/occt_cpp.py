@@ -17,8 +17,9 @@ class OCCTCppFeatureRecognitionProvider:
         return {
             "provider": self.key,
             "version": self.version,
-            "status": "available_via_occt_analyzer",
-            "deployment": "external_process",
+            "status": "not_implemented",
+            "deployment": "external_project",
+            "primary_production_target": True,
             "supported_formats": ["step"],
             "required_fact_names": ["process", "model_units"],
             "discovery_contract_version": DISCOVERY_SCHEMA_VERSION,
@@ -26,6 +27,7 @@ class OCCTCppFeatureRecognitionProvider:
             "output_contracts": [
                 "FeatureRecord[]",
                 "RegionRecord[]",
+                "GeometryDiscoveryResultManifest",
                 "DiscoverySnapshotRecord",
             ],
         }
@@ -38,9 +40,9 @@ class OCCTCppFeatureRecognitionProvider:
         facts: Mapping[str, Any] | None = None,
     ) -> FeatureRecognitionResult:
         raise DFMError(
-            "external_process_required",
-            "OCCT feature recognition must run through the isolated OCCT analyzer; "
-            "the provider contract does not execute native code in-process.",
+            "unsupported_capability",
+            "The external OCCT Geometry Discovery/Recognizer call is not connected; "
+            "the Objective analyzer output must not be relabeled as a Discovery result.",
             {
                 **self.capability(),
                 "input_id": input_record.input_id,

@@ -1,7 +1,7 @@
 ---
 title: "DFM Hermes Agent 开发路径"
 status: active
-updated: 2026-08-18
+updated: 2026-08-25
 type: product-development-plan
 ---
 
@@ -16,7 +16,8 @@ type: product-development-plan
 
 ```text
 项目建档 → 信息提取 → 特征发现 → 事实确认 → 分析计划
-→ 客观几何计算 → 确定性规则评价 → 证据截图 → Finding / Report
+→ 本体/能力编译 → 客观几何计算 → 确定性规则评价
+→ AI工程解释 → 证据截图 → Finding / Report
 ```
 
 每个结论必须可追溯到输入、事实、特征区域、规则、计算结果和证据。LLM 负责理解、
@@ -33,31 +34,62 @@ type: product-development-plan
 | 三维输入 | 外部 OCCT C++ 项目支持 STEP；PythonOCC 与 NX 路径已移除 |
 | 二维输入 | 契约和 Provider 占位，尚无生产识别 |
 | 特征识别 | 普通全模型区域可运行；主壁、螺钉柱、凸台、筋、孔、倒扣和外观面候选由 OCCT C++ Provider 显式占位 |
-| 规则 | Hermes 侧版本化 Scope；当前 ABS 示例阈值仅用于已批准范围 |
-| 证据 | Hermes 根据 ScalarField 和同源 RenderScene 生成三视角截图 |
+| 本体/规则 | Snapshot Schema 2、`injection.default@1.1.0`、本地 SQLite、Check Context 和通用 RuleBinding 编译已实现；中心管理后台与同步尚未交付 |
+| 证据 | Hermes 保留 ScalarField/RenderScene 证据管线；当前外部 Engine 的 `render_mesh` 尚未自动满足该局部场契约 |
 
-已完成的基础能力包括项目 Manifest、两阶段发现、区域化 AnalysisPlan、外部 OCCT C++
-壁厚/拔模角 Metric Field、统一 Evaluation/Finding/Report，以及 Objective Schema 4 和几何
-证据 Schema 2。当前算法成熟度为 `experimental`，尚不能声明 `certified`。
+已完成的基础能力包括项目 Manifest、两阶段发现骨架、区域化 AnalysisPlan、统一
+Evaluation/Finding/Report，以及外部 Objective Schema 2 + request/event/result v1；注塑阈值已从
+静态 Scope 迁移到已发布本体/规则快照，Agent 可以按 Check 输出有限语义上下文并将本体关系编译
+为现有规则契约。独立 Analysis Situs/OCCT Engine 已接入 STEP Objective Calculator，但其
+Capability 仍为 `experimental`，外部两阶段工艺特征 Discovery 和生产认证尚未交付。PythonOCC、
+NX 与 Parasolid 不在当前执行、回归或降级链路中。
 
 ## 3. 开发阶段
 
-### M2.6-A：冻结外部 OCCT C++ 项目边界与契约
+### M2.5-A：Agent 本体/规则运行时（基础已完成）
+
+- 冻结 Process、Feature Type、Region Type、Metric、Check、Factor 六类稳定 Concept；
+- 使用 Relation 表达 `HAS_CHECK/HAS_REGION/APPLIES_TO_FEATURE/APPLIES_TO_REGION/USES_OPERAND/REQUIRES_FACTOR`；
+- 冻结 `OntologyRuleSnapshot` Schema 2，发布物包含本体子图、Factor Option 和有效 Rule Version；
+- Agent 将发布包原子安装为 Profile-aware 本地 SQLite，只读执行；
+- 通过本体关系编译 `EffectiveRule/RuleBinding`，继续复用通用多 Measurement Evaluation Engine；
+- `dfm_analysis context` 按 Check 向 Agent/AI提供有限概念、关系、选项和规则；
+- Discovery 的正式 Feature/Region/Metric Target 优先来自已发布本体，不再来自阈值 Scope。
+
+完成证据：修改发布包阈值后 Agent 不改代码即可生成新 EffectiveRule；新增 Feature/Region/Check
+本体记录且 OCCT Capability 已声明 Metric 时，通用编译器不增加专用业务分支即可生成 RuleBinding。
+Schema 2 已删除 `USES_OPERAND` 中重复的 Worker/Feature/Region Selector，改由
+`APPLIES_TO_REGION + HAS_REGION + APPLIES_TO_FEATURE` 唯一解析，并覆盖多 Operand 不同区域测试。
+
+### M2.5-B：Django 本体与规则管理控制面（待实施）
+
+- 建立 Concept、Relation、Factor Option、Rule Version、Rule Set、Rule Set Item、Citation、
+  Rule Generation 和 Publication 九张核心表；
+- 管理 Web 支持概念/关系字典、完整决策行规则、系统默认与企业覆盖、审核和停用；
+- AI 只能根据 Check Context 和知识 Citation 起草 Draft Rule，不自由发明 ID、Operand 或运算符；
+- 发布器展开企业继承，并执行 Ontology × OCCT Capability、单位、表达式、规则冲突和引用校验；
+- 输出签名 Snapshot，Agent 支持同步、固定版本、回滚和撤销列表。
+
+完成标准：Web、Desktop 和 Agent 读取同一稳定字典；一条审核后的规则可以不发布 Agent 新版本而在
+下一次 AnalysisPlan 生效，已有 Run 仍可按旧 Snapshot 完整复现。
+
+### M2.6-A：冻结外部 OCCT C++ 项目边界与契约（Objective 已接通，Discovery 跨仓待实施）
 
 目标是先冻结 Hermes 与独立几何项目的边界，避免 C++ 工程复制规则、项目状态或报告逻辑。
 
-- 独立项目使用 C++17/20 与 OCCT，实现 STEP 几何发现和客观计算；
-- 冻结 Geometry Discovery Schema 1、Objective Schema 4、Geometry/Evidence Schema 2；
+- 独立项目使用 C++17、Analysis Situs v2025.2 与 OCCT 7.9.3，实现 STEP 几何发现和客观计算；
+- 当前外部执行固定 Objective Schema 2 与 request/event/result v1；Geometry Discovery Schema 1 和通用 Backend Capability Schema 1 作为下一阶段边界；
 - Discovery 输出 Observation 候选、Feature、Region、Topology/RenderMesh Snapshot 和同源 Artifact；
 - Objective 输出 Measurement、ScalarField、RenderScene 和 TopologyMap；
 - 冻结 Capability、错误、进度、取消、Artifact 哈希和版本认证要求；
+- Capability 中的 Feature/Region/Metric/Quantity 必须与待发布本体快照做交叉校验；
 - Hermes 保留事实、澄清、AnalysisPlan、规则、Evaluation、证据、Finding 和报告；
 - PythonOCC 与 NX 不进入实现、回归或降级链路。
 
 完成标准：外部项目不依赖 Hermes 内部 Python 类型即可使用正式 Schema 和共享 Fixture 完成
 Discovery 与 Objective 请求/结果的双向契约测试。
 
-### M2.6-B：OCCT C++ 生产闭环
+### M2.6-B：OCCT C++ 生产闭环（实验 Objective 已接通，Discovery/认证待实施）
 
 用 STEP、壁厚和拔模角完成第一条生产链路，同时交付第一批真实 Feature/Region。
 
@@ -74,7 +106,7 @@ Discovery 与 Objective 请求/结果的双向契约测试。
 完成标准：任一 Finding 能从报告反向追溯到图片、高亮三角形、场值、拓扑实体、Feature/
 Region、Operation、规则、输入哈希、Snapshot 和 C++ 实现版本。
 
-### M2.6-C：特征规则与指标逐项扩展
+### M2.6-C：特征规则与指标逐项扩展（待实施）
 
 按工程价值逐项加入，不一次性实现候选清单。推荐顺序：
 
@@ -87,7 +119,7 @@ Region、Operation、规则、输入哈希、Snapshot 和 C++ 实现版本。
 验收，不能只增加字段或报告文案。压铸等其它工艺必须建立独立 Scope 和认证范围，不复制
 注塑阈值冒充支持。
 
-### M2.7：黄金产品完整闭环
+### M2.7：黄金产品完整闭环（待实施）
 
 - 冻结真实或脱敏黄金产品、确认事实和批准规则；
 - 覆盖该产品全部批准指标；
@@ -96,21 +128,21 @@ Region、Operation、规则、输入哈希、Snapshot 和 C++ 实现版本。
 
 Ground Truth 只用于研发验收，不进入生产分析，也不回写运行结果。
 
-### M3：二维图纸信息提取
+### M3：二维图纸信息提取（待实施）
 
 - PDF/图片解析、OCR、版面和表格识别；
 - 输出带页码、bbox、原文、单位和置信度的 Observation；
 - 高置信度且无冲突的信息可转为 Fact，歧义进入 Clarification；
 - 无可靠比例或明确标注时，不从像素推断精确几何尺寸。
 
-### M4：二维工程特征与三维融合
+### M4：二维工程特征与三维融合（待实施）
 
 - 识别公差、材料、表面要求、基准和局部工程标注；
 - 将二维 Observation 与三维 Feature/Region 建立可审核 FusionLink；
 - 冲突和低置信度映射由用户确认；
 - 图纸信息参与规则选择，但不替代三维客观计算。
 
-### M5：平台化与多工艺扩展
+### M5：平台化与多工艺扩展（待实施）
 
 - 通用 Capability/Calculator 注册与认证；
 - 受影响 Operation 重算和断点复用；
@@ -128,7 +160,9 @@ Ground Truth 只用于研发验收，不进入生产分析，也不回写运行�
 6. 未实现、低置信度或未认证能力必须显式阻塞或回退为 ordinary，不生成伪特征。
 7. 修改规则只重做评价闭包；修改输入、拓扑、网格或算法版本会使相关客观缓存失效。
 8. 新能力保持在 DFM toolset/服务边缘，不修改 Hermes Agent Loop，不增加无关会话工具负担。
-9. NX、Parasolid 和 PythonOCC 不属于当前能力面。
+9. NX 与 Parasolid 保留为未来可选 Backend；延期不得污染 OCCT C++ 当前契约或阻塞 STEP 生产闭环。
+10. 管理库是编辑来源；Agent 本地库是一次发布的只读投影，运行中不得逐行修改或切换版本。
+11. 本体只有通过通用编译器、Check Context 或发布校验被消费才允许存在，禁止建设无人使用的概念表。
 
 ## 5. 验收方式
 
@@ -142,11 +176,18 @@ Ground Truth 只用于研发验收，不进入生产分析，也不回写运行�
 
 ## 6. 当前优先级
 
-1. 冻结 Geometry Discovery 1、Objective 4、Geometry/Evidence 2 和共享 Fixture；
-2. 建立独立 OCCT C++ 项目及 Capability/Job/Artifact 边界；
-3. 实现 STEP Loader、Snapshot、第一批真实注塑 Feature/Region Recognizer；
-4. 实现壁厚/拔模角 Calculator 和真实 OCCT C++ E2E；
-5. 完成 Golden Model、并发稳定性和工程认证后逐项扩展指标。
+后续按两条主线并行推进，几何生产闭环是产品核心路径，规则控制面不能阻塞 OCCT 工程启动：
+
+| 优先级 | 几何生产主线 | 规则与 Agent 主线 |
+| --- | --- | --- |
+| P0 | 在现有 `dfm-geometry` 上接通 Discovery 1/Recognizer 与稳定 Region；保持已接通 Objective 2 + request/event/result v1 的兼容 Fixture | 固定 Snapshot Schema 2；继续维护本地编译、Evaluation 和契约测试 |
+| P1 | STEP Loader、Snapshot、主壁/螺钉柱等首批 Feature/Region Recognizer、壁厚/拔模 Calculator | 独立 Django 工程实现九张中心表、审核发布器和 Snapshot API |
+| P2 | 用螺钉柱壁厚比例完成“不改 Agent 业务代码”的 Golden E2E | Agent 完成签名同步、版本选择、回滚和撤销处理 |
+| P3 | 并发、资源隔离、数值与工程认证后逐项扩展指标 | 规则生成 AI、知识 Citation、企业规则管理和审计 |
+
+二维图纸识别与 2D/3D Fusion 在三维 Golden E2E 之后进入实现，但其 Observation、FusionLink 和
+Clarification 契约继续保留，避免后续破坏主数据链。
 
 文档只记录已批准方向。字段和状态以 `tools/dfm/schemas/`、`tools/dfm/contracts.py` 和
-`tools/dfm/scopes/` 为最终依据。
+`tools/dfm/scopes/` 为当前可执行依据；中心管理后台交付后，以签名发布 Snapshot 和对应 Schema 为
+最终依据。

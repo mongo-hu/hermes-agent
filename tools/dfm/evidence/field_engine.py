@@ -16,6 +16,18 @@ from ..errors import DFMError
 
 EVIDENCE_SCHEMA_VERSION = 1
 _VIEWS_PER_PATCH = 3
+
+
+def _between(value: Any, expected: Any) -> bool:
+    if isinstance(expected, dict):
+        lower, upper = expected.get("lower"), expected.get("upper")
+    elif isinstance(expected, (list, tuple)) and len(expected) == 2:
+        lower, upper = expected
+    else:
+        return False
+    return bool(lower <= value <= upper)
+
+
 _OPERATORS: dict[str, Callable[[Any, Any], bool]] = {
     ">=": operator.ge,
     "<=": operator.le,
@@ -23,6 +35,7 @@ _OPERATORS: dict[str, Callable[[Any, Any], bool]] = {
     "<": operator.lt,
     "==": operator.eq,
     "!=": operator.ne,
+    "between": _between,
 }
 
 
@@ -67,6 +80,13 @@ class FieldEvidenceEngine:
         patches: list[dict[str, Any]] = []
         for evaluation in evaluations_payload.get("evaluations", []):
             if not isinstance(evaluation, dict) or evaluation.get("outcome") != "fail":
+                continue
+            # A scalar field can only be thresholded with the direct rule that
+            # produced it. Composite expressions (for example boss/main-wall
+            # thickness ratios) need a dedicated renderer for their numerator
+            # and denominator regions; applying the derived threshold to each
+            # raw field sample would create false evidence.
+            if evaluation.get("expression") is not None:
                 continue
             comparison = _OPERATORS.get(str(evaluation.get("operator") or ""))
             if comparison is None:

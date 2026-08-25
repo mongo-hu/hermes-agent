@@ -18,7 +18,7 @@ def test_dfm_tools_are_discovered_with_stable_schemas_and_dispatch(tmp_path):
         "create", "add_input", "status", "confirm_fact", "list"
     ]
     assert analysis_schema["parameters"]["properties"]["action"]["enum"] == [
-        "plan", "start", "status", "cancel", "result"
+        "discover", "plan", "start", "status", "cancel", "result", "context"
     ]
 
     token = set_hermes_home_override(tmp_path / "home")

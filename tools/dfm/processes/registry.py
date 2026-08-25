@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ..errors import DFMError
+from ..ontology import LocalOntologyStore
 from .base import ProcessAdapter
 
 
@@ -37,11 +38,13 @@ class ProcessAdapterRegistry:
         return tuple(sorted(self._adapters))
 
 
-def build_default_process_registry() -> ProcessAdapterRegistry:
+def build_default_process_registry(
+    ontology_store: LocalOntologyStore | None = None,
+) -> ProcessAdapterRegistry:
     from .die_casting import DieCastingProcessAdapter
     from .injection import InjectionProcessAdapter
 
     registry = ProcessAdapterRegistry()
-    registry.register(InjectionProcessAdapter())
+    registry.register(InjectionProcessAdapter(ontology_store=ontology_store))
     registry.register(DieCastingProcessAdapter())
     return registry

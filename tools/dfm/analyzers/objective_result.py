@@ -44,6 +44,43 @@ def validate_objective_result(
             "Measurements do not implement the objective production contract.",
         )
 
+    metric_fields_artifact = next(
+        (item for item in artifacts if item.kind == "metric_fields"), None
+    )
+    metric_field_views: dict[str, dict] = {}
+    metric_fields_by_id: dict[str, dict] = {}
+    if metric_fields_artifact is not None:
+        metric_fields_payload = _read(project_dir, metric_fields_artifact, error_code)
+        fields = metric_fields_payload.get("fields")
+        views = metric_fields_payload.get("views")
+        if (
+            metric_fields_payload.get("schema_version") != 1
+            or metric_fields_payload.get("run_id") != run_id
+            or metric_fields_payload.get("input_sha256") != input_sha256
+            or metric_fields_payload.get("process") != process
+            or metric_fields_payload.get("scope_id") != scope_id
+            or not isinstance(fields, list)
+            or not isinstance(views, list)
+        ):
+            raise DFMError(error_code, "Metric fields have an invalid identity.")
+        metric_fields_by_id = {
+            str(item.get("field_id")): item
+            for item in fields
+            if isinstance(item, dict) and item.get("field_id")
+        }
+        metric_field_views = {
+            str(item.get("field_id")): item
+            for item in views
+            if isinstance(item, dict) and item.get("field_id")
+        }
+        if len(metric_fields_by_id) != len(fields) or len(metric_field_views) != len(views):
+            raise DFMError(error_code, "Metric field identities must be unique.")
+        if any(
+            str(view.get("source_field_id") or "") not in metric_fields_by_id
+            for view in metric_field_views.values()
+        ):
+            raise DFMError(error_code, "Metric field views do not resolve.")
+
     task_operations = {item.operation_id: item for item in operations}
     expected = {
         (operation.operation_id, metric_id, quantity_id)
@@ -74,11 +111,29 @@ def validate_objective_result(
         field_refs = measurement.get("field_refs")
         if not isinstance(field_refs, list) or any(
             not isinstance(ref, str)
-            or ref not in by_id
-            or by_id[ref].kind != "scalar_field"
+            or (
+                (ref not in by_id or by_id[ref].kind != "scalar_field")
+                and ref not in metric_field_views
+            )
             for ref in field_refs
         ):
             raise DFMError(error_code, "Measurement field_refs do not resolve.")
+        for ref in field_refs:
+            if ref not in metric_field_views:
+                continue
+            view = metric_field_views[ref]
+            source = metric_fields_by_id[str(view["source_field_id"])]
+            if (
+                view.get("quantity_id") != quantity_id
+                or source.get("operation_id") != operation_id
+                or source.get("calculator_id") != operation.calculator_id
+                or source.get("metric_id") != metric_id
+                or source.get("input_sha256") != input_sha256
+            ):
+                raise DFMError(
+                    error_code,
+                    "Measurement metric-field view does not match its operation.",
+                )
         if "scalar_field" in operation.required_artifacts and not field_refs:
             raise DFMError(error_code, "A field-backed measurement has no field_ref.")
         if any(
@@ -98,7 +153,10 @@ def validate_objective_result(
     required_kinds = {
         kind for operation in operations for kind in operation.required_artifacts
     }
-    missing_kinds = sorted(required_kinds - {item.kind for item in artifacts})
+    available_kinds = {item.kind for item in artifacts}
+    if "metric_fields" in available_kinds:
+        available_kinds.add("scalar_field")
+    missing_kinds = sorted(required_kinds - available_kinds)
     if missing_kinds:
         raise DFMError(
             error_code,
@@ -109,7 +167,14 @@ def validate_objective_result(
         artifact.artifact_id: _read(project_dir, artifact, error_code)
         for artifact in artifacts
         if artifact.kind
-        in {"scalar_field", "render_scene", "topology_map", "preflight", "features"}
+        in {
+            "scalar_field",
+            "metric_fields",
+            "render_scene",
+            "topology_map",
+            "preflight",
+            "features",
+        }
     }
     if any(
         item.get("schema_version") != 1

@@ -19,6 +19,21 @@ class ProcessPlan:
     operations: list[PlanOperation]
     accepted_inputs: set[str]
     rule_bindings: list[RuleBinding] = field(default_factory=list)
+    binding_selectors: dict[str, dict[str, dict[str, str]]] = field(
+        default_factory=dict
+    )
+    ontology_snapshot_id: str = ""
+    ontology_snapshot_sha256: str = ""
+
+
+@dataclass(frozen=True)
+class FactRequirement:
+    """One explicit engineering prerequisite and the phase it blocks."""
+
+    name: str
+    question: str
+    phase: str
+    required_by: tuple[str, ...] = ()
 
 
 @runtime_checkable
@@ -29,6 +44,8 @@ class ProcessAdapter(Protocol):
     def capability(self, context: AnalyzerContext) -> Capability: ...
 
     def required_facts(self) -> Mapping[str, str]: ...
+
+    def fact_requirements(self) -> tuple[FactRequirement, ...]: ...
 
     def compile(
         self,

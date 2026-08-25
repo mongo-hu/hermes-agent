@@ -86,6 +86,19 @@ def materialize_evaluated_findings(
                 recommendation=(
                     "Review and correct the geometry identified by the evaluated rule."
                 ),
+                feature_refs=sorted(
+                    {
+                        str(ref)
+                        for item in linked
+                        for ref in item.get("feature_refs", [])
+                    }
+                    | {str(ref) for ref in evaluation.get("feature_refs", [])}
+                ),
+                check_ids=(
+                    [str(evaluation["check_id"])]
+                    if evaluation.get("check_id")
+                    else []
+                ),
             )
         )
     return results

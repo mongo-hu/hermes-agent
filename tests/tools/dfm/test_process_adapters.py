@@ -43,23 +43,23 @@ def test_die_casting_scope_is_independent_and_topology_only(context):
     assert tuple(adapter.required_facts()) == ("model_units",)
 
 
-def test_injection_default_scope_has_versioned_parameter_provenance(context):
+def test_injection_plan_uses_published_ontology_and_capability_provenance(context):
     adapter = build_default_process_registry().get("injection")
 
     plan = adapter.compile(context, {})
 
     assert plan.process == "injection"
-    assert plan.scope_id == "injection.geometry-core"
-    assert plan.scope_version == "4.0.0"
-    assert plan.adapter_version == "injection-geometry-core-v4"
-    assert plan.rules["min_wall_mm"].source == (
-        "scope:injection.geometry-core@4.0.0/parameters/min_wall_mm"
+    assert plan.scope_id == "injection.default"
+    assert plan.scope_version == "1.1.0"
+    assert plan.adapter_version == "injection-ontology-runtime-v1"
+    assert plan.ontology_snapshot_id == "ontology.injection.default@1.1.0"
+    assert len(plan.ontology_snapshot_sha256) == 64
+    assert plan.rules["R_INJ_MAIN_WALL_MIN_ABS"].value == 1.2
+    assert plan.rules["R_INJ_MAIN_WALL_MIN_ABS"].source.startswith(
+        "ontology:ontology.injection.default@1.1.0/"
     )
-    assert plan.rules["min_draft_deg"].value == 1.0
-    assert plan.rules["min_draft_deg"].source == (
-        "scope:injection.geometry-core@4.0.0/parameters/min_draft_deg"
-    )
-    assert plan.rules["min_draft_deg"].unit == "degree"
+    assert plan.rules["R_INJ_MAIN_WALL_DRAFT_DEFAULT"].value == 1.0
+    assert plan.rules["R_INJ_MAIN_WALL_DRAFT_DEFAULT"].unit == "degree"
     assert plan.operations[0].calculator_id == "geometry_preflight"
     assert plan.operations[0].arguments["model_unit"].value == "mm"
     assert [item.calculator_id for item in plan.operations] == [
@@ -84,9 +84,23 @@ def test_injection_default_scope_has_versioned_parameter_provenance(context):
     assert {item.quantity_id for item in plan.rule_bindings} == {
         "thickness_mm",
         "draft_angle_deg",
-        "undercut_count",
-        "corner_angle_deg",
     }
+    wall_operation = next(
+        item for item in plan.operations if item.calculator_id == "measure_wall_thickness"
+    )
+    wall_binding = next(
+        item for item in plan.rule_bindings if item.quantity_id == "thickness_mm"
+    )
+    assert wall_operation.required_fact_names == ["model_units"]
+    assert wall_binding.required_fact_names == ["material"]
+    requirements = {item.name: item for item in adapter.fact_requirements()}
+    assert requirements["model_units"].phase == "discovery"
+    assert requirements["material"].phase == "analysis"
+    assert requirements["pull_dir"].phase == "analysis"
+    assert requirements["material"].required_by == (
+        "check.main_wall_minimum_thickness",
+    )
+    assert requirements["pull_dir"].required_by == ("geometry.draft",)
     assert all(
         "topology_map" in item.required_artifacts
         for item in plan.operations
@@ -98,16 +112,15 @@ def test_injection_default_scope_has_versioned_parameter_provenance(context):
         if item.calculator_id == "measure_wall_thickness"
     )
     assert wall.required_quantities == ["thickness_mm", "average_thickness_mm"]
-    assert tuple(adapter.required_facts()) == ("model_units",)
+    assert set(adapter.required_facts()) == {"material", "model_units", "pull_dir"}
 
 
-def test_confirmed_parameter_override_is_normalized_and_traced(context):
+def test_confirmed_geometry_fact_is_normalized_and_traced(context):
     adapter = build_default_process_registry().get("injection")
 
     plan = adapter.compile(
         context,
         {
-            "min_wall_mm": {"value": "1.6", "source": "project_fact"},
             "pull_dir": {
                 "value": [0, 1, 0],
                 "source": "user_confirmed",
@@ -116,11 +129,8 @@ def test_confirmed_parameter_override_is_normalized_and_traced(context):
         },
     )
 
-    assert plan.rules["min_wall_mm"].value == 1.6
-    assert plan.rules["min_wall_mm"].source == "fact:min_wall_mm"
-    draft = next(
-        item for item in plan.operations if item.calculator_id == "measure_draft"
-    )
+    assert plan.rules["R_INJ_MAIN_WALL_MIN_ABS"].value == 1.2
+    draft = next(item for item in plan.operations if item.calculator_id == "measure_draft")
     undercut = next(
         item for item in plan.operations if item.calculator_id == "measure_undercut"
     )
@@ -129,12 +139,12 @@ def test_confirmed_parameter_override_is_normalized_and_traced(context):
     assert undercut.arguments["pull_direction"].value == [0.0, 1.0, 0.0]
 
 
-def test_injection_geometry_plan_does_not_require_or_forward_material(context):
+def test_injection_material_selects_ontology_rule_but_is_not_forwarded(context):
     adapter = build_default_process_registry().get("injection")
 
-    plan = adapter.compile(context, {"model_units": "mm"})
+    plan = adapter.compile(context, {"model_units": "mm", "material": "abs"})
 
-    assert plan.rules["min_wall_mm"].value == 1.2
+    assert plan.rules["R_INJ_MAIN_WALL_MIN_ABS"].value == 1.2
     assert all("material" not in item.arguments for item in plan.operations)
 
 
@@ -165,10 +175,18 @@ def test_scope_rejects_unknown_model_units(context, model_units):
     assert exc_info.value.code == "process_parameter_invalid"
 
 
+def test_project_facts_cannot_override_a_published_rule_threshold(context):
+    adapter = build_default_process_registry().get("injection")
+
+    with pytest.raises(DFMError) as exc_info:
+        adapter.compile(context, {"min_wall_mm": 1.6})
+
+    assert exc_info.value.code == "process_parameter_invalid"
+
+
 @pytest.mark.parametrize(
     "parameters",
     [
-        {"material": "ABS"},
         {"imaginary_threshold": 1},
         {"min_wall_mm": 0},
         {"pull_dir": [0, 0]},

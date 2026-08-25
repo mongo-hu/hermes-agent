@@ -39,10 +39,11 @@ DFM_PROJECT_SCHEMA = {
 
 DFM_ANALYSIS_SCHEMA = {
     "name": "dfm_analysis",
-    "description": "Plan and manage non-blocking DFM runs. OCCT work can legitimately spend several minutes in one measurement stage; unchanged progress is not evidence of a disconnect. Before the configured timeout, cancel only after the user explicitly requests it and pass confirm_cancel=true. Unavailable analyzers fail explicitly; never infer engineering findings from that status.",
+    "description": "Discover, plan, and manage non-blocking DFM runs. Objective STEP geometry is executed by the external Analysis Situs/OCCT engine at experimental verification level; certified execution never silently downgrades. Hermes owns ontology resolution, evaluation, evidence, findings, and reporting.",
     "parameters": {"type": "object", "properties": {
-        "action": {"type": "string", "enum": ["plan", "start", "status", "cancel", "result"]},
+        "action": {"type": "string", "enum": ["discover", "plan", "start", "status", "cancel", "result", "context"]},
         "project_id": {"type": "string"}, "plan_id": {"type": "string"}, "run_id": {"type": "string", "description": "Run ID returned by start. Always pass it to status, result, or cancel; if omitted, the service can infer it only when unambiguous."},
+        "check_id": {"type": "string", "description": "Stable Check identity required when action=context, keeping the ontology/rule response bounded."},
         "base_plan_id": {"type": "string", "description": "Invalidated plan to rebuild with only affected operations."},
         "process": {"type": "string", "enum": ["injection", "die_casting"], "description": "Manufacturing process selected by the user. Omit only to keep the project's current/default process."},
         "analyzer_key": {"type": "string", "enum": ["occt", "drawing", "fusion"]},

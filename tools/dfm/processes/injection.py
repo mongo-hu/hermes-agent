@@ -11,13 +11,12 @@ from ..analyzers.base import AnalyzerContext
 from ..contracts import (
     Capability,
     CapabilityStatus,
-    EffectiveRule,
     PlanOperation,
     ResolvedArgument,
-    RuleBinding,
 )
 from ..errors import DFMError
-from .base import ProcessPlan
+from ..ontology import LocalOntologyStore
+from .base import FactRequirement, ProcessPlan
 
 
 _TRUSTED_SOURCES = {"project_fact", "user_confirmed"}
@@ -48,14 +47,24 @@ _LENGTH_UNIT_ALIASES = {
 
 class InjectionProcessAdapter:
     key = "injection"
-    version = "injection-geometry-core-v4"
+    version = "injection-ontology-runtime-v1"
 
-    def __init__(self, scope_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        scope_path: Path | None = None,
+        ontology_store: LocalOntologyStore | None = None,
+    ) -> None:
         self.scope_path = scope_path or (
             Path(__file__).resolve().parents[1]
             / "scopes"
             / "injection"
-            / "geometry_core_v4.json"
+            / "geometry_capability_v1.json"
+        )
+        self.ontology_store = ontology_store or LocalOntologyStore.from_package(
+            Path(__file__).resolve().parents[1]
+            / "scopes"
+            / "injection"
+            / "ontology_snapshot_v2.json"
         )
 
     def capability(self, context: AnalyzerContext) -> Capability:
@@ -67,9 +76,19 @@ class InjectionProcessAdapter:
         )
 
     def required_facts(self) -> Mapping[str, str]:
-        return {
-            "model_units": "What length unit was used to author the STEP model?",
-        }
+        return {item.name: item.question for item in self.fact_requirements()}
+
+    def fact_requirements(self) -> tuple[FactRequirement, ...]:
+        ontology_requirements = tuple(
+            FactRequirement(
+                name=str(item["name"]),
+                question=str(item["question"]),
+                phase=str(item["phase"]),
+                required_by=tuple(str(value) for value in item["required_by"]),
+            )
+            for item in self.ontology_store.fact_requirements(self.key)
+        )
+        return ontology_requirements
 
     def compile(
         self,
@@ -78,7 +97,10 @@ class InjectionProcessAdapter:
     ) -> ProcessPlan:
         scope = self._load_scope()
         defaults = scope["parameters"]
-        unknown = sorted(set(raw_parameters) - set(defaults))
+        accepted_inputs = set(defaults) | {
+            item.name for item in self.fact_requirements() if item.name != "process"
+        }
+        unknown = sorted(set(raw_parameters) - accepted_inputs)
         if unknown:
             self._invalid("Unknown injection parameter.", {"parameters": unknown})
 
@@ -88,12 +110,14 @@ class InjectionProcessAdapter:
                 "unit": definition.get("unit"),
                 "source": "injection_scope_default",
                 "source_ref": (
-                    f"scope:{scope['scope_id']}@{scope['version']}/parameters/{key}"
+                    f"capability:{scope['capability_id']}@{scope['version']}"
+                    f"/parameters/{key}"
                 ),
                 "kind": str(definition.get("kind") or "rule"),
             }
             for key, definition in defaults.items()
         }
+        ontology_facts: dict[str, Any] = {}
         for key, raw in raw_parameters.items():
             source = "project_fact"
             value = raw
@@ -105,27 +129,21 @@ class InjectionProcessAdapter:
                     "Injection parameter source is not trusted.",
                     {"parameter": key, "source": source},
                 )
-            resolved[key] = {
-                "value": self._normalize_value(key, value),
-                "unit": defaults[key].get("unit"),
-                "source": source,
-                "source_ref": str(raw.get("source_ref") or f"fact:{key}")
-                if isinstance(raw, Mapping)
-                else f"fact:{key}",
-                "kind": str(defaults[key].get("kind") or "rule"),
-            }
+            normalized = self._normalize_value(key, value)
+            ontology_facts[key] = normalized
+            if key in defaults:
+                resolved[key] = {
+                    "value": normalized,
+                    "unit": defaults[key].get("unit"),
+                    "source": source,
+                    "source_ref": str(raw.get("source_ref") or f"fact:{key}")
+                    if isinstance(raw, Mapping)
+                    else f"fact:{key}",
+                    "kind": "engineering_context",
+                }
 
-        rules = {
-            key: EffectiveRule(
-                value=item["value"],
-                unit=item["unit"],
-                source=item["source_ref"],
-                version=str(scope["version"]),
-            )
-            for key, item in resolved.items()
-            if item["kind"] == "rule"
-        }
         operations = [PlanOperation.from_dict(item) for item in scope["operations"]]
+        compiled = self.ontology_store.compile(self.key, ontology_facts, operations)
         enriched_operations = []
         for operation in operations:
             arguments = dict(operation.arguments)
@@ -148,6 +166,9 @@ class InjectionProcessAdapter:
                     metric_ids=operation.metric_ids,
                     required_quantities=operation.required_quantities,
                     required_artifacts=operation.required_artifacts,
+                    required_fact_names=operation.required_fact_names,
+                    feature_refs=operation.feature_refs,
+                    region_refs=operation.region_refs,
                     arguments=arguments,
                     algorithm_options=algorithm_options,
                 )
@@ -156,15 +177,15 @@ class InjectionProcessAdapter:
         return ProcessPlan(
             process=self.key,
             adapter_version=self.version,
-            scope_id=scope["scope_id"],
-            scope_version=scope["version"],
-            rules=rules,
+            scope_id=compiled.identity.scope_id,
+            scope_version=compiled.identity.scope_version,
+            rules=compiled.rules,
             operations=enriched_operations,
-            accepted_inputs=set(defaults),
-            rule_bindings=[
-                RuleBinding.from_dict(item)
-                for item in scope["rule_bindings"]
-            ],
+            accepted_inputs=accepted_inputs,
+            rule_bindings=compiled.rule_bindings,
+            binding_selectors=compiled.binding_selectors,
+            ontology_snapshot_id=compiled.identity.snapshot_id,
+            ontology_snapshot_sha256=compiled.identity.content_sha256,
         )
 
     def _load_scope(self) -> dict[str, Any]:
@@ -177,12 +198,11 @@ class InjectionProcessAdapter:
                 {"path": str(self.scope_path)},
             ) from exc
         if (
-            scope.get("scope_id") != "injection.geometry-core"
+            scope.get("capability_id") != "injection.geometry-core"
             or scope.get("version") != "4.0.0"
             or scope.get("process") != self.key
             or not isinstance(scope.get("parameters"), dict)
             or not isinstance(scope.get("operations"), list)
-            or not isinstance(scope.get("rule_bindings"), list)
         ):
             raise DFMError(
                 "process_scope_invalid",
@@ -191,6 +211,11 @@ class InjectionProcessAdapter:
         return scope
 
     def _normalize_value(self, key: str, value: Any) -> Any:
+        if key == "material":
+            material = str(value or "").strip().upper()
+            if not material:
+                self._invalid("material must be a non-empty material identifier.")
+            return material
         if key == "model_units":
             unit = str(value or "").strip().lower()
             if unit not in _LENGTH_UNIT_ALIASES:
@@ -215,21 +240,7 @@ class InjectionProcessAdapter:
             if not all(math.isfinite(item) for item in vector) or not any(vector):
                 self._invalid("pull_dir must be a finite non-zero vector.")
             return vector
-        try:
-            number = float(value)
-        except (TypeError, ValueError) as exc:
-            raise DFMError(
-                "process_parameter_invalid",
-                f"Injection parameter must be numeric: {key}",
-                {"parameter": key},
-            ) from exc
-        allow_zero = key == "max_undercut_count"
-        if not math.isfinite(number) or number < 0 or (number == 0 and not allow_zero):
-            self._invalid(
-                "Injection parameter must be a positive finite number.",
-                {"parameter": key},
-            )
-        return number
+        return value
 
     @staticmethod
     def _invalid(message: str, details: dict[str, Any] | None = None) -> None:

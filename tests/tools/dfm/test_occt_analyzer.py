@@ -68,6 +68,7 @@ CAPABILITIES = {
         "render_mesh",
         "features",
         "measurements",
+        "metric_fields",
     ],
     "operations": [
         {
@@ -183,10 +184,25 @@ class SuccessfulRunner:
                     f"{self.request.task.input_sha256}:{ENGINE_VERSION}".encode()
                 ).hexdigest()[:20],
                 "engine_version": ENGINE_VERSION,
+                "scene_ref": "render_scene",
                 "index_base": 1,
                 "identity_scope": "input_sha256+engine_version",
                 "bbox": {},
-                "faces": [{"index": 1, "surface_type": "plane", "area_mm2": 1.0}],
+                "faces": [
+                    {
+                        "index": 1,
+                        "geometry_ref": {
+                            "kind": "face",
+                            "index": 1,
+                            "input_sha256": self.request.task.input_sha256,
+                        },
+                        "triangle_refs": [
+                            {"primitive_id": "face-1", "triangle_id": 0}
+                        ],
+                        "surface_type": "plane",
+                        "area_mm2": 1.0,
+                    }
+                ],
                 "edges": [],
                 "aag": [],
                 "quality": {
@@ -320,6 +336,19 @@ class SuccessfulRunner:
             }),
             encoding="utf-8",
         )
+        metric_fields = output / "metric_fields.json"
+        metric_fields.write_text(
+            json.dumps({
+                **identity,
+                "contract_version": "dfm.geometry.artifact/metric-fields/v1",
+                "process": "injection",
+                "scope_id": "injection.geometry-core",
+                "scope_version": "4.0.0",
+                "fields": [],
+                "views": [],
+            }),
+            encoding="utf-8",
+        )
         result = ObjectiveResultManifest(
             schema_version=2,
             producer_version=ENGINE_VERSION,
@@ -335,6 +364,7 @@ class SuccessfulRunner:
                 _artifact(render_mesh, "render_mesh", "render_mesh"),
                 _artifact(features, "features", "features"),
                 _artifact(measurements, "measurements", "measurements"),
+                _artifact(metric_fields, "metric_fields", "metric_fields"),
             ],
             contract_version=GEOMETRY_RESULT_CONTRACT,
         )
@@ -348,6 +378,7 @@ class SuccessfulRunner:
             ("render_mesh", "render_mesh.json"),
             ("features", "features.json"),
             ("measurements", "measurements.json"),
+            ("metric_fields", "metric_fields.json"),
             ("worker_result", "engine_result.json"),
         ):
             event = WorkerEvent(
@@ -677,6 +708,7 @@ def test_occt_analyzer_runs_versioned_request_and_returns_validated_artifacts(tm
         "render_mesh",
         "features",
         "measurements",
+        "metric_fields",
         "worker_result",
     }
 
@@ -772,6 +804,7 @@ def test_native_protocol_and_artifact_json_schemas_validate_real_adapter_shapes(
         "event.schema",
         "features.schema",
         "measurements.schema",
+        "metric_fields.schema",
         "preflight.schema",
         "request.schema",
         "render_mesh.schema",
@@ -820,6 +853,7 @@ def test_native_protocol_and_artifact_json_schemas_validate_real_adapter_shapes(
         ("render_mesh.schema", "render_mesh.json"),
         ("features.schema", "features.json"),
         ("measurements.schema", "measurements.json"),
+        ("metric_fields.schema", "metric_fields.json"),
         ("result.schema", "engine_result.json"),
     ):
         Draft202012Validator(schemas[stem]).validate(

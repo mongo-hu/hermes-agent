@@ -38,14 +38,28 @@ def test_real_occt_injection_vertical_slice(tmp_path):
             fact_name="model_units",
             fact_value="mm",
         )
+        service.project(
+            "confirm_fact",
+            project_id=project_id,
+            fact_name="material",
+            fact_value="ABS",
+        )
+        service.project(
+            "confirm_fact",
+            project_id=project_id,
+            fact_name="pull_dir",
+            fact_value=[0, 0, 1],
+        )
+        service.analysis("discover", project_id=project_id)
         plan = service.analysis(
             "plan",
             project_id=project_id,
             analyzer_key="occt",
             verification_level="experimental",
         )["plan"]
-        assert plan["scope_id"] == "injection.geometry-core"
-        assert plan["assumed_pull_direction"] is True
+        assert plan["scope_id"] == "injection.default"
+        assert plan["ontology_snapshot_id"] == "ontology.injection.default@1.1.0"
+        assert plan["assumed_pull_direction"] is False
         started = service.analysis(
             "start", project_id=project_id, plan_id=plan["plan_id"]
         )
@@ -67,6 +81,7 @@ def test_real_occt_injection_vertical_slice(tmp_path):
             "render_mesh",
             "features",
             "measurements",
+            "metric_fields",
             "evaluations",
             "dfm_viewer",
         }
@@ -78,6 +93,7 @@ def test_real_occt_injection_vertical_slice(tmp_path):
             "render_mesh": "render_mesh.schema.json",
             "features": "features.schema.json",
             "measurements": "measurements.schema.json",
+            "metric_fields": "metric_fields.schema.json",
             "worker_result": "result.schema.json",
         }
         project_dir = service.workspace.project_dir(project_id)

@@ -31,7 +31,9 @@ from .base import AnalyzerContext, CancellationToken
 from .objective_result import validate_objective_result
 
 
-ENGINE_VERSION = "occt-dfm-geometry-1.0.0"
+ENGINE_VERSION = "occt-dfm-geometry-1.2.0"
+GEOMETRY_SCOPE_ID = "injection.geometry-core"
+GEOMETRY_SCOPE_VERSION = "4.0.0"
 CAPABILITY_CONTRACT = "dfm.geometry.capabilities/v1"
 GEOMETRY_OPERATION_PAIRS = (
     ("geometry.preflight", "geometry_preflight"),
@@ -223,6 +225,7 @@ class OcctAnalyzer:
                                 "render_mesh",
                                 "features",
                                 "measurements",
+                                "metric_fields",
                             ]
                             or not _valid_capability_operations(
                                 payload.get("operations")
@@ -352,8 +355,11 @@ class OcctAnalyzer:
             input_sha256=input_record.sha256,
             input_format="step",
             process=context.plan.process,
-            scope_id=context.plan.scope_id,
-            scope_version=context.plan.scope_version,
+            # Plan scope identifies the pinned ontology/rule publication. The
+            # external engine has its own capability scope and must never be
+            # handed Hermes semantic scope identities as geometry policy.
+            scope_id=GEOMETRY_SCOPE_ID,
+            scope_version=GEOMETRY_SCOPE_VERSION,
             operations=context.plan.operations,
             verification_level=context.plan.verification_level,
             assumed_pull_direction=context.plan.assumed_pull_direction,
@@ -440,6 +446,7 @@ class OcctAnalyzer:
             ("render_mesh", "render_mesh.json"),
             ("features", "features.json"),
             ("measurements", "measurements.json"),
+            ("metric_fields", "metric_fields.json"),
             ("worker_result", "engine_result.json"),
         }
         if (
@@ -467,8 +474,8 @@ class OcctAnalyzer:
             or result.run_id != context.run_id
             or result.input_sha256 != input_record.sha256
             or result.process != context.plan.process
-            or result.scope_id != context.plan.scope_id
-            or result.scope_version != context.plan.scope_version
+            or result.scope_id != GEOMETRY_SCOPE_ID
+            or result.scope_version != GEOMETRY_SCOPE_VERSION
             or result.result_path != "engine_result.json"
         ):
             raise DFMError(
@@ -481,6 +488,7 @@ class OcctAnalyzer:
             "render_mesh",
             "features",
             "measurements",
+            "metric_fields",
         }
         artifact_kinds = [item.kind for item in result.artifacts]
         if (
@@ -539,8 +547,8 @@ class OcctAnalyzer:
             run_id=context.run_id,
             input_sha256=input_record.sha256,
             process=context.plan.process,
-            scope_id=context.plan.scope_id,
-            scope_version=context.plan.scope_version,
+            scope_id=GEOMETRY_SCOPE_ID,
+            scope_version=GEOMETRY_SCOPE_VERSION,
         )
         artifacts.append(
             self._artifact_record(
@@ -558,7 +566,7 @@ class OcctAnalyzer:
             run_id=context.run_id,
             input_sha256=input_record.sha256,
             process=context.plan.process,
-            scope_id=context.plan.scope_id,
+            scope_id=GEOMETRY_SCOPE_ID,
         )
         return artifacts
 
@@ -579,6 +587,7 @@ class OcctAnalyzer:
             "render_mesh": "dfm.geometry.artifact/render-mesh/v1",
             "features": "dfm.geometry.artifact/features/v1",
             "measurements": "dfm.geometry.artifact/measurements/v1",
+            "metric_fields": "dfm.geometry.artifact/metric-fields/v1",
         }
         if set(documents) != set(contracts):
             raise DFMError(
@@ -678,7 +687,7 @@ class OcctAnalyzer:
                 "objective_result_invalid",
                 "OCCT artifacts claim unaudited geometry normalization.",
             )
-        for kind in ("features", "measurements"):
+        for kind in ("features", "measurements", "metric_fields"):
             document = documents[kind]
             if (
                 document.get("process") != process
@@ -693,12 +702,19 @@ class OcctAnalyzer:
 
         features = documents["features"].get("features")
         measurements = documents["measurements"].get("measurements")
-        if not isinstance(features, list) or not isinstance(measurements, list):
+        metric_fields = documents["metric_fields"].get("fields")
+        metric_views = documents["metric_fields"].get("views")
+        if (
+            not isinstance(features, list)
+            or not isinstance(measurements, list)
+            or not isinstance(metric_fields, list)
+            or not isinstance(metric_views, list)
+        ):
             raise DFMError(
                 "objective_result_invalid",
-                "OCCT feature and measurement collections must be arrays.",
+                "OCCT feature, measurement, and metric-field collections must be arrays.",
             )
-        records = [*features, *measurements]
+        records = [*features, *measurements, *metric_fields]
         quality_records = [preflight, topology, render_mesh, *records]
         if any(
             not isinstance(record, dict)

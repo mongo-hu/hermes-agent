@@ -1,4 +1,4 @@
-"""OCCT-backed Discovery materialization for the stable Hermes DFM workflow."""
+"""Deterministic discovery orchestration with an honest ordinary-region fallback."""
 
 from __future__ import annotations
 
@@ -10,27 +10,27 @@ from pathlib import Path
 from typing import Any
 
 from .contracts import (
-    ArtifactRecord,
     DiscoverySnapshotRecord,
     FeatureRecord,
     GeometryRef,
     InputRecord,
-    PlanOperation,
     ProjectManifest,
     RegionRecord,
-    RuleBinding,
 )
 from .errors import DFMError
+from .feature_recognition import OCCTCppFeatureRecognitionProvider
+from .ontology import LocalOntologyStore
 
 
-DISCOVERY_ENGINE_VERSION = "hermes-occt-discovery-v1"
+FALLBACK_RECOGNIZER = "ordinary-region-fallback"
+FALLBACK_VERSION = "1.0.0"
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _hash(payload: Any) -> str:
+def _content_hash(payload: dict[str, Any]) -> str:
     encoded = json.dumps(
         payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("ascii")
@@ -38,264 +38,24 @@ def _hash(payload: Any) -> str:
 
 
 class DiscoveryEngine:
-    """Convert external OCCT feature artifacts into Hermes-owned frozen records."""
+    """Freeze deterministic discovery state before objective planning."""
 
-    version = DISCOVERY_ENGINE_VERSION
+    version = "hermes-discovery-v2"
 
-    def __init__(self, scope_path: Path | None = None) -> None:
-        scope_path = scope_path or (
+    def __init__(
+        self,
+        catalog_path: Path | None = None,
+        ontology_store: LocalOntologyStore | None = None,
+    ) -> None:
+        self.catalog_path = catalog_path or (
             Path(__file__).resolve().parent
             / "scopes"
             / "injection"
-            / "geometry_core_v4.json"
+            / "feature_catalog.json"
         )
-        try:
-            scope = json.loads(scope_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise DFMError(
-                "discovery_catalog_invalid",
-                "The DFM feature-to-metric bindings cannot be loaded.",
-                {"path": str(scope_path)},
-            ) from exc
-        bindings = scope.get("feature_metric_bindings")
-        if not isinstance(bindings, list):
-            raise DFMError(
-                "discovery_catalog_invalid",
-                "The DFM feature-to-metric bindings are missing.",
-            )
-        self.feature_kinds_by_operation: dict[str, set[str]] = {}
-        for item in bindings:
-            if (
-                not isinstance(item, dict)
-                or not isinstance(item.get("feature_kind"), str)
-                or not item["feature_kind"]
-                or not isinstance(item.get("operation_ids"), list)
-                or not item["operation_ids"]
-            ):
-                raise DFMError(
-                    "discovery_catalog_invalid",
-                    "A DFM feature-to-metric binding is invalid.",
-                    {"binding": item},
-                )
-            for operation_id in item["operation_ids"]:
-                self.feature_kinds_by_operation.setdefault(
-                    str(operation_id), set()
-                ).add(item["feature_kind"])
-
-    @staticmethod
-    def _read(project_dir: Path, artifact: ArtifactRecord) -> dict[str, Any]:
-        try:
-            payload = json.loads(
-                (project_dir / artifact.relative_path).read_text(encoding="utf-8")
-            )
-        except (OSError, ValueError) as exc:
-            raise DFMError(
-                "discovery_artifact_invalid",
-                f"The OCCT {artifact.kind} artifact cannot be read.",
-            ) from exc
-        if not isinstance(payload, dict):
-            raise DFMError(
-                "discovery_artifact_invalid",
-                f"The OCCT {artifact.kind} artifact must be an object.",
-            )
-        return payload
-
-    def materialize(
-        self,
-        manifest: ProjectManifest,
-        input_record: InputRecord,
-        artifacts: list[ArtifactRecord],
-        project_dir: Path,
-    ) -> tuple[ProjectManifest, DiscoverySnapshotRecord]:
-        by_kind = {item.kind: item for item in artifacts}
-        required = {"features", "topology_map", "render_mesh"}
-        if required - set(by_kind):
-            raise DFMError(
-                "discovery_artifact_invalid",
-                "OCCT Discovery did not produce feature, topology, and render artifacts.",
-                {"missing_artifacts": sorted(required - set(by_kind))},
-            )
-        feature_payload = self._read(project_dir, by_kind["features"])
-        topology_payload = self._read(project_dir, by_kind["topology_map"])
-        topology_snapshot_id = str(topology_payload.get("map_id") or "")
-        if not topology_snapshot_id:
-            raise DFMError(
-                "discovery_artifact_invalid",
-                "OCCT topology artifact has no immutable map identity.",
-            )
-
-        features: list[FeatureRecord] = []
-        regions: list[RegionRecord] = []
-        for raw in feature_payload.get("features", []):
-            if not isinstance(raw, dict):
-                continue
-            provider_feature_id = str(raw.get("feature_id") or "")
-            if not provider_feature_id:
-                continue
-            feature_id = (
-                f"feature.occt.{_hash([input_record.sha256, provider_feature_id])[:16]}"
-            )
-            geometry_refs = [
-                GeometryRef(
-                    kind=str(item.get("kind") or ""),
-                    index=int(item.get("index") or 0),
-                    input_sha256=input_record.sha256,
-                    topology_snapshot_id=topology_snapshot_id,
-                    entity_id=f"{item.get('kind')}:{int(item.get('index') or 0)}",
-                )
-                for item in raw.get("geometry_refs", [])
-                if isinstance(item, dict)
-                and item.get("kind") in {"face", "edge", "solid", "vertex"}
-                and isinstance(item.get("index"), int)
-                and item["index"] > 0
-            ]
-            face_refs = [item for item in geometry_refs if item.kind == "face"]
-            region_refs: list[str] = []
-            if face_refs:
-                region_id = f"region.feature.{_hash([input_record.sha256, feature_id, [item.index for item in face_refs]])[:16]}"
-                region_refs.append(region_id)
-                region_identity = {
-                    "region_id": region_id,
-                    "feature_id": feature_id,
-                    "input_sha256": input_record.sha256,
-                    "faces": [item.index for item in face_refs],
-                    "topology_snapshot_id": topology_snapshot_id,
-                }
-                regions.append(
-                    RegionRecord(
-                        region_id=region_id,
-                        input_sha256=input_record.sha256,
-                        coordinate_system="model",
-                        mode="topology_refs",
-                        semantic_label=f"{raw.get('kind') or 'feature'}_region",
-                        source_refs=[
-                            f"artifact:{by_kind['features'].artifact_id}",
-                            f"feature:{feature_id}",
-                        ],
-                        version=self.version,
-                        content_sha256=_hash(region_identity),
-                        geometry_refs=face_refs,
-                        role="feature",
-                        feature_refs=[feature_id],
-                    )
-                )
-            features.append(
-                FeatureRecord(
-                    feature_id=feature_id,
-                    kind=str(raw.get("kind") or "unknown"),
-                    source_refs=[str(item) for item in raw.get("source_refs", [])],
-                    confidence=float(raw.get("confidence") or 0.0),
-                    subtype=str(raw.get("subtype") or ""),
-                    geometry_refs=geometry_refs,
-                    parameters=dict(raw.get("parameters") or {}),
-                    method=str(raw.get("method") or ""),
-                    algorithm_version=str(raw.get("algorithm_version") or ""),
-                    input_sha256=input_record.sha256,
-                    quality=dict(raw.get("quality") or {}),
-                    diagnostics=dict(raw.get("diagnostics") or {}),
-                    region_refs=region_refs,
-                    properties={
-                        "provider_feature_id": provider_feature_id,
-                        "subtype": raw.get("subtype"),
-                        "parameters": dict(raw.get("parameters") or {}),
-                    },
-                    recognizer=str(raw.get("method") or "occt"),
-                    recognizer_version=str(raw.get("algorithm_version") or ""),
-                    status="detected",
-                )
-            )
-
-        if not regions:
-            suffix = input_record.sha256[:16]
-            feature_id = f"feature.ordinary.{suffix}"
-            region_id = f"region.ordinary.{suffix}"
-            features.append(
-                FeatureRecord(
-                    feature_id=feature_id,
-                    kind="ordinary_part",
-                    source_refs=[f"input:{input_record.input_id}"],
-                    confidence=1.0,
-                    input_sha256=input_record.sha256,
-                    region_refs=[region_id],
-                    properties={"fallback": True, "coverage": "whole_model"},
-                    recognizer="ordinary-region-fallback",
-                    recognizer_version=self.version,
-                    status="confirmed",
-                )
-            )
-            regions.append(
-                RegionRecord(
-                    region_id=region_id,
-                    input_sha256=input_record.sha256,
-                    coordinate_system="model",
-                    mode="whole_model",
-                    semantic_label="ordinary_model_region",
-                    source_refs=[f"input:{input_record.input_id}"],
-                    version=self.version,
-                    content_sha256=_hash([region_id, input_record.sha256]),
-                    role="ordinary",
-                    feature_refs=[feature_id],
-                )
-            )
-
-        identity = {
-            "input_hashes": {input_record.input_id: input_record.sha256},
-            "process": manifest.process,
-            "features": [item.to_dict() for item in features],
-            "regions": [item.to_dict() for item in regions],
-            "provider_versions": {"occt": features[0].algorithm_version or self.version},
-        }
-        content_sha256 = _hash(identity)
-        existing = next(
-            (
-                item
-                for item in reversed(manifest.discovery_snapshots)
-                if item.content_sha256 == content_sha256
-            ),
-            None,
-        )
-        if existing is not None:
-            return manifest, existing
-        confirmed_fact_refs = [
-            item.fact_id
-            for item in manifest.facts
-            if item.status == "confirmed" and item.name in {"process", "model_units"}
-        ]
-        snapshot = DiscoverySnapshotRecord(
-            snapshot_id=f"discovery.snapshot.{content_sha256[:16]}",
-            created_at=_utc_now(),
-            input_hashes={input_record.input_id: input_record.sha256},
-            observation_refs=[],
-            feature_refs=[item.feature_id for item in features],
-            region_refs=[item.region_id for item in regions],
-            fusion_link_refs=[],
-            provider_versions=identity["provider_versions"],
-            content_sha256=content_sha256,
-            process=manifest.process,
-            confirmed_fact_refs=confirmed_fact_refs,
-            geometry_snapshot_ref=by_kind["preflight"].artifact_id
-            if "preflight" in by_kind
-            else "",
-            topology_snapshot_id=topology_snapshot_id,
-            render_mesh_snapshot_id=by_kind["render_mesh"].artifact_id,
-            artifact_refs=[item.artifact_id for item in artifacts],
-        )
-        active_hashes = {item.sha256 for item in self.active_inputs(manifest)}
-        next_manifest = replace(
-            manifest,
-            features=[
-                *[item for item in manifest.features if item.input_sha256 not in active_hashes],
-                *features,
-            ],
-            regions=[
-                *[item for item in manifest.regions if item.input_sha256 not in active_hashes],
-                *regions,
-            ],
-            discovery_snapshots=[*manifest.discovery_snapshots, snapshot],
-            artifacts=[*manifest.artifacts, *artifacts],
-            updated_at=_utc_now(),
-        )
-        return next_manifest, snapshot
+        self.catalog = self._load_catalog()
+        self.ontology_store = ontology_store
+        self.placeholder_providers = (OCCTCppFeatureRecognitionProvider(),)
 
     @staticmethod
     def active_inputs(manifest: ProjectManifest) -> list[InputRecord]:
@@ -306,69 +66,399 @@ class DiscoveryEngine:
         }
         return [item for item in manifest.inputs if item.input_id not in superseded]
 
-    def analysis_targets(
+    def refresh_candidates(self, manifest: ProjectManifest) -> ProjectManifest:
+        """Create one whole-model ordinary region for every active geometry input."""
+
+        geometry_inputs = [
+            item
+            for item in self.active_inputs(manifest)
+            if item.kind in {"step", "parasolid"}
+        ]
+        active_hashes = {item.sha256 for item in geometry_inputs}
+        features = [
+            item
+            for item in manifest.features
+            if item.recognizer != FALLBACK_RECOGNIZER
+            or item.input_sha256 in active_hashes
+        ]
+        regions = [
+            item
+            for item in manifest.regions
+            if not item.source_refs
+            or not item.source_refs[0].startswith(f"recognizer:{FALLBACK_RECOGNIZER}")
+            or item.input_sha256 in active_hashes
+        ]
+        feature_ids = {item.feature_id for item in features}
+        region_ids = {item.region_id for item in regions}
+        for input_record in geometry_inputs:
+            suffix = input_record.sha256[:16]
+            feature_id = f"feature.ordinary.{suffix}"
+            region_id = f"region.ordinary.{suffix}"
+            source_refs = [
+                f"recognizer:{FALLBACK_RECOGNIZER}@{FALLBACK_VERSION}",
+                f"input:{input_record.input_id}",
+            ]
+            if region_id not in region_ids:
+                identity = {
+                    "region_id": region_id,
+                    "input_sha256": input_record.sha256,
+                    "mode": "whole_model",
+                    "role": "ordinary",
+                    "feature_refs": [feature_id],
+                }
+                regions.append(
+                    RegionRecord(
+                        region_id=region_id,
+                        input_sha256=input_record.sha256,
+                        coordinate_system="model",
+                        mode="whole_model",
+                        semantic_label="ordinary_model_region",
+                        source_refs=source_refs,
+                        version=FALLBACK_VERSION,
+                        content_sha256=_content_hash(identity),
+                        role="ordinary",
+                        feature_refs=[feature_id],
+                    )
+                )
+                region_ids.add(region_id)
+            if feature_id not in feature_ids:
+                features.append(
+                    FeatureRecord(
+                        feature_id=feature_id,
+                        kind="ordinary_part",
+                        source_refs=source_refs,
+                        confidence=1.0,
+                        input_sha256=input_record.sha256,
+                        region_refs=[region_id],
+                        properties={
+                            "fallback": True,
+                            "coverage": "whole_model",
+                            "requested_feature_recognizers": [
+                                item["recognizer_id"]
+                                for item in self.catalog["recognizers"]
+                                if item["status"] == "placeholder"
+                            ],
+                        },
+                        recognizer=FALLBACK_RECOGNIZER,
+                        recognizer_version=FALLBACK_VERSION,
+                        status="confirmed",
+                    )
+                )
+                feature_ids.add(feature_id)
+        regions = self._partition_ordinary_regions(
+            features, regions, manifest.process or "injection"
+        )
+        return replace(
+            manifest, features=features, regions=regions, updated_at=_utc_now()
+        )
+
+    @staticmethod
+    def _geometry_key(ref: GeometryRef) -> tuple[str, int, str]:
+        return ref.kind, ref.index, ref.input_sha256
+
+    def _partition_ordinary_regions(
         self,
-        manifest: ProjectManifest,
-        snapshot: DiscoverySnapshotRecord,
-        operations: list[PlanOperation],
-        bindings: list[RuleBinding],
-    ) -> tuple[list[PlanOperation], list[RuleBinding], list[RegionRecord]]:
+        features: list[FeatureRecord],
+        regions: list[RegionRecord],
+        process: str,
+    ) -> list[RegionRecord]:
+        """Turn whole-model fallback into the complement of concrete feature faces."""
+
+        feature_by_id = {item.feature_id: item for item in features}
+        metric_bindings = {
+            (item["feature_kind"], item["region_role"])
+            for item in self._metric_bindings(process)
+            if item.get("status") in {"available", "placeholder", "released"}
+        }
+        claimed_by_input: dict[str, dict[tuple[str, int, str], GeometryRef]] = {}
+        for region in regions:
+            if region.role == "ordinary":
+                continue
+            concrete_features = [
+                feature_by_id[ref]
+                for ref in region.feature_refs
+                if ref in feature_by_id
+                and feature_by_id[ref].kind != "ordinary_part"
+                and feature_by_id[ref].status in {"confirmed", "detected"}
+            ]
+            if not concrete_features:
+                continue
+            if not any(
+                (feature.kind, region.role) in metric_bindings
+                for feature in concrete_features
+            ):
+                continue
+            if region.mode != "topology_refs" or not region.geometry_refs:
+                raise DFMError(
+                    "feature_region_not_computable",
+                    "A concrete feature region must resolve to immutable topology refs.",
+                    {"region_id": region.region_id, "mode": region.mode},
+                )
+            claimed = claimed_by_input.setdefault(region.input_sha256, {})
+            for ref in region.geometry_refs:
+                if ref.input_sha256 != region.input_sha256:
+                    raise DFMError(
+                        "feature_region_not_computable",
+                        "Feature region topology belongs to another geometry input.",
+                        {"region_id": region.region_id},
+                    )
+                claimed[self._geometry_key(ref)] = ref
+
+        output = []
+        for region in regions:
+            if region.role != "ordinary":
+                output.append(region)
+                continue
+            excluded = sorted(
+                claimed_by_input.get(region.input_sha256, {}).values(),
+                key=self._geometry_key,
+            )
+            identity = {
+                "region_id": region.region_id,
+                "input_sha256": region.input_sha256,
+                "mode": "topology_complement" if excluded else "whole_model",
+                "role": "ordinary",
+                "feature_refs": region.feature_refs,
+                "excluded_geometry_refs": [item.to_dict() for item in excluded],
+            }
+            output.append(
+                replace(
+                    region,
+                    mode=identity["mode"],
+                    excluded_geometry_refs=excluded,
+                    content_sha256=_content_hash(identity),
+                )
+            )
+        return output
+
+    def analysis_targets(
+        self, manifest: ProjectManifest, snapshot: DiscoverySnapshotRecord
+    ) -> list[dict[str, Any]]:
+        """Resolve one non-overlapping region target for each supported metric."""
+
         features = {
             item.feature_id: item
             for item in manifest.features
             if item.feature_id in snapshot.feature_refs
         }
+        bindings = self._metric_bindings(manifest.process or "injection")
+        targets: list[dict[str, Any]] = []
+        claims: dict[tuple[str, tuple[str, int, str]], str] = {}
+        for region in manifest.regions:
+            if region.region_id not in snapshot.region_refs:
+                continue
+            matching_features = [
+                features[ref] for ref in region.feature_refs if ref in features
+            ]
+            if len(matching_features) != 1:
+                raise DFMError(
+                    "analysis_region_invalid",
+                    "Every analysis region must belong to exactly one feature.",
+                    {"region_id": region.region_id},
+                )
+            feature = matching_features[0]
+            binding = next(
+                (
+                    item
+                    for item in bindings
+                    if item["feature_kind"] == feature.kind
+                    and item["region_role"] == region.role
+                ),
+                None,
+            )
+            if binding is None:
+                continue
+            for metric_id in binding["metrics"]:
+                for ref in region.geometry_refs:
+                    key = (metric_id, self._geometry_key(ref))
+                    owner = claims.get(key)
+                    if owner is not None and owner != region.region_id:
+                        raise DFMError(
+                            "analysis_region_overlap",
+                            "Two feature regions claim the same topology for one metric.",
+                            {
+                                "metric_id": metric_id,
+                                "region_ids": [owner, region.region_id],
+                            },
+                        )
+                    claims[key] = region.region_id
+                targets.append(
+                    {
+                        "feature": feature,
+                        "region": region,
+                        "metric_id": metric_id,
+                        "rule_profile": binding.get("rule_profile"),
+                        "fallback_to": binding.get("fallback_to"),
+                    }
+                )
+        return targets
+
+    def _metric_bindings(self, process: str) -> list[dict[str, Any]]:
+        if self.ontology_store is not None:
+            published = self.ontology_store.analysis_target_specs(process)
+            if published:
+                return [dict(item) for item in published]
+        return list(self.catalog["feature_metric_bindings"])
+
+    def freeze(
+        self, manifest: ProjectManifest
+    ) -> tuple[ProjectManifest, DiscoverySnapshotRecord]:
+        refreshed = self.refresh_candidates(manifest)
+        active = self.active_inputs(refreshed)
+        input_hashes = {item.input_id: item.sha256 for item in active}
+        active_hashes = set(input_hashes.values())
+        features = [
+            item for item in refreshed.features if item.input_sha256 in active_hashes
+        ]
+        feature_ids = {item.feature_id for item in features}
         regions = [
             item
-            for item in manifest.regions
-            if item.region_id in snapshot.region_refs
+            for item in refreshed.regions
+            if item.input_sha256 in active_hashes
+            and set(item.feature_refs).issubset(feature_ids)
         ]
-        concrete = [
+        discovery_fact_names = {"process", *self.required_fact_names()}
+        facts = [
             item
-            for item in regions
-            if item.mode == "topology_refs" and item.geometry_refs
+            for item in refreshed.facts
+            if item.status == "confirmed" and item.name in discovery_fact_names
         ]
-        def targets(operation_id: str) -> tuple[list[str], list[str]]:
-            allowed = self.feature_kinds_by_operation.get(operation_id, set())
-            selected = [
-                region
-                for region in concrete
-                if any(
-                    feature_ref in features
-                    and features[feature_ref].kind in allowed
-                    for feature_ref in region.feature_refs
-                )
-            ]
-            feature_refs = sorted(
-                {
-                    feature_ref
-                    for region in selected
-                    for feature_ref in region.feature_refs
-                    if feature_ref in features
-                }
-            )
-            return feature_refs, [region.region_id for region in selected]
+        identity = {
+            "input_hashes": input_hashes,
+            "process": refreshed.process,
+            "confirmed_fact_refs": [item.fact_id for item in facts],
+            "observation_refs": [
+                item.observation_id for item in refreshed.observations
+            ],
+            "feature_refs": [item.feature_id for item in features],
+            "region_refs": [item.region_id for item in regions],
+            "fusion_link_refs": [
+                item.fusion_link_id for item in refreshed.fusion_links
+            ],
+            "provider_versions": self.provider_versions(),
+        }
+        content_sha256 = _content_hash(identity)
+        existing = next(
+            (
+                item
+                for item in reversed(refreshed.discovery_snapshots)
+                if item.content_sha256 == content_sha256
+            ),
+            None,
+        )
+        if existing is not None:
+            return refreshed, existing
+        snapshot = DiscoverySnapshotRecord(
+            snapshot_id=f"discovery.snapshot.{content_sha256[:16]}",
+            created_at=_utc_now(),
+            input_hashes=input_hashes,
+            observation_refs=identity["observation_refs"],
+            feature_refs=identity["feature_refs"],
+            region_refs=identity["region_refs"],
+            fusion_link_refs=identity["fusion_link_refs"],
+            provider_versions=identity["provider_versions"],
+            content_sha256=content_sha256,
+            process=refreshed.process,
+            confirmed_fact_refs=identity["confirmed_fact_refs"],
+        )
+        return (
+            replace(
+                refreshed,
+                discovery_snapshots=[*refreshed.discovery_snapshots, snapshot],
+                updated_at=_utc_now(),
+            ),
+            snapshot,
+        )
 
-        enriched_operations = []
-        for operation in operations:
-            feature_refs, region_refs = targets(operation.operation_id)
-            enriched_operations.append(
-                replace(
-                    operation,
-                    feature_refs=feature_refs,
-                    region_refs=region_refs,
-                )
-                if operation.metric_ids
-                else operation
+    def provider_versions(self) -> dict[str, str]:
+        versions = {
+            "hermes_discovery": self.version,
+            "ordinary_region": FALLBACK_VERSION,
+            "drawing": "placeholder:not_implemented",
+        }
+        versions.update(
+            {
+                provider.key: f"{provider.version}:not_implemented"
+                for provider in self.placeholder_providers
+            }
+        )
+        return versions
+
+    def capability(self) -> dict[str, Any]:
+        return {
+            "status": "available_with_fallback",
+            "catalog_id": self.catalog["catalog_id"],
+            "catalog_version": self.catalog["version"],
+            "providers": self.provider_versions(),
+            "provider_capabilities": [
+                provider.capability() for provider in self.placeholder_providers
+            ],
+            "recognizers": self.catalog["recognizers"],
+            "placeholder_policy": self.catalog["placeholder_policy"],
+            "fallback_feature_kind": "ordinary_part",
+            "fallback_region_role": "ordinary",
+        }
+
+    def _load_catalog(self) -> dict[str, Any]:
+        try:
+            payload = json.loads(self.catalog_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise DFMError(
+                "discovery_catalog_invalid",
+                "The DFM feature discovery catalog could not be loaded.",
+                {"path": str(self.catalog_path)},
+            ) from exc
+        if (
+            payload.get("catalog_id") != "injection.wall-draft.features"
+            or not isinstance(payload.get("recognizers"), list)
+            or not isinstance(payload.get("feature_metric_bindings"), list)
+            or not isinstance(payload.get("placeholder_policy"), dict)
+        ):
+            raise DFMError(
+                "discovery_catalog_invalid",
+                "The DFM feature discovery catalog has an invalid contract.",
             )
-        enriched_bindings = []
-        for binding in bindings:
-            feature_refs, region_refs = targets(binding.operation_id)
-            enriched_bindings.append(
-                replace(
-                    binding,
-                    feature_refs=feature_refs,
-                    region_refs=region_refs,
+        for recognizer in payload["recognizers"]:
+            if not isinstance(recognizer, dict):
+                raise DFMError(
+                    "discovery_catalog_invalid",
+                    "A feature recognizer declaration is invalid.",
+                    {"recognizer": recognizer},
                 )
+            observation_kinds = recognizer.get("observation_kinds", [])
+            if (
+                not recognizer.get("recognizer_id")
+                or (not recognizer.get("feature_kind") and not observation_kinds)
+                or not isinstance(observation_kinds, list)
+                or any(not item for item in observation_kinds)
+                or not isinstance(recognizer.get("region_roles"), list)
+                or not isinstance(recognizer.get("required_fact_names"), list)
+                or recognizer.get("status") not in {"available", "placeholder"}
+            ):
+                raise DFMError(
+                    "discovery_catalog_invalid",
+                    "A feature recognizer declaration is invalid.",
+                    {"recognizer": recognizer},
+                )
+        policy = payload["placeholder_policy"]
+        if (
+            policy.get("behavior") != "treat_as_ordinary"
+            or policy.get("fallback_feature_kind") != "ordinary_part"
+            or policy.get("fallback_region_role") != "ordinary"
+            or policy.get("emit_synthetic_process_features") is not False
+        ):
+            raise DFMError(
+                "discovery_catalog_invalid",
+                "The placeholder feature fallback policy is invalid.",
             )
-        return enriched_operations, enriched_bindings, regions
+        return payload
+
+    def required_fact_names(self) -> set[str]:
+        """Facts needed by recognizers that can actually run in this release."""
+
+        return {
+            str(name)
+            for recognizer in self.catalog["recognizers"]
+            if recognizer["status"] == "available"
+            for name in recognizer["required_fact_names"]
+        }

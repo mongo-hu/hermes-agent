@@ -1,0 +1,335 @@
+{
+  "schema_version": 2,
+  "snapshot_id": "ontology.injection.default@1.1.0",
+  "ontology_version": "1.1.0",
+  "published_at": "2026-08-25T00:00:00Z",
+  "content_sha256": "c6603a1170ee4d6fb3f57107257c6028a4d3f94e85387760d4ad3e3e5fd7d198",
+  "rule_set": {
+    "rule_set_code": "injection.default",
+    "version": "1.1.0",
+    "process": "injection",
+    "scope_type": "system",
+    "scope_key": "default"
+  },
+  "concepts": [
+    {
+      "concept_id": "process.injection",
+      "concept_type": "process",
+      "name_zh": "注塑成型",
+      "name_en": "Injection molding",
+      "definition": "使用注塑模具将熔融聚合物成型为塑料零件的制造过程。",
+      "aliases": ["injection", "injection_molding"],
+      "properties": {"runtime_key": "injection"},
+      "status": "active"
+    },
+    {
+      "concept_id": "feature.ordinary_part",
+      "concept_type": "feature_type",
+      "name_zh": "普通主体",
+      "name_en": "Ordinary part",
+      "definition": "尚未被专用工艺特征认领的零件主体区域。",
+      "aliases": ["main body"],
+      "properties": {"worker_kind": "ordinary_part"},
+      "status": "active"
+    },
+    {
+      "concept_id": "region.ordinary",
+      "concept_type": "region_type",
+      "name_zh": "普通主体区域",
+      "name_en": "Ordinary region",
+      "definition": "普通主体特征中用于客观几何计算的区域。",
+      "aliases": [],
+      "properties": {"worker_role": "ordinary"},
+      "status": "active"
+    },
+    {
+      "concept_id": "metric.injection.wall_thickness",
+      "concept_type": "metric",
+      "name_zh": "壁厚",
+      "name_en": "Wall thickness",
+      "definition": "由几何计算器得到的局部壁厚客观测量。",
+      "aliases": ["thickness"],
+      "data_schema": {"type": "number", "exclusiveMinimum": 0},
+      "properties": {
+        "worker_metric_id": "injection.geometry.wall_thickness",
+        "quantity_id": "thickness_mm",
+        "dimension": "length",
+        "canonical_unit": "mm"
+      },
+      "status": "active"
+    },
+    {
+      "concept_id": "metric.injection.draft_angle",
+      "concept_type": "metric",
+      "name_zh": "拔模角",
+      "name_en": "Draft angle",
+      "definition": "表面法向与确认出模方向之间形成的客观拔模角测量。",
+      "aliases": ["draft"],
+      "data_schema": {"type": "number"},
+      "properties": {
+        "worker_metric_id": "injection.geometry.draft",
+        "quantity_id": "draft_angle_deg",
+        "dimension": "angle",
+        "canonical_unit": "degree"
+      },
+      "status": "active"
+    },
+    {
+      "concept_id": "factor.model_units",
+      "concept_type": "factor",
+      "name_zh": "模型长度单位",
+      "name_en": "Model length unit",
+      "definition": "STEP模型创建时采用的长度单位。",
+      "aliases": ["units", "model_unit"],
+      "data_schema": {"type": "string", "enum": ["mm"]},
+      "properties": {
+        "runtime_key": "model_units",
+        "default_value": "mm",
+        "question": "What length unit was used to author the STEP model?"
+      },
+      "status": "active"
+    },
+    {
+      "concept_id": "factor.material",
+      "concept_type": "factor",
+      "name_zh": "材料牌号",
+      "name_en": "Material grade",
+      "definition": "用于选择注塑工程规则的已确认材料牌号。",
+      "aliases": ["resin"],
+      "data_schema": {"type": "string"},
+      "properties": {
+        "runtime_key": "material",
+        "default_value": "ABS",
+        "question": "What resin/material grade will be used for this part?"
+      },
+      "status": "active"
+    },
+    {
+      "concept_id": "factor.pull_direction",
+      "concept_type": "factor",
+      "name_zh": "确认出模方向",
+      "name_en": "Confirmed pull direction",
+      "definition": "由用户确认并供方向相关识别和计算使用的三维向量。",
+      "aliases": ["pull_dir", "mold_pull_direction"],
+      "data_schema": {
+        "type": "array",
+        "minItems": 3,
+        "maxItems": 3,
+        "items": {"type": "number"}
+      },
+      "properties": {
+        "runtime_key": "pull_dir",
+        "default_value": [0, 0, 1],
+        "question": "What is the confirmed mold pull direction as [x, y, z]?"
+      },
+      "status": "active"
+    },
+    {
+      "concept_id": "check.main_wall_minimum_thickness",
+      "concept_type": "check",
+      "name_zh": "主体壁最小厚度",
+      "name_en": "Main-wall minimum thickness",
+      "definition": "判断普通主体区域的最小客观壁厚是否满足当前材料规则。",
+      "aliases": [],
+      "properties": {"default_severity": "warning"},
+      "status": "active"
+    },
+    {
+      "concept_id": "check.main_wall_minimum_draft",
+      "concept_type": "check",
+      "name_zh": "主体壁最小拔模角",
+      "name_en": "Main-wall minimum draft",
+      "definition": "判断普通主体区域的最小客观拔模角是否满足当前发布规则。",
+      "aliases": [],
+      "properties": {"default_severity": "warning"},
+      "status": "active"
+    }
+  ],
+  "relations": [
+    {
+      "relation_id": "rel.process.injection.check.wall",
+      "subject_id": "process.injection",
+      "predicate": "HAS_CHECK",
+      "object_id": "check.main_wall_minimum_thickness",
+      "qualifiers": {},
+      "sort_order": 10
+    },
+    {
+      "relation_id": "rel.process.injection.check.draft",
+      "subject_id": "process.injection",
+      "predicate": "HAS_CHECK",
+      "object_id": "check.main_wall_minimum_draft",
+      "qualifiers": {},
+      "sort_order": 20
+    },
+    {
+      "relation_id": "rel.feature.ordinary.region.ordinary",
+      "subject_id": "feature.ordinary_part",
+      "predicate": "HAS_REGION",
+      "object_id": "region.ordinary",
+      "qualifiers": {},
+      "sort_order": 10
+    },
+    {
+      "relation_id": "rel.check.wall.feature.ordinary",
+      "subject_id": "check.main_wall_minimum_thickness",
+      "predicate": "APPLIES_TO_FEATURE",
+      "object_id": "feature.ordinary_part",
+      "qualifiers": {},
+      "sort_order": 10
+    },
+    {
+      "relation_id": "rel.check.wall.region.ordinary",
+      "subject_id": "check.main_wall_minimum_thickness",
+      "predicate": "APPLIES_TO_REGION",
+      "object_id": "region.ordinary",
+      "qualifiers": {},
+      "sort_order": 15
+    },
+    {
+      "relation_id": "rel.check.wall.operand.actual",
+      "subject_id": "check.main_wall_minimum_thickness",
+      "predicate": "USES_OPERAND",
+      "object_id": "metric.injection.wall_thickness",
+      "qualifiers": {
+        "alias": "actual",
+        "aggregation": "minimum",
+        "required": true
+      },
+      "sort_order": 20
+    },
+    {
+      "relation_id": "rel.check.wall.factor.material",
+      "subject_id": "check.main_wall_minimum_thickness",
+      "predicate": "REQUIRES_FACTOR",
+      "object_id": "factor.material",
+      "qualifiers": {
+        "usage_role": "rule_selector",
+        "required": true,
+        "missing_policy": "ask_user",
+        "phase": "analysis",
+        "question": "What resin/material grade will be used for this part?",
+        "required_by": ["check.main_wall_minimum_thickness"]
+      },
+      "sort_order": 30
+    },
+    {
+      "relation_id": "rel.check.draft.feature.ordinary",
+      "subject_id": "check.main_wall_minimum_draft",
+      "predicate": "APPLIES_TO_FEATURE",
+      "object_id": "feature.ordinary_part",
+      "qualifiers": {},
+      "sort_order": 10
+    },
+    {
+      "relation_id": "rel.check.draft.region.ordinary",
+      "subject_id": "check.main_wall_minimum_draft",
+      "predicate": "APPLIES_TO_REGION",
+      "object_id": "region.ordinary",
+      "qualifiers": {},
+      "sort_order": 15
+    },
+    {
+      "relation_id": "rel.check.draft.operand.actual",
+      "subject_id": "check.main_wall_minimum_draft",
+      "predicate": "USES_OPERAND",
+      "object_id": "metric.injection.draft_angle",
+      "qualifiers": {
+        "alias": "actual",
+        "aggregation": "minimum",
+        "required": true
+      },
+      "sort_order": 20
+    },
+    {
+      "relation_id": "rel.check.draft.factor.pull",
+      "subject_id": "check.main_wall_minimum_draft",
+      "predicate": "REQUIRES_FACTOR",
+      "object_id": "factor.pull_direction",
+      "qualifiers": {
+        "usage_role": "calculation_input",
+        "required": true,
+        "missing_policy": "ask_user",
+        "phase": "analysis",
+        "question": "What is the confirmed mold pull direction as [x, y, z]?",
+        "required_by": ["geometry.draft"]
+      },
+      "sort_order": 30
+    },
+    {
+      "relation_id": "rel.process.injection.factor.units",
+      "subject_id": "process.injection",
+      "predicate": "REQUIRES_FACTOR",
+      "object_id": "factor.model_units",
+      "qualifiers": {
+        "usage_role": "calculation_input",
+        "required": true,
+        "missing_policy": "ask_user",
+        "phase": "discovery",
+        "question": "What length unit was used to author the STEP model?",
+        "required_by": ["geometry.load", "feature.dimension_classification"]
+      },
+      "sort_order": 10
+    }
+  ],
+  "factor_options": [
+    {
+      "factor_id": "factor.model_units",
+      "option_code": "MM",
+      "name_zh": "毫米",
+      "value": "mm",
+      "sort_order": 10,
+      "status": "active"
+    },
+    {
+      "factor_id": "factor.material",
+      "option_code": "ABS",
+      "name_zh": "ABS",
+      "value": "ABS",
+      "sort_order": 10,
+      "status": "active"
+    }
+  ],
+  "rules": [
+    {
+      "rule_version_id": "rule-version.main-wall-min-abs.1",
+      "rule_id": "R_INJ_MAIN_WALL_MIN_ABS",
+      "version": "1.0.0",
+      "check_id": "check.main_wall_minimum_thickness",
+      "name": "ABS主体壁最小厚度",
+      "conditions": [
+        {"factor_id": "factor.material", "operator": "EQ", "value": "ABS"}
+      ],
+      "expression": {"operand": "actual"},
+      "comparator": "GTE",
+      "threshold": 1.2,
+      "result_unit": "mm",
+      "severity": "warning",
+      "recommendation_template": "复核主体壁厚与材料成型窗口，必要时调整局部壁厚。",
+      "explanation_text": "主体壁最小厚度低于当前发布规则时可能增加充填和成型稳定性风险。",
+      "priority": 100,
+      "is_default": false,
+      "status": "released",
+      "citation_refs": []
+    },
+    {
+      "rule_version_id": "rule-version.main-wall-draft-default.1",
+      "rule_id": "R_INJ_MAIN_WALL_DRAFT_DEFAULT",
+      "version": "1.0.0",
+      "check_id": "check.main_wall_minimum_draft",
+      "name": "主体壁默认最小拔模角",
+      "conditions": [],
+      "expression": {"operand": "actual"},
+      "comparator": "GTE",
+      "threshold": 1.0,
+      "result_unit": "degree",
+      "severity": "warning",
+      "recommendation_template": "复核出模方向并增加不足区域的拔模角。",
+      "explanation_text": "拔模角不足可能增加脱模阻力和表面损伤风险。",
+      "priority": 0,
+      "is_default": true,
+      "status": "released",
+      "citation_refs": []
+    }
+  ]
+}

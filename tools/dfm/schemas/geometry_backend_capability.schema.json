@@ -73,7 +73,7 @@
       ],
       "properties": {
         "status": {"$ref": "#/$defs/status"},
-        "contract_version": {"const": 4},
+        "contract_version": {"const": 2},
         "implementation_version": {"type": "string"},
         "required_arguments": {"$ref": "#/$defs/stringArray"},
         "optional_arguments": {"$ref": "#/$defs/stringArray"},

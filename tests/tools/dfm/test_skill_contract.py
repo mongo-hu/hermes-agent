@@ -40,7 +40,9 @@ def test_dfm_skill_prescribes_safe_complete_tool_workflow():
 def test_dfm_skill_defines_the_m1_injection_plan_boundary():
     text = SKILL.read_text(encoding="utf-8")
 
-    assert "injection.geometry-core" in text
+    assert "injection.default" in text
+    assert "action=context" in text
+    assert "geometry_engine_missing" in text
     assert "injection" in text
     assert "unsupported_capability" in text
     assert "verification_level=experimental" in text
