@@ -1,7 +1,7 @@
 ---
 title: "DFM 本体、规则库与 Agent 运行快照设计"
 status: active
-updated: 2026-08-25
+updated: 2026-08-26
 type: architecture-database-design
 ---
 
@@ -40,7 +40,7 @@ type: architecture-database-design
 
 ```mermaid
 flowchart LR
-    W[规则管理 Web] --> M[Django 管理服务 / PostgreSQL]
+    W[规则管理 Web] --> M[Django 管理服务 / MySQL]
     K[知识文档] --> M
     M --> A[审核与发布]
     A --> P[OntologyRuleSnapshot JSON]
@@ -60,17 +60,17 @@ flowchart LR
 | 层级 | 数据源 | 职责 |
 | --- | --- | --- |
 | 算法能力层 | OCCT C++ 代码和 Capability Manifest | Recognizer、Calculator、Metric/Quantity、参数和认证状态 |
-| 管理控制层 | Django/PostgreSQL | 本体维护、规则生成、审核、默认/企业覆盖、知识引用和发布 |
+| 管理控制层 | Django/MySQL 8.0+ | 本体维护、规则生成、审核、默认/企业覆盖、知识引用和发布 |
 | Agent 运行层 | 本地 SQLite 快照 | 只读查询、Check 上下文、计划编译、规则选择和离线复现 |
 
 管理库和 Agent 本地库不是同一个数据库。管理库支持编辑和继承；本地库是一次发布后展开、校验、
 不可变的运行投影。
 
 当前代码只实现了 Agent 运行层：随仓库提供的 Snapshot Schema 2 发布包会被安装为本地 SQLite。
-Django/PostgreSQL 管理控制层、签名发布 API、企业继承和后台同步仍是待交付目标，不能因为存在
+Django/MySQL 管理控制层、签名发布 API、企业继承和后台同步仍是待交付目标，不能因为存在
 本地表结构就宣称规则管理平台已经完成。
 
-多端不直接连接 PostgreSQL，通过管理服务共享字典：
+多端不直接连接 MySQL，通过管理服务共享字典：
 
 ```text
 GET /v1/dfm/dictionary?ontology_version=...
@@ -80,6 +80,11 @@ GET /v1/dfm/publications/{snapshot_id}/artifact
 ```
 
 Web 使用字典/Context API，Agent 下载签名发布物，OCCT 只交换 Capability 和几何任务契约。
+
+中心管理库固定采用 MySQL 8.0+、InnoDB 和 `utf8mb4`。Django `UUIDField` 在 MySQL 中按
+`char(32)` 落库，所有时间使用 UTC `datetime(6)`；`JSONField` 映射为 MySQL `json`。高频过滤条件
+必须使用普通关系字段或生成列索引，不依赖对任意 JSON 路径做全表扫描。知识向量检索不与本体/规则
+关系表耦合，需要时使用独立检索服务。
 
 ## 4. 中心管理库表
 
@@ -91,19 +96,19 @@ Web 使用字典/Context API，Agent 下载签名发布物，OCCT 只交换 Capa
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `id` | uuid PK | 数据库主键 |
+| `id` | char(32) PK | UUID 数据库主键，由 Django `UUIDField` 映射 |
 | `concept_id` | varchar(180) UNIQUE | 稳定 ID，如 `check.main_wall_minimum_thickness` |
 | `concept_type` | varchar(30) | `process/feature_type/region_type/metric/check/factor` |
 | `name_zh` | varchar(180) | 中文显示名 |
 | `name_en` | varchar(180) nullable | 英文显示名 |
 | `definition` | text | 无阈值的准确工程定义 |
-| `aliases_json` | jsonb | 同义词和旧名称 |
-| `data_schema_json` | jsonb nullable | Factor 值或 Metric 值的 JSON Schema |
-| `properties_json` | jsonb | 不同 Concept Type 的受控扩展属性 |
-| `owner_organization_id` | uuid nullable | 空为系统概念，非空为企业扩展 |
+| `aliases_json` | json | 同义词和旧名称 |
+| `data_schema_json` | json nullable | Factor 值或 Metric 值的 JSON Schema |
+| `properties_json` | json | 不同 Concept Type 的受控扩展属性 |
+| `owner_organization_id` | char(32) nullable | 空为系统概念，非空为企业扩展 |
 | `status` | varchar(20) | `draft/active/retired` |
-| `created_by_id` | uuid | 创建人 |
-| `updated_at` | timestamptz | 更新时间 |
+| `created_by_id` | char(32) | 创建人 |
+| `updated_at` | datetime(6) | UTC 更新时间 |
 
 `properties_json` 的常用字段：
 
@@ -118,18 +123,79 @@ Web 使用字典/Context API，Agent 下载签名发布物，OCCT 只交换 Capa
 `concept_id` 发布后不得改名；改显示名称或定义不改变稳定 ID。确实发生语义不兼容时创建新 ID，旧 ID
 进入 `retired`。
 
+#### Factor 的 `source_policy`
+
+`source_policy` 保存于 `concept_type=factor` 的 `dfm_concept.properties_json`，用于声明影响因子的允许
+来源和采信策略。它不保存项目中的实际值；实际值仍保存为 Agent 项目 Manifest 中的 `FactRecord`，
+候选识别结果保存为 `ObservationRecord`。
+
+```json
+{
+  "runtime_key": "surface_texture",
+  "question": "产品表面采用什么皮纹？",
+  "source_policy": {
+    "allowed_sources": [
+      "user",
+      "project_metadata",
+      "drawing_recognition",
+      "geometry_recognition",
+      "derived_program"
+    ],
+    "auto_accept_sources": ["project_metadata", "derived_program"],
+    "confirmation_required_sources": [
+      "drawing_recognition",
+      "geometry_recognition"
+    ],
+    "min_confidence": 0.9,
+    "evidence_required": true,
+    "conflict_policy": "ask_user",
+    "missing_policy": "ask_user"
+  }
+}
+```
+
+字段约束：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `allowed_sources` | string[] | 该 Factor 允许使用的来源白名单 |
+| `auto_accept_sources` | string[] | 满足数据 Schema、置信度和证据要求后可自动转为 confirmed Fact 的来源 |
+| `confirmation_required_sources` | string[] | 只能先形成 Observation，必须经用户或工程师确认的来源 |
+| `min_confidence` | number nullable | 识别类来源进入确认流程的最低置信度，范围 `0..1` |
+| `evidence_required` | boolean | 非用户来源是否必须保存 `evidence_refs` |
+| `conflict_policy` | string | 多来源值冲突时的策略；第一期固定支持 `ask_user` |
+| `missing_policy` | string | 所有允许来源均无有效值时的策略；第一期固定支持 `ask_user` |
+
+第一期来源码固定为：
+
+| 来源码 | 含义 |
+| --- | --- |
+| `user` | 用户明确输入或确认 |
+| `project_metadata` | 项目表单、PLM/BOM 等结构化项目属性 |
+| `drawing_recognition` | 二维图纸 OCR、标注或符号识别结果 |
+| `geometry_recognition` | STEP/OCCT 特征识别推断结果 |
+| `derived_program` | 程序基于已确认事实进行的确定性推导 |
+
+`auto_accept_sources` 和 `confirmation_required_sources` 必须都是 `allowed_sources` 的子集，且不能重叠。
+识别结果先保存为带来源、置信度和证据的 Observation；只有通过 `source_policy` 后才能成为参与规则匹配
+的 confirmed Fact。规则条件默认只使用规范化后的 Factor 值，不因来源不同而改变工程阈值。
+
+几何连续量不应为了复用该机制而转成 Factor。例如螺钉柱壁厚、高度和直径属于
+`Measurement/Operand`；“识别出螺钉柱”属于 `Feature`；材料、皮纹和外观等级等用于选择工程规则的
+上下文才属于 `Factor/Fact`。
+
 ### 4.2 `dfm_relation`
 
 保存本体关系，也是 Agent 通用编译和 AI 上下文的核心。
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `id` | uuid PK | 主键 |
+| `id` | char(32) PK | UUID 主键 |
 | `relation_id` | varchar(220) UNIQUE | 稳定关系 ID |
-| `subject_concept_id` | uuid FK | 主语 Concept |
+| `subject_concept_id` | char(32) FK | 主语 Concept |
 | `predicate` | varchar(40) | 受控谓词 |
-| `object_concept_id` | uuid FK | 宾语 Concept |
-| `qualifiers_json` | jsonb | 关系的可执行限定信息 |
+| `object_concept_id` | char(32) FK | 宾语 Concept |
+| `qualifiers_json` | json | 关系的可执行限定信息 |
 | `sort_order` | integer | Operand、询问和显示顺序 |
 | `status` | varchar(20) | `draft/active/retired` |
 
@@ -193,12 +259,12 @@ Check ──APPLIES_TO_REGION──> Region <──HAS_REGION── Feature
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `id` | uuid PK | 主键 |
-| `factor_concept_id` | uuid FK | 必须指向 `concept_type=factor` |
-| `organization_id` | uuid nullable | 空为系统选项 |
+| `id` | char(32) PK | UUID 主键 |
+| `factor_concept_id` | char(32) FK | 必须指向 `concept_type=factor` |
+| `organization_id` | char(32) nullable | 空为系统选项 |
 | `option_code` | varchar(100) | 稳定选项码，如 `ABS` |
 | `name_zh` | varchar(160) | 显示名称 |
-| `value_json` | jsonb | 实际规范值 |
+| `value_json` | json | 实际规范值 |
 | `sort_order` | integer | 排序 |
 | `status` | varchar(20) | `active/retired` |
 
@@ -212,16 +278,16 @@ Check ──APPLIES_TO_REGION──> Region <──HAS_REGION── Feature
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `id` | uuid PK | `rule_version_id` |
+| `id` | char(32) PK | UUID `rule_version_id` |
 | `rule_id` | varchar(180) | 稳定规则身份 |
 | `version` | varchar(32) | 规则版本 |
-| `check_concept_id` | uuid FK | 对应 Check |
-| `owner_organization_id` | uuid nullable | 空为系统规则，非空为企业创建规则；实际生效范围仍由 Rule Set 决定 |
+| `check_concept_id` | char(32) FK | 对应 Check |
+| `owner_organization_id` | char(32) nullable | 空为系统规则，非空为企业创建规则；实际生效范围仍由 Rule Set 决定 |
 | `name` | varchar(180) | 规则名称 |
-| `conditions_json` | jsonb | 多个 Factor 原子条件，全部 AND |
-| `expression_json` | jsonb | 引用 Operand Alias 的受控表达式 |
+| `conditions_json` | json | 多个 Factor 原子条件，全部 AND |
+| `expression_json` | json | 引用 Operand Alias 的受控表达式 |
 | `comparator` | varchar(20) | `GT/GTE/LT/LTE/EQ/NE/BETWEEN` |
-| `threshold_json` | jsonb | 常量、上下限或发布前已编译的查表结果 |
+| `threshold_json` | json | 常量、上下限或发布前已编译的查表结果 |
 | `result_unit` | varchar(40) nullable | 表达式结果单位 |
 | `severity` | varchar(20) | 不合格严重程度 |
 | `recommendation_template` | text nullable | 工程建议模板 |
@@ -231,9 +297,9 @@ Check ──APPLIES_TO_REGION──> Region <──HAS_REGION── Feature
 | `status` | varchar(20) | `draft/review/approved/released/retired` |
 | `generated_by_ai` | boolean | 是否由 AI 起草 |
 | `content_sha256` | char(64) | 不可变内容哈希 |
-| `created_by_id` | uuid | 创建人 |
-| `reviewed_by_id` | uuid nullable | 审核人 |
-| `reviewed_at` | timestamptz nullable | 审核时间 |
+| `created_by_id` | char(32) | 创建人 |
+| `reviewed_by_id` | char(32) nullable | 审核人 |
+| `reviewed_at` | datetime(6) nullable | UTC 审核时间 |
 
 唯一约束：`UNIQUE(rule_id, version)`。
 
@@ -264,26 +330,26 @@ Check ──APPLIES_TO_REGION──> Region <──HAS_REGION── Feature
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `id` | uuid PK | 主键 |
+| `id` | char(32) PK | UUID 主键 |
 | `rule_set_code` | varchar(140) | 稳定规则集编号 |
 | `version` | varchar(32) | 版本 |
-| `process_concept_id` | uuid FK | 制造工艺 |
+| `process_concept_id` | char(32) FK | 制造工艺 |
 | `scope_type` | varchar(20) | `system/organization/customer` |
-| `organization_id` | uuid nullable | 企业范围 |
-| `customer_id` | uuid nullable | 客户范围 |
-| `base_rule_set_id` | uuid nullable | 固定继承的基础规则集版本 |
+| `organization_id` | char(32) nullable | 企业范围 |
+| `customer_id` | char(32) nullable | 客户范围 |
+| `base_rule_set_id` | char(32) nullable | 固定继承的基础规则集版本 |
 | `status` | varchar(20) | `draft/review/released/retired` |
 | `content_sha256` | char(64) | 内容哈希 |
-| `released_by_id` | uuid nullable | 发布人 |
-| `released_at` | timestamptz nullable | 发布时间 |
+| `released_by_id` | char(32) nullable | 发布人 |
+| `released_at` | datetime(6) nullable | UTC 发布时间 |
 
 ### 4.6 `dfm_rule_set_item`
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `id` | uuid PK | 主键 |
-| `rule_set_id` | uuid FK | 所属规则集 |
-| `rule_version_id` | uuid FK nullable | 包含或覆盖的版本 |
+| `id` | char(32) PK | UUID 主键 |
+| `rule_set_id` | char(32) FK | 所属规则集 |
+| `rule_version_id` | char(32) FK nullable | 包含或覆盖的版本 |
 | `action` | varchar(20) | `include/override/disable` |
 | `target_rule_id` | varchar(180) nullable | 被覆盖/停用的稳定 Rule ID |
 | `precedence` | integer | 展开顺序 |
@@ -294,8 +360,8 @@ Check ──APPLIES_TO_REGION──> Region <──HAS_REGION── Feature
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `id` | uuid PK | 主键 |
-| `rule_version_id` | uuid FK | 规则版本 |
+| `id` | char(32) PK | UUID 主键 |
+| `rule_version_id` | char(32) FK | 规则版本 |
 | `knowledge_chunk_ref` | varchar(220) | 知识模块提供的稳定片段身份；跨服务时是逻辑引用，不建立数据库 FK |
 | `knowledge_revision` | varchar(80) | 被引用片段的不可变修订版本 |
 | `support_type` | varchar(30) | `condition/threshold/explanation/recommendation` |
@@ -312,20 +378,20 @@ Check ──APPLIES_TO_REGION──> Region <──HAS_REGION── Feature
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `id` | uuid PK | 生成任务 ID |
-| `check_concept_id` | uuid FK | 目标 Check |
-| `requested_by_id` | uuid FK | 发起人 |
+| `id` | char(32) PK | UUID 生成任务 ID |
+| `check_concept_id` | char(32) FK | 目标 Check |
+| `requested_by_id` | char(32) FK | 发起人 |
 | `input_text` | text | 用户的规则生成要求 |
-| `ontology_publication_id` | uuid FK | AI看到的本体版本 |
-| `knowledge_query_json` | jsonb | 检索条件和过滤范围 |
-| `knowledge_chunk_refs_json` | jsonb | 实际提供的知识片段 ID/Revision |
+| `ontology_publication_id` | char(32) FK | AI看到的本体版本 |
+| `knowledge_query_json` | json | 检索条件和过滤范围 |
+| `knowledge_chunk_refs_json` | json | 实际提供的知识片段 ID/Revision |
 | `model_id` | varchar(160) | 模型身份 |
 | `prompt_version` | varchar(80) | 生成模板版本 |
-| `output_json` | jsonb | AI原始结构化输出 |
-| `validation_json` | jsonb | ID、Operand、Factor、单位和冲突校验结果 |
-| `generated_rule_version_id` | uuid nullable | 通过结构校验后生成的 Draft |
+| `output_json` | json | AI原始结构化输出 |
+| `validation_json` | json | ID、Operand、Factor、单位和冲突校验结果 |
+| `generated_rule_version_id` | char(32) nullable | 通过结构校验后生成的 Draft |
 | `status` | varchar(20) | `running/generated/rejected/error` |
-| `created_at` | timestamptz | 创建时间 |
+| `created_at` | datetime(6) | UTC 创建时间 |
 
 ### 4.9 `dfm_publication`
 
@@ -333,16 +399,16 @@ Check ──APPLIES_TO_REGION──> Region <──HAS_REGION── Feature
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `id` | uuid PK | 发布 ID |
+| `id` | char(32) PK | UUID 发布 ID |
 | `snapshot_id` | varchar(180) UNIQUE | 快照稳定身份 |
 | `ontology_version` | varchar(32) | 本体版本 |
-| `rule_set_id` | uuid FK | 已展开的规则集 |
+| `rule_set_id` | char(32) FK | 已展开的规则集 |
 | `scope_type/scope_key` | varchar | 运行作用域 |
 | `schema_version` | integer | Snapshot Schema 版本；当前新发布固定为 `2` |
 | `artifact_uri` | text | JSON/SQLite 发布物位置 |
 | `content_sha256` | char(64) | 发布物哈希 |
 | `status` | varchar(20) | `building/released/revoked` |
-| `released_at` | timestamptz | 发布时间 |
+| `released_at` | datetime(6) | UTC 发布时间 |
 
 发布校验必须证明：
 
@@ -350,6 +416,8 @@ Check ──APPLIES_TO_REGION──> Region <──HAS_REGION── Feature
 - Check 的每个 Operand 能在目标 OCCT Capability 中解析出唯一 Metric/Quantity；
 - 表达式只使用本 Check 声明的 Alias 和白名单运算；
 - Factor 条件满足其数据 Schema 或枚举选项；
+- Factor 的 `source_policy` 只使用受控来源码，自动采信与强制确认来源均为允许来源且互不重叠；
+- 自动采信的识别类来源声明了有效置信度门槛，要求证据时能够生成稳定 Evidence 引用；
 - 阈值与表达式结果单位兼容；
 - 同优先级、同具体度规则不存在冲突；
 - 每个关键工程阈值具有审核状态，要求引用时具有 Citation。
@@ -376,6 +444,8 @@ Agent 不复制管理库全部表，只安装一次发布后展开的运行投�
 ### 5.2 `ontology_concept`
 
 中心 `dfm_concept` 的已发布投影，只包含当前作用域可见、执行或解释所需的概念。
+Factor Concept 的 `properties_json.source_policy` 随快照发布，供 Agent 的 Fact Resolver 决定候选值是
+自动采信、请求确认还是因冲突转为用户澄清；本地库不保存项目实际 Fact。
 
 ### 5.3 `ontology_relation`
 

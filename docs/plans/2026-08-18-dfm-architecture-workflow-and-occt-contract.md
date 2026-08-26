@@ -1,7 +1,7 @@
 ---
 title: "DFM 架构、工作流与 OCCT C++ 契约"
 status: active
-updated: 2026-08-25
+updated: 2026-08-26
 type: architecture-contract
 ---
 
@@ -74,11 +74,11 @@ Check 不得发布为可执行能力。完整库表见
 | --- | --- | --- | --- |
 | `hermes-agent` | Python；Desktop 为 Electron/React/TypeScript | Agent、DFM toolset/skill、项目与 Run、本地 Snapshot、通用编译/Evaluation/Evidence/Report、Desktop 交互 | 已接通实验级外部 Objective |
 | 后台管理 Web（独立仓库） | 以现有前端栈为准，建议 React/TypeScript | 本体字典、规则编辑/生成、审核、发布、企业覆盖和审计 UI | 待实施 |
-| DFM 管理服务（独立 Django 仓库） | Django/DRF、PostgreSQL；异步任务按实际消费者引入 | 九张中心表、知识 Citation、规则审核、Snapshot Schema 2 发布 API | 待实施 |
-| `dfm-geometry` | C++17、Analysis Situs v2025.2、OCCT 7.9.3、CMake/CTest | STEP、Topology/AAG、Recognizer、Calculator、几何 Artifact、Capability/CLI API | Objective 已接通且为 experimental；两阶段 Discovery 待接入 |
+| DFM 管理服务（独立 Django 仓库） | Django/DRF、MySQL 8.0+；异步任务按实际消费者引入 | 九张中心表、知识 Citation、规则审核、Snapshot Schema 2 发布 API | 待实施 |
+| `dfm-occt-worker` | C++17/20、OCCT、CMake/CTest | STEP、Snapshot、Recognizer、Calculator、几何 Artifact、Capability/Job API | 待实施 |
 | 知识模块 | 首期作为 Django 仓库内独立领域模块；对象存储与向量检索按需要接入 | 原始文档、Revision、Chunk、检索和 Citation | 待实施；暂不拆独立仓库 |
 
-管理 Web 不直接连接 PostgreSQL；Hermes 不直接编辑中心规则；OCCT Worker 不访问规则库。知识模块
+管理 Web 不直接连接 MySQL；Hermes 不直接编辑中心规则；OCCT Worker 不访问规则库。知识模块
 只有在规则起草和解释时通过带版本 Citation 的有限上下文介入，不进入几何 Objective，也不直接
 决定 pass/fail。
 
