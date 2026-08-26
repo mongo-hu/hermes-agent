@@ -20,19 +20,19 @@ owners: DFM 工程团队
 | 能力 | 当前实现 |
 | --- | --- |
 | 制造工艺 | 注塑 `injection` 完整基线；压铸 `die_casting` 首条 STEP 拓扑有效性门 |
-| 三维输入 | 外部 Analysis Situs/OCCT `dfm-geometry` 支持 STEP/STP；Parasolid `x_t` 与 NX 路线已移出当前 intake/执行路径 |
+| 三维输入 | PythonOCC 参考实现支持 STEP/STP；外部 `dfm-geometry` 以 experimental OCCT C++ Analyzer 接入 STEP；Parasolid `x_t` 仅保留登记和显式不可用边界 |
 | 2D 图纸/OCR | 接口预留，尚未形成生产分析闭环 |
 | 混合输入融合 | 接口预留，尚未形成生产分析闭环 |
-| 几何计算 | 独立 Analysis Situs/OCCT C++ 可执行文件，Capability 和算法成熟度为 `experimental`，必须显式选择 `verification_level=experimental` |
+| 几何计算 | OpenCascade / `pythonocc-core` 参考 Worker继续保留；独立 `dfm-geometry` 可执行程序已作为 experimental Adapter 接入，尚未通过生产认证 |
 | 本体/工艺规则 | Ontology Snapshot Schema 2；注塑 `injection.default@1.1.0` 和本地只读 SQLite；压铸 `die_casting.topology-baseline@1.0.0` |
-| 执行方式 | Hermes 主进程管理 Run，并以版本化 JSON/JSONL 协议启动外部 `dfm-geometry analyze` 子进程 |
-| 结果 | C++ Engine `preflight/topology/render_mesh/features/measurements/metric_fields/engine_result` JSON；Hermes `evaluations.json`、报告及可生成的证据制品 |
-| Desktop | 复用附件上传、聊天进度和 Artifacts 展示 |
+| 执行方式 | Hermes 主进程管理 Run；PythonOCC STEP Worker 或外部 `dfm-geometry` 进程隔离执行 |
+| 结果 | Worker `measurements.json`、Hermes `evaluations.json`、兼容报告 JSON、Markdown、PPTX、PNG 证据、高亮 STEP |
+| Desktop | 复用附件上传和聊天进度；STEP 预览及 Run 产物可通过独立 Three.js 3D 查看器显示 |
 
-外部 C++ 项目已经通过本地 CLI 契约接入，但当前只证明实验级 Objective Calculation，不等于
-生产认证。Hermes 的 `discover` 目前冻结可审计的 ordinary 全模型区域；外部两阶段工艺特征
-Recognizer 尚未接入该调用链，因此不得把 fallback 表述为真实识别结果。PythonOCC、NX 与
-Parasolid 均不在当前执行或静默降级链路中。
+当前代码中的 PythonOCC 结果明确标记为非认证参考结果，不能作为 OCCT C++ 生产能力证明。
+独立 C++ 项目已经通过版本化 JSON 请求、JSONL 事件和哈希校验 Artifact 接入，但 Capability
+仍标记为 `experimental`；这证明集成链路可运行，不等于真实工艺特征识别和生产级区域化指标
+计算已经完成认证。NX 与 Parasolid 路线延期，不作为当前部署成功条件，也没有从仓库中删除。
 
 当前版本不分析模具设计模型，也不分析型芯、型腔、滑块、顶针、浇注系统或冷却系统；
 压铸尚未开放壁厚、拔模和倒扣规则。
@@ -42,7 +42,7 @@ Parasolid 均不在当前执行或静默降级链路中。
 ```text
 用户 / Desktop
   │
-  ├─ 上传 STEP/STP
+  ├─ 上传 STEP（或登记 x_t）
   │
   v
 Hermes Agent
@@ -63,8 +63,9 @@ Hermes Agent
 DFMService
   ├─ DiscoveryEngine → ordinary whole-model fallback（当前）
   ├─ Local Ontology SQLite + ProcessAdapter → AnalysisPlan
-  └─ JobManager → Analysis Situs/OCCT dfm-geometry → Objective artifacts
-                    └─ Hermes Evaluation → Evidence → Finding → JSON/MD/PPTX
+  └─ JobManager ┬→ PythonOCC reference worker
+                └→ dfm-geometry experimental worker → Measurement/Field/Scene/Map
+                    └─ Hermes Evaluation → Evidence/Viewer → Finding → JSON/MD/PPTX
 ```
 
 ### 2.1 Agent 与确定性计划的分工
@@ -72,13 +73,14 @@ DFMService
 - Hermes Agent 负责理解用户意图、选择工艺、补充或确认工程事实，并决定何时调用 DFM 工具。
 - `DFMService` 不直接执行模型临时生成的几何步骤。它将本地已发布本体/规则快照与几何 Capability
   组合，根据已确认事实编译结构化 Plan。
-- `discover` 必须先于 analysis `plan`。当前 Discovery 只产生可审计的 ordinary 全模型区域和
-  外部 OCCT Provider 的显式未实现状态，不伪造螺钉柱、筋等工艺特征。
+- `discover` 必须先于 analysis `plan`。当前 Discovery 仍只产生可审计的 ordinary 全模型区域，
+  不把 Objective 阶段的 experimental Recognizer 产物伪装成已冻结 Discovery Feature/Region。
 - `dfm_analysis(context)` 按 Check 返回概念定义、Operand、Factor、选项和候选规则，使 Agent/AI
   实际消费本体；它不把完整数据库放入模型上下文。
 - Run 启动前会保存 Plan 快照；worker 只执行该快照对应的参数和操作。
-- Analysis Situs/OCCT 测量值和 Hermes 规则判断均由确定性代码产生，不由大模型编造；当前
-  Objective Calculation 已由独立 C++ 项目执行，外部 Geometry Discovery/Recognizer 调用仍待接入。
+- OpenCascade 测量值和规则判断由确定性代码产生，不由大模型编造。选择
+  `analyzer_key=occt` 时 Objective Calculation 由独立 OCCT C++ 程序执行；完整的生产级 Geometry
+  Discovery 闭环仍是后续验收项。
 
 ## 3. 数据根目录与标识
 
@@ -128,17 +130,15 @@ Docker 中通常通过 `HERMES_HOME` 指向持久卷，例如：
 │       │       ├── worker.stdout.log
 │       │       ├── worker.stderr.log
 │       │       └── artifacts/
-│       │           ├── preflight.json
-│       │           ├── topology.json
-│       │           ├── render_mesh.json
-│       │           ├── features.json
 │       │           ├── measurements.json
-│       │           ├── metric_fields.json
-│       │           ├── engine_result.json
+│       │           ├── render_scene.json
+│       │           ├── topology_map.json
+│       │           ├── scalar_<field_id>.json
+│       │           ├── worker_result.json
 │       │           ├── evaluations.json
 │       │           ├── evidence_geometry.json
 │       │           ├── evidence_records.json
-│       │           ├── evidence_<序号>.png     # 仅测量提供可验证局部场时
+│       │           ├── evidence_<序号>.png
 │       │           ├── dfm_report.json
 │       │           ├── dfm_report.md
 │       │           └── dfm_report.pptx       # 安装 python-pptx 时
@@ -195,7 +195,7 @@ STEP 项目按阶段确认事实：`model_units` 属于当前 Discovery 前置�
 `discovery_required`，不会跳过发现阶段。新增输入或确认影响既有计划的事实会把相关 Plan 标记为
 `invalidated`，需要重新发现或重新规划。
 
-同名同类型的新输入会以 `supersedes_input_id` 指向旧版本；后续 Plan 仅引用未被替代的活动输入。失效 Plan 会保存 `invalidated_by` 和 `affected_operation_ids`。调用 `dfm_analysis(plan, base_plan_id=...)` 可以从失效 Plan 生成仅包含受影响检查及其依赖的重跑 Plan；例如当前 ontology 只发布主体壁厚与拔模角 Check，仅修改拔模方向时重跑范围为几何预检、拓扑/AAG 与拔模测量，而不是完整操作族。
+同名同类型的新输入会以 `supersedes_input_id` 指向旧版本；后续 Plan 仅引用未被替代的活动输入。失效 Plan 会保存 `invalidated_by` 和 `affected_operation_ids`。调用 `dfm_analysis(plan, base_plan_id=...)` 可以从失效 Plan 生成仅包含受影响检查及其依赖的重跑 Plan；例如仅修改拔模方向时，重跑范围为 STEP 加载、拓扑、拔模和倒扣检查，而不是完整检查族。
 
 相同类型且哈希相同的输入会复用既有记录。分析追溯以项目输入副本和哈希为准，不依赖原始附件路径持续存在。
 
@@ -219,7 +219,7 @@ STEP 项目按阶段确认事实：`model_units` 属于当前 Discovery 前置�
 契约已经存在。当前实现将失败 Evaluation 归一化为带规则引用的项目级 Finding：
 
 - 已确认工艺参数可以写入 `facts` 并参与 Plan 编译；
-- 每次 STEP Run 都生成 `measurements.json`，保存输入哈希、算法版本、实际 operations 和客观模型测量；规则比较结果由 Hermes 单独写入 `evaluations.json`；
+- 每次 STEP Run 都生成 `measurements.json`，保存输入哈希、算法版本、实际 operations、客观模型测量、问题测量及规则 Evaluation；
 - 原始兼容问题仍保存在 `dfm_report.json` 和最终报告中，旧报告格式没有被改写；
 - Finding ID 由输入哈希和稳定 Evaluation ID 派生，包含版本化 rule 引用，并引用测量、报告及同次运行的证据制品；
 - `ProjectManifest.findings` 是项目级风险浏览入口，精确测量仍以被引用的 `measurements.json` 为准。
@@ -248,17 +248,16 @@ PlanRecord 保存：
 
 ### 7.3 request.json
 
-`runs/<run_id>/request.json` 是 `OcctAnalyzer` 发给外部 `dfm-geometry` 的请求，主要包含：
+`runs/<run_id>/request.json` 是 StepAnalyzer 发给隔离 worker 的请求，主要包含：
 
 - worker schema 版本；
 - `run_id`；
 - 项目输入文件绝对路径；
 - 本次 artifact 输出目录；
 - 工艺、范围和分析器版本；
-- 外部协议允许的 Objective Operations、已解析参数和实验验证级别。
+- Discovery 已解析的 Region 和 Objective Operations。
 
-规则条件、阈值、pass/fail、Fact 依赖和 Feature/Region 规划元数据不发送给几何引擎；它们留在
-Hermes 的 Plan/Evaluation 阶段。当前外部 Objective v2 只消费客观 Calculator 输入。
+规则条件、阈值和 pass/fail 不发送给几何 worker；它们留在 Hermes 的 Plan/Evaluation 阶段。
 
 `request.json` 是复核“worker 实际收到了什么”的首选文件，但其中的绝对路径属于运行环境路径，迁移到另一台机器后不应直接复用。
 
@@ -302,8 +301,7 @@ Artifact 和 Hermes 阶段更新推进。
 
 ### 8.3 worker.stdout.log
 
-保存外部引擎标准输出。当前协议要求每个非空行都是纯 JSON WorkerEvent，不允许前缀或普通日志
-混入 stdout。主要用于：
+保存 worker 完整标准输出，包括带 `__HERMES_DFM_EVENT__` 前缀的原始 JSONL 协议行及分析器普通输出。主要用于：
 
 - 检查事件是否实际发出；
 - 定位进度停在哪个阶段；
@@ -323,13 +321,11 @@ Artifact 和 Hermes 阶段更新推进。
 
 | 文件 | 类型/用途 | 主要使用者 |
 | --- | --- | --- |
-| `engine_result.json` | 外部 Objective Result Manifest：输入/范围、Producer 版本、协议版本和 Artifact 元数据 | Analyzer、开发诊断 |
-| `preflight.json` | STEP 单位、B-Rep 有效性及可审计 Healing 诊断 | 输入质量与几何归一化审计 |
-| `topology.json` | 稳定拓扑映射身份 | 几何引用与契约校验 |
-| `render_mesh.json` | 外部引擎三角网格及质量信息 | 可视化/后续证据适配 |
-| `features.json` | 当前执行操作产生的客观识别记录；不替代 Hermes DiscoverySnapshot | 开发诊断、后续发现适配 |
+| `worker_result.json` | Objective Result Manifest：输入/范围、Producer 版本和 Artifact 元数据 | Analyzer、开发诊断 |
 | `measurements.json` | 几何 Worker 输出的版本化客观 Measurement、Operation 引用和几何引用 | EvaluationEngine 输入、系统集成、开发诊断 |
-| `metric_fields.json` | 外部引擎汇总的 ScalarField 与可审计视图引用 | Measurement 场引用校验、证据适配、开发诊断 |
+| `render_scene.json` | 与测量同源的渲染网格场景 | Hermes 证据渲染 |
+| `topology_map.json` | 几何实体到渲染 primitive/triangle 的映射 | 证据定位、契约校验 |
+| `scalar_*.json` | 壁厚、拔模角等局部客观场 | FailedPatch 与证据生成 |
 | `evaluations.json` | Hermes EvaluationEngine 使用 Plan 参数/版本化规则比较后生成的 Evaluation 和 provenance | Finding 归一化、规则审计 |
 | `evidence_geometry.json` | 失败 Evaluation 对应的 FailedPatch 几何 | 证据审计 |
 | `evidence_records.json` | Evaluation、Measurement、Region 与图片的结构化关系 | 报告、Finding |
@@ -338,8 +334,7 @@ Artifact 和 Hermes 阶段更新推进。
 | `dfm_report.md` | 可读文本报告和兼容交付 | Agent、开发者 |
 | `dfm_report.pptx` | 安装 `python-pptx` 时生成的演示交付报告 | Desktop 用户 |
 
-当前只有失败 Evaluation 能关联有效 ScalarField/RenderScene 适配制品时才生成局部证据图片；
-外部引擎只返回 `render_mesh` 并不自动等于已经满足该证据契约。每个入选 FailedPatch
+当前只有失败 Evaluation 能关联有效 ScalarField 时才生成局部证据图片。每个入选 FailedPatch
 最多生成三个自适应视角：
 
 - 出模方向视图 `pull`，未提供方向时为 `overview`；
@@ -358,7 +353,7 @@ Artifact 和 Hermes 阶段更新推进。
        └─ DiscoverySnapshot → Feature / Region
             └─ Ontology Snapshot + RuleBinding + AnalysisPlan
                  └─ RunRecord.plan_snapshot
-                      └─ request.json → engine_result.json / measurements.json / metric_fields.json
+                      └─ request.json → worker_result.json / measurements.json
                            └─ evaluations.json → evidence → Finding / Report
                                 └─ ArtifactRecord.relative_path + SHA256
 ```
@@ -368,7 +363,7 @@ Artifact 和 Hermes 阶段更新推进。
 1. 从 PPTX、`dfm_report.json` 或 Manifest Finding 找到 Evaluation ID；
 2. 在 `evidence_records.json` 找到证据图片、Measurement 和 Region 引用；
 3. 在 `evaluations.json` 核对规则版本、表达式、Operand 值和结果；
-4. 在 `measurements.json` 与 `metric_fields.json` 核对客观测量、场定义和可审计视图；
+4. 在 `measurements.json` 与 `scalar_*.json` 核对客观测量和局部场；
 5. 查看 `request.json`、DiscoverySnapshot 与 Plan 固定的本体快照 ID/哈希；
 6. 查看输入哈希和实现版本，必要时使用项目 `inputs/` 中的 STEP 复算。
 
@@ -406,8 +401,7 @@ Get-ChildItem "<Run目录>\artifacts" -File |
 python .\hermes dfm doctor --json
 ```
 
-`dfm doctor` 只验证配置、工作区、外部几何可执行文件/协议、ProcessAdapter、默认 ontology
-快照和可选报告依赖，不代表某个具体 STEP 已经分析成功或算法已经获得生产认证。
+`dfm doctor` 只验证配置、工作区、worker 解释器、OCC/PPTX 依赖和能力声明，不代表某个具体 STEP 已经分析成功。
 
 ## 12. 成功、失败和中断的判断
 
@@ -415,7 +409,7 @@ python .\hermes dfm doctor --json
 
 - Manifest 中对应 Run 为 `succeeded`；
 - `events.jsonl` 有且仅有一个有效 completion 结果；
-- `engine_result.json` 可解析且协议身份匹配；
+- `worker_result.json` 可解析；
 - Run artifact 已登记并且文件存在；
 - JSON/PPTX 能打开，证据引用与图片对应。
 

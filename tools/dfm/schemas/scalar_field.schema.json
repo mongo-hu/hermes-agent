@@ -4,9 +4,9 @@
   "title": "Hermes DFM Objective Scalar Field",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "field_id", "run_id", "input_sha256", "operation_id", "metric_id", "quantity_id", "unit", "scene_ref", "topology_map_ref", "interpolation", "calculation_context", "samples", "cells", "quality"],
+  "required": ["schema_version", "field_id", "run_id", "input_sha256", "operation_id", "metric_id", "quantity_id", "unit", "scene_ref", "topology_map_ref", "topology_snapshot_ref", "render_mesh_snapshot_ref", "interpolation", "calculation_context", "feature_refs", "region_refs", "samples", "cells", "quality"],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "field_id": {"type": "string", "minLength": 1},
     "run_id": {"type": "string", "minLength": 1},
     "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -16,6 +16,8 @@
     "unit": {"type": ["string", "null"]},
     "scene_ref": {"type": "string", "minLength": 1},
     "topology_map_ref": {"type": "string", "minLength": 1},
+    "topology_snapshot_ref": {"type": "string", "minLength": 1},
+    "render_mesh_snapshot_ref": {"type": "string", "minLength": 1},
     "interpolation": {"enum": ["linear_on_triangle", "constant_per_triangle"]},
     "calculation_context": {
       "type": "object",
@@ -24,6 +26,8 @@
         "pull_direction": {"$ref": "#/$defs/vector3"}
       }
     },
+    "feature_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "region_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "samples": {
       "type": "array",
       "items": {
@@ -67,29 +71,33 @@
     "geometryRef": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "index", "input_sha256"],
+      "required": ["kind", "index", "input_sha256", "topology_snapshot_id", "entity_id"],
       "properties": {
         "kind": {"const": "face"},
         "index": {"type": "integer", "minimum": 0},
-        "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "topology_snapshot_id": {"type": "string", "minLength": 1},
+        "entity_id": {"type": "string", "minLength": 1}
       }
     },
     "vertexRef": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["primitive_id", "vertex_id"],
+      "required": ["primitive_id", "vertex_id", "render_mesh_snapshot_id"],
       "properties": {
         "primitive_id": {"type": "string", "minLength": 1},
-        "vertex_id": {"type": "integer", "minimum": 0}
+        "vertex_id": {"type": "integer", "minimum": 0},
+        "render_mesh_snapshot_id": {"type": "string", "minLength": 1}
       }
     },
     "triangleRef": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["primitive_id", "triangle_id"],
+      "required": ["primitive_id", "triangle_id", "render_mesh_snapshot_id"],
       "properties": {
         "primitive_id": {"type": "string", "minLength": 1},
-        "triangle_id": {"type": "integer", "minimum": 0}
+        "triangle_id": {"type": "integer", "minimum": 0},
+        "render_mesh_snapshot_id": {"type": "string", "minLength": 1}
       }
     }
   }

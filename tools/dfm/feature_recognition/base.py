@@ -1,4 +1,4 @@
-"""Hermes-owned provider contract for semantic feature recognition."""
+"""Provider contract for concrete semantic feature recognizers."""
 
 from __future__ import annotations
 
@@ -30,4 +30,3 @@ class FeatureRecognitionProvider(Protocol):
         process: str,
         facts: Mapping[str, Any] | None = None,
     ) -> FeatureRecognitionResult: ...
-

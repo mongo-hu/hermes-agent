@@ -1,0 +1,56 @@
+{
+  "schema_version": 2,
+  "field_id": "draft_field_fixed_half",
+  "run_id": "run_1",
+  "input_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "operation_id": "draft.fixed_half",
+  "metric_id": "dc.geometry.draft.fixed_half",
+  "quantity_id": "draft_angle_deg",
+  "unit": "degree",
+  "scene_ref": "scene_golden_part",
+  "topology_map_ref": "topology_golden_part",
+  "topology_snapshot_ref": "topology_ba5565e33756d25",
+  "render_mesh_snapshot_ref": "mesh_910e4f54e289d3ee",
+  "interpolation": "linear_on_triangle",
+  "calculation_context": {"pull_direction": [0, 0, 1]},
+  "feature_refs": ["feature.screw_boss.003"],
+  "region_refs": ["region.fixed_half"],
+  "samples": [
+    {
+      "sample_id": "sample-1",
+      "point": [0, 0, 0],
+      "uv": [0, 0],
+      "surface_normal": [0.999, 0, 0.01],
+      "value": 0.6,
+      "geometry_ref": {"kind": "face", "index": 17, "input_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "topology_snapshot_id": "topology_ba5565e33756d25", "entity_id": "face_000017"},
+      "mesh_vertex_ref": {"primitive_id": "body-1", "vertex_id": 0, "render_mesh_snapshot_id": "mesh_910e4f54e289d3ee"}
+    },
+    {
+      "sample_id": "sample-2",
+      "point": [10, 0, 0],
+      "uv": [1, 0],
+      "surface_normal": [0.998, 0, 0.02],
+      "value": 1.2,
+      "geometry_ref": {"kind": "face", "index": 17, "input_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "topology_snapshot_id": "topology_ba5565e33756d25", "entity_id": "face_000017"},
+      "mesh_vertex_ref": {"primitive_id": "body-1", "vertex_id": 1, "render_mesh_snapshot_id": "mesh_910e4f54e289d3ee"}
+    },
+    {
+      "sample_id": "sample-3",
+      "point": [10, 10, 1],
+      "uv": [1, 1],
+      "surface_normal": [0.99, 0, 0.1],
+      "value": 1.8,
+      "geometry_ref": {"kind": "face", "index": 17, "input_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "topology_snapshot_id": "topology_ba5565e33756d25", "entity_id": "face_000017"},
+      "mesh_vertex_ref": {"primitive_id": "body-1", "vertex_id": 2, "render_mesh_snapshot_id": "mesh_910e4f54e289d3ee"}
+    }
+  ],
+  "cells": [
+    {
+      "cell_id": "cell-1",
+      "sample_ids": ["sample-1", "sample-2", "sample-3"],
+      "geometry_ref": {"kind": "face", "index": 17, "input_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "topology_snapshot_id": "topology_ba5565e33756d25", "entity_id": "face_000017"},
+      "triangle_ref": {"primitive_id": "body-1", "triangle_id": 0, "render_mesh_snapshot_id": "mesh_910e4f54e289d3ee"}
+    }
+  ],
+  "quality": {"max_chordal_deviation_mm": 0.05, "includes_controlling_extrema": true}
+}

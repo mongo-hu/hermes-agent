@@ -19,7 +19,6 @@ from ..analyzers.registry import AnalyzerRegistry
 from ..config import DFMConfig
 from ..contracts import (
     ArtifactRecord,
-    FeatureRecord,
     PlanRecord,
     ProjectManifest,
     RunRecord,
@@ -48,18 +47,6 @@ logger = logging.getLogger(__name__)
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _elapsed_seconds(timestamp: str) -> float:
-    """Return a conservative elapsed duration for a persisted UTC timestamp."""
-
-    try:
-        started = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-        if started.tzinfo is None:
-            started = started.replace(tzinfo=timezone.utc)
-    except (TypeError, ValueError):
-        return 0.0
-    return max(0.0, (datetime.now(timezone.utc) - started).total_seconds())
 
 
 class JobManager:
@@ -400,7 +387,6 @@ class JobManager:
         artifacts: list[ArtifactRecord],
     ) -> None:
         now = _utc_now()
-        feature_snapshot = self._features_from_artifacts(project_id, artifacts)
 
         def complete(current: ProjectManifest) -> ProjectManifest:
             runs = []
@@ -431,14 +417,6 @@ class JobManager:
                 self.workspace.project_dir(project_id), artifacts
             )
             finding_ids = {item.finding_id for item in findings}
-            features = current.features
-            if feature_snapshot is not None:
-                feature_input_sha256, recognized = feature_snapshot
-                features = [
-                    item
-                    for item in current.features
-                    if item.input_sha256 != feature_input_sha256
-                ] + recognized
             return replace(
                 current,
                 runs=runs,
@@ -451,41 +429,11 @@ class JobManager:
                     ],
                 ],
                 findings=[item for item in current.findings if item.finding_id not in finding_ids] + findings,
-                features=features,
                 updated_at=now,
             )
 
         self._store(project_id).update(complete)
         self._notify(run_id, self.status(project_id, run_id))
-
-    def _features_from_artifacts(
-        self, project_id: str, artifacts: list[ArtifactRecord]
-    ) -> tuple[str, list[FeatureRecord]] | None:
-        feature_artifact = next(
-            (item for item in artifacts if item.kind == "features"), None
-        )
-        if feature_artifact is None:
-            return None
-        path = self.workspace.project_dir(project_id) / feature_artifact.relative_path
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            input_sha256 = str(payload["input_sha256"])
-            features = [
-                FeatureRecord.from_dict(item) for item in payload.get("features", [])
-            ]
-        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise DFMError(
-                "features_invalid",
-                "The recognized feature artifact cannot be added to the project.",
-            ) from exc
-        if len(input_sha256) != 64 or any(
-            item.input_sha256 != input_sha256 for item in features
-        ):
-            raise DFMError(
-                "features_invalid",
-                "Recognized features do not belong to one immutable input.",
-            )
-        return input_sha256, features
 
     def _record_event(self, project_id: str, run_id: str, event: WorkerEvent) -> None:
         now = _utc_now()
@@ -619,35 +567,10 @@ class JobManager:
             sha256=sha256,
         )
 
-    def cancel(
-        self,
-        project_id: str,
-        run_id: str,
-        *,
-        user_confirmed: bool = False,
-    ) -> RunRecord:
+    def cancel(self, project_id: str, run_id: str) -> RunRecord:
         run = self.status(project_id, run_id)
         if run.status not in {RunStatus.QUEUED, RunStatus.RUNNING}:
             return run
-        timeout_seconds = (
-            self.config.geometry_timeout_seconds
-            if run.analyzer_key == "occt"
-            else self.config.timeout_seconds
-        )
-        elapsed_seconds = _elapsed_seconds(run.created_at)
-        if not user_confirmed and elapsed_seconds < timeout_seconds:
-            raise DFMError(
-                "cancel_confirmation_required",
-                "Cancelling an active DFM run before its configured timeout requires explicit user confirmation.",
-                {
-                    "run_id": run_id,
-                    "stage": run.stage,
-                    "progress_percent": run.progress_percent,
-                    "elapsed_seconds": int(elapsed_seconds),
-                    "timeout_seconds": timeout_seconds,
-                    "remaining_seconds": max(0, int(timeout_seconds - elapsed_seconds)),
-                },
-            )
         with self._lock:
             token = self._tokens.get(run_id)
             if token:

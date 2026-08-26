@@ -1,4 +1,4 @@
-"""Backend-neutral injection plan for the OCCT geometry-core scope."""
+"""Backend-neutral injection plan for wall-thickness and draft checks."""
 
 from __future__ import annotations
 
@@ -20,29 +20,6 @@ from .base import FactRequirement, ProcessPlan
 
 
 _TRUSTED_SOURCES = {"project_fact", "user_confirmed"}
-_LENGTH_UNIT_ALIASES = {
-    "mm": "mm",
-    "millimeter": "mm",
-    "millimeters": "mm",
-    "millimetre": "mm",
-    "millimetres": "mm",
-    "cm": "cm",
-    "centimeter": "cm",
-    "centimeters": "cm",
-    "centimetre": "cm",
-    "centimetres": "cm",
-    "m": "m",
-    "meter": "m",
-    "meters": "m",
-    "metre": "m",
-    "metres": "m",
-    "in": "inch",
-    "inch": "inch",
-    "inches": "inch",
-    "ft": "foot",
-    "foot": "foot",
-    "feet": "foot",
-}
 
 
 class InjectionProcessAdapter:
@@ -71,7 +48,7 @@ class InjectionProcessAdapter:
         return Capability(
             self.key,
             CapabilityStatus.AVAILABLE,
-            "The backend-neutral injection geometry-core scope is available.",
+            "The backend-neutral injection wall/draft scope is available.",
             details={"adapter_version": self.version},
         )
 
@@ -88,7 +65,15 @@ class InjectionProcessAdapter:
             )
             for item in self.ontology_store.fact_requirements(self.key)
         )
-        return ontology_requirements
+        return (
+            FactRequirement(
+                name="process",
+                question="Should this project be analyzed as injection molding or die casting?",
+                phase="discovery",
+                required_by=("feature.process_semantics",),
+            ),
+            *ontology_requirements,
+        )
 
     def compile(
         self,
@@ -148,12 +133,12 @@ class InjectionProcessAdapter:
         for operation in operations:
             arguments = dict(operation.arguments)
             algorithm_options = dict(operation.algorithm_options)
-            if operation.calculator_id == "geometry_preflight":
+            if operation.calculator_id == "load_geometry":
                 units = resolved["model_units"]
                 arguments["model_unit"] = ResolvedArgument(
                     units["value"], units["source_ref"], None
                 )
-            elif operation.calculator_id in {"measure_draft", "measure_undercut"}:
+            elif operation.calculator_id == "measure_draft":
                 pull = resolved["pull_dir"]
                 arguments["pull_direction"] = ResolvedArgument(
                     pull["value"], pull["source_ref"], pull["unit"]
@@ -198,8 +183,8 @@ class InjectionProcessAdapter:
                 {"path": str(self.scope_path)},
             ) from exc
         if (
-            scope.get("capability_id") != "injection.geometry-core"
-            or scope.get("version") != "4.0.0"
+            scope.get("capability_id") != "injection.geometry.wall-draft"
+            or scope.get("version") != "1.0.0"
             or scope.get("process") != self.key
             or not isinstance(scope.get("parameters"), dict)
             or not isinstance(scope.get("operations"), list)
@@ -218,15 +203,12 @@ class InjectionProcessAdapter:
             return material
         if key == "model_units":
             unit = str(value or "").strip().lower()
-            if unit not in _LENGTH_UNIT_ALIASES:
+            if unit not in {"mm", "millimeter", "millimeters"}:
                 self._invalid(
-                    "model_units must identify a supported STEP length unit.",
-                    {
-                        "model_units": value,
-                        "supported_units": ["mm", "cm", "m", "inch", "foot"],
-                    },
+                    "The frozen injection scope currently requires millimeter geometry.",
+                    {"model_units": value, "supported_units": ["mm"]},
                 )
-            return _LENGTH_UNIT_ALIASES[unit]
+            return "mm"
         if key == "pull_dir":
             if not isinstance(value, (list, tuple)) or len(value) != 3:
                 self._invalid("pull_dir must contain exactly three numbers.")

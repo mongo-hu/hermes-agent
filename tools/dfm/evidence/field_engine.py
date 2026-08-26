@@ -14,7 +14,7 @@ from ..contracts import ArtifactRecord, EvidenceRecord, GeometryRef
 from ..errors import DFMError
 
 
-EVIDENCE_SCHEMA_VERSION = 1
+EVIDENCE_SCHEMA_VERSION = 2
 _VIEWS_PER_PATCH = 3
 
 
@@ -46,7 +46,7 @@ def _utc_now() -> str:
 class FieldEvidenceEngine:
     """Render precise evidence from any backend's objective scalar fields."""
 
-    version = "hermes-field-evidence-v3"
+    version = "hermes-field-evidence-v4"
 
     def materialize(
         self,
@@ -142,6 +142,7 @@ class FieldEvidenceEngine:
                     "run_id": run_id,
                     "input_sha256": input_sha256,
                     "producer": "hermes-evidence-engine",
+                    "producer_version": self.version,
                     "failed_patches": patches,
                 },
                 ensure_ascii=False,
@@ -210,12 +211,15 @@ class FieldEvidenceEngine:
                             "viewport": [1280, 720],
                             "patch_id": patch["patch_id"],
                             "scene_ref": patch["scene_ref"],
+                            "topology_snapshot_ref": patch["topology_snapshot_ref"],
+                            "render_mesh_snapshot_ref": patch["render_mesh_snapshot_ref"],
                             "view_id": view["id"],
                             "view_label": view["label"],
                             "camera_direction": list(view["basis_d"]),
                             "camera_up": list(view["basis_v"]),
                             "camera_source": view["source"],
                         },
+                        feature_refs=[str(item) for item in patch["feature_refs"]],
                     )
                 )
 
@@ -227,6 +231,7 @@ class FieldEvidenceEngine:
                     "run_id": run_id,
                     "input_sha256": input_sha256,
                     "producer": "hermes-evidence-renderer",
+                    "producer_version": self.version,
                     "records": [item.to_dict() for item in records],
                 },
                 ensure_ascii=False,
@@ -302,17 +307,26 @@ class FieldEvidenceEngine:
                     "The topology map and scalar field reference different scenes.",
                 )
         scene_triangles = {
-            (str(primitive.get("primitive_id")), triangle_id)
+            (
+                str(primitive.get("render_mesh_snapshot_id")),
+                str(primitive.get("primitive_id")),
+                triangle_id,
+            )
             for primitive in linked_payloads["render_scene"].get("primitives", [])
             for triangle_id, _triangle in enumerate(primitive.get("triangles", []))
         }
         mapped_triangles = {
-            (str(ref.get("primitive_id")), int(ref.get("triangle_id", -1)))
+            (
+                str(ref.get("render_mesh_snapshot_id")),
+                str(ref.get("primitive_id")),
+                int(ref.get("triangle_id", -1)),
+            )
             for face in linked_payloads["topology_map"].get("faces", [])
             for ref in face.get("triangle_refs", [])
         }
         field_triangles = {
             (
+                str(cell.get("triangle_ref", {}).get("render_mesh_snapshot_id")),
                 str(cell.get("triangle_ref", {}).get("primitive_id")),
                 int(cell.get("triangle_ref", {}).get("triangle_id", -1)),
             )
@@ -322,6 +336,88 @@ class FieldEvidenceEngine:
             raise DFMError(
                 "evidence_field_invalid",
                 "Scalar field cells are not present in both the scene and topology map.",
+            )
+        mapped_by_entity = {
+            (
+                str(face.get("geometry_ref", {}).get("topology_snapshot_id")),
+                str(face.get("geometry_ref", {}).get("entity_id")),
+                str(ref.get("render_mesh_snapshot_id")),
+                str(ref.get("primitive_id")),
+                int(ref.get("triangle_id", -1)),
+            )
+            for face in linked_payloads["topology_map"].get("faces", [])
+            for ref in face.get("triangle_refs", [])
+        }
+        if any(
+            (
+                str(cell.get("geometry_ref", {}).get("topology_snapshot_id")),
+                str(cell.get("geometry_ref", {}).get("entity_id")),
+                str(cell.get("triangle_ref", {}).get("render_mesh_snapshot_id")),
+                str(cell.get("triangle_ref", {}).get("primitive_id")),
+                int(cell.get("triangle_ref", {}).get("triangle_id", -1)),
+            )
+            not in mapped_by_entity
+            for cell in field.get("cells", [])
+        ):
+            raise DFMError(
+                "evidence_field_invalid",
+                "A scalar-field cell triangle is mapped to a different topology entity.",
+            )
+        scene_snapshot = linked_payloads["render_scene"].get("render_mesh_snapshot", {})
+        topology_snapshot = linked_payloads["topology_map"].get("topology_snapshot", {})
+        mesh_id = str(scene_snapshot.get("render_mesh_snapshot_id") or "")
+        topology_id = str(topology_snapshot.get("topology_snapshot_id") or "")
+        if (
+            not mesh_id
+            or not topology_id
+            or field.get("render_mesh_snapshot_ref") != mesh_id
+            or field.get("topology_snapshot_ref") != topology_id
+            or linked_payloads["render_scene"].get("topology_snapshot_ref") != topology_id
+            or linked_payloads["topology_map"].get("render_mesh_snapshot_ref") != mesh_id
+            or scene_snapshot.get("topology_snapshot_id") != topology_id
+            or scene_snapshot.get("input_sha256") != input_sha256
+            or topology_snapshot.get("input_sha256") != input_sha256
+        ):
+            raise DFMError(
+                "evidence_snapshot_mismatch",
+                "Scalar field, topology, and render mesh do not share one immutable snapshot.",
+            )
+        primitives = linked_payloads["render_scene"].get("primitives", [])
+        mesh_payload = [
+            {key: value for key, value in item.items() if key != "render_mesh_snapshot_id"}
+            for item in primitives
+        ]
+        topology_payload = [
+            {
+                "entity_id": face.get("geometry_ref", {}).get("entity_id"),
+                "kind": face.get("geometry_ref", {}).get("kind"),
+                "index": face.get("geometry_ref", {}).get("index"),
+            }
+            for face in linked_payloads["topology_map"].get("faces", [])
+        ]
+        if (
+            scene_snapshot.get("render_mesh_sha256") != _stable_content_sha256(mesh_payload)
+            or scene_snapshot.get("triangle_count")
+            != sum(len(item.get("triangles", [])) for item in primitives)
+            or topology_snapshot.get("topology_content_sha256")
+            != _stable_content_sha256(topology_payload)
+        ):
+            raise DFMError(
+                "evidence_snapshot_mismatch",
+                "The topology or render mesh content no longer matches its immutable snapshot.",
+            )
+        geometry_refs = [
+            item.get("geometry_ref", {}) for item in field.get("samples", [])
+        ] + [item.get("geometry_ref", {}) for item in field.get("cells", [])]
+        if any(
+            ref.get("topology_snapshot_id") != topology_id
+            or ref.get("input_sha256") != input_sha256
+            or not ref.get("entity_id")
+            for ref in geometry_refs
+        ):
+            raise DFMError(
+                "evidence_snapshot_mismatch",
+                "Scalar field geometry refs do not belong to the linked topology snapshot.",
             )
 
     @staticmethod
@@ -399,8 +495,11 @@ class FieldEvidenceEngine:
                 "field_ref": field_ref,
                 "scene_ref": str(field.get("scene_ref") or ""),
                 "topology_map_ref": str(field.get("topology_map_ref") or ""),
+                "topology_snapshot_ref": str(field.get("topology_snapshot_ref") or ""),
+                "render_mesh_snapshot_ref": str(field.get("render_mesh_snapshot_ref") or ""),
                 "geometry_refs": geometry_refs,
                 "region_refs": sorted(str(item) for item in measurement.get("region_refs", [])),
+                "feature_refs": sorted(str(item) for item in measurement.get("feature_refs", [])),
                 "sample_ids": sample_ids,
                 "cell_ids": sorted(str(item.get("cell_id")) for item in cells),
                 "triangle_refs": triangles,
@@ -432,7 +531,11 @@ class FieldEvidenceEngine:
         image = Image.new("RGB", (width, height), (247, 248, 250))
         draw = ImageDraw.Draw(image)
         highlighted = {
-            (str(item["primitive_id"]), int(item["triangle_id"]))
+            (
+                str(item["render_mesh_snapshot_id"]),
+                str(item["primitive_id"]),
+                int(item["triangle_id"]),
+            )
             for item in patch["triangle_refs"]
         }
         basis_u = view["basis_u"]
@@ -443,6 +546,7 @@ class FieldEvidenceEngine:
         all_xy: list[tuple[float, float]] = []
         for primitive in scene.get("primitives", []):
             primitive_id = str(primitive.get("primitive_id") or "")
+            mesh_snapshot_id = str(primitive.get("render_mesh_snapshot_id") or "")
             vertices = primitive.get("vertices", [])
             for triangle_id, triangle in enumerate(primitive.get("triangles", [])):
                 try:
@@ -486,7 +590,7 @@ class FieldEvidenceEngine:
             polygon = [screen(point) for point in xy]
             if not _visible(polygon, width, height):
                 continue
-            is_failed = (primitive_id, triangle_id) in highlighted
+            is_failed = (mesh_snapshot_id, primitive_id, triangle_id) in highlighted
             draw.polygon(
                 polygon,
                 fill=(210, 214, 220),
@@ -799,7 +903,11 @@ def _connected_cells(
     cells: list[dict[str, Any]], scene: dict[str, Any]
 ) -> list[list[dict[str, Any]]]:
     triangle_vertices = {
-        (str(primitive.get("primitive_id")), triangle_id): {
+        (
+            str(primitive.get("render_mesh_snapshot_id")),
+            str(primitive.get("primitive_id")),
+            triangle_id,
+        ): {
             tuple(round(float(value), 9) for value in vertices[int(vertex_id)])
             for vertex_id in triangle
         }
@@ -811,7 +919,12 @@ def _connected_cells(
     def mesh_vertices(cell: dict[str, Any]) -> set[tuple[float, ...]]:
         ref = cell.get("triangle_ref", {})
         return triangle_vertices.get(
-            (str(ref.get("primitive_id")), int(ref.get("triangle_id", -1))), set()
+            (
+                str(ref.get("render_mesh_snapshot_id")),
+                str(ref.get("primitive_id")),
+                int(ref.get("triangle_id", -1)),
+            ),
+            set(),
         )
 
     remaining = list(cells)
@@ -844,6 +957,14 @@ def _unique_dicts(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
         key = json.dumps(value, sort_keys=True, separators=(",", ":"))
         unique[key] = value
     return list(unique.values())
+
+
+def _stable_content_sha256(payload: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def _dot(left: list[float], right: tuple[float, float, float]) -> float:

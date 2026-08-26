@@ -269,6 +269,7 @@ class ObjectiveOperationCache:
                 input_sha256=input_sha256,
                 process=plan.process,
                 scope_id=plan.scope_id,
+                regions=plan.regions,
                 error_code="objective_cache_invalid",
             )
         except DFMError:

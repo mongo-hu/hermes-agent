@@ -26,12 +26,18 @@ def test_real_occt_injection_vertical_slice(tmp_path):
     try:
         project_id = service.project("create", name="OCCT E2E")["project_id"]
         added = service.project("add_input", project_id=project_id, path=str(FIXTURE))
-        assert added["preview"]["status"] == "ready"
+        assert added["preview"]["status"] == "ready", added["preview"]
         preview_manifest = json.loads(
             Path(added["viewer_manifest"]).read_text(encoding="utf-8")
         )
         assert preview_manifest["status"] == "preview"
         assert preview_manifest["issues"] == []
+        service.project(
+            "confirm_fact",
+            project_id=project_id,
+            fact_name="process",
+            fact_value="injection",
+        )
         service.project(
             "confirm_fact",
             project_id=project_id,
@@ -55,11 +61,9 @@ def test_real_occt_injection_vertical_slice(tmp_path):
             "plan",
             project_id=project_id,
             analyzer_key="occt",
-            verification_level="experimental",
         )["plan"]
         assert plan["scope_id"] == "injection.default"
         assert plan["ontology_snapshot_id"] == "ontology.injection.default@1.1.0"
-        assert plan["assumed_pull_direction"] is False
         started = service.analysis(
             "start", project_id=project_id, plan_id=plan["plan_id"]
         )

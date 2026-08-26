@@ -1,4 +1,4 @@
-"""Dependency-free STEP intake metadata boundary before the OCCT process."""
+"""STEP reader metadata boundary around the existing validated intake."""
 
 from pathlib import Path
 
@@ -8,23 +8,17 @@ from ..contracts import GeometryMetadata
 
 
 class StepGeometryReader:
-    key = "step_lexical_preflight"
+    key = "opencascade_step"
     format_ids = ("step",)
 
     def capability(self) -> Capability:
         return Capability(
             self.key,
             CapabilityStatus.AVAILABLE,
-            "STEP lexical intake is available; OCCT owns authoritative B-Rep loading.",
-            details={
-                "format_ids": list(self.format_ids),
-                "representation": "brep",
-                "pythonocc": "deprecated_disabled",
-                "authoritative_geometry_backend": "occt_cpp_external_process",
-            },
+            "STEP intake and the OpenCascade worker boundary are implemented.",
+            details={"format_ids": list(self.format_ids), "representation": "brep"},
         )
 
     def preflight(self, path: Path) -> GeometryMetadata:
         details = inspect_step(path)
         return GeometryMetadata("step", "brep", details=details)
-

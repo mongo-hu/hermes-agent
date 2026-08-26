@@ -1,205 +1,61 @@
 {
-  "capability_id": "injection.geometry-core",
-  "version": "4.0.0",
+  "capability_id": "injection.geometry.wall-draft",
+  "version": "1.0.0",
   "process": "injection",
   "parameters": {
-    "model_units": {"value": "mm", "unit": null, "kind": "engineering_context"},
-    "pull_dir": {"value": [0, 0, 1], "unit": null, "kind": "engineering_context"}
+    "model_units": {
+      "value": "mm",
+      "unit": null,
+      "kind": "engineering_context"
+    },
+    "pull_dir": {
+      "value": [0, 0, 1],
+      "unit": null,
+      "kind": "engineering_context"
+    }
   },
   "operations": [
     {
-      "operation_id": "geometry.preflight",
-      "calculator_id": "geometry_preflight",
+      "operation_id": "geometry.load",
+      "calculator_id": "load_geometry",
       "depends_on": [],
       "metric_ids": [],
       "required_quantities": [],
-      "required_artifacts": ["preflight"],
+      "required_artifacts": [],
       "required_fact_names": ["model_units"],
       "arguments": {},
       "algorithm_options": {}
     },
     {
-      "operation_id": "topology.index",
-      "calculator_id": "index_topology",
-      "depends_on": ["geometry.preflight"],
+      "operation_id": "geometry.topology",
+      "calculator_id": "inspect_topology",
+      "depends_on": ["geometry.load"],
       "metric_ids": [],
       "required_quantities": [],
-      "required_artifacts": ["topology_map"],
+      "required_artifacts": [],
       "required_fact_names": [],
       "arguments": {},
       "algorithm_options": {}
     },
     {
-      "operation_id": "topology.aag",
-      "calculator_id": "build_aag",
-      "depends_on": ["topology.index"],
-      "metric_ids": [],
-      "required_quantities": [],
-      "required_artifacts": ["topology_map"],
-      "required_fact_names": [],
+      "operation_id": "geometry.wall_thickness",
+      "calculator_id": "measure_wall_thickness",
+      "depends_on": ["geometry.topology"],
+      "metric_ids": ["injection.geometry.wall_thickness"],
+      "required_quantities": ["thickness_mm"],
+      "required_artifacts": ["scalar_field", "render_scene", "topology_map"],
+      "required_fact_names": ["model_units"],
       "arguments": {},
       "algorithm_options": {}
     },
     {
-      "operation_id": "measure_draft",
+      "operation_id": "geometry.draft",
       "calculator_id": "measure_draft",
-      "depends_on": ["topology.aag"],
+      "depends_on": ["geometry.topology"],
       "metric_ids": ["injection.geometry.draft"],
       "required_quantities": ["draft_angle_deg"],
-      "required_artifacts": ["topology_map", "scalar_field"],
-      "required_fact_names": ["model_units", "pull_dir"],
-      "arguments": {},
-      "algorithm_options": {}
-    },
-    {
-      "operation_id": "measure_wall_thickness",
-      "calculator_id": "measure_wall_thickness",
-      "depends_on": ["topology.aag"],
-      "metric_ids": ["injection.geometry.wall_thickness"],
-      "required_quantities": ["thickness_mm", "average_thickness_mm"],
-      "required_artifacts": ["topology_map", "scalar_field"],
-      "required_fact_names": ["model_units"],
-      "arguments": {},
-      "algorithm_options": {}
-    },
-    {
-      "operation_id": "measure_undercut",
-      "calculator_id": "measure_undercut",
-      "depends_on": ["topology.aag"],
-      "metric_ids": ["injection.geometry.undercut"],
-      "required_quantities": ["undercut_count"],
-      "required_artifacts": ["topology_map", "scalar_field"],
-      "required_fact_names": ["model_units", "pull_dir"],
-      "arguments": {},
-      "algorithm_options": {}
-    },
-    {
-      "operation_id": "measure_sharp_corner",
-      "calculator_id": "measure_sharp_corner",
-      "depends_on": ["topology.aag"],
-      "metric_ids": ["injection.geometry.sharp_corner"],
-      "required_quantities": ["corner_angle_deg"],
-      "required_artifacts": ["topology_map", "scalar_field"],
-      "required_fact_names": ["model_units"],
-      "arguments": {},
-      "algorithm_options": {}
-    },
-    {
-      "operation_id": "recognize_drilled_hole",
-      "calculator_id": "recognize_drilled_hole",
-      "depends_on": ["topology.aag"],
-      "metric_ids": [],
-      "required_quantities": [],
-      "required_artifacts": ["features"],
-      "required_fact_names": ["model_units"],
-      "arguments": {},
-      "algorithm_options": {
-        "hard_mode": {"value": false, "source_ref": "capability:injection.geometry-core@4.0.0/operations/recognize_drilled_hole/hard_mode", "unit": null}
-      }
-    },
-    {
-      "operation_id": "recognize_blend",
-      "calculator_id": "recognize_blend",
-      "depends_on": ["topology.aag"],
-      "metric_ids": [],
-      "required_quantities": [],
-      "required_artifacts": ["features"],
-      "required_fact_names": ["model_units"],
-      "arguments": {},
-      "algorithm_options": {
-        "allow_cones": {"value": true, "source_ref": "capability:injection.geometry-core@4.0.0/operations/recognize_blend/allow_cones", "unit": null},
-        "allow_linear_extrusions": {"value": true, "source_ref": "capability:injection.geometry-core@4.0.0/operations/recognize_blend/allow_linear_extrusions", "unit": null},
-        "radius_deviation_percent": {"value": 1.0, "source_ref": "capability:injection.geometry-core@4.0.0/operations/recognize_blend/radius_deviation_percent", "unit": "percent"}
-      }
-    },
-    {
-      "operation_id": "recognize_shaft",
-      "calculator_id": "recognize_shaft",
-      "depends_on": ["topology.aag"],
-      "metric_ids": [],
-      "required_quantities": [],
-      "required_artifacts": ["features"],
-      "required_fact_names": ["model_units"],
-      "arguments": {},
-      "algorithm_options": {}
-    },
-    {
-      "operation_id": "recognize_cavity",
-      "calculator_id": "recognize_cavity",
-      "depends_on": ["topology.aag"],
-      "metric_ids": [],
-      "required_quantities": [],
-      "required_artifacts": ["features"],
-      "required_fact_names": ["model_units"],
-      "arguments": {},
-      "algorithm_options": {}
-    },
-    {
-      "operation_id": "recognize_convex_hull",
-      "calculator_id": "recognize_convex_hull",
-      "depends_on": ["topology.aag"],
-      "metric_ids": [],
-      "required_quantities": [],
-      "required_artifacts": ["features"],
-      "required_fact_names": ["model_units"],
-      "arguments": {},
-      "algorithm_options": {
-        "grid_resolution": {"value": 10, "source_ref": "capability:injection.geometry-core@4.0.0/operations/recognize_convex_hull/grid_resolution", "unit": "count"},
-        "use_haines": {"value": false, "source_ref": "capability:injection.geometry-core@4.0.0/operations/recognize_convex_hull/use_haines", "unit": null}
-      }
-    },
-    {
-      "operation_id": "recognize_isolated",
-      "calculator_id": "recognize_isolated",
-      "depends_on": ["topology.aag"],
-      "metric_ids": [],
-      "required_quantities": [],
-      "required_artifacts": ["features"],
-      "required_fact_names": ["model_units"],
-      "arguments": {},
-      "algorithm_options": {}
-    },
-    {
-      "operation_id": "recognize_canonical_surface",
-      "calculator_id": "recognize_canonical_surface",
-      "depends_on": ["topology.aag"],
-      "metric_ids": [],
-      "required_quantities": [],
-      "required_artifacts": ["features"],
-      "required_fact_names": ["model_units"],
-      "arguments": {},
-      "algorithm_options": {}
-    },
-    {
-      "operation_id": "recognize_surface_probe",
-      "calculator_id": "recognize_surface_probe",
-      "depends_on": ["topology.aag"],
-      "metric_ids": [],
-      "required_quantities": [],
-      "required_artifacts": ["features"],
-      "required_fact_names": ["model_units"],
-      "arguments": {},
-      "algorithm_options": {}
-    },
-    {
-      "operation_id": "recognize_chamfer",
-      "calculator_id": "recognize_chamfer",
-      "depends_on": ["topology.aag"],
-      "metric_ids": [],
-      "required_quantities": [],
-      "required_artifacts": ["features"],
-      "required_fact_names": ["model_units"],
-      "arguments": {},
-      "algorithm_options": {}
-    },
-    {
-      "operation_id": "recognize_rib",
-      "calculator_id": "recognize_rib",
-      "depends_on": ["topology.aag"],
-      "metric_ids": [],
-      "required_quantities": [],
-      "required_artifacts": ["features"],
-      "required_fact_names": ["model_units"],
+      "required_artifacts": ["scalar_field", "render_scene", "topology_map"],
+      "required_fact_names": ["pull_dir", "model_units"],
       "arguments": {},
       "algorithm_options": {}
     }

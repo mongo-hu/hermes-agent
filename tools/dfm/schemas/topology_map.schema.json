@@ -4,13 +4,15 @@
   "title": "Hermes DFM Topology To Render Mesh Map",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "map_id", "run_id", "input_sha256", "scene_ref", "faces"],
+  "required": ["schema_version", "map_id", "run_id", "input_sha256", "scene_ref", "topology_snapshot", "render_mesh_snapshot_ref", "faces"],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "map_id": {"type": "string", "minLength": 1},
     "run_id": {"type": "string", "minLength": 1},
     "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "scene_ref": {"type": "string", "minLength": 1},
+    "topology_snapshot": {"$ref": "#/$defs/topologySnapshot"},
+    "render_mesh_snapshot_ref": {"type": "string", "minLength": 1},
     "faces": {
       "type": "array",
       "items": {
@@ -28,20 +30,36 @@
     "geometryRef": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "index", "input_sha256"],
+      "required": ["kind", "index", "input_sha256", "topology_snapshot_id", "entity_id"],
       "properties": {
         "kind": {"const": "face"},
         "index": {"type": "integer", "minimum": 0},
-        "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "topology_snapshot_id": {"type": "string", "minLength": 1},
+        "entity_id": {"type": "string", "minLength": 1}
       }
     },
     "triangleRef": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["primitive_id", "triangle_id"],
+      "required": ["primitive_id", "triangle_id", "render_mesh_snapshot_id"],
       "properties": {
         "primitive_id": {"type": "string", "minLength": 1},
-        "triangle_id": {"type": "integer", "minimum": 0}
+        "triangle_id": {"type": "integer", "minimum": 0},
+        "render_mesh_snapshot_id": {"type": "string", "minLength": 1}
+      }
+    },
+    "topologySnapshot": {
+      "type": "object", "additionalProperties": false,
+      "required": ["topology_snapshot_id", "input_sha256", "backend", "backend_version", "loader_id", "loader_version", "indexer_id", "indexer_version", "entity_count", "topology_content_sha256"],
+      "properties": {
+        "topology_snapshot_id": {"type": "string", "minLength": 1},
+        "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "backend": {"type": "string", "minLength": 1}, "backend_version": {"type": "string", "minLength": 1},
+        "loader_id": {"type": "string", "minLength": 1}, "loader_version": {"type": "string", "minLength": 1},
+        "indexer_id": {"type": "string", "minLength": 1}, "indexer_version": {"type": "string", "minLength": 1},
+        "entity_count": {"type": "object"},
+        "topology_content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     }
   }

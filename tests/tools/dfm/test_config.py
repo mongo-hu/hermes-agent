@@ -8,6 +8,7 @@ def test_dfm_config_defaults_match_m0_contract():
     config = load_dfm_config({})
 
     assert config == DFMConfig(
+        runtime_python="auto",
         default_process="injection",
         max_concurrent_runs=1,
         timeout_seconds=900,
@@ -23,6 +24,7 @@ def test_dfm_config_reads_nested_values():
         {
             "dfm": {
                 "runtime": {
+                    "python": "C:/dfm/python.exe",
                     "max_concurrent_runs": 2,
                     "timeout_seconds": 120,
                 },
@@ -30,16 +32,16 @@ def test_dfm_config_reads_nested_values():
                 "defaults": {"process": "injection"},
                 "retention": {"keep_failed_runs": False},
                 "evidence": {"max_rendered_findings": 7},
-                "geometry": {
-                    "executable": "C:/dfm/dfm-geometry.exe",
-                    "timeout_seconds": 321,
+                "nx": {
+                    "endpoint": "https://nx.example.internal/",
+                    "request_timeout_seconds": 15,
+                    "poll_interval_seconds": 1,
                 },
             }
         }
     )
 
-    assert config.geometry_executable == "C:/dfm/dfm-geometry.exe"
-    assert config.geometry_timeout_seconds == 321
+    assert config.runtime_python == "C:/dfm/python.exe"
     assert config.default_process == "injection"
     assert config.max_concurrent_runs == 2
     assert config.timeout_seconds == 120
@@ -47,6 +49,9 @@ def test_dfm_config_reads_nested_values():
     assert config.max_pages == 8
     assert config.keep_failed_runs is False
     assert config.max_evidence_findings == 7
+    assert config.nx_endpoint == "https://nx.example.internal"
+    assert config.nx_request_timeout_seconds == 15
+    assert config.nx_poll_interval_seconds == 1
 
 
 def test_dfm_config_normalizes_the_m0_process_name():
@@ -63,8 +68,6 @@ def test_dfm_config_normalizes_the_m0_process_name():
         {"dfm": {"intake": {"max_file_size_mb": -1}}},
         {"dfm": {"retention": {"keep_failed_runs": "yes"}}},
         {"dfm": {"evidence": {"max_rendered_findings": 0}}},
-        {"dfm": {"geometry": {"timeout_seconds": 0}}},
-        {"dfm": {"geometry": {"executable": 42}}},
     ],
 )
 def test_dfm_config_rejects_invalid_values(mapping):

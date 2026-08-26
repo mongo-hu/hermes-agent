@@ -46,10 +46,16 @@ class DieCastingProcessAdapter:
     def fact_requirements(self) -> tuple[FactRequirement, ...]:
         return (
             FactRequirement(
-                name="model_units",
-                question="What length unit was used to author the die-cast part model?",
-                phase="discovery",
-                required_by=("geometry.load",),
+                "process",
+                "Should this project be analyzed as injection molding or die casting?",
+                "discovery",
+                ("feature.process_semantics",),
+            ),
+            FactRequirement(
+                "model_units",
+                "What length unit was used to author the die-cast part model?",
+                "discovery",
+                ("geometry.load",),
             ),
         )
 

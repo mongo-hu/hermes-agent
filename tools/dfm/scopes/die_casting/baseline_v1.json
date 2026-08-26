@@ -6,7 +6,7 @@
     "model_units": {"value": "mm", "unit": null, "kind": "engineering_context"}
   },
   "operations": [
-    {"operation_id": "geometry.load", "calculator_id": "load_geometry", "depends_on": [], "metric_ids": [], "required_quantities": [], "arguments": {}, "algorithm_options": {}},
-    {"operation_id": "geometry.topology", "calculator_id": "inspect_topology", "depends_on": ["geometry.load"], "metric_ids": ["geometry.model"], "required_quantities": ["valid_brep"], "arguments": {}, "algorithm_options": {}}
+    {"operation_id": "geometry.load", "calculator_id": "load_geometry", "depends_on": [], "metric_ids": [], "required_quantities": [], "required_artifacts": [], "required_fact_names": ["model_units"], "arguments": {}, "algorithm_options": {}},
+    {"operation_id": "geometry.topology", "calculator_id": "inspect_topology", "depends_on": ["geometry.load"], "metric_ids": ["geometry.model"], "required_quantities": ["valid_brep"], "required_artifacts": [], "required_fact_names": [], "arguments": {}, "algorithm_options": {}}
   ]
 }

@@ -298,12 +298,8 @@ class EvaluationEngine:
                 and measurement.quantity_id == operand.quantity_id
                 and (
                     (
-                        set(operand.feature_refs).issubset(
-                            measurement.feature_refs
-                        )
-                        and set(operand.region_refs).issubset(
-                            measurement.region_refs
-                        )
+                        set(operand.feature_refs).issubset(measurement.feature_refs)
+                        and set(operand.region_refs).issubset(measurement.region_refs)
                     )
                     or (
                         allow_unscoped_whole_model
@@ -378,14 +374,7 @@ class EvaluationEngine:
     def _allows_unscoped_whole_model(
         plan: PlanRecord, operand: RuleOperand
     ) -> bool:
-        """Bridge a v2 objective result only when its semantic scope is the full model.
-
-        The external geometry contract intentionally does not receive Hermes feature or
-        region identities.  An unscoped Measurement can therefore satisfy an ontology
-        operand only when every referenced region is the explicit whole-model fallback
-        and those regions collectively own every referenced feature.  Concrete topology
-        or bounding-box regions must still be returned with exact scope identities.
-        """
+        """Allow the OCCT v2 bridge only for the explicit whole-model region."""
 
         if not operand.region_refs:
             return False

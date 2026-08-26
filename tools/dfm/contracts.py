@@ -15,7 +15,8 @@ from .errors import DFMError
 MANIFEST_SCHEMA_VERSION = 1
 WORKER_SCHEMA_VERSION = 1
 DISCOVERY_SCHEMA_VERSION = 1
-OBJECTIVE_SCHEMA_VERSION = 2
+OBJECTIVE_SCHEMA_VERSION = 4
+OCCT_OBJECTIVE_SCHEMA_VERSION = 2
 GEOMETRY_REQUEST_CONTRACT = "dfm.geometry.request/v1"
 GEOMETRY_EVENT_CONTRACT = "dfm.geometry.event/v1"
 GEOMETRY_RESULT_CONTRACT = "dfm.geometry.result/v1"
@@ -36,7 +37,7 @@ def normalize_objective_stage(stage: str | None) -> str:
     """Map backend-specific progress labels onto the shared runtime vocabulary."""
 
     value = str(stage or "").strip().lower()
-    if value in {"queued", "accepted", "pending"}:
+    if value in {"queued", "accepted", "nx_queued", "pending"}:
         return STAGE_OBJECTIVE_LOAD
     if value in {"load", "loading", "load_geometry", "objective_load"}:
         return STAGE_OBJECTIVE_LOAD
@@ -72,14 +73,15 @@ def normalize_objective_error(code: str | None) -> str:
         return "run_cancelled"
     if value in {
         "license_unavailable",
+        "nx_backend_unavailable",
         "backend_unavailable",
     }:
         return "objective_backend_unavailable"
-    if value == "artifact_invalid":
+    if value in {"nx_artifact_invalid", "artifact_invalid"}:
         return "objective_artifact_invalid"
-    if value == "worker_result_invalid":
+    if value in {"nx_result_invalid", "worker_result_invalid"}:
         return "objective_result_invalid"
-    if value == "calculation_failed":
+    if value in {"nx_execution_failed", "calculation_failed", "nx_analysis_failed"}:
         return "objective_calculation_failed"
     return value or "objective_backend_failed"
 
@@ -88,6 +90,7 @@ class CapabilityStatus(str, Enum):
     AVAILABLE = "available"
     DEPENDENCY_MISSING = "dependency_missing"
     NOT_IMPLEMENTED = "not_implemented"
+    BLOCKED = "blocked"
     DISABLED = "disabled"
     UNHEALTHY = "unhealthy"
 
@@ -186,14 +189,7 @@ class FeatureRecord:
     kind: str
     source_refs: list[str]
     confidence: float
-    subtype: str = ""
-    geometry_refs: list["GeometryRef"] = field(default_factory=list)
-    parameters: dict[str, Any] = field(default_factory=dict)
-    method: str = ""
-    algorithm_version: str = ""
     input_sha256: str = ""
-    quality: dict[str, Any] = field(default_factory=dict)
-    diagnostics: dict[str, Any] = field(default_factory=dict)
     region_refs: list[str] = field(default_factory=list)
     properties: dict[str, Any] = field(default_factory=dict)
     relationships: list[dict[str, Any]] = field(default_factory=list)
@@ -202,18 +198,11 @@ class FeatureRecord:
     status: str = "detected"
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            **asdict(self),
-            "geometry_refs": [item.to_dict() for item in self.geometry_refs],
-        }
+        return asdict(self)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "FeatureRecord":
-        values = dict(payload)
-        values["geometry_refs"] = [
-            GeometryRef.from_dict(item) for item in values.get("geometry_refs", [])
-        ]
-        return cls(**values)
+        return cls(**payload)
 
 
 @dataclass(frozen=True)
@@ -314,8 +303,6 @@ class PlanRecord:
     phase: str = "analysis"
     discovery_snapshot_refs: list[str] = field(default_factory=list)
     regions: list["RegionRecord"] = field(default_factory=list)
-    verification_level: str = "certified"
-    assumed_pull_direction: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
@@ -344,8 +331,6 @@ class PlanRecord:
             "phase": self.phase,
             "discovery_snapshot_refs": list(self.discovery_snapshot_refs),
             "regions": [item.to_dict() for item in self.regions],
-            "verification_level": self.verification_level,
-            "assumed_pull_direction": self.assumed_pull_direction,
         }
 
     def validate(self) -> None:
@@ -722,11 +707,11 @@ class PlanOperation:
     metric_ids: list[str] = field(default_factory=list)
     required_quantities: list[str] = field(default_factory=list)
     required_artifacts: list[str] = field(default_factory=list)
+    arguments: dict[str, "ResolvedArgument"] = field(default_factory=dict)
+    algorithm_options: dict[str, "ResolvedArgument"] = field(default_factory=dict)
     required_fact_names: list[str] = field(default_factory=list)
     feature_refs: list[str] = field(default_factory=list)
     region_refs: list[str] = field(default_factory=list)
-    arguments: dict[str, "ResolvedArgument"] = field(default_factory=dict)
-    algorithm_options: dict[str, "ResolvedArgument"] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
@@ -772,8 +757,15 @@ class PlanOperation:
                 "Plan operation required_artifacts must be unique.",
                 {"operation_id": self.operation_id},
             )
+        if len(self.required_fact_names) != len(set(self.required_fact_names)) or any(
+            not isinstance(name, str) or not name for name in self.required_fact_names
+        ):
+            raise DFMError(
+                "plan_operation_invalid",
+                "Plan operation required_fact_names must contain unique names.",
+                {"operation_id": self.operation_id},
+            )
         for name, refs in (
-            ("required_fact_names", self.required_fact_names),
             ("feature_refs", self.feature_refs),
             ("region_refs", self.region_refs),
         ):
@@ -899,8 +891,7 @@ class RegionRecord:
             "whole_model",
         }:
             raise DFMError(
-                "region_invalid",
-                "Region selection mode is unsupported.",
+                "region_invalid", "Region selection mode is unsupported.",
                 {"region_id": self.region_id, "mode": self.mode},
             )
         if not re.fullmatch(r"[0-9a-f]{64}", self.input_sha256):
@@ -1071,8 +1062,7 @@ class ObjectiveTaskRequest:
     scope_id: str
     scope_version: str
     operations: list[PlanOperation] = field(default_factory=list)
-    verification_level: str = "certified"
-    assumed_pull_direction: bool = False
+    regions: list[RegionRecord] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if (
@@ -1084,9 +1074,71 @@ class ObjectiveTaskRequest:
             or not self.scope_id
             or not self.scope_version
             or not self.operations
-            or self.verification_level not in {"certified", "experimental"}
         ):
             raise ValueError("Objective task identity is invalid.")
+        for operation in self.operations:
+            operation.validate()
+        regions = {item.region_id: item for item in self.regions}
+        if len(regions) != len(self.regions):
+            raise ValueError("Objective task region identities are not unique.")
+        for operation in self.operations:
+            if set(operation.region_refs) - set(regions):
+                raise ValueError("Objective task operation has unresolved region references.")
+        for region in self.regions:
+            region.validate()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            **asdict(self),
+            "operations": [operation.to_dict() for operation in self.operations],
+            "regions": [region.to_dict() for region in self.regions],
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "ObjectiveTaskRequest":
+        values = dict(payload)
+        values["operations"] = [
+            PlanOperation.from_dict(value) for value in values.get("operations", [])
+        ]
+        values["regions"] = [
+            RegionRecord.from_dict(value) for value in values.get("regions", [])
+        ]
+        return cls(**values)
+
+
+@dataclass(frozen=True)
+class OcctObjectiveTaskRequest:
+    """Adapter-owned request for the currently deployed dfm-geometry CLI.
+
+    Hermes keeps Objective Schema 4 as its backend-neutral contract.  The
+    external executable currently consumes Schema 2, so this type is kept at
+    the adapter boundary instead of replacing the shared request above.
+    """
+
+    schema_version: int
+    run_id: str
+    input_sha256: str
+    input_format: str
+    process: str
+    scope_id: str
+    scope_version: str
+    operations: list[PlanOperation] = field(default_factory=list)
+    verification_level: str = "experimental"
+    assumed_pull_direction: bool = False
+
+    def __post_init__(self) -> None:
+        if (
+            self.schema_version != OCCT_OBJECTIVE_SCHEMA_VERSION
+            or not self.run_id
+            or not re.fullmatch(r"[0-9a-f]{64}", self.input_sha256)
+            or self.input_format != "step"
+            or self.process != "injection"
+            or not self.scope_id
+            or not self.scope_version
+            or not self.operations
+            or self.verification_level != "experimental"
+        ):
+            raise ValueError("OCCT objective task identity is invalid.")
         for operation in self.operations:
             operation.validate()
 
@@ -1094,19 +1146,24 @@ class ObjectiveTaskRequest:
         operations = []
         for operation in self.operations:
             payload = operation.to_dict()
-            # The external Analysis Situs/OCCT v2 task contract intentionally
-            # receives only objective calculator inputs. Hermes-owned planning
-            # metadata stays in PlanRecord and is never leaked into the engine.
             for name in ("required_fact_names", "feature_refs", "region_refs"):
                 payload.pop(name, None)
             operations.append(payload)
         return {
-            **asdict(self),
+            "schema_version": self.schema_version,
+            "run_id": self.run_id,
+            "input_sha256": self.input_sha256,
+            "input_format": self.input_format,
+            "process": self.process,
+            "scope_id": self.scope_id,
+            "scope_version": self.scope_version,
             "operations": operations,
+            "verification_level": self.verification_level,
+            "assumed_pull_direction": self.assumed_pull_direction,
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "ObjectiveTaskRequest":
+    def from_dict(cls, payload: dict[str, Any]) -> "OcctObjectiveTaskRequest":
         values = dict(payload)
         values["operations"] = [
             PlanOperation.from_dict(value) for value in values.get("operations", [])
@@ -1122,7 +1179,7 @@ class LocalObjectiveWorkerRequest:
     backend_version: str
     input_path: str
     output_dir: str
-    task: ObjectiveTaskRequest
+    task: ObjectiveTaskRequest | OcctObjectiveTaskRequest
     contract_version: str = ""
 
     def __post_init__(self) -> None:
@@ -1136,19 +1193,28 @@ class LocalObjectiveWorkerRequest:
             raise ValueError("Local objective worker envelope is invalid.")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "schema_version": self.schema_version,
             "backend_version": self.backend_version,
             "input_path": self.input_path,
             "output_dir": self.output_dir,
             "task": self.task.to_dict(),
-            "contract_version": self.contract_version,
         }
+        if self.contract_version:
+            payload["contract_version"] = self.contract_version
+        return payload
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "LocalObjectiveWorkerRequest":
         values = dict(payload)
-        values["task"] = ObjectiveTaskRequest.from_dict(values["task"])
+        task_payload = values["task"]
+        task_type = (
+            OcctObjectiveTaskRequest
+            if task_payload.get("schema_version") == OCCT_OBJECTIVE_SCHEMA_VERSION
+            and values.get("contract_version") == GEOMETRY_REQUEST_CONTRACT
+            else ObjectiveTaskRequest
+        )
+        values["task"] = task_type.from_dict(task_payload)
         return cls(**values)
 
 
@@ -1495,7 +1561,7 @@ class ObjectiveResultManifest:
 
     def __post_init__(self) -> None:
         if (
-            self.schema_version != OBJECTIVE_SCHEMA_VERSION
+            self.schema_version not in {OBJECTIVE_SCHEMA_VERSION, OCCT_OBJECTIVE_SCHEMA_VERSION}
             or not self.producer_version
             or not self.run_id
             or not re.fullmatch(r"[0-9a-f]{64}", self.input_sha256)
@@ -1505,6 +1571,10 @@ class ObjectiveResultManifest:
             or not self.result_path
             or not self.artifacts
             or self.contract_version not in {"", GEOMETRY_RESULT_CONTRACT}
+            or (
+                self.schema_version == OCCT_OBJECTIVE_SCHEMA_VERSION
+                and self.contract_version != GEOMETRY_RESULT_CONTRACT
+            )
         ):
             raise ValueError("Objective result manifest identity is invalid.")
         artifact_ids = [item.artifact_id for item in self.artifacts]
@@ -1516,10 +1586,13 @@ class ObjectiveResultManifest:
             raise ValueError("Objective result artifacts must be unique.")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             **asdict(self),
             "artifacts": [item.to_dict() for item in self.artifacts],
         }
+        if not self.contract_version:
+            payload.pop("contract_version")
+        return payload
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ObjectiveResultManifest":

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 from pathlib import Path
 
-from ..contracts import ArtifactRecord, PlanOperation
+from ..contracts import ArtifactRecord, PlanOperation, RegionRecord
 from ..errors import DFMError
 
 
@@ -19,9 +20,10 @@ def validate_objective_result(
     input_sha256: str,
     process: str,
     scope_id: str,
+    regions: list[RegionRecord] | None = None,
     error_code: str = "objective_result_invalid",
 ) -> None:
-    """Validate the backend-neutral objective geometry artifact contract."""
+    """Validate the contract shared by all objective geometry backends."""
 
     measurements = next(
         (item for item in artifacts if item.kind == "measurements"), None
@@ -44,44 +46,12 @@ def validate_objective_result(
             "Measurements do not implement the objective production contract.",
         )
 
-    metric_fields_artifact = next(
-        (item for item in artifacts if item.kind == "metric_fields"), None
-    )
-    metric_field_views: dict[str, dict] = {}
-    metric_fields_by_id: dict[str, dict] = {}
-    if metric_fields_artifact is not None:
-        metric_fields_payload = _read(project_dir, metric_fields_artifact, error_code)
-        fields = metric_fields_payload.get("fields")
-        views = metric_fields_payload.get("views")
-        if (
-            metric_fields_payload.get("schema_version") != 1
-            or metric_fields_payload.get("run_id") != run_id
-            or metric_fields_payload.get("input_sha256") != input_sha256
-            or metric_fields_payload.get("process") != process
-            or metric_fields_payload.get("scope_id") != scope_id
-            or not isinstance(fields, list)
-            or not isinstance(views, list)
-        ):
-            raise DFMError(error_code, "Metric fields have an invalid identity.")
-        metric_fields_by_id = {
-            str(item.get("field_id")): item
-            for item in fields
-            if isinstance(item, dict) and item.get("field_id")
-        }
-        metric_field_views = {
-            str(item.get("field_id")): item
-            for item in views
-            if isinstance(item, dict) and item.get("field_id")
-        }
-        if len(metric_fields_by_id) != len(fields) or len(metric_field_views) != len(views):
-            raise DFMError(error_code, "Metric field identities must be unique.")
-        if any(
-            str(view.get("source_field_id") or "") not in metric_fields_by_id
-            for view in metric_field_views.values()
-        ):
-            raise DFMError(error_code, "Metric field views do not resolve.")
-
     task_operations = {item.operation_id: item for item in operations}
+    planned_snapshot_ids = {
+        ref.topology_snapshot_id
+        for region in regions or []
+        for ref in [*region.geometry_refs, *region.excluded_geometry_refs]
+    }
     expected = {
         (operation.operation_id, metric_id, quantity_id)
         for operation in operations
@@ -102,6 +72,10 @@ def validate_objective_result(
             or metric_id not in operation.metric_ids
             or quantity_id not in operation.required_quantities
             or measurement.get("input_sha256") != input_sha256
+            or sorted(measurement.get("feature_refs") or [])
+            != sorted(operation.feature_refs)
+            or sorted(measurement.get("region_refs") or [])
+            != sorted(operation.region_refs)
         ):
             raise DFMError(
                 error_code,
@@ -111,33 +85,22 @@ def validate_objective_result(
         field_refs = measurement.get("field_refs")
         if not isinstance(field_refs, list) or any(
             not isinstance(ref, str)
-            or (
-                (ref not in by_id or by_id[ref].kind != "scalar_field")
-                and ref not in metric_field_views
-            )
+            or ref not in by_id
+            or by_id[ref].kind != "scalar_field"
             for ref in field_refs
         ):
             raise DFMError(error_code, "Measurement field_refs do not resolve.")
-        for ref in field_refs:
-            if ref not in metric_field_views:
-                continue
-            view = metric_field_views[ref]
-            source = metric_fields_by_id[str(view["source_field_id"])]
-            if (
-                view.get("quantity_id") != quantity_id
-                or source.get("operation_id") != operation_id
-                or source.get("calculator_id") != operation.calculator_id
-                or source.get("metric_id") != metric_id
-                or source.get("input_sha256") != input_sha256
-            ):
-                raise DFMError(
-                    error_code,
-                    "Measurement metric-field view does not match its operation.",
-                )
         if "scalar_field" in operation.required_artifacts and not field_refs:
             raise DFMError(error_code, "A field-backed measurement has no field_ref.")
         if any(
-            not isinstance(ref, dict) or ref.get("input_sha256") != input_sha256
+            not isinstance(ref, dict)
+            or ref.get("input_sha256") != input_sha256
+            or not ref.get("topology_snapshot_id")
+            or not ref.get("entity_id")
+            or (
+                planned_snapshot_ids
+                and ref.get("topology_snapshot_id") not in planned_snapshot_ids
+            )
             for ref in measurement.get("geometry_refs") or []
         ):
             raise DFMError(error_code, "Measurement geometry belongs to another input.")
@@ -153,10 +116,7 @@ def validate_objective_result(
     required_kinds = {
         kind for operation in operations for kind in operation.required_artifacts
     }
-    available_kinds = {item.kind for item in artifacts}
-    if "metric_fields" in available_kinds:
-        available_kinds.add("scalar_field")
-    missing_kinds = sorted(required_kinds - available_kinds)
+    missing_kinds = sorted(required_kinds - {item.kind for item in artifacts})
     if missing_kinds:
         raise DFMError(
             error_code,
@@ -166,84 +126,72 @@ def validate_objective_result(
     linked_payloads = {
         artifact.artifact_id: _read(project_dir, artifact, error_code)
         for artifact in artifacts
-        if artifact.kind
-        in {
-            "scalar_field",
-            "metric_fields",
-            "render_scene",
-            "topology_map",
-            "preflight",
-            "features",
-        }
+        if artifact.kind in {"scalar_field", "render_scene", "topology_map"}
     }
     if any(
-        item.get("schema_version") != 1
+        item.get("schema_version") != 2
         or item.get("run_id") != run_id
         or item.get("input_sha256") != input_sha256
         for item in linked_payloads.values()
     ):
         raise DFMError(error_code, "Objective geometry belongs to another run or input.")
 
-    topology_artifact = next(
-        (item for item in artifacts if item.kind == "topology_map"), None
-    )
-    if topology_artifact is not None:
-        topology = linked_payloads[topology_artifact.artifact_id]
-        face_indices = _topology_indices(topology.get("faces"), error_code)
-        edge_indices = _topology_indices(topology.get("edges"), error_code)
-        _validate_topology_references(
-            topology,
-            face_indices,
-            edge_indices,
-            error_code,
-        )
-        for measurement in payload["measurements"]:
-            _validate_geometry_refs(
-                measurement.get("geometry_refs"),
-                input_sha256,
-                face_indices,
-                edge_indices,
-                error_code,
-            )
-
-    feature_artifacts = [item for item in artifacts if item.kind == "features"]
-    if len(feature_artifacts) > 1:
-        raise DFMError(error_code, "Objective result contains duplicate feature artifacts.")
-    if feature_artifacts:
-        features = linked_payloads[feature_artifacts[0].artifact_id]
+    scenes = [item for item in linked_payloads.values() if item.get("scene_id")]
+    topology_maps = [item for item in linked_payloads.values() if item.get("map_id")]
+    for scene in scenes:
+        snapshot = scene.get("render_mesh_snapshot")
+        if not isinstance(snapshot, dict):
+            raise DFMError(error_code, "Render scene has no immutable mesh snapshot.")
+        mesh_id = str(snapshot.get("render_mesh_snapshot_id") or "")
+        primitives = scene.get("primitives")
         if (
-            features.get("schema_version") != 1
-            or features.get("run_id") != run_id
-            or features.get("input_sha256") != input_sha256
-            or features.get("process") != process
-            or features.get("scope_id") != scope_id
-            or not isinstance(features.get("features"), list)
+            not mesh_id
+            or not isinstance(primitives, list)
+            or snapshot.get("input_sha256") != input_sha256
+            or snapshot.get("topology_snapshot_id") != scene.get("topology_snapshot_ref")
+            or any(item.get("render_mesh_snapshot_id") != mesh_id for item in primitives)
+            or snapshot.get("triangle_count")
+            != sum(len(item.get("triangles", [])) for item in primitives)
+            or snapshot.get("render_mesh_sha256") != _mesh_content_sha256(primitives)
         ):
-            raise DFMError(error_code, "Feature artifact identity is invalid.")
-        feature_ids: set[str] = set()
-        for feature in features["features"]:
-            if not isinstance(feature, dict):
-                raise DFMError(error_code, "Feature artifact entries must be objects.")
-            feature_id = str(feature.get("feature_id") or "")
-            confidence = feature.get("confidence")
-            if (
-                not feature_id
-                or feature_id in feature_ids
-                or feature.get("input_sha256") != input_sha256
-                or not isinstance(confidence, (int, float))
-                or isinstance(confidence, bool)
-                or not 0 <= float(confidence) <= 1
-            ):
-                raise DFMError(error_code, "Feature record identity is invalid.")
-            feature_ids.add(feature_id)
-            if topology_artifact is not None:
-                _validate_geometry_refs(
-                    feature.get("geometry_refs"),
-                    input_sha256,
-                    face_indices,
-                    edge_indices,
-                    error_code,
-                )
+            raise DFMError(error_code, "Render mesh snapshot identity or content is invalid.")
+    for topology in topology_maps:
+        snapshot = topology.get("topology_snapshot")
+        if not isinstance(snapshot, dict):
+            raise DFMError(error_code, "Topology map has no immutable topology snapshot.")
+        topology_id = str(snapshot.get("topology_snapshot_id") or "")
+        faces = topology.get("faces")
+        if (
+            not topology_id
+            or not isinstance(faces, list)
+            or snapshot.get("input_sha256") != input_sha256
+            or snapshot.get("topology_content_sha256") != _topology_content_sha256(faces)
+            or snapshot.get("entity_count", {}).get("face") != len(faces)
+            or any(
+                face.get("geometry_ref", {}).get("topology_snapshot_id") != topology_id
+                or not face.get("geometry_ref", {}).get("entity_id")
+                or face.get("geometry_ref", {}).get("input_sha256") != input_sha256
+                for face in faces
+            )
+        ):
+            raise DFMError(error_code, "Topology snapshot identity or content is invalid.")
+        scene = linked_payloads.get(str(topology.get("scene_ref") or ""), {})
+        mesh_id = str(scene.get("render_mesh_snapshot", {}).get("render_mesh_snapshot_id") or "")
+        if (
+            scene.get("topology_snapshot_ref") != topology_id
+            or topology.get("render_mesh_snapshot_ref") != mesh_id
+            or any(
+                ref.get("render_mesh_snapshot_id") != mesh_id
+                for face in faces
+                for ref in face.get("triangle_refs", [])
+            )
+        ):
+            raise DFMError(error_code, "Topology and render mesh snapshots are inconsistent.")
+        if planned_snapshot_ids and planned_snapshot_ids != {topology_id}:
+            raise DFMError(
+                error_code,
+                "Planned feature regions and objective results use different topology snapshots.",
+            )
 
     for artifact in artifacts:
         if artifact.kind != "scalar_field":
@@ -254,6 +202,10 @@ def validate_objective_result(
             operation is None
             or field.get("metric_id") not in operation.metric_ids
             or field.get("quantity_id") not in operation.required_quantities
+            or sorted(field.get("feature_refs") or [])
+            != sorted(operation.feature_refs)
+            or sorted(field.get("region_refs") or [])
+            != sorted(operation.region_refs)
         ):
             raise DFMError(error_code, "Scalar field does not link to its operation.")
         calculation_context = field.get("calculation_context")
@@ -280,6 +232,23 @@ def validate_objective_result(
             or linked_payloads.get(topology_ref, {}).get("scene_ref") != scene_ref
         ):
             raise DFMError(error_code, "Scalar field scene/topology refs are inconsistent.")
+        scene = linked_payloads[scene_ref]
+        topology = linked_payloads[topology_ref]
+        topology_id = str(topology.get("topology_snapshot", {}).get("topology_snapshot_id") or "")
+        mesh_id = str(scene.get("render_mesh_snapshot", {}).get("render_mesh_snapshot_id") or "")
+        if (
+            field.get("topology_snapshot_ref") != topology_id
+            or field.get("render_mesh_snapshot_ref") != mesh_id
+            or any(
+                item.get("geometry_ref", {}).get("topology_snapshot_id") != topology_id
+                for item in [*field.get("samples", []), *field.get("cells", [])]
+            )
+            or any(
+                item.get("triangle_ref", {}).get("render_mesh_snapshot_id") != mesh_id
+                for item in field.get("cells", [])
+            )
+        ):
+            raise DFMError(error_code, "Scalar field snapshot refs are inconsistent.")
         sample_ids = {
             str(item.get("sample_id"))
             for item in field.get("samples", [])
@@ -321,105 +290,26 @@ def _is_unit_vector(value: object) -> bool:
     return abs(math.sqrt(sum(item * item for item in components)) - 1.0) <= 1e-6
 
 
-def _topology_indices(values: object, error_code: str) -> set[int]:
-    if not isinstance(values, list):
-        raise DFMError(error_code, "Topology index collections must be arrays.")
-    indices = {
-        item.get("index")
-        for item in values
-        if isinstance(item, dict)
-        and isinstance(item.get("index"), int)
-        and not isinstance(item.get("index"), bool)
-        and item["index"] > 0
-    }
-    if len(indices) != len(values):
-        raise DFMError(
-            error_code,
-            "Topology indices must be positive and unique.",
-        )
-    if indices != set(range(1, len(values) + 1)):
-        raise DFMError(
-            error_code,
-            "Topology indices must be contiguous and 1-based.",
-        )
-    return indices
+def _stable_sha256(payload: object) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
 
 
-def _validate_topology_references(
-    topology: dict,
-    face_indices: set[int],
-    edge_indices: set[int],
-    error_code: str,
-) -> None:
-    if topology.get("index_base") != 1:
-        raise DFMError(error_code, "Topology index_base must be 1.")
-    edges = topology.get("edges")
-    arcs = topology.get("aag")
-    if not isinstance(edges, list) or not isinstance(arcs, list):
-        raise DFMError(error_code, "Topology edges and AAG must be arrays.")
-    for edge in edges:
-        adjacent = edge.get("adjacent_face_indices") if isinstance(edge, dict) else None
-        if (
-            not isinstance(adjacent, list)
-            or any(
-                not isinstance(index, int)
-                or isinstance(index, bool)
-                or index not in face_indices
-                for index in adjacent
-            )
-            or len(adjacent) != len(set(adjacent))
-        ):
-            raise DFMError(error_code, "Topology edge adjacency does not resolve.")
-    seen_arcs: set[tuple[int, int]] = set()
-    for arc in arcs:
-        arc_edges = arc.get("edge_indices") if isinstance(arc, dict) else None
-        faces = arc.get("face_indices") if isinstance(arc, dict) else None
-        if (
-            not isinstance(arc_edges, list)
-            or not arc_edges
-            or any(
-                not isinstance(index, int)
-                or isinstance(index, bool)
-                or index not in edge_indices
-                for index in arc_edges
-            )
-            or len(arc_edges) != len(set(arc_edges))
-            or not isinstance(faces, list)
-            or len(faces) != 2
-            or any(
-                not isinstance(index, int)
-                or isinstance(index, bool)
-                or index not in face_indices
-                for index in faces
-            )
-            or len(set(faces)) != 2
-        ):
-            raise DFMError(error_code, "Topology AAG references do not resolve.")
-        arc_identity = tuple(sorted(faces))
-        if arc_identity in seen_arcs:
-            raise DFMError(error_code, "Topology AAG contains a duplicate face arc.")
-        seen_arcs.add(arc_identity)
+def _mesh_content_sha256(primitives: list[dict]) -> str:
+    return _stable_sha256(
+        [{key: value for key, value in item.items() if key != "render_mesh_snapshot_id"} for item in primitives]
+    )
 
 
-def _validate_geometry_refs(
-    values: object,
-    input_sha256: str,
-    face_indices: set[int],
-    edge_indices: set[int],
-    error_code: str,
-) -> None:
-    if not isinstance(values, list):
-        raise DFMError(error_code, "Geometry references must be an array.")
-    for item in values:
-        if not isinstance(item, dict) or item.get("input_sha256") != input_sha256:
-            raise DFMError(error_code, "Geometry reference belongs to another input.")
-        kind = item.get("kind")
-        index = item.get("index")
-        allowed = face_indices if kind == "face" else edge_indices if kind == "edge" else None
-        if (
-            allowed is None
-            or not isinstance(index, int)
-            or isinstance(index, bool)
-            or index not in allowed
-        ):
-            raise DFMError(error_code, "Geometry reference does not resolve in topology.")
+def _topology_content_sha256(faces: list[dict]) -> str:
+    return _stable_sha256(
+        [
+            {
+                "entity_id": face.get("geometry_ref", {}).get("entity_id"),
+                "kind": face.get("geometry_ref", {}).get("kind"),
+                "index": face.get("geometry_ref", {}).get("index"),
+            }
+            for face in faces
+        ]
+    )

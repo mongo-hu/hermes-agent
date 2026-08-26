@@ -29,8 +29,6 @@ def test_pptx_report_contains_bounded_ordered_evidence(tmp_path):
 
     result = {
         "input": str(tmp_path / "part.step"),
-        "verification_level": "experimental",
-        "assumed_pull_direction": True,
         "issue_count": 1,
         "stats": {"volume_mm3": 1250.5, "face_count": 24},
         "issues": [
@@ -55,7 +53,7 @@ def test_pptx_report_contains_bounded_ordered_evidence(tmp_path):
         artifact_dir=tmp_path,
         result=result,
         process="injection",
-        scope_id="injection.geometry-core",
+        scope_id="injection.wall-draft",
     )
 
     assert len(artifacts) == 1
@@ -63,16 +61,6 @@ def test_pptx_report_contains_bounded_ordered_evidence(tmp_path):
     assert artifacts[0].path.name == "dfm_report.pptx"
     deck = Presentation(artifacts[0].path)
     assert len(deck.slides) == 5
-
-    cover_text = "\n".join(
-        shape.text for shape in deck.slides[0].shapes if hasattr(shape, "text_frame")
-    )
-    notes_text = "\n".join(
-        shape.text for shape in deck.slides[-1].shapes if hasattr(shape, "text_frame")
-    )
-    assert "验证等级：EXPERIMENTAL" in cover_text
-    assert "拉模方向为假设值：是" in cover_text
-    assert "不得表述为 certified" in notes_text
 
     detail = deck.slides[3]
     detail_text = "\n".join(

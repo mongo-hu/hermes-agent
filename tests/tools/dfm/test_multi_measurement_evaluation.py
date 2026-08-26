@@ -1,16 +1,13 @@
-from dataclasses import replace
 import json
 from pathlib import Path
 
 import pytest
 
 from tools.dfm.contracts import (
-    BoundingBox,
     EffectiveRule,
     MeasurementRecord,
     PlanOperation,
     PlanRecord,
-    RegionRecord,
     RuleBinding,
     RuleOperand,
 )
@@ -26,7 +23,7 @@ def _measurement(
     measurement_id: str,
     operation_id: str,
     value: float,
-    region_ref: str | None,
+    region_ref: str,
     *,
     input_sha256: str = "a" * 64,
 ) -> MeasurementRecord:
@@ -43,7 +40,7 @@ def _measurement(
         method="occt_wall_thickness",
         algorithm_version="occt-wall-thickness-v1",
         input_sha256=input_sha256,
-        region_refs=[region_ref] if region_ref else [],
+        region_refs=[region_ref],
     )
 
 
@@ -228,88 +225,3 @@ def test_multi_measurement_rule_rejects_division_by_zero():
         EvaluationEngine().evaluate(measurements, plan)
 
     assert exc_info.value.code == "evaluation_expression_invalid"
-
-
-def test_unscoped_objective_measurements_match_explicit_whole_model_fallback():
-    plan = replace(
-        _ratio_plan(),
-        regions=[
-            RegionRecord(
-                region_id=region_id,
-                input_sha256="a" * 64,
-                coordinate_system="model",
-                mode="whole_model",
-                semantic_label="ordinary.whole_model",
-                source_refs=["discovery.snapshot"],
-                version="1",
-                content_sha256="b" * 64,
-            )
-            for region_id in (
-                "region.screw_boss.1.wall",
-                "region.main_wall.1.wall",
-            )
-        ],
-    )
-    measurements = [
-        _measurement(
-            "measurement.boss.wall",
-            "geometry.wall_thickness.boss",
-            1.0,
-            None,
-        ),
-        _measurement(
-            "measurement.main.wall",
-            "geometry.wall_thickness.main",
-            2.0,
-            None,
-        ),
-    ]
-
-    evaluations, _ = EvaluationEngine().evaluate(measurements, plan)
-
-    assert evaluations[0].actual == pytest.approx(0.5)
-    assert set(evaluations[0].region_refs) == {
-        "region.screw_boss.1.wall",
-        "region.main_wall.1.wall",
-    }
-
-
-def test_unscoped_objective_measurement_cannot_match_concrete_region():
-    plan = replace(
-        _ratio_plan(),
-        regions=[
-            RegionRecord(
-                region_id=region_id,
-                input_sha256="a" * 64,
-                coordinate_system="model",
-                mode="bbox",
-                semantic_label="recognized.wall",
-                source_refs=["discovery.snapshot"],
-                version="1",
-                content_sha256="b" * 64,
-                bbox=BoundingBox(
-                    minimum=[0.0, 0.0, 0.0],
-                    maximum=[1.0, 1.0, 1.0],
-                ),
-            )
-            for region_id in (
-                "region.screw_boss.1.wall",
-                "region.main_wall.1.wall",
-            )
-        ],
-    )
-
-    with pytest.raises(DFMError) as exc_info:
-        EvaluationEngine().evaluate(
-            [
-                _measurement(
-                    "measurement.boss.wall",
-                    "geometry.wall_thickness.boss",
-                    1.0,
-                    None,
-                )
-            ],
-            plan,
-        )
-
-    assert exc_info.value.code == "evaluation_operand_missing"

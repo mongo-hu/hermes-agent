@@ -142,8 +142,13 @@ dependencies = [
 
 [project.optional-dependencies]
 # Built-in DFM report output. OpenCascade remains environment-specific, while
-# python-pptx is the optional portable DFM report renderer.
-dfm = ["python-pptx==1.0.2"]
+# python-pptx is a portable renderer used by the isolated STEP worker.
+dfm = [
+  "python-pptx==1.0.2",
+  "rapidocr-onnxruntime>=1.4.0",
+  "pymupdf>=1.20.0",
+  "aspose-cad>=24.0.0"
+]
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
 anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452

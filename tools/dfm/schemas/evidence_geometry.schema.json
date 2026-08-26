@@ -4,18 +4,19 @@
   "title": "Hermes DFM Evaluated Evidence Geometry",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "run_id", "input_sha256", "producer", "failed_patches"],
+  "required": ["schema_version", "run_id", "input_sha256", "producer", "producer_version", "failed_patches"],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "run_id": {"type": "string", "minLength": 1},
     "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "producer": {"const": "hermes-evidence-engine"},
+    "producer_version": {"type": "string", "minLength": 1},
     "failed_patches": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["patch_id", "evaluation_id", "measurement_ids", "field_ref", "scene_ref", "topology_map_ref", "geometry_refs", "region_refs", "sample_ids", "cell_ids", "triangle_refs", "focus_point", "surface_normal", "bounds"],
+        "required": ["patch_id", "evaluation_id", "measurement_ids", "field_ref", "scene_ref", "topology_map_ref", "topology_snapshot_ref", "render_mesh_snapshot_ref", "geometry_refs", "region_refs", "feature_refs", "sample_ids", "cell_ids", "triangle_refs", "focus_point", "surface_normal", "bounds"],
         "properties": {
           "patch_id": {"type": "string", "minLength": 1},
           "evaluation_id": {"type": "string", "minLength": 1},
@@ -23,8 +24,11 @@
           "field_ref": {"type": "string", "minLength": 1},
           "scene_ref": {"type": "string", "minLength": 1},
           "topology_map_ref": {"type": "string", "minLength": 1},
+          "topology_snapshot_ref": {"type": "string", "minLength": 1},
+          "render_mesh_snapshot_ref": {"type": "string", "minLength": 1},
           "geometry_refs": {"type": "array", "items": {"$ref": "#/$defs/geometryRef"}},
           "region_refs": {"type": "array", "items": {"type": "string"}},
+          "feature_refs": {"type": "array", "items": {"type": "string"}},
           "sample_ids": {"type": "array", "items": {"type": "string"}},
           "cell_ids": {"type": "array", "items": {"type": "string"}},
           "triangle_refs": {"type": "array", "items": {"$ref": "#/$defs/triangleRef"}},
@@ -49,13 +53,13 @@
     "vector3": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
     "geometryRef": {
       "type": "object", "additionalProperties": false,
-      "required": ["kind", "index", "input_sha256"],
-      "properties": {"kind": {"enum": ["face", "edge", "solid", "vertex"]}, "index": {"type": "integer", "minimum": 0}, "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+      "required": ["kind", "index", "input_sha256", "topology_snapshot_id", "entity_id"],
+      "properties": {"kind": {"enum": ["face", "edge", "solid", "vertex"]}, "index": {"type": "integer", "minimum": 0}, "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "topology_snapshot_id": {"type": "string", "minLength": 1}, "entity_id": {"type": "string", "minLength": 1}}
     },
     "triangleRef": {
       "type": "object", "additionalProperties": false,
-      "required": ["primitive_id", "triangle_id"],
-      "properties": {"primitive_id": {"type": "string"}, "triangle_id": {"type": "integer", "minimum": 0}}
+      "required": ["primitive_id", "triangle_id", "render_mesh_snapshot_id"],
+      "properties": {"primitive_id": {"type": "string"}, "triangle_id": {"type": "integer", "minimum": 0}, "render_mesh_snapshot_id": {"type": "string", "minLength": 1}}
     }
   }
 }

@@ -31,18 +31,20 @@ type: product-development-plan
 | --- | --- |
 | 工艺 | 注塑 `injection` |
 | 指标 | 壁厚、拔模角 |
-| 三维输入 | 外部 OCCT C++ 项目支持 STEP；PythonOCC 与 NX 路径已移除 |
+| 三维输入 | PythonOCC 参考实现继续支持 STEP；外部 `dfm-geometry` OCCT C++ 程序已以 experimental Adapter 接入 STEP |
 | 二维输入 | 契约和 Provider 占位，尚无生产识别 |
 | 特征识别 | 普通全模型区域可运行；主壁、螺钉柱、凸台、筋、孔、倒扣和外观面候选由 OCCT C++ Provider 显式占位 |
 | 本体/规则 | Snapshot Schema 2、`injection.default@1.1.0`、本地 SQLite、Check Context 和通用 RuleBinding 编译已实现；中心管理后台与同步尚未交付 |
-| 证据 | Hermes 保留 ScalarField/RenderScene 证据管线；当前外部 Engine 的 `render_mesh` 尚未自动满足该局部场契约 |
+| 证据 | Hermes 根据 ScalarField 和同源 RenderScene 生成三视角截图 |
+| Desktop | 已接入独立 Three.js 3D 查看器，消费 STEP 预览和 Run 的 `dfm_viewer` Manifest |
 
-已完成的基础能力包括项目 Manifest、两阶段发现骨架、区域化 AnalysisPlan、统一
-Evaluation/Finding/Report，以及外部 Objective Schema 2 + request/event/result v1；注塑阈值已从
-静态 Scope 迁移到已发布本体/规则快照，Agent 可以按 Check 输出有限语义上下文并将本体关系编译
-为现有规则契约。独立 Analysis Situs/OCCT Engine 已接入 STEP Objective Calculator，但其
-Capability 仍为 `experimental`，外部两阶段工艺特征 Discovery 和生产认证尚未交付。PythonOCC、
-NX 与 Parasolid 不在当前执行、回归或降级链路中。
+已完成的基础能力包括项目 Manifest、两阶段发现骨架、区域化 AnalysisPlan、PythonOCC
+壁厚/拔模角客观场、统一 Evaluation/Finding/Report，以及 Objective Schema 4 和几何证据
+Schema 2；注塑阈值已从静态 Scope 迁移到已发布本体/规则快照，Agent 可以按 Check 输出有限语义
+上下文并将本体关系编译为现有规则契约。PythonOCC 只作为参考、契约回归和算法验证实现。独立 OCCT C++ 几何引擎已经完成
+本地可执行程序 Adapter、版本化请求/事件/结果、Artifact 校验和真实 E2E 接入，但仍为 experimental；真实工艺特征发现闭环和
+生产级 Calculator 认证尚未交付，因此不能声明生产可用。NX/Parasolid 路线延期，
+不属于当前里程碑的交付前置条件。
 
 ## 3. 开发阶段
 
@@ -73,23 +75,23 @@ Schema 2 已删除 `USES_OPERAND` 中重复的 Worker/Feature/Region Selector，
 完成标准：Web、Desktop 和 Agent 读取同一稳定字典；一条审核后的规则可以不发布 Agent 新版本而在
 下一次 AnalysisPlan 生效，已有 Run 仍可按旧 Snapshot 完整复现。
 
-### M2.6-A：冻结外部 OCCT C++ 项目边界与契约（Objective 已接通，Discovery 跨仓待实施）
+### M2.6-A：冻结外部 OCCT C++ 项目边界与契约（Hermes 侧基线已完成，跨仓待实施）
 
 目标是先冻结 Hermes 与独立几何项目的边界，避免 C++ 工程复制规则、项目状态或报告逻辑。
 
-- 独立项目使用 C++17、Analysis Situs v2025.2 与 OCCT 7.9.3，实现 STEP 几何发现和客观计算；
-- 当前外部执行固定 Objective Schema 2 与 request/event/result v1；Geometry Discovery Schema 1 和通用 Backend Capability Schema 1 作为下一阶段边界；
+- 独立项目使用 C++17/20 与 OCCT，实现 STEP 几何发现和客观计算；
+- 冻结 Geometry Discovery Schema 1、Objective Schema 4、Geometry/Evidence Schema 2；
 - Discovery 输出 Observation 候选、Feature、Region、Topology/RenderMesh Snapshot 和同源 Artifact；
 - Objective 输出 Measurement、ScalarField、RenderScene 和 TopologyMap；
 - 冻结 Capability、错误、进度、取消、Artifact 哈希和版本认证要求；
 - Capability 中的 Feature/Region/Metric/Quantity 必须与待发布本体快照做交叉校验；
 - Hermes 保留事实、澄清、AnalysisPlan、规则、Evaluation、证据、Finding 和报告；
-- PythonOCC 与 NX 不进入实现、回归或降级链路。
+- PythonOCC 继续作为参考实现和契约回归，不作为生产验收替代品。
 
 完成标准：外部项目不依赖 Hermes 内部 Python 类型即可使用正式 Schema 和共享 Fixture 完成
 Discovery 与 Objective 请求/结果的双向契约测试。
 
-### M2.6-B：OCCT C++ 生产闭环（实验 Objective 已接通，Discovery/认证待实施）
+### M2.6-B：OCCT C++ 生产闭环（待实施）
 
 用 STEP、壁厚和拔模角完成第一条生产链路，同时交付第一批真实 Feature/Region。
 
@@ -101,7 +103,7 @@ Discovery 与 Objective 请求/结果的双向契约测试。
 - Feature/Region 与 TopologySnapshot 绑定，ordinary 是已计算特征区域的补集；
 - 对批准 Region 执行壁厚和拔模角 Calculator，输出完整客观场与控制极值；
 - Hermes 完成规则评价、FailedPatch、证据、Finding 和报告；
-- 通过真实产品、对抗模型、并发稳定性和真实 OCCT C++ E2E 验收。
+- 通过真实产品、对抗模型、并发稳定性和 PythonOCC 参考回归验收。
 
 完成标准：任一 Finding 能从报告反向追溯到图片、高亮三角形、场值、拓扑实体、Feature/
 Region、Operation、规则、输入哈希、Snapshot 和 C++ 实现版本。
@@ -155,8 +157,8 @@ Ground Truth 只用于研发验收，不进入生产分析，也不回写运行�
 1. Manifest 是项目事实来源，聊天记录不是数据库。
 2. 先发现后分析：冻结 DiscoverySnapshot 后才编译 AnalysisPlan。
 3. Backend 只做特征识别和客观计算；Hermes 持有规则、Evaluation、证据和 Finding。
-4. OCCT C++ 外部协议由 Adapter 映射为 Hermes 稳定数据契约与后处理流程。
-5. OCCT C++ 不可用或失败时明确阻塞，禁止静默降级。
+4. PythonOCC 参考实现与 OCCT C++ 生产实现允许算法和精度不同，但数据契约与后处理流程必须一致。
+5. 选择 OCCT C++ Production 后禁止静默降级到 PythonOCC。
 6. 未实现、低置信度或未认证能力必须显式阻塞或回退为 ordinary，不生成伪特征。
 7. 修改规则只重做评价闭包；修改输入、拓扑、网格或算法版本会使相关客观缓存失效。
 8. 新能力保持在 DFM toolset/服务边缘，不修改 Hermes Agent Loop，不增加无关会话工具负担。
@@ -171,7 +173,7 @@ Ground Truth 只用于研发验收，不进入生产分析，也不回写运行�
 | Contract | JSON Schema、共享 Fixture、跨 Run/输入/快照错配负例 |
 | Component | Recognizer、Calculator、Rule、Evidence 各自行为测试 |
 | Integration | 上传、Job、取消、失败恢复、Artifact 哈希和缓存恢复 |
-| E2E | Desktop/CLI 创建项目，经 Discovery、Plan、Run、Evidence 到真实 OCCT C++ STEP 报告与 3D Viewer |
+| E2E | Desktop/CLI 创建项目到报告；PythonOCC 参考 STEP；真实 OCCT C++ STEP |
 | Engineering | 数值容差、问题区域重叠、截图可读性和模具工程师签字 |
 
 ## 6. 当前优先级
@@ -180,7 +182,7 @@ Ground Truth 只用于研发验收，不进入生产分析，也不回写运行�
 
 | 优先级 | 几何生产主线 | 规则与 Agent 主线 |
 | --- | --- | --- |
-| P0 | 在现有 `dfm-geometry` 上接通 Discovery 1/Recognizer 与稳定 Region；保持已接通 Objective 2 + request/event/result v1 的兼容 Fixture | 固定 Snapshot Schema 2；继续维护本地编译、Evaluation 和契约测试 |
+| P0 | 建立独立 `dfm-occt-worker` 仓库；冻结 Discovery 1、Objective 4、Geometry/Evidence 2 和共享 Fixture | 固定 Snapshot Schema 2；继续维护本地编译、Evaluation 和契约测试 |
 | P1 | STEP Loader、Snapshot、主壁/螺钉柱等首批 Feature/Region Recognizer、壁厚/拔模 Calculator | 独立 Django 工程实现九张中心表、审核发布器和 Snapshot API |
 | P2 | 用螺钉柱壁厚比例完成“不改 Agent 业务代码”的 Golden E2E | Agent 完成签名同步、版本选择、回滚和撤销处理 |
 | P3 | 并发、资源隔离、数值与工程认证后逐项扩展指标 | 规则生成 AI、知识 Citation、企业规则管理和审计 |

@@ -99,7 +99,6 @@ def test_viewer_manifest_maps_failed_evaluation_to_geometry_refs(tmp_path):
         process="injection",
         scope_id="injection.geometry-core",
         scope_version="4.0.0",
-        verification_level="experimental",
     )
 
     result = materialize_viewer_manifest(tmp_path, "run_1", plan, artifacts)

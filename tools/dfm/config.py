@@ -10,6 +10,7 @@ from .errors import DFMError
 
 @dataclass(frozen=True)
 class DFMConfig:
+    runtime_python: str = "auto"
     default_process: str = "injection"
     max_concurrent_runs: int = 1
     timeout_seconds: int = 900
@@ -17,6 +18,9 @@ class DFMConfig:
     max_pages: int = 50
     keep_failed_runs: bool = True
     max_evidence_findings: int = 12
+    nx_endpoint: str = ""
+    nx_request_timeout_seconds: int = 30
+    nx_poll_interval_seconds: int = 2
     geometry_executable: str = ""
     geometry_timeout_seconds: int = 900
 
@@ -42,15 +46,21 @@ def load_dfm_config(config: Mapping[str, Any] | None = None) -> DFMConfig:
 
         config = load_config_readonly()
     defaults = DFMConfig()
+    runtime_python = _nested(config, "dfm", "runtime", "python", default=defaults.runtime_python)
     default_process = _nested(config, "dfm", "defaults", "process", default=defaults.default_process)
     keep_failed = _nested(
         config, "dfm", "retention", "keep_failed_runs", default=defaults.keep_failed_runs
     )
+    nx_endpoint = _nested(config, "dfm", "nx", "endpoint", default=defaults.nx_endpoint)
     geometry_executable = _nested(
         config, "dfm", "geometry", "executable", default=defaults.geometry_executable
     )
+    if not isinstance(nx_endpoint, str):
+        raise DFMError("config_invalid", "dfm.nx.endpoint must be a string.")
     if not isinstance(geometry_executable, str):
         raise DFMError("config_invalid", "dfm.geometry.executable must be a string.")
+    if not isinstance(runtime_python, str) or not runtime_python.strip():
+        raise DFMError("config_invalid", "dfm.runtime.python must be a non-empty string.")
     if not isinstance(default_process, str) or not default_process.strip():
         raise DFMError("config_invalid", "dfm.defaults.process must be a non-empty string.")
     normalized_process = default_process.strip()
@@ -59,6 +69,7 @@ def load_dfm_config(config: Mapping[str, Any] | None = None) -> DFMConfig:
     if not isinstance(keep_failed, bool):
         raise DFMError("config_invalid", "dfm.retention.keep_failed_runs must be boolean.")
     return DFMConfig(
+        runtime_python=runtime_python.strip(),
         default_process=normalized_process,
         max_concurrent_runs=_positive_int(
             _nested(config, "dfm", "runtime", "max_concurrent_runs", default=defaults.max_concurrent_runs),
@@ -86,6 +97,15 @@ def load_dfm_config(config: Mapping[str, Any] | None = None) -> DFMConfig:
                 default=defaults.max_evidence_findings,
             ),
             "dfm.evidence.max_rendered_findings",
+        ),
+        nx_endpoint=nx_endpoint.strip().rstrip("/"),
+        nx_request_timeout_seconds=_positive_int(
+            _nested(config, "dfm", "nx", "request_timeout_seconds", default=defaults.nx_request_timeout_seconds),
+            "dfm.nx.request_timeout_seconds",
+        ),
+        nx_poll_interval_seconds=_positive_int(
+            _nested(config, "dfm", "nx", "poll_interval_seconds", default=defaults.nx_poll_interval_seconds),
+            "dfm.nx.poll_interval_seconds",
         ),
         geometry_executable=geometry_executable.strip(),
         geometry_timeout_seconds=_positive_int(

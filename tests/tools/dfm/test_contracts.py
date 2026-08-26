@@ -8,15 +8,19 @@ from tools.dfm.contracts import (
     Capability,
     CapabilityStatus,
     ClarificationRecord,
+    DiscoverySnapshotRecord,
     FactRecord,
     FeatureRecord,
+    FusionLinkRecord,
     FindingRecord,
     InputRecord,
     MeasurementRecord,
+    ObservationRecord,
     PlanOperation,
     PlanRecord,
     ProjectManifest,
     ResolvedArgument,
+    RuleBinding,
     RunRecord,
     RunStatus,
     ensure_run_transition,
@@ -29,6 +33,7 @@ def test_contract_state_values_are_stable():
         "available",
         "dependency_missing",
         "not_implemented",
+        "blocked",
         "disabled",
         "unhealthy",
     }
@@ -151,8 +156,8 @@ def test_manifest_carries_m0_workflow_records():
         clarifications=[
             ClarificationRecord("clar_1", "Which material?", "answered", "ABS")
         ],
-        features=[FeatureRecord("feature_1", "drilled_hole", ["input_1"], 0.9)],
-        plans=[PlanRecord("plan_1", "step", ["occt"], "ready", "2026-07-13T10:00:30Z")],
+        features=[FeatureRecord("feature_1", "hole", ["input_1"], 0.9)],
+        plans=[PlanRecord("plan_1", "step", ["step"], "ready", "2026-07-13T10:00:30Z")],
         findings=[
             FindingRecord(
                 finding_id="finding_1",
@@ -203,18 +208,118 @@ def test_plan_operation_round_trips_as_the_only_production_shape():
 
 def test_measurement_references_plan_operation_metric_and_calculator():
     measurement = MeasurementRecord(
-        measurement_id="measurement_draft_min",
-        operation_id="measure_draft",
+        measurement_id="measurement_draft_fixed_half_min",
+        operation_id="draft.fixed_half",
         calculator_id="measure_draft",
-        metric_id="injection.geometry.draft",
+        metric_id="dc.geometry.draft.fixed_half",
         quantity_id="draft_angle_deg",
         value=1.2,
         unit="degree",
         status="measured",
         geometry_refs=[],
-        method="occt_adaptive_uv_sampling",
-        algorithm_version="draft-0.1.0",
+        method="nx_open_draft_analysis",
+        algorithm_version="nx-draft-1",
         input_sha256="a" * 64,
     )
 
     assert MeasurementRecord.from_dict(measurement.to_dict()) == measurement
+
+
+def test_rule_binding_separates_rule_facts_from_geometry_facts():
+    binding = RuleBinding(
+        binding_id="binding.wall.minimum",
+        operation_id="geometry.wall_thickness",
+        metric_id="injection.geometry.wall_thickness",
+        quantity_id="thickness_mm",
+        rule_id="min_wall_mm",
+        operator=">=",
+        aggregation="minimum",
+        required_fact_names=["material"],
+        feature_refs=["feature.ordinary.1"],
+        region_refs=["region.ordinary.1"],
+    )
+
+    payload = binding.to_dict()
+    assert RuleBinding.from_dict(payload) == binding
+    assert payload["required_fact_names"] == ["material"]
+
+
+def test_discovery_contract_links_observations_features_regions_and_analysis_plan():
+    feature = FeatureRecord(
+        "feature.screw_boss.003",
+        "screw_boss",
+        ["input:model"],
+        0.96,
+        input_sha256="a" * 64,
+        region_refs=["region.screw_boss.003.outer_wall"],
+        properties={"outer_radius_mm": 4.0, "inner_radius_mm": 2.2},
+        recognizer="occt_cpp_molding_feature_recognizer",
+        recognizer_version="1.0.0",
+    )
+    observation = ObservationRecord(
+        "observation.drawing.17",
+        "input_drawing",
+        "minimum_draft_angle",
+        1.0,
+        ["drawing:page=2:bbox=120,80,180,110"],
+        0.91,
+        unit="degree",
+    )
+    fusion = FusionLinkRecord(
+        "fusion.17",
+        [observation.observation_id],
+        [feature.feature_id],
+        feature.region_refs,
+        0.88,
+        "confirmed",
+        "drawing_callout_to_feature_region",
+    )
+    snapshot = DiscoverySnapshotRecord(
+        "discovery.snapshot.1",
+        "2026-08-11T10:00:30Z",
+        {"input_model": "a" * 64},
+        [observation.observation_id],
+        [feature.feature_id],
+        feature.region_refs,
+        [fusion.fusion_link_id],
+        {"occt_cpp_molding_feature_recognizer": "1.0.0"},
+        "b" * 64,
+    )
+    discovery = PlanRecord(
+        "plan.discovery.1",
+        "fusion",
+        ["drawing", "step"],
+        "ready",
+        "2026-08-11T10:00:00Z",
+        phase="discovery",
+    )
+    analysis = PlanRecord(
+        "plan.analysis.1",
+        "fusion",
+        ["step"],
+        "ready",
+        "2026-08-11T10:01:00Z",
+        phase="analysis",
+        parent_plan_id=discovery.plan_id,
+        discovery_snapshot_refs=[
+            "feature-set:run.discovery.1",
+            "region-set:run.discovery.1",
+            "fusion-links:revision.1",
+        ],
+    )
+
+    manifest = ProjectManifest(
+        project_id="dfm_123",
+        name="Feature-aware part",
+        created_at="2026-08-11T10:00:00Z",
+        updated_at="2026-08-11T10:01:00Z",
+        features=[feature],
+        observations=[observation],
+        fusion_links=[fusion],
+        discovery_snapshots=[snapshot],
+        plans=[discovery, analysis],
+    )
+
+    assert ProjectManifest.from_dict(manifest.to_dict()) == manifest
+    assert analysis.phase == "analysis"
+    assert analysis.discovery_snapshot_refs[0].startswith("feature-set:")

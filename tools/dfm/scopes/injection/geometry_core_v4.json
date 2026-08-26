@@ -2,14 +2,7 @@
   "scope_id": "injection.geometry-core",
   "version": "4.0.0",
   "process": "injection",
-  "parameters": {
-    "model_units": {"value": "mm", "unit": null, "kind": "engineering_context"},
-    "pull_dir": {"value": [0, 0, 1], "unit": null, "kind": "engineering_context"},
-    "min_wall_mm": {"value": 1.2, "unit": "mm", "kind": "rule"},
-    "min_draft_deg": {"value": 1.0, "unit": "degree", "kind": "rule"},
-    "max_undercut_count": {"value": 0, "unit": "count", "kind": "rule"},
-    "min_corner_angle_deg": {"value": 90.0, "unit": "degree", "kind": "rule"}
-  },
+  "parameters": {},
   "operations": [
     {
       "operation_id": "geometry.preflight",
@@ -47,7 +40,7 @@
       "depends_on": ["topology.aag"],
       "metric_ids": ["injection.geometry.draft"],
       "required_quantities": ["draft_angle_deg"],
-      "required_artifacts": ["topology_map"],
+      "required_artifacts": ["topology_map", "scalar_field"],
       "arguments": {},
       "algorithm_options": {}
     },
@@ -57,7 +50,7 @@
       "depends_on": ["topology.aag"],
       "metric_ids": ["injection.geometry.wall_thickness"],
       "required_quantities": ["thickness_mm", "average_thickness_mm"],
-      "required_artifacts": ["topology_map"],
+      "required_artifacts": ["topology_map", "scalar_field"],
       "arguments": {},
       "algorithm_options": {}
     },
@@ -67,7 +60,7 @@
       "depends_on": ["topology.aag"],
       "metric_ids": ["injection.geometry.undercut"],
       "required_quantities": ["undercut_count"],
-      "required_artifacts": ["topology_map"],
+      "required_artifacts": ["topology_map", "scalar_field"],
       "arguments": {},
       "algorithm_options": {}
     },
@@ -77,7 +70,7 @@
       "depends_on": ["topology.aag"],
       "metric_ids": ["injection.geometry.sharp_corner"],
       "required_quantities": ["corner_angle_deg"],
-      "required_artifacts": ["topology_map"],
+      "required_artifacts": ["topology_map", "scalar_field"],
       "arguments": {},
       "algorithm_options": {}
     },
@@ -213,44 +206,6 @@
       "required_artifacts": ["features"],
       "arguments": {},
       "algorithm_options": {}
-    }
-  ],
-  "rule_bindings": [
-    {
-      "binding_id": "binding.wall_thickness.minimum",
-      "operation_id": "measure_wall_thickness",
-      "metric_id": "injection.geometry.wall_thickness",
-      "quantity_id": "thickness_mm",
-      "rule_id": "min_wall_mm",
-      "operator": ">=",
-      "aggregation": "minimum"
-    },
-    {
-      "binding_id": "binding.draft.minimum",
-      "operation_id": "measure_draft",
-      "metric_id": "injection.geometry.draft",
-      "quantity_id": "draft_angle_deg",
-      "rule_id": "min_draft_deg",
-      "operator": ">=",
-      "aggregation": "minimum"
-    },
-    {
-      "binding_id": "binding.undercut.maximum",
-      "operation_id": "measure_undercut",
-      "metric_id": "injection.geometry.undercut",
-      "quantity_id": "undercut_count",
-      "rule_id": "max_undercut_count",
-      "operator": "<=",
-      "aggregation": "maximum"
-    },
-    {
-      "binding_id": "binding.sharp_corner.minimum",
-      "operation_id": "measure_sharp_corner",
-      "metric_id": "injection.geometry.sharp_corner",
-      "quantity_id": "corner_angle_deg",
-      "rule_id": "min_corner_angle_deg",
-      "operator": ">=",
-      "aggregation": "minimum"
     }
   ]
 }

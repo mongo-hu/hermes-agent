@@ -23,7 +23,7 @@ def materialize_result_reports(
     plan: PlanRecord,
     artifacts: list[ArtifactRecord],
 ) -> list[ArtifactRecord]:
-    """Create the final result shape for backend-neutral objective measurements."""
+    """Create one final result shape for every compliant objective backend."""
 
     by_kind = {item.kind: item for item in artifacts}
     if "measurements" not in by_kind or "evaluations" not in by_kind:
@@ -67,6 +67,22 @@ def materialize_result_reports(
             item["image"] for item in evidence_by_evaluation.get(evaluation_id, [])
         ]
         quality = linked[0].get("quality", {}) if linked else {}
+        feature_refs = sorted(
+            {
+                str(ref)
+                for item in linked
+                for ref in item.get("feature_refs", [])
+            }
+            | {str(ref) for ref in evaluation.get("feature_refs", [])}
+        )
+        region_refs = sorted(
+            {
+                str(ref)
+                for item in linked
+                for ref in item.get("region_refs", [])
+            }
+            | {str(ref) for ref in evaluation.get("region_refs", [])}
+        )
         issues.append(
             {
                 "id": evaluation_id,
@@ -88,7 +104,6 @@ def materialize_result_reports(
                     "rule_hash": evaluation.get("rule_hash"),
                     "measurement_ids": evaluation.get("measurement_ids", []),
                     "backend": quality.get("backend"),
-                    "maturity": quality.get("maturity"),
                     "certified": quality.get("certified"),
                     "algorithm_version": linked[0].get("algorithm_version")
                     if linked
@@ -96,6 +111,8 @@ def materialize_result_reports(
                 },
                 "images": images,
                 "image": images[0] if images else None,
+                "feature_refs": feature_refs,
+                "region_refs": region_refs,
                 "recommendation": "Correct the highlighted geometry and rerun the same plan.",
             }
         )
@@ -108,8 +125,6 @@ def materialize_result_reports(
         "process": plan.process,
         "scope_id": plan.scope_id,
         "scope_version": plan.scope_version,
-        "verification_level": plan.verification_level,
-        "assumed_pull_direction": plan.assumed_pull_direction,
         "producer": "hermes-result-assembler-v1",
         "producer_contract": "evaluated_objective_result",
         "stats": {
@@ -129,8 +144,6 @@ def materialize_result_reports(
         "",
         f"- Process: {plan.process}",
         f"- Scope: {plan.scope_id}@{plan.scope_version}",
-        f"- Verification level: {plan.verification_level}",
-        f"- Pull direction assumed: {'yes' if plan.assumed_pull_direction else 'no'}",
         f"- Failed checks: {len(issues)}",
         "",
     ]

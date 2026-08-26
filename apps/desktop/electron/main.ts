@@ -1634,19 +1634,6 @@ function findPythonForRoot(root) {
     }
   }
 
-  // A development checkout does not need to duplicate the full Python
-  // environment maintained by the desktop installer. Reuse that interpreter
-  // when it exists; createPythonBackend still puts `root` first on PYTHONPATH,
-  // so source code comes from the selected checkout while dependencies come
-  // from the already-working managed runtime. Without this fallback, Windows
-  // machines with no separately discoverable system Python silently run the
-  // managed checkout instead of the local source tree.
-  const managedPython = getVenvPython(VENV_ROOT)
-
-  if (fileExists(managedPython)) {
-    return managedPython
-  }
-
   return findSystemPython()
 }
 

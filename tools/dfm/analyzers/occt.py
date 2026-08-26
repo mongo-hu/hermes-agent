@@ -15,20 +15,19 @@ from ..contracts import (
     GEOMETRY_EVENT_CONTRACT,
     GEOMETRY_REQUEST_CONTRACT,
     GEOMETRY_RESULT_CONTRACT,
-    OBJECTIVE_SCHEMA_VERSION,
+    OCCT_OBJECTIVE_SCHEMA_VERSION,
     WORKER_SCHEMA_VERSION,
     ArtifactRecord,
     Capability,
     CapabilityStatus,
     LocalObjectiveWorkerRequest,
+    OcctObjectiveTaskRequest,
     ObjectiveResultManifest,
-    ObjectiveTaskRequest,
     WorkerEvent,
 )
 from ..errors import DFMError
 from ..runtime.process import ProcessRunner
 from .base import AnalyzerContext, CancellationToken
-from .objective_result import validate_objective_result
 
 
 ENGINE_VERSION = "occt-dfm-geometry-1.2.0"
@@ -280,10 +279,9 @@ class OcctAnalyzer:
                     "supported_processes": ["injection"],
                 },
             )
-        if (
-            context.plan is not None
-            and context.plan.verification_level != "experimental"
-        ):
+        if context.plan is not None and getattr(
+            context.plan, "verification_level", "experimental"
+        ) != "experimental":
             return Capability(
                 self.key,
                 CapabilityStatus.DISABLED,
@@ -349,8 +347,8 @@ class OcctAnalyzer:
         run_dir = context.project_dir / "runs" / context.run_id
         output_dir = run_dir / "artifacts"
         output_dir.mkdir(parents=True, exist_ok=True)
-        task = ObjectiveTaskRequest(
-            schema_version=OBJECTIVE_SCHEMA_VERSION,
+        task = OcctObjectiveTaskRequest(
+            schema_version=OCCT_OBJECTIVE_SCHEMA_VERSION,
             run_id=context.run_id,
             input_sha256=input_record.sha256,
             input_format="step",
@@ -361,8 +359,8 @@ class OcctAnalyzer:
             scope_id=GEOMETRY_SCOPE_ID,
             scope_version=GEOMETRY_SCOPE_VERSION,
             operations=context.plan.operations,
-            verification_level=context.plan.verification_level,
-            assumed_pull_direction=context.plan.assumed_pull_direction,
+            verification_level="experimental",
+            assumed_pull_direction=self._assumed_pull_direction(context.plan),
         )
         request = LocalObjectiveWorkerRequest(
             schema_version=WORKER_SCHEMA_VERSION,
@@ -468,7 +466,7 @@ class OcctAnalyzer:
                 "The OCCT engine result could not be loaded.",
             ) from exc
         if (
-            result.schema_version != OBJECTIVE_SCHEMA_VERSION
+            result.schema_version != OCCT_OBJECTIVE_SCHEMA_VERSION
             or result.contract_version != GEOMETRY_RESULT_CONTRACT
             or result.producer_version != self.version
             or result.run_id != context.run_id
@@ -558,15 +556,6 @@ class OcctAnalyzer:
                 "worker_result",
                 result_path,
             )
-        )
-        validate_objective_result(
-            context.plan.operations,
-            context.project_dir,
-            artifacts,
-            run_id=context.run_id,
-            input_sha256=input_record.sha256,
-            process=context.plan.process,
-            scope_id=GEOMETRY_SCOPE_ID,
         )
         return artifacts
 
@@ -741,6 +730,126 @@ class OcctAnalyzer:
                 "objective_result_invalid",
                 "OCCT feature/measurement algorithm identity is invalid.",
             )
+
+        face_indices = cls._topology_indices(topology.get("faces"))
+        edge_indices = cls._topology_indices(topology.get("edges"))
+        cls._validate_topology_references(topology, face_indices, edge_indices)
+        for record in [*features, *measurements]:
+            cls._validate_geometry_refs(
+                record.get("geometry_refs"),
+                input_sha256,
+                face_indices,
+                edge_indices,
+            )
+
+    @staticmethod
+    def _assumed_pull_direction(plan: Any) -> bool:
+        sources = [
+            argument.source_ref
+            for operation in plan.operations
+            for name, argument in operation.arguments.items()
+            if name == "pull_direction"
+        ]
+        if not sources:
+            return False
+        return not any(source.startswith("fact:") for source in sources)
+
+    @staticmethod
+    def _topology_indices(values: object) -> set[int]:
+        if not isinstance(values, list):
+            raise DFMError(
+                "objective_result_invalid",
+                "Topology index collections must be arrays.",
+            )
+        indices = {
+            item.get("index")
+            for item in values
+            if isinstance(item, dict)
+            and isinstance(item.get("index"), int)
+            and not isinstance(item.get("index"), bool)
+            and item["index"] > 0
+        }
+        if len(indices) != len(values) or indices != set(range(1, len(values) + 1)):
+            raise DFMError(
+                "objective_result_invalid",
+                "Topology indices must be contiguous, positive, and unique.",
+            )
+        return indices
+
+    @staticmethod
+    def _validate_topology_references(
+        topology: dict[str, Any],
+        face_indices: set[int],
+        edge_indices: set[int],
+    ) -> None:
+        if topology.get("index_base") != 1:
+            raise DFMError(
+                "objective_result_invalid", "Topology index_base must be 1."
+            )
+        for edge in topology.get("edges", []):
+            adjacent = edge.get("adjacent_face_indices") if isinstance(edge, dict) else None
+            if (
+                not isinstance(adjacent, list)
+                or any(index not in face_indices for index in adjacent)
+                or len(adjacent) != len(set(adjacent))
+            ):
+                raise DFMError(
+                    "objective_result_invalid",
+                    "Topology edge adjacency does not resolve.",
+                )
+        seen_arcs: set[tuple[int, int]] = set()
+        for arc in topology.get("aag", []):
+            arc_edges = arc.get("edge_indices") if isinstance(arc, dict) else None
+            faces = arc.get("face_indices") if isinstance(arc, dict) else None
+            if (
+                not isinstance(arc_edges, list)
+                or not arc_edges
+                or any(index not in edge_indices for index in arc_edges)
+                or len(arc_edges) != len(set(arc_edges))
+                or not isinstance(faces, list)
+                or len(faces) != 2
+                or any(index not in face_indices for index in faces)
+                or len(set(faces)) != 2
+            ):
+                raise DFMError(
+                    "objective_result_invalid",
+                    "Topology AAG references do not resolve.",
+                )
+            identity = tuple(sorted(faces))
+            if identity in seen_arcs:
+                raise DFMError(
+                    "objective_result_invalid",
+                    "Topology AAG contains a duplicate face arc.",
+                )
+            seen_arcs.add(identity)
+
+    @staticmethod
+    def _validate_geometry_refs(
+        values: object,
+        input_sha256: str,
+        face_indices: set[int],
+        edge_indices: set[int],
+    ) -> None:
+        if not isinstance(values, list):
+            raise DFMError(
+                "objective_result_invalid", "Geometry references must be an array."
+            )
+        for item in values:
+            kind = item.get("kind") if isinstance(item, dict) else None
+            index = item.get("index") if isinstance(item, dict) else None
+            allowed = face_indices if kind == "face" else edge_indices if kind == "edge" else None
+            if (
+                not isinstance(item, dict)
+                or item.get("input_sha256") != input_sha256
+                or allowed is None
+                or not isinstance(index, int)
+                or isinstance(index, bool)
+                or index not in allowed
+            ):
+                raise DFMError(
+                    "objective_result_invalid",
+                    "Geometry reference does not resolve in topology.",
+                )
 
     @staticmethod
     def _validate_jsonl_stdout(raw_stdout: str, observed: list[WorkerEvent]) -> None:

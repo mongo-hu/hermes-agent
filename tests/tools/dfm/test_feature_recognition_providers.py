@@ -6,6 +6,8 @@ from tools.dfm.contracts import InputRecord
 from tools.dfm.discovery import DiscoveryEngine
 from tools.dfm.errors import DFMError
 from tools.dfm.feature_recognition import (
+    MTKFeatureRecognitionProvider,
+    NXFeatureRecognitionProvider,
     OCCTCppFeatureRecognitionProvider,
 )
 
@@ -22,6 +24,22 @@ def _input() -> InputRecord:
         format_id="step",
         representation="brep",
     )
+
+
+@pytest.mark.parametrize(
+    "provider", [NXFeatureRecognitionProvider(), MTKFeatureRecognitionProvider()]
+)
+def test_pending_feature_providers_are_explicit_non_executing_placeholders(provider):
+    capability = provider.capability()
+
+    assert capability["status"] == "not_implemented"
+    assert "process" in capability["required_fact_names"]
+    assert "model_units" in capability["required_fact_names"]
+    assert capability["output_contracts"] == ["FeatureRecord[]", "RegionRecord[]"]
+    with pytest.raises(DFMError) as exc_info:
+        provider.recognize(_input(), process="injection")
+
+    assert exc_info.value.code == "unsupported_capability"
 
 
 def test_occt_cpp_is_the_explicit_external_production_provider():

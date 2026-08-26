@@ -1,18 +1,16 @@
 ---
 name: dfm-analysis
-description: Use when analyzing injection-molded part manufacturability from STEP/STP CAD or inspecting PDF/PNG/JPG engineering drawings with the built-in dfm_project and dfm_analysis tools.
+description: Use when analyzing injection-molded or die-cast part manufacturability from STEP/STP CAD, reserved Parasolid x_t input, PDF engineering drawings, or PNG/JPG drawing images with the built-in dfm_project and dfm_analysis tools.
 license: MIT
 metadata:
   hermes:
-    tags: [DFM, manufacturing, STEP, OCCT, CAD, engineering-drawing]
+    tags: [DFM, manufacturing, STEP, CAD, engineering-drawing]
     requires_toolsets: [dfm]
 ---
 
 # DFM Analysis
 
-Manage every analysis as a durable DFM project. Tools are the source of
-engineering facts; conversation is used to obtain missing facts and explain
-traceable results.
+Manage every analysis as a durable DFM project. Treat tools as the source of engineering facts; use conversation to clarify intent and explain evidence.
 
 ## Workflow
 
@@ -23,7 +21,7 @@ before deciding whether execution is valid. Starting a plan does not bypass
 those decisions or return control to the Agent Loop from inside the worker.
 
 1. Call `dfm_project` with `create`, unless continuing a known `project_id`.
-2. Call `dfm_project` with `add_input` for every STEP/STP or drawing `@file:` reference. Parasolid x_t and NX inputs are deferred and are rejected explicitly; do not rename, convert, or silently route them through the STEP path.
+2. Call `dfm_project` with `add_input` for every STEP/STP, reserved Parasolid x_t, or drawing `@file:` reference. When the external OCCT executable is available, STEP intake may return a `viewer_manifest`; Desktop opens it in the 3D viewer. An accepted x_t intake does not mean its geometry reader is available; inspect capability before planning. NX/Parasolid development is deferred and is not the production path for the current milestone.
 3. Call project `status`. Inspect the input mode and every analyzer `capability`.
 4. Pass `process=injection` or `process=die_casting` when the user has selected it; never infer the process from part shape. Call `dfm_analysis` with `discover`. If it returns `status=clarification_required`, it is a hard stop: do **not** answer the questions yourself and do **not** call `confirm_fact` in the same turn. Call the Hermes `clarify` tool for each open question so Desktop shows its blocking question panel; wait for the user's response, then call `confirm_fact` with exactly that response and rerun `discover`. Use the canonical fact names returned by the service; keep them `confirmed`, not inferred.
 5. Inspect the returned DiscoverySnapshot, Feature/Region coverage, provider statuses, and open analysis clarifications. Ask only the process adapter's returned missing analysis facts, using the same wait-then-`confirm_fact` rule. Never continue with a stale DiscoverySnapshot.
@@ -33,8 +31,8 @@ those decisions or return control to the Agent Loop from inside the worker.
    contains only main-wall thickness and draft-angle Checks. Die casting currently exposes only its
    approved topology gate. Inspect the returned process, scope version, input hashes, operations,
    ontology snapshot ID/hash, DiscoverySnapshot reference, RuleBindings, and parameter provenance. Explain blocked checks and assumptions before
-   execution.
-7. The external Analysis Situs/OCCT engine is currently an objective, experimental backend. Request `verification_level=experimental` explicitly in `plan`, then call `start` only when that exact plan reports capability `available`. A certified request must stay blocked and must never silently downgrade. Preserve the returned `run_id`.
+   execution. Pass `analyzer_key=occt` only when the external experimental OCCT C++ path is intentionally selected; omit it to retain the PythonOCC STEP reference path. Material and pull direction remain user-confirmed facts—never substitute ABS or `+Z` for a missing answer.
+7. Call `start` only when the selected capability is `available`. Preserve its `run_id`.
 8. `start` is non-blocking. Immediately save the returned `run_id` and pass that exact ID to every subsequent `status`, `result`, or `cancel` call; never omit it or invent a replacement. The run publishes background stage, percentage,
    heartbeat, and incremental artifact updates to supported clients. Return
    control to the user after starting; do not spend Agent turns on terminal
@@ -49,43 +47,41 @@ those decisions or return control to the Agent Loop from inside the worker.
 
 ## Capability handling
 
-- `dependency_missing` with `geometry_engine_missing`: explain that the configured external `dfm-geometry` executable is absent or cannot be started, suggest `hermes dfm doctor`, and never install or substitute a geometry backend automatically. Optional reporting dependencies must be diagnosed separately.
+- `dependency_missing`: explain the missing backend (the current PythonOCC/VTK reference worker, the external `dfm-geometry` executable, or optional python-pptx reporting) and suggest `hermes dfm doctor`; never install automatically.
 - `not_implemented` or `unsupported_capability`: state the limitation and offer supported partial analysis.
 - `disabled`: ask the user to configure and enable the capability in a new session.
 - `unhealthy`: preserve project and Run IDs and report diagnostics.
 
-The connected geometry backend is the separately built Analysis Situs/OCCT
-`dfm-geometry` executable. Its current calculator contract is experimental, not
-certified. Hermes already uses it for objective STEP preflight, topology,
-recognition, and measurements; it must fail explicitly with
-`geometry_engine_missing` or another capability error when unavailable. There
-is no PythonOCC or NX execution fallback. Discovery currently freezes an honest
-whole-model ordinary-region fallback until the external two-stage recognizer
-contract is connected; never present that fallback as a detected process
-feature. Every objective backend returns Measurements and geometry artifacts;
-Hermes alone performs ontology/rule selection, Evaluation, evidence rendering,
-Finding, and reporting.
+PythonOCC STEP geometry is a non-certified reference backend and remains
+available. The separately developed `dfm-geometry` executable is connected as
+an `experimental` OCCT C++ Objective backend through versioned contracts; it
+must not be presented as certified production capability, and it must never
+silently fall back to PythonOCC. Every objective backend must return
+Measurement, ScalarField, RenderScene, and TopologyMap; Hermes alone performs
+Evaluation, evidence rendering, Finding, and reporting.
 The initial die-casting scope remains a topology gate. Do not run injection
 thresholds under a die-casting label. If the
 user requests machining, sheet metal, or another process, report
-`unsupported_capability` and the supported process list. Parasolid x_t and the
-NX path remain deferred and must not be reintroduced as a fallback for the
-OCCT STEP milestone.
+`unsupported_capability` and the supported process list. Parasolid x_t remains
+an explicit reserved capability; the NX path is deferred and must not block the
+OCCT C++ STEP milestone.
 Drawing-only and Fusion execution remain explicit unavailable capabilities.
 
 ## Engineering integrity
 
-- Never invent measurements, thresholds, findings, standards or successful checks.
-- Never turn visual/model inference into a confirmed material, unit or pull direction.
-- Geometry engine output is objective and experimental. Hermes alone performs
-  rules, Evaluation, Finding and reporting.
-- Prefer an explicit blocked/unavailable result over a guess.
+- Never invent measurements, thresholds, risk scores, Findings, or successful checks.
+- Never invent engineering standards, standard codes, drawing requirements, or
+  claim that the default wall/draft scope is a customer or regulatory standard.
+- Never convert visual impression or model inference into a confirmed engineering fact.
+- Never claim a STEP-only check ran against drawing-only input.
+- Never treat a technical test artifact as a production DFM conclusion.
+- Prefer explicit unavailable or blocked results over guesses.
 
 ## Recovery
 
-After interruption, call project status and then run status with the recorded
-ID. Inspect diagnostics events/stdout/stderr for failures. Never automatically
-start a replacement run after timeout. Before the configured worker timeout,
-call `cancel` with `confirm_cancel=true` only when the user explicitly asked to
-stop that run. Never cancel, terminate the native PID, or start a replacement
-solely because progress has not changed.
+After interruption, call project `status`, then run `status` with the recorded IDs. Do not create a replacement project or duplicate Run unless the user requests a new revision.
+
+For a failed or slow run, inspect the `diagnostics.events`,
+`diagnostics.stdout`, and `diagnostics.stderr` paths returned by run status.
+Partial artifacts remain attached to the Run even when it times out. Never
+automatically start a replacement Run after timeout.

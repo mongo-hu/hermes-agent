@@ -7,12 +7,10 @@
   "required": ["schema_version", "run_id", "input_sha256", "process", "scope_id", "producer_contract", "measurements"],
   "properties": {
     "schema_version": {"const": 1},
-    "contract_version": {"enum": ["dfm.geometry.artifact/measurements/v1"]},
     "run_id": {"type": "string", "minLength": 1},
     "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "process": {"type": "string", "minLength": 1},
     "scope_id": {"type": "string", "minLength": 1},
-    "scope_version": {"type": "string", "minLength": 1},
     "producer_contract": {"const": "measurement_only"},
     "measurements": {"type": "array", "items": {"$ref": "#/$defs/measurement"}}
   },
@@ -20,17 +18,19 @@
     "geometryRef": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "index", "input_sha256"],
+      "required": ["kind", "index", "input_sha256", "topology_snapshot_id", "entity_id"],
       "properties": {
         "kind": {"enum": ["face", "edge", "solid", "vertex"]},
         "index": {"type": "integer", "minimum": 0},
-        "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "topology_snapshot_id": {"type": "string", "minLength": 1},
+        "entity_id": {"type": "string", "minLength": 1}
       }
     },
     "measurement": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["measurement_id", "operation_id", "calculator_id", "metric_id", "quantity_id", "value", "unit", "status", "geometry_refs", "region_refs", "field_refs", "method", "algorithm_version", "input_sha256", "quality", "diagnostics"],
+      "required": ["measurement_id", "operation_id", "calculator_id", "metric_id", "quantity_id", "value", "unit", "status", "geometry_refs", "region_refs", "feature_refs", "field_refs", "method", "algorithm_version", "input_sha256", "quality", "diagnostics"],
       "properties": {
         "measurement_id": {"type": "string", "minLength": 1},
         "operation_id": {"type": "string", "minLength": 1},
@@ -42,6 +42,7 @@
         "status": {"type": "string", "minLength": 1},
         "geometry_refs": {"type": "array", "items": {"$ref": "#/$defs/geometryRef"}},
         "region_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "feature_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
         "field_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
         "method": {"type": "string", "minLength": 1},
         "algorithm_version": {"type": "string", "minLength": 1},

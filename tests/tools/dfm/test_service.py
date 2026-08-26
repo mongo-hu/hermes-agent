@@ -6,55 +6,22 @@ import pytest
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from tools.dfm.analyzers.drawing import DrawingAnalyzer
 from tools.dfm.analyzers.fusion import FusionAnalyzer
-from tools.dfm.analyzers.occt import (
-    ENGINE_VERSION,
-    GEOMETRY_OPERATION_PAIRS,
-    OcctAnalyzer,
-)
+from tools.dfm.analyzers.parasolid import ParasolidAnalyzer
 from tools.dfm.analyzers.registry import AnalyzerRegistry
-from tools.dfm.contracts import FeatureRecord, GeometryRef, RegionRecord
+from tools.dfm.analyzers.step import StepAnalyzer
 from tools.dfm.errors import DFMError
 from tools.dfm.service import DFMService
+from tools.dfm.contracts import FeatureRecord, GeometryRef, RegionRecord
 
 
 STEP_PAYLOAD = (
     Path(__file__).parents[3] / "tests" / "fixtures" / "dfm" / "step" / "injection_plate_with_hole.step"
 ).read_bytes()
 
-OCCT_CAPABILITIES = {
-    "contract_version": "dfm.geometry.capabilities/v1",
-    "engine_version": ENGINE_VERSION,
-    "backend": "analysis_situs+occt",
-    "analysis_situs_version": "v2025.2",
-    "analysis_situs_commit": "aa5958932c8c85c068566ab685f2b99c0436b926",
-    "occt_version": "7.9.3",
-    "status": "available",
-    "maturity": "experimental",
-    "supported_processes": ["injection"],
-    "supported_formats": ["step"],
-    "supported_extensions": [".step", ".stp"],
-    "output_artifact_kinds": [
-        "preflight",
-        "topology_map",
-        "render_mesh",
-        "features",
-        "measurements",
-        "metric_fields",
-    ],
-    "operations": [
-        {
-            "operation_id": operation_id,
-            "calculator_id": calculator_id,
-            "maturity": "experimental",
-            "algorithm_version": ENGINE_VERSION,
-        }
-        for operation_id, calculator_id in GEOMETRY_OPERATION_PAIRS
-    ],
-}
-
 
 def confirm_step_facts(dfm, project_id):
     for name, value in {
+        "process": "injection",
         "material": "ABS",
         "pull_dir": [0, 0, 1],
         "model_units": "mm",
@@ -68,14 +35,10 @@ def confirm_step_facts(dfm, project_id):
 def service(tmp_path):
     token = set_hermes_home_override(tmp_path / "home")
     registry = AnalyzerRegistry()
-    registry.register(
-        OcctAnalyzer(
-            "C:/dfm/dfm-geometry.exe",
-            capability_probe=lambda _: OCCT_CAPABILITIES,
-        )
-    )
+    registry.register(StepAnalyzer(dependency_probe=lambda: False))
     registry.register(DrawingAnalyzer())
     registry.register(FusionAnalyzer())
+    registry.register(ParasolidAnalyzer())
     instance = DFMService(registry=registry, reconcile_jobs=False)
     try:
         yield instance, tmp_path
@@ -94,30 +57,27 @@ def test_project_actions_create_add_input_status_confirm_and_list(service):
     confirmed = dfm.project(
         "confirm_fact",
         project_id=created["project_id"],
-        fact_name="model_units",
-        fact_value="mm",
+        fact_name="material",
+        fact_value="ABS",
     )
     status = dfm.project("status", project_id=created["project_id"])
     listed = dfm.project("list")
 
     assert added["input"]["kind"] == "step"
     assert {item["clarification_id"] for item in added["open_clarifications"]} == {
+        "clarification_process",
         "clarification_model_units",
     }
     assert confirmed["fact"]["status"] == "confirmed"
     assert status["project"]["input_mode"] == "step"
     assert next(
-        item
-        for item in status["project"]["clarifications"]
-        if item["clarification_id"] == "clarification_model_units"
-    ) == {
-        "clarification_id": "clarification_model_units",
-        "question": "What length unit was used to author the STEP model?",
-        "status": "answered",
-        "answer": "mm",
+        item for item in status["project"]["facts"] if item["name"] == "material"
+    )["value"] == "ABS"
+    assert {item["clarification_id"] for item in status["project"]["open_clarifications"]} == {
+        "clarification_process",
+        "clarification_model_units",
     }
-    assert status["project"]["open_clarifications"] == []
-    assert status["capabilities"]["occt"]["status"] == "available"
+    assert status["capabilities"]["step"]["status"] == "dependency_missing"
     assert listed["projects"][0]["project_id"] == created["project_id"]
 
 
@@ -181,61 +141,6 @@ def test_fact_alias_units_closes_model_units_clarification(service):
     assert row["status"] == "answered"
 
 
-def test_inch_step_unit_is_preserved_in_occt_plan_for_native_normalization(service):
-    dfm, temp = service
-    project_id = dfm.project("create", name="Inch-authored part")["project_id"]
-    source = temp / "part.step"
-    source.write_bytes(STEP_PAYLOAD)
-    dfm.project("add_input", project_id=project_id, path=str(source))
-    dfm.project(
-        "confirm_fact", project_id=project_id, fact_name="model_units", fact_value="inch"
-    )
-    dfm.project(
-        "confirm_fact", project_id=project_id, fact_name="material", fact_value="ABS"
-    )
-    dfm.project(
-        "confirm_fact", project_id=project_id, fact_name="pull_dir", fact_value=[0, 0, 1]
-    )
-    dfm.analysis("discover", project_id=project_id)
-
-    plan = dfm.analysis(
-        "plan", project_id=project_id, verification_level="experimental"
-    )["plan"]
-
-    preflight = next(
-        item for item in plan["operations"] if item["operation_id"] == "geometry.preflight"
-    )
-    assert preflight["arguments"]["model_unit"]["value"] == "inch"
-    assert plan["assumed_pull_direction"] is False
-
-
-def test_material_fact_selects_rules_without_being_forwarded_to_occt(service):
-    dfm, temp = service
-    project_id = dfm.project("create", name="Legacy material project")["project_id"]
-    source = temp / "part.step"
-    source.write_bytes(STEP_PAYLOAD)
-    dfm.project("add_input", project_id=project_id, path=str(source))
-    dfm.project(
-        "confirm_fact", project_id=project_id, fact_name="material", fact_value="ABS"
-    )
-    dfm.project(
-        "confirm_fact", project_id=project_id, fact_name="model_units", fact_value="mm"
-    )
-    dfm.project(
-        "confirm_fact", project_id=project_id, fact_name="pull_dir", fact_value=[0, 0, 1]
-    )
-    dfm.analysis("discover", project_id=project_id)
-
-    plan = dfm.analysis(
-        "plan", project_id=project_id, verification_level="experimental"
-    )["plan"]
-
-    assert plan["status"] == "ready"
-    assert all(
-        "material" not in operation["arguments"] for operation in plan["operations"]
-    )
-
-
 def test_missing_run_id_is_recovered_only_when_unambiguous():
     one = SimpleNamespace(run_id="run_only", status="running")
     manifest = SimpleNamespace(runs=[one])
@@ -270,17 +175,23 @@ def test_plan_is_persisted_but_unavailable_production_start_fails_explicitly(ser
     blocked = dfm.analysis("plan", project_id=project_id)
     assert blocked["status"] == "discovery_required"
     assert blocked["next_action"] == "discover"
-
-    discovery_blocked = dfm.analysis("discover", project_id=project_id)
-    assert discovery_blocked["status"] == "clarification_required"
-    assert discovery_blocked["requires_user_response"] is True
-    assert discovery_blocked["do_not_infer"] is True
     confirm_step_facts(dfm, project_id)
     discovery = dfm.analysis("discover", project_id=project_id)
-    assert discovery["snapshot"]["status"] == "frozen"
     plan = dfm.analysis("plan", project_id=project_id)
 
-    assert plan["plan"]["analyzer_keys"] == ["occt"]
+    assert discovery["snapshot"]["feature_refs"]
+    assert discovery["features"][0]["kind"] == "ordinary_part"
+    assert discovery["regions"][0]["mode"] == "whole_model"
+    assert discovery["capability"]["providers"]["occt_cpp_feature_recognition"] == (
+        "external-contract-1:not_implemented"
+    )
+    assert plan["plan"]["analyzer_keys"] == ["step"]
+    assert plan["plan"]["discovery_snapshot_refs"] == [
+        discovery["snapshot"]["snapshot_id"]
+    ]
+    measured = [item for item in plan["plan"]["operations"] if item["metric_ids"]]
+    assert all(item["feature_refs"] == discovery["snapshot"]["feature_refs"] for item in measured)
+    assert all(item["region_refs"] == discovery["snapshot"]["region_refs"] for item in measured)
     assert plan["plan"]["process"] == "injection"
     assert plan["plan"]["scope_id"] == "injection.default"
     assert plan["plan"]["scope_version"] == "1.1.0"
@@ -297,20 +208,10 @@ def test_plan_is_persisted_but_unavailable_production_start_fails_explicitly(ser
     assert draft_rule["source"].startswith(
         "ontology:ontology.injection.default@1.1.0/"
     )
-    assert plan["plan"]["verification_level"] == "certified"
-    assert plan["capability"]["status"] == "disabled"
+    assert plan["capability"]["status"] == "dependency_missing"
     with pytest.raises(DFMError) as exc_info:
         dfm.analysis("start", project_id=project_id, plan_id=plan["plan"]["plan_id"])
-    assert exc_info.value.code == "verification_unavailable"
-
-    opted_in = dfm.analysis(
-        "plan",
-        project_id=project_id,
-        verification_level="experimental",
-    )
-    assert opted_in["plan"]["status"] == "ready"
-    assert opted_in["plan"]["verification_level"] == "experimental"
-    assert opted_in["capability"]["status"] == "available"
+    assert exc_info.value.code == "dependency_missing"
 
 
 def test_input_or_confirmed_fact_invalidates_prior_plan(service):
@@ -326,8 +227,8 @@ def test_input_or_confirmed_fact_invalidates_prior_plan(service):
     dfm.project(
         "confirm_fact",
         project_id=project_id,
-        fact_name="model_units",
-        fact_value="inch",
+        fact_name="material",
+        fact_value="PC",
     )
 
     with pytest.raises(DFMError) as exc_info:
@@ -356,19 +257,12 @@ def test_new_input_version_supersedes_prior_input_and_replans_full_scope(service
     assert second["supersedes_input_id"] == first["input_id"]
     assert rebuilt["parent_plan_id"] == plan["plan_id"]
     assert rebuilt["input_ids"] == [second["input_id"]]
-    assert [item["operation_id"] for item in rebuilt["operations"]] == [
-        item["operation_id"] for item in plan["operations"]
-    ]
     assert [item["calculator_id"] for item in rebuilt["operations"]] == [
         item["calculator_id"] for item in plan["operations"]
     ]
-    assert {
-        ref
-        for item in rebuilt["operations"]
-        for ref in item["region_refs"]
-    } != {
-        ref for item in plan["operations"] for ref in item["region_refs"]
-    }
+    assert rebuilt["operations"][2]["region_refs"] != plan["operations"][2][
+        "region_refs"
+    ]
 
 
 def test_pull_direction_rebuild_only_includes_affected_operation_closure(service):
@@ -388,14 +282,14 @@ def test_pull_direction_rebuild_only_includes_affected_operation_closure(service
         "plan", project_id=project_id, base_plan_id=plan["plan_id"]
     )["plan"]
 
-    assert [item["operation_id"] for item in rebuilt["operations"]] == [
-        "geometry.preflight",
-        "topology.index",
-        "topology.aag",
+    assert [item["calculator_id"] for item in rebuilt["operations"]] == [
+        "load_geometry",
+        "inspect_topology",
         "measure_draft",
     ]
+    assert rebuilt["operations"][2]["operation_id"].startswith("geometry.draft.")
     assert [item["quantity_id"] for item in rebuilt["rule_bindings"]] == [
-        "draft_angle_deg",
+        "draft_angle_deg"
     ]
 
 
@@ -417,12 +311,13 @@ def test_material_rebuild_uses_wall_rule_dependency_without_draft_recalculation(
     )["plan"]
 
     assert [item["calculator_id"] for item in rebuilt["operations"]] == [
-        "geometry_preflight",
-        "index_topology",
-        "build_aag",
+        "load_geometry",
+        "inspect_topology",
         "measure_wall_thickness",
     ]
-    assert rebuilt["operations"][3]["operation_id"] == "measure_wall_thickness"
+    assert rebuilt["operations"][2]["operation_id"].startswith(
+        "geometry.wall_thickness."
+    )
     assert [item["quantity_id"] for item in rebuilt["rule_bindings"]] == [
         "thickness_mm"
     ]
@@ -515,6 +410,7 @@ def test_unpublished_feature_region_remains_inside_ordinary_analysis_scope(servi
     }
     assert len({item["operation_id"] for item in measured}) == 2
 
+
 def test_desktop_file_reference_prefix_is_accepted(service):
     dfm, temp = service
     project_id = dfm.project("create", name="Bracket")["project_id"]
@@ -544,27 +440,36 @@ def test_die_casting_plan_uses_its_own_facts_scope_and_operations(service):
         fact_name="model_units",
         fact_value="mm",
     )
-    dfm.analysis("discover", project_id=project_id, process="die_casting")
+    discovery = dfm.analysis("discover", project_id=project_id, process="die_casting")
     result = dfm.analysis("plan", project_id=project_id, process="die_casting")
     status = dfm.project("status", project_id=project_id)
 
     assert result["plan"]["process"] == "die_casting"
+    assert result["plan"]["discovery_snapshot_refs"] == [
+        discovery["snapshot"]["snapshot_id"]
+    ]
     assert result["plan"]["scope_id"] == "die_casting.topology-baseline"
     assert [item["calculator_id"] for item in result["plan"]["operations"]] == [
         "load_geometry",
         "inspect_topology",
     ]
-    assert result["plan"]["status"] == "blocked"
-    assert result["capability"]["error_code"] == "unsupported_capability"
     assert status["project"]["process"] == "die_casting"
     assert status["project"]["process_source"] == "user_selected"
 
 
-def test_new_parasolid_input_is_rejected(service):
+def test_parasolid_capability_is_local_and_does_not_disable_step(service):
     dfm, temp = service
-    project_id = dfm.project("create", name="Retired Parasolid input")["project_id"]
+    project_id = dfm.project("create", name="NX backend capability")["project_id"]
     source = temp / "part.x_t"
     source.write_text("Parasolid transmit text file\nbody data\n", encoding="ascii")
-    with pytest.raises(DFMError) as exc_info:
-        dfm.project("add_input", project_id=project_id, path=str(source))
-    assert exc_info.value.code == "input_type_unsupported"
+    dfm.project("add_input", project_id=project_id, path=str(source))
+
+    status = dfm.project("status", project_id=project_id)
+
+    assert status["project"]["inputs"][0]["format_id"] == "parasolid_xt"
+    assert status["capabilities"]["parasolid"]["status"] == "dependency_missing"
+    assert status["capabilities"]["step"]["status"] == "dependency_missing"
+    dfm.analysis("discover", project_id=project_id)
+    plan = dfm.analysis("plan", project_id=project_id)
+    assert plan["plan"]["status"] == "blocked"
+    assert plan["capability"]["status"] == "dependency_missing"

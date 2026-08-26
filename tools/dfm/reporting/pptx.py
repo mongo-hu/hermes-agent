@@ -287,22 +287,7 @@ class PythonPptxReportRenderer(ReportRenderer):
         _text(slide, "注塑成型 · 可制造性评估", 1.18, 2.12, 4.9, 0.42, size=17, color="B8DDE1")
         input_name = Path(str(context.result.get("input") or "未命名零件")).name
         _text(slide, input_name, 1.18, 3.0, 5.2, 0.7, size=21, color=_WHITE, bold=True, valign="top")
-        verification = str(
-            context.result.get("verification_level") or "unspecified"
-        ).upper()
-        assumed_pull = "是" if context.result.get("assumed_pull_direction") else "否"
-        _text(
-            slide,
-            f"工艺：{context.process}\n规则范围：{context.scope_id}"
-            f"\n验证等级：{verification} · 拉模方向为假设值：{assumed_pull}",
-            1.18,
-            4.0,
-            5.2,
-            1.25,
-            size=12,
-            color="CDD5DF",
-            valign="top",
-        )
+        _text(slide, f"工艺：{context.process}\n规则范围：{context.scope_id}", 1.18, 4.0, 5.2, 0.9, size=12, color="CDD5DF", valign="top")
         image = _safe_image(context.artifact_dir, "overview.png") or _safe_image(context.artifact_dir, "model.png")
         _shape(slide, 7.0, 0.72, 5.55, 5.95, _WHITE)
         if image:
@@ -432,10 +417,6 @@ class PythonPptxReportRenderer(ReportRenderer):
             "未展示证据图的问题仍完整保存在 JSON 和 Markdown artifact 中。",
             "分析结论用于首轮可制造性筛查；最终设计决策仍需结合材料、模具方案和企业标准复核。",
         ]
-        if context.result.get("verification_level") == "experimental":
-            notes.append(
-                "本次 OCCT 几何算法为 EXPERIMENTAL，结果不得表述为 certified。"
-            )
         for index, note in enumerate(notes, start=1):
             y = 2.08 + (index - 1) * 0.86
             _text(slide, f"0{index}", 1.25, y, 0.65, 0.42, size=16, color="5ED0D9", bold=True)

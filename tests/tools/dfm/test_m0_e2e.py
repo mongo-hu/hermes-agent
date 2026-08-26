@@ -32,6 +32,8 @@ STEP_FIXTURE = Path("tests/fixtures/dfm/step/injection_plate_with_hole.step").re
 
 def _confirm_step_facts(project_id: str) -> None:
     for name, value in {
+        "process": "injection",
+        "material": "ABS",
         "pull_dir": [0, 0, 1],
         "model_units": "mm",
     }.items():
@@ -111,7 +113,7 @@ def test_production_step_intake_rejects_fake_content_without_fake_results(tmp_pa
 
 
 class SuccessfulTestAnalyzer:
-    key = "occt"
+    key = "step"
     version = "m0-test-only"
     supported_inputs = ("step",)
 
@@ -156,6 +158,7 @@ def test_injected_analyzer_vertical_slice_returns_desktop_compatible_artifact(tm
             path=f"@file:{source}",
         )
         for name, value in {
+            "process": "injection",
             "material": "ABS",
             "pull_dir": [0, 0, 1],
             "model_units": "mm",

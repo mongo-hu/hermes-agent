@@ -79,60 +79,6 @@ class ProgressAnalyzer(ControlledAnalyzer):
         return []
 
 
-class FeatureAnalyzer:
-    key = "features"
-    version = "1"
-    supported_inputs = ("step",)
-
-    def capability(self, context):
-        return Capability(self.key, CapabilityStatus.AVAILABLE, "test only")
-
-    def run(self, context: AnalyzerContext, cancellation):
-        cancellation.raise_if_cancelled()
-        output = context.project_dir / "runs" / context.run_id / "artifacts"
-        output.mkdir(parents=True, exist_ok=True)
-        feature_path = output / "features.json"
-        feature_path.write_text(
-            json.dumps(
-                {
-                    "input_sha256": "a" * 64,
-                    "features": [
-                        {
-                            "feature_id": "feature-drilled-hole-1",
-                            "kind": "drilled_hole",
-                            "source_refs": ["input:" + "a" * 64],
-                            "confidence": 0.82,
-                            "subtype": "cylindrical_hole",
-                            "geometry_refs": [
-                                {
-                                    "kind": "face",
-                                    "index": 4,
-                                    "input_sha256": "a" * 64,
-                                }
-                            ],
-                            "parameters": {"diameter_mm": 5.0},
-                            "method": "occt_internal_cylinder_aag",
-                            "algorithm_version": "occt-dfm-geometry-1.0.0",
-                            "input_sha256": "a" * 64,
-                            "quality": {"maturity": "experimental"},
-                            "diagnostics": {},
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-        return [
-            ArtifactRecord(
-                f"features_{context.run_id}",
-                "features",
-                f"runs/{context.run_id}/artifacts/features.json",
-                "application/json",
-                "2026-08-11T00:00:00Z",
-            )
-        ]
-
-
 class InspectingExecutor:
     def __init__(self, inspect):
         self.inspect = inspect
@@ -211,27 +157,6 @@ def test_run_succeeds_and_registers_safe_artifact(job_env):
     assert (workspace.project_dir(project_id) / finished.artifacts[0].relative_path).exists()
 
 
-def test_successful_run_registers_structured_occt_features(job_env):
-    workspace, project_id, _, _, managers = job_env
-    registry = AnalyzerRegistry()
-    registry.register(FeatureAnalyzer())
-    manager = JobManager(workspace, registry, DFMConfig())
-    managers.append(manager)
-
-    run = manager.start(project_id, "features")
-    _wait_status(manager, project_id, run.run_id, RunStatus.SUCCEEDED)
-    manifest = ManifestStore(workspace.project_dir(project_id)).load()
-
-    assert len(manifest.features) == 1
-    recognized = manifest.features[0]
-    assert recognized.kind == "drilled_hole"
-    assert recognized.subtype == "cylindrical_hole"
-    assert recognized.geometry_refs[0].kind == "face"
-    assert recognized.geometry_refs[0].index == 4
-    assert recognized.parameters == {"diameter_mm": 5.0}
-    assert recognized.quality["maturity"] == "experimental"
-
-
 def test_run_persists_incremental_progress_artifacts_and_event_log(job_env):
     workspace, project_id, _, _, managers = job_env
     analyzer = ProgressAnalyzer()
@@ -276,8 +201,8 @@ def test_run_executes_and_persists_the_named_plan_snapshot(job_env):
         "ready",
         "2026-07-15T00:00:00Z",
         process="injection",
-        scope_id="injection.geometry-core",
-        scope_version="4.0.0",
+        scope_id="injection.wall-draft",
+        scope_version="1.0.0",
     )
 
     run = manager.start(project_id, "test", plan=plan)
@@ -297,31 +222,8 @@ def test_run_can_be_cancelled_cooperatively(job_env):
     run = manager.start(project_id, "test")
     assert analyzer.started.wait(1)
 
-    manager.cancel(project_id, run.run_id, user_confirmed=True)
+    manager.cancel(project_id, run.run_id)
 
-    assert _wait_status(manager, project_id, run.run_id, RunStatus.CANCELLED)
-
-
-def test_active_run_rejects_unconfirmed_cancel_before_configured_timeout(job_env):
-    workspace, project_id, registry, analyzer, managers = job_env
-    manager = JobManager(
-        workspace,
-        registry,
-        DFMConfig(timeout_seconds=900, geometry_timeout_seconds=900),
-    )
-    managers.append(manager)
-    run = manager.start(project_id, "test")
-    assert analyzer.started.wait(1)
-
-    with pytest.raises(DFMError) as exc_info:
-        manager.cancel(project_id, run.run_id)
-
-    assert exc_info.value.code == "cancel_confirmation_required"
-    assert exc_info.value.details["timeout_seconds"] == 900
-    assert exc_info.value.details["remaining_seconds"] > 0
-    assert manager.status(project_id, run.run_id).status is RunStatus.RUNNING
-
-    manager.cancel(project_id, run.run_id, user_confirmed=True)
     assert _wait_status(manager, project_id, run.run_id, RunStatus.CANCELLED)
 
 

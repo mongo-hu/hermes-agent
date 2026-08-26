@@ -8,7 +8,6 @@ from tools.dfm.contracts import (
     FeatureRecord,
     FusionLinkRecord,
     ObservationRecord,
-    RegionRecord,
     RuleBinding,
 )
 
@@ -70,7 +69,6 @@ def test_feature_observation_and_fusion_link_match_formal_schemas():
         fusion_link_refs=[link.fusion_link_id],
         provider_versions={"occt_cpp_molding_feature_recognizer": "1.0.0"},
         content_sha256="b" * 64,
-        process="injection",
         geometry_snapshot_ref="artifact.geometry_snapshot",
         topology_snapshot_id="topology.snapshot.1",
         render_mesh_snapshot_id="render.snapshot.1",
@@ -80,24 +78,11 @@ def test_feature_observation_and_fusion_link_match_formal_schemas():
             "artifact.render_scene",
         ],
     )
-    region = RegionRecord(
-        region_id=feature.region_refs[0],
-        input_sha256=feature.input_sha256,
-        coordinate_system="model",
-        mode="whole_model",
-        semantic_label="ordinary.whole_model",
-        source_refs=[snapshot.snapshot_id],
-        version="1",
-        content_sha256="c" * 64,
-        role="measurement_target",
-        feature_refs=[feature.feature_id],
-    )
 
     _validate("feature.schema.json", feature.to_dict())
     _validate("observation.schema.json", observation.to_dict())
     _validate("fusion_link.schema.json", link.to_dict())
     _validate("discovery_snapshot.schema.json", snapshot.to_dict())
-    _validate("region.schema.json", region.to_dict())
 
 
 def test_rule_binding_fact_dependencies_match_formal_schema():

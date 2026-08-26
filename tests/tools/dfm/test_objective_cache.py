@@ -18,27 +18,24 @@ def _plan(*, rule=1.0, pull=(0, 0, 1)):
     return PlanRecord(
         "plan_1",
         "step",
-        ["occt"],
+        ["step"],
         "ready",
         "now",
         process="injection",
-        scope_id="injection.geometry-core",
-        scope_version="4.0.0",
+        scope_id="injection.wall-draft",
+        scope_version="2.0.0",
         input_ids=["input_1"],
         input_hashes={"input_1": "a" * 64},
         rules={"min_draft_deg": EffectiveRule(rule, "degree", "scope")},
         operations=[
-            PlanOperation("geometry.preflight", "geometry_preflight"),
+            PlanOperation("geometry.load", "load_geometry"),
             PlanOperation(
-                "topology.index", "index_topology", ["geometry.preflight"]
+                "geometry.topology", "inspect_topology", ["geometry.load"]
             ),
             PlanOperation(
-                "topology.aag", "build_aag", ["topology.index"]
-            ),
-            PlanOperation(
+                "geometry.draft",
                 "measure_draft",
-                "measure_draft",
-                ["topology.aag"],
+                ["geometry.topology"],
                 ["injection.geometry.draft"],
                 ["draft_angle_deg"],
                 arguments={
@@ -52,8 +49,8 @@ def _plan(*, rule=1.0, pull=(0, 0, 1)):
 def test_operation_fingerprint_ignores_hermes_rule_but_tracks_geometry_arguments():
     common = {
         "input_sha256": "a" * 64,
-        "analyzer_key": "occt",
-        "analyzer_version": "occt-dfm-geometry-1.0.0",
+        "analyzer_key": "step",
+        "analyzer_version": "worker-2",
     }
 
     baseline = operation_fingerprints(_plan(), **common)
@@ -61,10 +58,9 @@ def test_operation_fingerprint_ignores_hermes_rule_but_tracks_geometry_arguments
     changed_pull = operation_fingerprints(_plan(pull=(0, 1, 0)), **common)
 
     assert baseline == changed_rule
-    assert baseline["geometry.preflight"] == changed_pull["geometry.preflight"]
-    assert baseline["topology.index"] == changed_pull["topology.index"]
-    assert baseline["topology.aag"] == changed_pull["topology.aag"]
-    assert baseline["measure_draft"] != changed_pull["measure_draft"]
+    assert baseline["geometry.load"] == changed_pull["geometry.load"]
+    assert baseline["geometry.topology"] == changed_pull["geometry.topology"]
+    assert baseline["geometry.draft"] != changed_pull["geometry.draft"]
 
 
 def test_cache_restores_objective_checkpoint_into_new_run(tmp_path):
@@ -77,12 +73,12 @@ def test_cache_restores_objective_checkpoint_into_new_run(tmp_path):
                 "run_id": "run_old",
                 "input_sha256": "a" * 64,
                 "process": "injection",
-                "scope_id": "injection.geometry-core",
+                "scope_id": "injection.wall-draft",
                 "producer_contract": "measurement_only",
                 "measurements": [
                     {
                         "measurement_id": "measurement-draft",
-                        "operation_id": "measure_draft",
+                        "operation_id": "geometry.draft",
                         "calculator_id": "measure_draft",
                         "metric_id": "injection.geometry.draft",
                         "quantity_id": "draft_angle_deg",
@@ -110,8 +106,8 @@ def test_cache_restores_objective_checkpoint_into_new_run(tmp_path):
     cache = ObjectiveOperationCache()
     common = {
         "input_sha256": "a" * 64,
-        "analyzer_key": "occt",
-        "analyzer_version": "occt-dfm-geometry-1.0.0",
+        "analyzer_key": "step",
+        "analyzer_version": "worker-2",
     }
 
     cache.publish(tmp_path, "run_old", _plan(), [artifact], **common)

@@ -131,7 +131,9 @@ def materialize_viewer_manifest(
         "process": plan.process,
         "scope_id": plan.scope_id,
         "scope_version": plan.scope_version,
-        "verification_level": plan.verification_level,
+        "verification_level": (
+            "experimental" if "occt" in plan.analyzer_keys else "reference"
+        ),
         "mesh_path": Path(by_kind["render_mesh"].relative_path).name,
         "topology_path": Path(by_kind["topology_map"].relative_path).name,
         "measurements_path": Path(by_kind["measurements"].relative_path).name,

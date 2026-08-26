@@ -12,13 +12,15 @@ from typing import Any
 from .contracts import (
     DiscoverySnapshotRecord,
     FeatureRecord,
-    GeometryRef,
     InputRecord,
     ProjectManifest,
     RegionRecord,
+    GeometryRef,
 )
 from .errors import DFMError
-from .feature_recognition import OCCTCppFeatureRecognitionProvider
+from .feature_recognition import (
+    OCCTCppFeatureRecognitionProvider,
+)
 from .ontology import LocalOntologyStore
 
 
@@ -38,7 +40,7 @@ def _content_hash(payload: dict[str, Any]) -> str:
 
 
 class DiscoveryEngine:
-    """Freeze deterministic discovery state before objective planning."""
+    """Own discovery identities while the external OCCT C++ engine is pending."""
 
     version = "hermes-discovery-v2"
 
@@ -55,7 +57,9 @@ class DiscoveryEngine:
         )
         self.catalog = self._load_catalog()
         self.ontology_store = ontology_store
-        self.placeholder_providers = (OCCTCppFeatureRecognitionProvider(),)
+        self.placeholder_providers = (
+            OCCTCppFeatureRecognitionProvider(),
+        )
 
     @staticmethod
     def active_inputs(manifest: ProjectManifest) -> list[InputRecord]:
@@ -148,9 +152,7 @@ class DiscoveryEngine:
         regions = self._partition_ordinary_regions(
             features, regions, manifest.process or "injection"
         )
-        return replace(
-            manifest, features=features, regions=regions, updated_at=_utc_now()
-        )
+        return replace(manifest, features=features, regions=regions, updated_at=_utc_now())
 
     @staticmethod
     def _geometry_key(ref: GeometryRef) -> tuple[str, int, str]:
@@ -276,10 +278,7 @@ class DiscoveryEngine:
                         raise DFMError(
                             "analysis_region_overlap",
                             "Two feature regions claim the same topology for one metric.",
-                            {
-                                "metric_id": metric_id,
-                                "region_ids": [owner, region.region_id],
-                            },
+                            {"metric_id": metric_id, "region_ids": [owner, region.region_id]},
                         )
                     claims[key] = region.region_id
                 targets.append(
@@ -300,9 +299,7 @@ class DiscoveryEngine:
                 return [dict(item) for item in published]
         return list(self.catalog["feature_metric_bindings"])
 
-    def freeze(
-        self, manifest: ProjectManifest
-    ) -> tuple[ProjectManifest, DiscoverySnapshotRecord]:
+    def freeze(self, manifest: ProjectManifest) -> tuple[ProjectManifest, DiscoverySnapshotRecord]:
         refreshed = self.refresh_candidates(manifest)
         active = self.active_inputs(refreshed)
         input_hashes = {item.input_id: item.sha256 for item in active}
@@ -327,14 +324,10 @@ class DiscoveryEngine:
             "input_hashes": input_hashes,
             "process": refreshed.process,
             "confirmed_fact_refs": [item.fact_id for item in facts],
-            "observation_refs": [
-                item.observation_id for item in refreshed.observations
-            ],
+            "observation_refs": [item.observation_id for item in refreshed.observations],
             "feature_refs": [item.feature_id for item in features],
             "region_refs": [item.region_id for item in regions],
-            "fusion_link_refs": [
-                item.fusion_link_id for item in refreshed.fusion_links
-            ],
+            "fusion_link_refs": [item.fusion_link_id for item in refreshed.fusion_links],
             "provider_versions": self.provider_versions(),
         }
         content_sha256 = _content_hash(identity)
@@ -428,7 +421,10 @@ class DiscoveryEngine:
             observation_kinds = recognizer.get("observation_kinds", [])
             if (
                 not recognizer.get("recognizer_id")
-                or (not recognizer.get("feature_kind") and not observation_kinds)
+                or (
+                    not recognizer.get("feature_kind")
+                    and not observation_kinds
+                )
                 or not isinstance(observation_kinds, list)
                 or any(not item for item in observation_kinds)
                 or not isinstance(recognizer.get("region_roles"), list)

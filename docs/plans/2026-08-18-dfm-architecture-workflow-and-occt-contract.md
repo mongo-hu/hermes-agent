@@ -17,7 +17,7 @@ OCCT C++ 交付要求和关键数据契约。完整字段以 `tools/dfm/schemas/
 - 规划中的 Django 管理服务负责 DFM 本体、规则生成/审核、默认/企业规则集和发布；当前尚未交付；
 - Hermes 安装已发布的本体/规则只读快照，负责项目、事实、澄清、通用计划编译、规则执行、
   评价、证据、Finding 和报告；
-- PythonOCC 与 NX 已从当前执行、回归和降级链路移除；几何执行只能使用显式探测通过的外部 Engine；
+- PythonOCC 只保留为参考实现、算法原型和契约回归，不作为生产能力证明；
 - 神经网络可用于候选生成、分类和排序，但几何事实必须由确定性几何算法验证；
 - NX/Parasolid 路线延期，不属于当前 STEP 生产闭环的前置条件；
 - 各工程只通过版本化 Snapshot、JSON Schema、Artifact 和 Job 协议集成，不共享内部对象或数据库。
@@ -52,16 +52,16 @@ flowchart LR
 | Hermes | 本地只读快照、Manifest、事实、澄清、DiscoverySnapshot、通用 AnalysisPlan、规则执行、Evaluation、Evidence、Finding、报告 | CAD 内核算法、在线编辑正式规则、伪造特征或几何值 |
 | OCCT C++ Engine | STEP Loader、Shape Healing、Topology/Render Snapshot、特征候选、Feature/Region、客观 Calculator、Artifact | 用户事实确认、规则阈值、pass/fail、严重程度、建议和报告 |
 | ML 辅助模块 | 对候选 Feature/Region 分类、排序或给出置信度 | 单独产生最终几何事实或绕过几何验证 |
-| 外部 Engine Adapter | 探测并调用版本固定的 Analysis Situs/OCCT CLI，校验 JSONL、Artifact 和哈希 | 规则阈值、Evaluation、静默降级 |
+| PythonOCC Reference | 合成样件、协议回归、算法对照、快速试验 | 生产认证和静默降级 |
 | 知识模块 | 文档版本、Chunk、检索与 Citation；辅助规则起草和解释 | 几何计算、直接发布阈值、替代规则审核 |
 
 独立 C++ 项目可以部署为本地 Worker 或远程服务，但必须消费和产生同一份契约。Hermes 不应
 链接 C++ 项目的内部库，也不应依赖 OCCT 对象、内存地址或进程内 Shape Handle。
 
-当前 Hermes 实际运行链路是“随仓库 Snapshot Schema 2 → 本地 SQLite → ordinary 全模型
-Discovery fallback → 外部 Analysis Situs/OCCT 实验级 Objective → Hermes
-Evaluation/Evidence/Report”。图中的外部 Geometry Discovery/Recognizer 和 Django 发布仍是目标
-链路；外部 Objective 已接通，但不能把实验级 Calculator 或 ordinary fallback 表述为生产认证。
+当前 Hermes 保留“随仓库 Snapshot Schema 2 → 本地 SQLite → ordinary 全模型 Discovery fallback
+→ PythonOCC 参考 Objective → Hermes Evaluation/Evidence/Report”链路；同时新增显式选择的
+`dfm-geometry` experimental Objective Adapter 和 Desktop 3D Viewer。外部程序已经接通不代表生产
+认证完成：Django 发布、C++ Geometry Discovery 闭环和 certified Calculator 仍是目标生产链路。
 
 本体只描述稳定业务语义和关系，不保存算法实现。发布器必须验证本体中的 `worker_kind`、
 `worker_role`、`worker_metric_id` 和 `quantity_id` 能在目标 OCCT Capability 中解析；验证失败的
@@ -72,7 +72,7 @@ Check 不得发布为可执行能力。完整库表见
 
 | 代码仓库 | 建议技术栈 | 主要职责 | 当前状态 |
 | --- | --- | --- | --- |
-| `hermes-agent` | Python；Desktop 为 Electron/React/TypeScript | Agent、DFM toolset/skill、项目与 Run、本地 Snapshot、通用编译/Evaluation/Evidence/Report、Desktop 交互 | 已接通实验级外部 Objective |
+| `hermes-agent` | Python；Desktop 为 Electron/React/TypeScript | Agent、DFM toolset/skill、项目与 Run、本地 Snapshot、通用编译/Evaluation/Evidence/Report、Desktop 交互 | 已有参考闭环 |
 | 后台管理 Web（独立仓库） | 以现有前端栈为准，建议 React/TypeScript | 本体字典、规则编辑/生成、审核、发布、企业覆盖和审计 UI | 待实施 |
 | DFM 管理服务（独立 Django 仓库） | Django/DRF、MySQL 8.0+；异步任务按实际消费者引入 | 九张中心表、知识 Citation、规则审核、Snapshot Schema 2 发布 API | 待实施 |
 | `dfm-occt-worker` | C++17/20、OCCT、CMake/CTest | STEP、Snapshot、Recognizer、Calculator、几何 Artifact、Capability/Job API | 待实施 |
@@ -210,7 +210,7 @@ Hermes Evaluation Engine v2 必须：
 5. 先计算一次表达式结果，再使用 `>=/<=/>/</==/!=/between` 做一次确定性判断。
 
 `metric_id` 表示 OCCT 测量的客观几何量；`check_id` 表示 DFM 要判断的业务问题。一个 Metric 可以被
-多个 Check 复用，一个 Check 也可以绑定多个 Metric/Quantity。外部 Objective Schema 当前保持版本 2，
+多个 Check 复用，一个 Check 也可以绑定多个 Metric/Quantity。Objective Schema 仍保持版本 4，
 因为表达式只属于 Hermes 的 RuleBinding/Evaluation，不进入 OCCT 请求或结果协议。
 
 Check、Operand 和 Factor 不再由注塑适配器逐项硬编码。Agent 从本地本体关系
@@ -256,23 +256,24 @@ Measurement 的可追溯 Finding；后续由专用复合证据 Renderer 同时�
 Feature 的 provenance/properties 必须记录模型 ID、模型版本、输入表示和置信度；最终 Region
 仍必须通过 TopologySnapshot 下的 GeometryRef 定位。
 
-## 6. 当前外部 Objective Schema 2
+## 6. Objective Schema 4
 
 `ObjectiveTaskRequest` 只在 DiscoverySnapshot 冻结后产生，包含：
 
 - `run_id`、输入 SHA256 和格式；
 - process/scope 身份；
-- 使用稳定 `operation_id`/`calculator_id` 的 Operations；Hermes 内部的 Feature/Region/Fact 依赖不泄漏到 Engine；
+- 完整 Region 定义；
+- 使用稳定 `calculator_id` 的 Operations；
 - 已解析且带 `source_ref` 的几何参数。
 
-成功结果为 `ObjectiveResultManifest`，并固定登记 `preflight.json`、`topology.json`、
-`render_mesh.json`、`features.json`、`measurements.json`、`metric_fields.json` 与 `engine_result.json`。Backend 不返回
-Evaluation、FailedPatch、Evidence、severity、rule 或 recommendation。
+成功结果为 `ObjectiveResultManifest`，至少包含一个 Measurement Artifact，并包含 Operation
+声明的 ScalarField、RenderScene、TopologyMap 等客观 Artifact。Backend 不返回 Evaluation、
+FailedPatch、Evidence、severity、rule 或 recommendation。
 
-当前本地 CLI 使用 Objective Schema 2 和 `dfm.geometry.request/event/result/v1`。只有数据语义发生
-不兼容变化并由 Hermes 与 Engine 原子升级时才修改版本，不能把未来 Discovery/Region 契约的
-版本 4 直接套到现有可执行文件。
-只有数据语义本身发生不兼容变化才升级版本。
+Hermes 内部 Objective Schema 保持版本 4，不因为生产实现从 PythonOCC 切换到 OCCT C++ 而修改。
+本地 Adapter 在进程边界把 Plan 映射为 `dfm.geometry.request/v1` 与 C++ Objective Task Schema 2，
+再把结果还原为 Hermes 的 Measurement/Artifact 语义；这个传输层版本不替代共享 Schema 4。
+只有数据语义本身发生不兼容变化才升级共享版本。
 
 ## 7. Snapshot 与拓扑身份
 
@@ -312,7 +313,7 @@ Hermes 只能把 `certified` 能力用于生产 Plan。`experimental` 可用于�
 ## 9. 独立 OCCT C++ 项目建议结构
 
 ```text
-dfm-geometry/
+dfm-occt-worker/
 ├── CMakeLists.txt
 ├── include/dfm_contract/
 ├── src/
@@ -360,7 +361,7 @@ Result 原子发布；Artifact 下载后由 Hermes 再次校验大小和 SHA256�
 - 公共错误归一为 `objective_input_invalid`、`objective_backend_unavailable`、
   `objective_calculation_failed`、`objective_result_invalid`、`objective_artifact_invalid` 和
   `run_cancelled`；Discovery 额外保留逐 Recognizer 的 blocked/not_implemented/failed 状态；
-- OCCT C++ 不可用或失败时明确阻塞，不存在备用几何后端。
+- 生产 OCCT C++ 不可用或失败时禁止自动切换到 PythonOCC。
 
 ## 12. 验收要求
 
@@ -371,7 +372,7 @@ Result 原子发布；Artifact 下载后由 Hermes 再次校验大小和 SHA256�
 5. 重复运行验证 ID、哈希、排序和结果确定性；
 6. 1/2/4/8 等并发阶梯验证吞吐、峰值内存、超时、取消、崩溃和长期泄漏；
 7. 跨输入、跨 Snapshot、错误 Entity/Triangle 和 Artifact 哈希必须被拒绝；
-8. 真实 OCCT C++ E2E 和模具工程师签字不可由模拟 Adapter 替代。
+8. PythonOCC 只做参考回归，不能替代真实 OCCT C++ E2E 和模具工程师签字。
 
 ## 13. 当前代码入口
 
@@ -388,6 +389,10 @@ Result 原子发布；Artifact 下载后由 Hermes 再次校验大小和 SHA256�
 - 当前几何能力声明：`tools/dfm/scopes/injection/geometry_capability_v1.json`
 - 特征目录：`tools/dfm/scopes/injection/feature_catalog.json`
 - OCCT C++ Provider 边界：`tools/dfm/feature_recognition/occt_cpp.py`
-- OCCT C++ Adapter：`tools/dfm/analyzers/occt.py`
+- OCCT C++ Objective Adapter：`tools/dfm/analyzers/occt.py`
+- OCCT C++ 操作图：`tools/dfm/scopes/injection/geometry_core_v4.json`
+- Viewer Manifest 物化：`tools/dfm/viewer.py`
+- Desktop 3D Viewer：`apps/desktop/src/app/dfm-viewer/`
+- PythonOCC 参考实现：`tools/dfm/geometry/step/field_export.py`
 
 开发阶段和优先级见 [DFM 开发路径](2026-07-13-dfm-hermes-agent-development-roadmap.md)。

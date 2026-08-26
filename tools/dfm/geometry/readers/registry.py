@@ -40,4 +40,3 @@ def build_default_geometry_reader_registry() -> GeometryReaderRegistry:
     registry = GeometryReaderRegistry()
     registry.register(StepGeometryReader())
     return registry
-

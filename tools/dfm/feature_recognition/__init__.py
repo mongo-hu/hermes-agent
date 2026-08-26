@@ -1,11 +1,11 @@
-"""Feature-recognition provider boundaries used by DFM Discovery."""
+"""Feature-recognition provider boundaries used by DFM discovery."""
 
-from .base import FeatureRecognitionProvider, FeatureRecognitionResult
+from .mtk import MTKFeatureRecognitionProvider
+from .nx import NXFeatureRecognitionProvider
 from .occt_cpp import OCCTCppFeatureRecognitionProvider
 
 __all__ = [
-    "FeatureRecognitionProvider",
-    "FeatureRecognitionResult",
+    "MTKFeatureRecognitionProvider",
+    "NXFeatureRecognitionProvider",
     "OCCTCppFeatureRecognitionProvider",
 ]
-

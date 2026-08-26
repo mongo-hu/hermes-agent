@@ -1,4 +1,4 @@
-"""OCCT C++ adapter behind the stable Hermes feature-recognition contract."""
+"""External OCCT C++ discovery boundary; implementation lives in another project."""
 
 from __future__ import annotations
 
@@ -11,9 +11,9 @@ from ..errors import DFMError
 
 class OCCTCppFeatureRecognitionProvider:
     key = "occt_cpp_feature_recognition"
-    version = "dfm.geometry.request/v1"
+    version = "external-contract-1"
 
-    def capability(self) -> dict[str, Any]:
+    def capability(self) -> dict:
         return {
             "provider": self.key,
             "version": self.version,
@@ -23,12 +23,11 @@ class OCCTCppFeatureRecognitionProvider:
             "supported_formats": ["step"],
             "required_fact_names": ["process", "model_units"],
             "discovery_contract_version": DISCOVERY_SCHEMA_VERSION,
-            "pythonocc": "deprecated_disabled",
             "output_contracts": [
+                "ObservationRecord[]",
                 "FeatureRecord[]",
                 "RegionRecord[]",
                 "GeometryDiscoveryResultManifest",
-                "DiscoverySnapshotRecord",
             ],
         }
 
@@ -41,12 +40,6 @@ class OCCTCppFeatureRecognitionProvider:
     ) -> FeatureRecognitionResult:
         raise DFMError(
             "unsupported_capability",
-            "The external OCCT Geometry Discovery/Recognizer call is not connected; "
-            "the Objective analyzer output must not be relabeled as a Discovery result.",
-            {
-                **self.capability(),
-                "input_id": input_record.input_id,
-                "process": process,
-            },
+            "The production OCCT C++ feature-recognition project is not connected yet.",
+            self.capability(),
         )
-

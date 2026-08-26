@@ -20,13 +20,13 @@ def test_m1_plan_and_run_round_trip_preserves_execution_snapshot():
     plan = PlanRecord(
         "plan_1",
         "step",
-        ["occt"],
+        ["step"],
         "ready",
         "2026-07-15T00:00:00Z",
         process="injection",
-        process_adapter_version="injection-geometry-core-v4",
-        scope_id="injection.geometry-core",
-        scope_version="4.0.0",
+        process_adapter_version="injection-wall-draft-v1",
+        scope_id="injection.wall-draft",
+        scope_version="1.0.0",
         input_ids=["input_1"],
         input_hashes={"input_1": "a" * 64},
         rules={
@@ -36,12 +36,12 @@ def test_m1_plan_and_run_round_trip_preserves_execution_snapshot():
                 source="injection_scope_default",
             )
         },
-        operations=[PlanOperation("geometry.preflight", "geometry_preflight", [])],
+        operations=[PlanOperation("geometry.load", "load_geometry", [])],
     )
     run = RunRecord(
         "run_1",
-        "occt",
-        "occt-dfm-geometry-1.0.0",
+        "step",
+        "worker-v1",
         RunStatus.QUEUED,
         "2026-07-15T00:00:01Z",
         "2026-07-15T00:00:01Z",
@@ -52,7 +52,7 @@ def test_m1_plan_and_run_round_trip_preserves_execution_snapshot():
     assert PlanRecord.from_dict(plan.to_dict()) == plan
     restored = RunRecord.from_dict(run.to_dict())
     assert restored.plan_id == "plan_1"
-    assert restored.plan_snapshot["scope_id"] == "injection.geometry-core"
+    assert restored.plan_snapshot["scope_id"] == "injection.wall-draft"
 
 
 @pytest.mark.parametrize(
@@ -72,16 +72,16 @@ def test_worker_event_rejects_invalid_payload(payload):
 
 def test_objective_task_and_result_round_trip_exclude_rule_and_render_policy():
     task = ObjectiveTaskRequest(
-        schema_version=2,
+        schema_version=4,
         run_id="run_1",
         input_sha256="a" * 64,
         input_format="step",
         process="injection",
-        scope_id="injection.geometry-core",
-        scope_version="4.0.0",
+        scope_id="injection.wall-draft",
+        scope_version="2.0.0",
         operations=[
             PlanOperation(
-                "measure_draft",
+                "geometry.draft",
                 "measure_draft",
                 arguments={
                     "pull_direction": ResolvedArgument([0, 0, 1], "fact:pull_dir")
@@ -91,19 +91,19 @@ def test_objective_task_and_result_round_trip_exclude_rule_and_render_policy():
     )
     request = LocalObjectiveWorkerRequest(
         schema_version=1,
-        backend_version="occt-dfm-geometry-1.0.0",
+        backend_version="worker-v1",
         input_path="inputs/part.step",
         output_dir="runs/run_1/artifacts",
         task=task,
     )
     result = ObjectiveResultManifest(
-        schema_version=2,
-        producer_version="occt-dfm-geometry-1.0.0",
+        schema_version=4,
+        producer_version="worker-v1",
         run_id="run_1",
         input_sha256="a" * 64,
         process="injection",
-        scope_id="injection.geometry-core",
-        scope_version="4.0.0",
+        scope_id="injection.wall-draft",
+        scope_version="2.0.0",
         result_path="worker_result.json",
         artifacts=[
             ObjectiveArtifactManifest(

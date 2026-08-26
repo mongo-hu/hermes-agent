@@ -546,7 +546,7 @@ class TamperingRunner(SuccessfulRunner):
         return result
 
 
-def _plan(verification_level="experimental"):
+def _plan():
     return PlanRecord(
         "plan_1",
         "step",
@@ -593,12 +593,10 @@ def _plan(verification_level="experimental"):
                 required_artifacts=["features"],
             ),
         ],
-        verification_level=verification_level,
-        assumed_pull_direction=True,
     )
 
 
-def test_capability_probe_is_cached_and_certified_plan_is_blocked(tmp_path):
+def test_capability_probe_is_cached_for_the_explicit_occt_analyzer(tmp_path):
     calls = []
     analyzer = OcctAnalyzer(
         "C:/dfm/dfm-geometry.exe",
@@ -609,11 +607,6 @@ def test_capability_probe_is_cached_and_certified_plan_is_blocked(tmp_path):
     assert analyzer.capability(context).status is CapabilityStatus.AVAILABLE
     assert analyzer.capability(context).status is CapabilityStatus.AVAILABLE
     assert len(calls) == 1
-    blocked = analyzer.capability(
-        AnalyzerContext("dfm_1", tmp_path, "step", [], plan=_plan("certified"))
-    )
-    assert blocked.status is CapabilityStatus.DISABLED
-    assert blocked.error_code == "verification_unavailable"
 
 
 def test_geometry_executable_discovery_prefers_explicit_config_then_path(

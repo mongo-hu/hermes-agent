@@ -13,12 +13,8 @@ def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path, monkey
             "input_sha256": "a" * 64,
             "measurements": [{
                 "measurement_id": "measurement-draft",
-                "algorithm_version": "occt-dfm-geometry-1.0.0",
-                "quality": {
-                    "backend": "occt",
-                    "maturity": "experimental",
-                    "certified": False,
-                },
+                "algorithm_version": "pythonocc-objective-v4",
+                "quality": {"backend": "pythonocc_demo", "certified": False},
             }],
         },
         "evaluations.json": {
@@ -78,14 +74,12 @@ def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path, monkey
     plan = PlanRecord(
         "plan_1",
         "step",
-        ["occt"],
+        ["step"],
         "ready",
         "now",
         process="injection",
-        scope_id="injection.geometry-core",
-        scope_version="4.0.0",
-        verification_level="experimental",
-        assumed_pull_direction=True,
+        scope_id="injection.wall-draft",
+        scope_version="1.0.0",
     )
     monkeypatch.setattr(result_assembler, "pptx_available", lambda: False)
 
@@ -97,11 +91,5 @@ def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path, monkey
     report = json.loads((output / "dfm_report.json").read_text(encoding="utf-8"))
     assert len(report["issues"]) == 1
     assert report["issues"][0]["images"] == ["evidence_001.png"]
-    assert report["issues"][0]["metric"]["backend"] == "occt"
-    assert report["issues"][0]["metric"]["maturity"] == "experimental"
+    assert report["issues"][0]["metric"]["backend"] == "pythonocc_demo"
     assert report["issues"][0]["metric"]["certified"] is False
-    assert report["verification_level"] == "experimental"
-    assert report["assumed_pull_direction"] is True
-    markdown = (output / "dfm_report.md").read_text(encoding="utf-8")
-    assert "Verification level: experimental" in markdown
-    assert "Pull direction assumed: yes" in markdown

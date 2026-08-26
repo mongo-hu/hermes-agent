@@ -83,26 +83,3 @@ test('unwrapWindowsVenvHermesCommand smoke-tests the venv python before trusting
     'a failed probe must fall through (return null) so the resolver reaches the bootstrap rung'
   )
 })
-
-test('developer checkout reuses the managed venv before falling back to system Python', () => {
-  const source = readMain()
-  const fnStart = source.indexOf('function findPythonForRoot(')
-  assert.notEqual(fnStart, -1, 'findPythonForRoot must exist in main.ts')
-  const fnEnd = source.indexOf('\nfunction ', fnStart + 1)
-  const body = source.slice(fnStart, fnEnd === -1 ? undefined : fnEnd)
-
-  assert.match(
-    body,
-    /const managedPython = getVenvPython\(VENV_ROOT\)/,
-    'a source checkout without its own venv must probe the managed desktop venv'
-  )
-  assert.match(
-    body,
-    /if \(fileExists\(managedPython\)\) \{\s*return managedPython\s*\}/,
-    'the usable managed interpreter must be returned for the source checkout'
-  )
-  assert.ok(
-    body.indexOf('return managedPython') < body.indexOf('return findSystemPython()'),
-    'managed venv fallback must run before system Python discovery'
-  )
-})

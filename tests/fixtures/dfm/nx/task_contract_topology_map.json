@@ -1,0 +1,35 @@
+{
+  "schema_version": 2,
+  "map_id": "topology_golden_part",
+  "run_id": "run_1",
+  "input_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "scene_ref": "scene_golden_part",
+  "topology_snapshot": {
+    "topology_snapshot_id": "topology_ba5565e33756d25",
+    "input_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "backend": "nx",
+    "backend_version": "NX2406",
+    "loader_id": "nx-step-loader",
+    "loader_version": "1.0",
+    "indexer_id": "nx-canonical-topology-indexer",
+    "indexer_version": "1.0",
+    "entity_count": {"body": 1, "face": 1},
+    "topology_content_sha256": "ba5565e33756d25541998611d418354f2baf58ac695f834de6f1fedef31f2048"
+  },
+  "render_mesh_snapshot_ref": "mesh_910e4f54e289d3ee",
+  "faces": [
+    {
+      "geometry_ref": {
+        "kind": "face",
+        "index": 17,
+        "input_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "topology_snapshot_id": "topology_ba5565e33756d25",
+        "entity_id": "face_000017"
+      },
+      "triangle_refs": [
+        {"primitive_id": "body-1", "triangle_id": 0, "render_mesh_snapshot_id": "mesh_910e4f54e289d3ee"},
+        {"primitive_id": "body-1", "triangle_id": 1, "render_mesh_snapshot_id": "mesh_910e4f54e289d3ee"}
+      ]
+    }
+  ]
+}

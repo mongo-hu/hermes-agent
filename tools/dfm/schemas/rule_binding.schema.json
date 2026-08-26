@@ -4,7 +4,7 @@
   "title": "Hermes DFM Rule Binding",
   "type": "object",
   "additionalProperties": false,
-  "required": ["binding_id", "operation_id", "metric_id", "quantity_id", "rule_id", "operator", "aggregation"],
+  "required": ["binding_id", "operation_id", "metric_id", "quantity_id", "rule_id", "operator", "aggregation", "required_fact_names", "feature_refs", "region_refs"],
   "properties": {
     "binding_id": {"type": "string", "minLength": 1},
     "operation_id": {"type": "string", "minLength": 1},

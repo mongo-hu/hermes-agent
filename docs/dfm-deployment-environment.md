@@ -7,45 +7,44 @@ type: deployment-guide
 
 # DFM 部署环境定义
 
-本文定义 Hermes DFM 能力当前可运行的实验环境和目标生产环境。Hermes 已通过本地 CLI 契约
-接入独立 Analysis Situs/OCCT `dfm-geometry` 可执行文件；其当前 Capability 为
-`experimental`，不等于生产认证。PythonOCC 与 NX 不在当前执行或降级链路中。
+本文定义 Hermes DFM 能力的当前参考环境和目标生产环境。PythonOCC Worker 继续用于开发、
+演示和契约回归；独立 OCCT C++ `dfm-geometry` 可执行程序已经以 experimental Adapter 接入，
+但生产级特征识别与指标计算仍需 certified 工程验收。两者不要求安装在同一个 Python 环境。
 
 一次分析的数据和排障方式见 [单次 DFM 分析数据说明](dfm-analysis-runbook.md)，生产架构和
 跨项目契约见 [DFM 架构、工作流与 OCCT C++ 契约](plans/2026-08-18-dfm-architecture-workflow-and-occt-contract.md)。
 
 ## 1. 能力状态
 
-| 能力 | 当前实验环境 | 目标生产环境 |
+| 能力 | 当前参考环境 | 目标生产环境 |
 | --- | --- | --- |
-| STEP | 独立 Analysis Situs/OCCT Engine，实验级 | 同一外部 Engine 的认证发布物 |
-| 特征识别 | Hermes ordinary whole-model fallback；外部 Engine 可产出 Objective features，但尚未接入两阶段 Discovery | OCCT C++ Recognizer + 可选 ML 候选增强 |
-| 指标 | 外部 Engine 壁厚/拔模等 Objective Calculator，实验级 | 认证的 OCCT C++ 区域化 Calculator |
+| STEP | PythonOCC 可运行、非认证；`dfm-geometry` experimental 可执行程序已接入 | certified 独立 OCCT C++ Engine |
+| 特征识别 | ordinary whole-model Discovery fallback；C++ Recognizer 产物为 experimental | OCCT C++ Recognizer + 可选 ML 候选增强 |
+| 指标 | PythonOCC 壁厚/拔模角参考场；C++ Calculator 为 experimental | certified OCCT C++ 区域化 Calculator |
 | 本体/规则 | 随仓库 Snapshot Schema 2、本地 SQLite、Hermes 确定性执行 | Django 发布系统/企业 Snapshot；Hermes 固定版本并执行 |
 | 报告 | Hermes | Hermes，保持不变 |
-| Parasolid/NX | intake 与执行路径均已移除，当前延期 | 未来可选 Backend，不阻塞 STEP |
+| Desktop 3D | Three.js 查看器消费 `dfm_viewer` Manifest | 同一 Manifest 契约，随生产 Artifact 验收 |
+| Parasolid/NX | 登记或遗留边界，当前延期 | 未来可选 Backend，不阻塞 STEP |
 | 2D/OCR/Fusion | 占位 | 后续里程碑 |
 
 只有通过 `certified` Capability、正式 E2E 和工程验收的 OCCT C++ 版本才能被声明为生产可用。
-当前 `available` 仅表示实验级 Engine 协议、版本和依赖探测通过，并且 Plan 已显式选择
-`verification_level=experimental`。
+PythonOCC 的 `available` 只表示参考 Worker 依赖齐全。
 
 ## 2. 进程与服务架构
 
-### 2.1 当前实验链路
+### 2.1 当前参考链路
 
 ```text
 Desktop / CLI / API
         |
         v
-Hermes Agent -> Discovery fallback -> Local Ontology SQLite + AnalysisPlan
-                                                    |
-                                                    v
-                                         Job Manager -> dfm-geometry
-                                                       |
-                                                       +-- preflight / topology
-                                                       +-- render_mesh / features
-                                                       +-- measurements / metric_fields / engine_result
+Hermes Agent -> DFM Service -> Local Ontology SQLite + AnalysisPlan
+                                |
+                                v
+                           Job Manager -+-> PythonOCC reference worker
+                                        +-> dfm-geometry experimental worker
+                                             |
+                                             +-- measurements / field / scene / map / viewer
 ```
 
 ### 2.2 目标生产链路
@@ -66,36 +65,36 @@ Hermes Agent -> DFM Service -> Geometry Backend Adapter
                          immutable artifacts + manifests
 ```
 
-当前实现使用本地 CLI。后续远程服务必须保持相同的 Objective、Capability、WorkerEvent 和
-Artifact 语义；Geometry Discovery Schema 1 已存在，但外部 Recognizer 调用尚未接入当前
-`discover` 动作。
+独立 C++ 项目可以先交付本地 CLI Worker，后续封装为远程服务。两种方式消费相同的
+Geometry Discovery、Objective、Capability、WorkerEvent 和 Artifact 契约。
 
 ## 3. 版本基线
 
-### 3.1 Hermes 运行环境
+### 3.1 Hermes 与 PythonOCC 参考环境
 
 | 项目 | 要求 |
 | --- | --- |
 | Python | `>=3.11,<3.14` |
+| PythonOCC | 与所用 OCCT ABI 匹配并锁定版本 |
+| VTK | 壁厚参考采样需要 |
 | PPTX | `python-pptx==1.0.2`，由 `dfm` extra 管理 |
 | 编码 | UTF-8 |
 
-### 3.2 Analysis Situs/OCCT C++ 项目
+### 3.2 OCCT C++ 项目（当前 experimental，目标 production）
 
 | 项目 | 要求 |
 | --- | --- |
-| C++ | C++17，项目内固定 |
+| C++ | C++17 或 C++20，项目内固定 |
 | 构建 | CMake；推荐 Ninja 或平台原生生成器 |
 | Windows | MSVC x64 与匹配的 Windows SDK |
 | Linux | 受支持的 GCC/Clang x86_64 工具链 |
-| Analysis Situs | `v2025.2`，提交 `aa5958932c8c85c068566ab685f2b99c0436b926` |
-| OCCT | `7.9.3`；固定编译器 ABI、构建选项和第三方依赖 |
+| OCCT | 固定明确版本、编译器 ABI、构建选项和第三方依赖 |
 | 测试 | CTest + 单元/契约/Golden/E2E；按需使用 sanitizer |
 | 交付 | 版本化可执行文件或容器镜像，不使用漂移的 `latest` |
 
-`dfm-geometry` 是独立 C++ 项目/发布物。Hermes 不把其源代码或 Python 绑定编入核心；Analyzer
-通过 `capabilities` 子命令校验 Engine、Analysis Situs、OCCT、操作表和成熟度，再通过
-`analyze --request <request.json>` 执行。
+`dfm-geometry` 作为独立 C++ 项目构建；其本地源码/构建目录被 Hermes `.gitignore` 排除。
+Hermes 不链接或 vendoring C++ 内部库，只发现已构建的可执行程序，并依赖其 Capability 与
+版本化进程协议。
 
 ### 3.3 当前协议和发布基线
 
@@ -103,13 +102,12 @@ Artifact 语义；Geometry Discovery Schema 1 已存在，但外部 Recognizer �
 | --- | --- |
 | Ontology Snapshot | Schema 2；默认 `ontology.injection.default@1.1.0` |
 | Geometry Discovery | Schema 1 |
-| 外部 Objective Task | Schema 2；`dfm.geometry.request/v1` |
-| 外部 WorkerEvent / Result | `dfm.geometry.event/v1` / `dfm.geometry.result/v1` |
-| 外部 Artifact | preflight/topology/render-mesh/features/measurements/metric-fields v1 |
+| Objective | Schema 4 |
+| 本地 Geometry 进程边界 | `dfm.geometry.request/v1`、`dfm.geometry.event/v1`、`dfm.geometry.result/v1`；C++ Objective Task Schema 2 |
+| ScalarField/RenderScene/TopologyMap/Evidence | Schema 2 |
 | Geometry Backend Capability | Schema 1 |
 
-这些版本表示当前 Hermes Analyzer 实际校验的边界；Discovery Schema 1 和通用 Backend
-Capability Schema 1 还包括下一阶段外部 Recognizer 的契约，不应误称为当前已执行的发现链路。
+这些版本表示 Hermes 侧已经存在的契约基线，不表示 `dfm-occt-worker` 或 Django 管理服务已经部署。
 
 ## 4. 当前 Python 依赖
 
@@ -125,20 +123,26 @@ python -m pip install -e ".[dfm]"
 uv sync --active --extra dfm --locked
 ```
 
-Python 环境不安装 `pythonocc-core` 或 VTK 作为几何后端。C++ 项目独立管理 Analysis Situs、
-OCCT、编译器和运行库；Hermes 只配置版本化可执行文件路径并通过契约探测兼容性。
+当前 PythonOCC 参考 Worker 仍通过 conda-forge 安装原生库：
+
+```powershell
+conda install -n hermes-dev -c conda-forge pythonocc-core vtk
+```
+
+这组依赖不应被复制为 OCCT C++ 生产项目的构建方式。生产项目独立管理 OCCT C++、编译器、
+链接库和镜像，并通过契约测试证明兼容。
 
 ## 5. Windows 开发环境
 
-### 5.1 Hermes/Python 环境
+### 5.1 Hermes/Python 参考环境
 
 ```powershell
-conda create -n hermes-dev python=3.11 pip
+conda create -n hermes-dev -c conda-forge python=3.11 pythonocc-core vtk pip
 conda activate hermes-dev
 python -m pip install -e ".[dfm]"
 ```
 
-### 5.2 Analysis Situs/OCCT C++ 项目
+### 5.2 OCCT C++ 项目
 
 建议安装：
 
@@ -170,47 +174,84 @@ npm run dev --workspace apps/desktop
 
 ```yaml
 dfm:
-  geometry:
-    executable: dfm-geometry/out/install/windows-vcpkg-vs2026-sln/bin/dfm-geometry.exe
+  runtime:
+    python: auto
+    max_concurrent_runs: 1
     timeout_seconds: 900
+  intake:
+    max_file_size_mb: 200
+    max_pages: 50
+  defaults:
+    process: injection
+  geometry:
+    executable: "C:/path/to/dfm-geometry.exe"
+    timeout_seconds: 900
+  evidence:
+    max_rendered_findings: 12
+  retention:
+    keep_failed_runs: true
 ```
 
-相对 `executable` 固定以当前 Hermes 源码根目录解析，不受桌面启动目录或项目目录
-影响。若省略 `executable`，按仓内标准 install/build 目录及 PATH 顺序发现。不得为
-这些设置新增 `.env` 变量。
+`dfm.geometry.executable` 可留空；此时 Hermes 会检查仓库旁的标准 `dfm-geometry` 构建/安装
+目录，再检查 `PATH`。配置相对路径时以 Hermes 仓库根目录解析。找不到程序时 OCCT Capability
+显式返回依赖缺失，PythonOCC、NX/Parasolid 和其他占位能力仍按各自原有状态保留。
 
-运行：
+Endpoint、并发、超时等行为设置进入 `config.yaml`；Token 等凭据进入 Hermes secret 存储或
+`.env`。NX 的遗留配置不是当前生产路线，新的部署不得依赖它完成 STEP 分析。
+
+## 7. 容器部署
+
+当前 PythonOCC 参考镜像可以用于开发和契约回归，但不得标记为生产 DFM 镜像。目标部署有
+两种受支持形态：
+
+1. **同容器独立进程**：Hermes 调用已安装的 OCCT C++ Worker；适合单机和早期 E2E；
+2. **独立计算服务**：Hermes 通过受控 HTTP Adapter 提交 Job；适合水平扩展和资源隔离。
+
+无论哪种形态，都必须：
+
+- 使用非 root 用户；
+- 为输入、Job 和 Artifact 配置隔离目录与容量限制；
+- 固定 Hermes、Engine、OCCT 和 Schema 版本；
+- 配置 CPU、内存、临时磁盘、内部线程数、并发和超时；
+- 不把 Token、客户路径或模型正文写入日志和镜像；
+- Result 原子发布，Artifact 校验大小和 SHA256；
+- Worker 崩溃不影响 Hermes 主进程和其它 Job。
+
+## 8. 环境验证
+
+### 8.1 当前参考环境
 
 ```powershell
-hermes dfm doctor --json
+python -c "from OCC.Core.BRep import BRep_Tool; print('OCC reference OK')"
+python -c "import vtk, pptx; from PIL import Image; print('Reference dependencies OK')"
+python .\hermes dfm doctor --json
 ```
 
-`dfm doctor` 当前检查 Hermes 配置、工作区、外部 `dfm-geometry` 可执行文件与 Capability、
-ProcessAdapter 和随仓库默认 Snapshot 能否编译。它不验证 Django 签名同步、撤销列表，也不
-代表实验级算法已经获得生产认证。
+`dfm doctor` 当前检查 Hermes 配置、工作区、PythonOCC 参考 Worker、`dfm-geometry` 可执行程序
+及 Capability、ProcessAdapter 和随仓库默认 Snapshot。OCCT 状态为 available 只证明 experimental
+Adapter 可执行，不代表 Django 发布、签名同步、生产认证或模具工程验收已经完成。
 
 ### 8.2 OCCT C++ 生产验收
 
 1. `GET /v1/capabilities` 或本地等价命令返回正式 Capability Schema 1；
 2. Geometry Discovery Schema 1 的正负 Fixture 全部通过；
-3. 当前 Objective Schema 2 与 request/event/result v1 的正负 Fixture 全部通过；升级契约时双方必须原子发布；
+3. Objective Schema 4 与 Geometry/Evidence Schema 2 的正负 Fixture 全部通过；
 4. STEP Loader、Snapshot、首批 Recognizer 和 Calculator 均为 `certified`；
 5. 真实产品完成 Discovery → Plan → Objective → Report E2E；
 6. 并发、超时、取消、崩溃、资源限制和 Artifact 恢复通过测试；
-7. Engine 缺失、不健康或认证级别不足时显式失败，PythonOCC/NX 不会被自动调用。
+7. PythonOCC reference 不会在生产失败时被自动调用。
 
 ## 9. 常见问题
 
 | 现象 | 检查项 |
 | --- | --- |
-| `geometry_engine_missing` | `dfm.geometry.executable`、标准 build/install 目录或 PATH 中是否存在 `dfm-geometry` |
-| `geometry_protocol_invalid` | Engine/Analysis Situs/OCCT 版本、操作表、JSON/JSONL 字段和协议版本是否与 Hermes 固定契约一致 |
+| `ModuleNotFoundError: OCC` | 当前运行的是 PythonOCC 参考链路，解释器是否安装对应 Conda 包 |
 | C++ 找不到 OCCT DLL/so | 编译器 ABI、Debug/Release、运行库搜索路径和 OCCT 发布物是否匹配 |
 | STEP 读取结果不一致 | Loader/Healing 参数、单位、OCCT 版本和输入 SHA256 |
 | Region 引用失效 | 是否跨 TopologySnapshot 复用了 Face index，GeometrySnapshot 是否一致 |
 | 并发时随机崩溃 | 是否共享 Shape/算法对象，内部线程是否过度订阅，算法是否可重入 |
 | 结果有图但无法定位 | Scene、TopologyMap、ScalarField 是否来自同一 RenderMeshSnapshot |
-| C++ 后端失败后仍有结果 | 只接受同一 Run 已登记且哈希通过的制品；检查是否误读旧 Run，任何后端静默降级都属于缺陷 |
+| C++ 后端失败后仍有结果 | 检查是否发生了禁止的 PythonOCC 静默降级 |
 
 ## 10. 发布前检查清单
 

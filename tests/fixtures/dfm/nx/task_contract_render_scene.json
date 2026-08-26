@@ -1,0 +1,27 @@
+{
+  "schema_version": 2,
+  "scene_id": "scene_golden_part",
+  "run_id": "run_1",
+  "input_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "coordinate_system": "model",
+  "unit": "mm",
+  "topology_snapshot_ref": "topology_ba5565e33756d25",
+  "render_mesh_snapshot": {
+    "render_mesh_snapshot_id": "mesh_910e4f54e289d3ee",
+    "topology_snapshot_id": "topology_ba5565e33756d25",
+    "input_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "producer": "nx",
+    "producer_version": "NX2406-plugin-1.0",
+    "tessellation": {"chordal_tolerance_mm": 0.05, "angular_tolerance_deg": 5.0},
+    "triangle_count": 2,
+    "render_mesh_sha256": "910e4f54e289d3eeefeff9a4ffdaa571952adbb238a442f655c80c02d282e0b4"
+  },
+  "primitives": [
+    {
+      "primitive_id": "body-1",
+      "render_mesh_snapshot_id": "mesh_910e4f54e289d3ee",
+      "vertices": [[0, 0, 0], [10, 0, 0], [10, 10, 1], [0, 10, 2]],
+      "triangles": [[0, 1, 2], [0, 2, 3]]
+    }
+  ]
+}

@@ -46,49 +46,55 @@ def test_default_registry_exposes_geometry_and_document_boundaries(tmp_path):
 
     capabilities = {key: registry.get(key).capability(context) for key in registry.keys()}
 
-    assert registry.keys() == ["drawing", "fusion", "occt"]
-    assert capabilities["occt"].status in {
+    assert registry.keys() == ["drawing", "fusion", "occt", "parasolid", "step"]
+    assert capabilities["step"].status in {
         CapabilityStatus.AVAILABLE,
         CapabilityStatus.DEPENDENCY_MISSING,
     }
-    assert capabilities["drawing"].status is CapabilityStatus.NOT_IMPLEMENTED
-    assert capabilities["fusion"].status is CapabilityStatus.NOT_IMPLEMENTED
-    assert capabilities["drawing"].error_code == "unsupported_capability"
+    assert capabilities["occt"].status in {
+        CapabilityStatus.AVAILABLE,
+        CapabilityStatus.DEPENDENCY_MISSING,
+        CapabilityStatus.UNHEALTHY,
+    }
+    assert capabilities["drawing"].status is CapabilityStatus.BLOCKED
+    assert capabilities["fusion"].status is CapabilityStatus.AVAILABLE
+    assert capabilities["drawing"].error_code == "input_missing"
 
 
-def test_default_registry_propagates_runtime_configuration(monkeypatch):
-    monkeypatch.setattr(
-        "tools.dfm.analyzers.registry.discover_geometry_executable",
-        lambda configured: "C:/dfm/dfm-geometry.exe",
-    )
-    config = DFMConfig(
-        geometry_executable="C:/dfm/dfm-geometry.exe",
-        geometry_timeout_seconds=123,
-    )
+def test_default_registry_propagates_runtime_configuration():
+    config = DFMConfig(runtime_python="C:/dfm/python.exe", timeout_seconds=123)
 
-    analyzer = build_default_registry(config).get("occt")
+    analyzer = build_default_registry(config).get("step")
 
-    assert analyzer.executable == "C:/dfm/dfm-geometry.exe"
+    assert analyzer.python_executable == "C:/dfm/python.exe"
     assert analyzer.timeout_seconds == 123
 
 
-@pytest.mark.parametrize("key", ["drawing", "fusion"])
-def test_unavailable_production_analyzers_never_emit_placeholder_results(tmp_path, key):
+@pytest.mark.parametrize(
+    ("key", "error_code"),
+    [("drawing", "unsupported_capability"), ("fusion", "fusion_failed")],
+)
+def test_analyzers_reject_missing_required_inputs(tmp_path, key, error_code):
     analyzer = build_default_registry().get(key)
 
     with pytest.raises(DFMError) as exc_info:
         analyzer.run(_context(tmp_path), CancellationToken())
 
-    assert exc_info.value.code in {"dependency_missing", "unsupported_capability"}
+    assert exc_info.value.code == error_code
 
 
-def test_occt_analyzer_requires_native_engine(tmp_path):
-    analyzer = build_default_registry().get("occt")
+def test_step_analyzer_requires_dependency_then_persisted_plan(tmp_path):
+    analyzer = build_default_registry().get("step")
 
     with pytest.raises(DFMError) as exc_info:
         analyzer.run(_context(tmp_path), CancellationToken())
 
-    assert exc_info.value.code in {"plan_required", "geometry_engine_missing"}
+    expected = (
+        "plan_required"
+        if analyzer.capability(_context(tmp_path)).status is CapabilityStatus.AVAILABLE
+        else "dependency_missing"
+    )
+    assert exc_info.value.code == expected
 
 
 def test_cancellation_token_is_cooperative():
