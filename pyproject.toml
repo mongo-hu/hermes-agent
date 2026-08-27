@@ -146,8 +146,7 @@ dependencies = [
 dfm = [
   "python-pptx==1.0.2",
   "rapidocr-onnxruntime>=1.4.0",
-  "pymupdf>=1.20.0",
-  "aspose-cad>=24.0.0"
+  "pymupdf>=1.20.0"
 ]
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).

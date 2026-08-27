@@ -37,50 +37,64 @@ def test_registry_rejects_duplicates_and_returns_deterministic_keys(tmp_path):
 
     assert exc_info.value.code == "analyzer_duplicate"
     assert registry.keys() == ["test"]
-    assert registry.get("test").capability(_context(tmp_path)).status is CapabilityStatus.AVAILABLE
+    assert (
+        registry.get("test").capability(_context(tmp_path)).status
+        is CapabilityStatus.AVAILABLE
+    )
 
 
 def test_default_registry_exposes_geometry_and_document_boundaries(tmp_path):
     registry = build_default_registry()
     context = _context(tmp_path)
 
-    capabilities = {key: registry.get(key).capability(context) for key in registry.keys()}
+    capabilities = {
+        key: registry.get(key).capability(context) for key in registry.keys()
+    }
 
-    assert registry.keys() == ["drawing", "fusion", "occt", "parasolid", "step"]
+    assert registry.keys() == ["drawing", "fusion", "occt_cpp", "parasolid", "step"]
     assert capabilities["step"].status in {
         CapabilityStatus.AVAILABLE,
         CapabilityStatus.DEPENDENCY_MISSING,
     }
-    assert capabilities["occt"].status in {
+    assert capabilities["occt_cpp"].status in {
         CapabilityStatus.AVAILABLE,
         CapabilityStatus.DEPENDENCY_MISSING,
         CapabilityStatus.UNHEALTHY,
     }
-    assert capabilities["drawing"].status is CapabilityStatus.BLOCKED
+    assert capabilities["drawing"].status is CapabilityStatus.AVAILABLE
     assert capabilities["fusion"].status is CapabilityStatus.AVAILABLE
-    assert capabilities["drawing"].error_code == "input_missing"
+    assert capabilities["drawing"].details["applicable"] is False
+    assert capabilities["fusion"].details["applicable"] is False
 
 
 def test_default_registry_propagates_runtime_configuration():
-    config = DFMConfig(runtime_python="C:/dfm/python.exe", timeout_seconds=123)
+    config = DFMConfig(
+        runtime_python="C:/dfm/python.exe",
+        timeout_seconds=123,
+        drawing_model="drawing-model",
+        drawing_base_url="https://models.example/v1",
+        drawing_request_timeout_seconds=45,
+    )
 
-    analyzer = build_default_registry(config).get("step")
+    registry = build_default_registry(config)
+    analyzer = registry.get("step")
+    drawing = registry.get("drawing")
 
     assert analyzer.python_executable == "C:/dfm/python.exe"
     assert analyzer.timeout_seconds == 123
+    assert drawing.model_name == "drawing-model"
+    assert drawing.base_url == "https://models.example/v1"
+    assert drawing.timeout_seconds == 45
 
 
-@pytest.mark.parametrize(
-    ("key", "error_code"),
-    [("drawing", "unsupported_capability"), ("fusion", "fusion_failed")],
-)
-def test_analyzers_reject_missing_required_inputs(tmp_path, key, error_code):
+@pytest.mark.parametrize("key", ["drawing", "fusion"])
+def test_document_analyzers_require_applicable_inputs(tmp_path, key):
     analyzer = build_default_registry().get(key)
 
     with pytest.raises(DFMError) as exc_info:
         analyzer.run(_context(tmp_path), CancellationToken())
 
-    assert exc_info.value.code == error_code
+    assert exc_info.value.code == "input_required"
 
 
 def test_step_analyzer_requires_dependency_then_persisted_plan(tmp_path):

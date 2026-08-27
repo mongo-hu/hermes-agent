@@ -12,7 +12,7 @@ FIXTURE = Path("tests/fixtures/dfm/step/injection_plate_with_hole.step").resolve
 
 
 class PreviewAnalyzer:
-    key = "occt"
+    key = "occt_cpp"
     version = "test-preview"
     supported_inputs = ("step",)
 

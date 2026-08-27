@@ -103,7 +103,7 @@ def test_viewer_manifest_maps_failed_evaluation_to_geometry_refs(tmp_path):
     plan = PlanRecord(
         "plan_1",
         "step",
-        ["occt"],
+        ["occt_cpp"],
         "ready",
         "now",
         process="injection",

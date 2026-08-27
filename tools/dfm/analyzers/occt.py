@@ -178,7 +178,7 @@ def probe_geometry_executable(executable: str) -> dict[str, Any]:
 
 
 class OcctAnalyzer:
-    key = "occt"
+    key = "occt_cpp"
     version = ENGINE_VERSION
     supported_inputs = ("step",)
 

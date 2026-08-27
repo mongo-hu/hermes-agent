@@ -72,7 +72,7 @@ def collect_diagnostics() -> dict:
             "scope_version": process_plan.scope_version,
         }
     step = registry.get("step")
-    occt = registry.get("occt")
+    occt_cpp = registry.get("occt_cpp")
     dependencies = dependency_statuses(step.python_executable)
     return {
         "ok": bool(config_report["valid"] and writable),
@@ -85,14 +85,14 @@ def collect_diagnostics() -> dict:
             "python_executable": step.python_executable,
             "dependencies": dependencies,
             "step_available": capabilities["step"]["status"] == "available",
-            "occt_executable": occt.executable,
+            "occt_executable": occt_cpp.executable,
             "occt_engine_version": ENGINE_VERSION,
-            "occt_available": capabilities["occt"]["status"] == "available",
+            "occt_available": capabilities["occt_cpp"]["status"] == "available",
         },
         "production_backend": {
             "backend_id": "external_occt_cpp",
-            "status": capabilities["occt"]["status"],
-            "connected": capabilities["occt"]["status"] == "available",
+            "status": capabilities["occt_cpp"]["status"],
+            "connected": capabilities["occt_cpp"]["status"] == "available",
             "discovery_contract_version": DISCOVERY_SCHEMA_VERSION,
             "objective_contract_version": OBJECTIVE_SCHEMA_VERSION,
             "note": "The external OCCT CLI is experimental; PythonOCC remains the reference backend and NX remains optional.",

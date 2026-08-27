@@ -15,13 +15,14 @@ def test_dfm_doctor_reports_workspace_config_and_capabilities(tmp_path, capsys):
         assert report["config"]["valid"] is True
         assert set(report["capabilities"]) == {
             "step",
-            "occt",
+            "occt_cpp",
             "parasolid",
             "drawing",
             "fusion",
         }
         assert report["capabilities"]["parasolid"]["status"] != "available"
-        assert report["capabilities"]["drawing"]["status"] == "blocked"
+        assert report["capabilities"]["drawing"]["status"] == "available"
+        assert report["capabilities"]["drawing"]["details"]["applicable"] is False
         assert report["capabilities"]["fusion"]["status"] == "available"
         assert report["runtime"]["worker_import_path"] == "tools.dfm.workers.step_worker"
         assert report["runtime"]["worker_version"] == WORKER_VERSION
@@ -38,9 +39,9 @@ def test_dfm_doctor_reports_workspace_config_and_capabilities(tmp_path, capsys):
         )
         production_backend = report["production_backend"]
         assert production_backend["backend_id"] == "external_occt_cpp"
-        assert production_backend["status"] == report["capabilities"]["occt"]["status"]
+        assert production_backend["status"] == report["capabilities"]["occt_cpp"]["status"]
         assert production_backend["connected"] is (
-            report["capabilities"]["occt"]["status"] == "available"
+            report["capabilities"]["occt_cpp"]["status"] == "available"
         )
         assert production_backend["discovery_contract_version"] == 1
         assert production_backend["objective_contract_version"] == 4

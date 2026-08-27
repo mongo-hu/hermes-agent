@@ -592,7 +592,7 @@ def _plan():
     return PlanRecord(
         "plan_1",
         "step",
-        ["occt"],
+        ["occt_cpp"],
         "ready",
         "now",
         process="injection",

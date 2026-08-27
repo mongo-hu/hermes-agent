@@ -60,10 +60,10 @@ def test_real_occt_injection_vertical_slice(tmp_path):
         plan = service.analysis(
             "plan",
             project_id=project_id,
-            analyzer_key="occt",
+            analyzer_key="occt_cpp",
         )["plan"]
         assert plan["scope_id"] == "injection.default"
-        assert plan["ontology_snapshot_id"] == "ontology.injection.default@1.1.0"
+        assert plan["ontology_snapshot_id"] == "ontology.injection.default@1.2.0"
         started = service.analysis(
             "start", project_id=project_id, plan_id=plan["plan_id"]
         )

@@ -79,7 +79,7 @@ DFMService
   实际消费本体；它不把完整数据库放入模型上下文。
 - Run 启动前会保存 Plan 快照；worker 只执行该快照对应的参数和操作。
 - OpenCascade 测量值和规则判断由确定性代码产生，不由大模型编造。选择
-  `analyzer_key=occt` 时 Objective Calculation 由独立 OCCT C++ 程序执行；完整的生产级 Geometry
+  `analyzer_key=occt_cpp` 时 Objective Calculation 由独立 OCCT C++ 程序执行；完整的生产级 Geometry
   Discovery 闭环仍是后续验收项。
 
 ## 3. 数据根目录与标识

@@ -100,7 +100,7 @@ Hermes 不链接或 vendoring C++ 内部库，只发现已构建的可执行程�
 
 | 契约 | 当前版本 |
 | --- | --- |
-| Ontology Snapshot | Schema 2；默认 `ontology.injection.default@1.1.0` |
+| Ontology Snapshot | Schema 2；默认 `ontology.injection.default@1.2.0` |
 | Geometry Discovery | Schema 1 |
 | Objective | Schema 4 |
 | 本地 Geometry 进程边界 | `dfm.geometry.request/v1`、`dfm.geometry.event/v1`、`dfm.geometry.result/v1`；信封内 Objective Task/Result 均为 Schema 4 |
@@ -190,14 +190,22 @@ dfm:
     max_rendered_findings: 12
   retention:
     keep_failed_runs: true
+  geometry:
+    backend: step       # 当前参考实现；生产 OCCT C++ Adapter 注册后改为其 analyzer key
+  drawing:
+    enabled: true
+    model: gpt-4o
+    base_url: https://api.openai.com/v1
+    request_timeout_seconds: 60
 ```
 
 `dfm.geometry.executable` 可留空；此时 Hermes 会检查仓库旁的标准 `dfm-geometry` 构建/安装
 目录，再检查 `PATH`。配置相对路径时以 Hermes 仓库根目录解析。找不到程序时 OCCT Capability
 显式返回依赖缺失，PythonOCC、NX/Parasolid 和其他占位能力仍按各自原有状态保留。
 
-Endpoint、并发、超时等行为设置进入 `config.yaml`；Token 等凭据进入 Hermes secret 存储或
-`.env`。NX 的遗留配置不是当前生产路线，新的部署不得依赖它完成 STEP 分析。
+Endpoint、模型、并发、超时等行为设置进入 `config.yaml`；二维语义提取的 `OPENAI_API_KEY` 等凭据
+进入 Hermes secret 存储或 `.env`。NX 的遗留配置不是当前生产路线，新的部署不得依赖它完成 STEP
+分析。DWG 当前未纳入正式输入格式，也不安装 Aspose.CAD 等商业 SDK。
 
 ## 7. 容器部署
 

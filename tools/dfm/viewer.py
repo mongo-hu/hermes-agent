@@ -132,7 +132,7 @@ def materialize_viewer_manifest(
         "scope_id": plan.scope_id,
         "scope_version": plan.scope_version,
         "verification_level": (
-            "experimental" if "occt" in plan.analyzer_keys else "reference"
+            "experimental" if "occt_cpp" in plan.analyzer_keys else "reference"
         ),
         "scene_path": Path(by_kind["render_scene"].relative_path).name,
         "topology_path": Path(by_kind["topology_map"].relative_path).name,
