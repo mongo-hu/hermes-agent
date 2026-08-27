@@ -1,0 +1,11 @@
+{
+  "input_id": "input_drawing_c562e5e0ec1aac08",
+  "input_sha256": "c562e5e0ec1aac08abca1382366bcbb2797b23ea83810f565549b22d13a34cf7",
+  "observation_count": 0,
+  "ocr_fragment_count": 89,
+  "provider": "hermes_drawing_pipeline",
+  "provider_version": "2.0.0",
+  "semantic_extraction": {
+    "status": "disabled_missing_configuration"
+  }
+}

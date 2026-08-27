@@ -42,7 +42,7 @@ flowchart LR
 
     AGENT <-->|发现任务 / 客观计算任务<br/>Feature · Region · Measurement| OCCT["OCCT C++ 几何引擎<br/><br/>STEP 解析 · 特征识别<br/>壁厚/拔模/圆角/孔深等计算<br/>几何定位数据"]
 
-    AGENT <-->|图纸识别任务<br/>Observation · FusionLink 候选| DRAWING["二维图纸识别分析模块<br/><br/>图纸解析 · OCR · 尺寸/公差/GD&T<br/>材料/皮纹/技术要求识别<br/>2D/3D 特征融合候选"]
+    AGENT <-->|程序化 OCR 任务<br/>原文 · 页码 · bbox · 置信度| DRAWING["二维图纸 OCR 模块<br/><br/>PDF/图片解析 · 页面渲染<br/>文字检测与识别<br/>稳定 Fragment 与诊断 Artifact"]
 
     AGENT <-->|有限 Check 上下文<br/>原因与整改说明| AI["知识检索 + LLM<br/><br/>辅助澄清 · 检索依据<br/>解释结果 · 生成整改建议<br/>不负责几何值和合格判定"]
     MGMT <-->|知识引用 / 规则草案| AI
@@ -74,7 +74,8 @@ flowchart LR
 1. 管理平台统一维护知识、本体和规则，并发布经过审核的本体规则包；
 2. Hermes 固定本次使用的规则包，负责把用户、规则和计算流程串起来；
 3. OCCT 只负责特征识别、指标计算和几何定位，不读取规则阈值；
-4. 二维图纸模块识别尺寸、公差、材料、皮纹和技术要求，并产生可追溯 Observation 与融合候选；
+4. 二维模块只做程序化 OCR；Hermes 当前会话大模型理解工程语义并提议 Observation/FusionLink，
+   程序负责校验、落库和几何关系验证；
 5. Hermes 的程序执行表达式和合格判定，不把 pass/fail 交给大模型；
 6. 知识库和 LLM 用于规则起草、依据检索、结果解释及整改建议；
 7. 客户端最终得到可定位、可追溯、可复现的 DFM 分析结果。
@@ -133,11 +134,11 @@ flowchart TB
             CAP --> GM
         end
 
-        subgraph DC["纵向能力 D · 二维图纸识别分析面"]
+        subgraph DC["纵向能力 D · Hermes 内置二维图纸分析面"]
             direction TB
-            DI["Drawing Intake / Preprocess<br/>PDF/DWG/DXF/图片 · 页面渲染 · 坐标系"]
-            DO["Engineering Information Recognition<br/>OCR · 尺寸/公差 · GD&T · 材料 · 皮纹 · 技术要求"]
-            DF["2D/3D Fusion<br/>Observation ↔ Feature/Region · 可审核 FusionLink"]
+            DI["Programmatic Drawing OCR<br/>PDF/图片 · 页面渲染 · Fragment · bbox"]
+            DO["Agent Drawing Interpretation<br/>复用当前 Hermes 模型 · Observation 提议"]
+            DF["Hybrid 2D/3D Fusion<br/>Agent 提议 · 程序落库 · 几何验证"]
             DI --> DO --> DF
         end
 
@@ -185,9 +186,12 @@ flowchart TB
     GA -- "客观几何结果" --> HE
     GA -- "Field / Scene / Map" --> HRP
 
-    HD -- "DrawingAnalysisTask" --> DI
-    DO -- "drawing_recognition Observation" --> HF
-    DF -- "FusionLink 候选" --> HD
+    HD -- "DrawingOcrTask" --> DI
+    DI -- "OCR Fragment Artifact" --> HD
+    HD -- "drawing_context / fusion_context" --> DO
+    DO -- "submit_observations" --> HF
+    DO -- "FusionLink 提议" --> DF
+    DF -- "程序校验后的 candidate / ambiguous" --> HD
     ML -.->|只增强候选，不单独确认几何事实| GR
     ML -.->|辅助 OCR/分类，不直接形成 confirmed Fact| DO
     MK -- "带 Revision 的 Citation" --> LLM
@@ -217,7 +221,7 @@ flowchart TB
     HC --> JT
     GD --> CMP
     GM --> CMP
-    DO --> MOD
+    DO -.->|复用当前会话模型| LLM
     ML --> MOD
     LLM --> MOD
     HA --> OBS
@@ -237,7 +241,7 @@ flowchart TB
     class HA,HP,HF,HD,HC,HE,HRP current;
     class MA,MR,MK,MP,MS target;
     class CAP,GD,GR,GM,GA geometry;
-    class DI,DO,DF drawing;
+    class DI,DO,DF current;
     class ML,LLM assist;
     class AS,LS,MYSQL,KS,GS store;
     class CT,JT,INF,CMP,MOD,OBS infra;
@@ -247,8 +251,9 @@ flowchart TB
 
 - **Hermes 负责分析语义和流程**：项目事实、澄清、快照固定、计划编译、确定性判定、证据和报告。
 - **OCCT 负责客观几何**：不读取规则阈值，不决定 pass/fail，不生成严重程度和整改建议。
-- **二维图纸模块负责文档事实候选**：输出带页码、bbox、原文、规范值、置信度和版本的 Observation；
-  Hermes 根据 `source_policy` 确认 Fact，并用可审核 FusionLink 关联三维 Feature/Region。
+- **二维图纸模块只负责 OCR 证据**：输出带稳定 Fragment ID、页码、bbox、原文、置信度和版本的
+  Artifact；当前 Hermes 会话大模型在 Agent event loop 内提议 Observation 和 FusionLink，程序校验
+  来源 ID、Revision 与数据契约后落库，再由几何关系/拓扑验证确定 `candidate` 或 `ambiguous`。
 - **管理服务负责可治理数据**：系统默认/企业本体和规则、知识引用、审核、发布、撤销与回滚。
 - **知识库和 AI 只辅助**：知识用于规则起草与结果解释；AI 不替代几何计算和确定性规则执行。
 - **管理库与运行库隔离**：本体库和规则库使用中心 MySQL；Agent 只安装发布后展开的只读快照，
@@ -262,7 +267,7 @@ sequenceDiagram
     actor U as 用户 / DFM 客户端
     participant H as Hermes Agent / DFM Runtime
     participant O as 本体规则运行时 / Fact Resolver
-    participant D as 2D 识别与融合（可选）
+    participant D as 程序化 2D OCR（可选）
     participant C as OCCT C++ Worker
     participant K as 知识检索 / LLM
     participant S as 项目与 Artifact 存储
@@ -276,8 +281,10 @@ sequenceDiagram
 
     opt 存在二维图纸
         H->>D: DrawingAnalysisTask（图纸文件、页码范围、文档哈希）
-        D->>D: 页面解析/OCR，识别尺寸、公差、GD&T、材料、皮纹和技术要求
-        D-->>H: Drawing Observation（页码/bbox/原文/规范值/单位/置信度/Provider 版本）
+        D->>D: 页面解析与 OCR，不做工程语义判断
+        D-->>H: OCR Fragment（稳定 ID/页码/bbox/原文/置信度/Provider 版本）
+        H->>H: 当前 Hermes 大模型读取 drawing_context 并提议工程语义
+        H->>S: submit_observations；程序校验 Fragment/Schema/Revision 后落库
         H->>O: 按 source_policy 解析 drawing_recognition 候选
         O-->>H: 自动采信 / 需要确认 / 冲突
     end
@@ -293,10 +300,11 @@ sequenceDiagram
     C->>C: Feature/Region 识别；可选 ML 只生成或排序候选
     C-->>H: Observation + Feature + Region + Snapshot/Artifact 引用
     opt 同时存在 2D Observation 与 3D Feature/Region
-        H->>H: 基于尺寸、标注引线和语义生成 2D/3D FusionLink 候选
+        H->>H: 当前 Hermes 大模型读取 fusion_context 并提议 2D/3D 关联
+        H->>C: 程序校验 ID/Feature/Region；几何算法验证引用与拓扑关系
         H-->>U: 对歧义或低置信度 FusionLink 请求审核
         U->>H: 确认、修正或拒绝关联
-        H->>S: 保存可审核 FusionLink；像素 bbox 不直接充当 CAD GeometryRef
+        H->>S: 保存 candidate/ambiguous FusionLink；Agent 不能直接确认，bbox 不充当 GeometryRef
     end
     H->>O: 按 source_policy 解析 geometry_recognition 候选 Fact
 
@@ -345,7 +353,7 @@ sequenceDiagram
 单次分析的主数据链为：
 
 ```text
-InputRecord + DrawingObservation + confirmed Fact + OntologyRuleSnapshot
+InputRecord + DrawingOcrFragment + AgentObservation + confirmed Fact + OntologyRuleSnapshot
 → GeometryDiscoveryTask
 → Observation / Feature / Region / FusionLink / GeometrySnapshot
 → DiscoverySnapshot
@@ -376,5 +384,5 @@ InputRecord + DrawingObservation + confirmed Fact + OntologyRuleSnapshot
 | 本体/规则库 | 仓库内 Snapshot Schema 2 + Agent 本地只读 SQLite | Django 中心管理、默认/企业继承、审核、签名发布、同步/撤销/回滚 |
 | 知识库 | 数据模型和 Citation 边界已设计，尚未形成生产模块 | 文档版本、Chunk、检索、固定 Citation，服务规则起草和分析解释 |
 | 三维几何 | PythonOCC 参考实现；普通全模型区域和少量参考指标 | 独立 OCCT C++ Worker 完成生产级特征识别、区域计算和几何证据 Artifact |
-| 2D/Fusion | PDF/图片 OCR、正式 Observation、材料 `source_policy`、候选/歧义 FusionLink 和降级诊断已形成基础闭环 | 完善尺寸/公差/GD&T、视图与引线识别、投影空间匹配和工程审核体验 |
-| AI | Hermes 可完成交互和说明 | 使用有界 Check Context 与带版本知识引用；始终不负责客观数值和最终判定 |
+| 2D/Fusion | 程序化 PDF/图片 OCR；Hermes Agent 提议、程序校验落库、几何验证的 Observation/FusionLink 基础闭环 | 完善尺寸/公差/GD&T、视图与引线识别、投影空间匹配和工程审核体验 |
+| AI | 默认复用 Hermes 当前会话模型完成有界 OCR 语义和融合判断，无独立 DFM 模型路由 | 使用有界 Check Context 与带版本知识引用；始终不负责客观几何数值和最终规则判定 |

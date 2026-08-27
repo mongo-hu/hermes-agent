@@ -1,0 +1,89 @@
+DFM智能分析系统总体架构
+知识驱动·规则可治理·几何可验证·结果可追溯
+DFM业务参与者
+用户与管理层
+业务使用·专家治理
+产品/模具工程师
+DFM专家
+企业管理员
+企业规则·权限管理
+发起分析·补充条件·审阅结论
+维护知识·审核规则·工程复核
+企业规则·组织权限·发布管理
+DFM产品与智能体应用层
+产品与智能体层
+02
+DFM Desktop / Web
+Hermes DFM Agent
+多端交互·Agent 编排
+规则/知识管理Web
+Hermes Gateway / REST API
+管理后台·系统集成
+模型上传·3D定位·证据·报告
+意图理解·事实澄清·分析编排
+独立管理端·字典维护·AI起草·审核发布
+第三方调用·任务订阅·结果回传
+确定性判定·证据与报告生成
+DFM核心业务与治理平台
+统一语义:Process·Feature·Region·Metric·Check·Factor·StableID
+DFM 核心业务层
+HermesDFM运行核心
+DFM管理控制核心
+03
+统一业务语义
+规则治理·运行编译
+项目与事实
+发现与融合
+计划、评价与报告
+知识库
+本体库
+规则库
+审核与发布
+确定性评价·可追溯
+Manifest - Fact - Clarification
+Observation · Feature · Region
+AnalysisPlan RuleBinding
+文档·Chunk·Citation
+Concept · Relation
+Check · Rule Set
+默认/企业·审计·签名
+source_policy·版本追溯
+DiscoverySnapshot · FusionLink
+Evaluation - Evidence - Finding
+同步到 Agent 本地只读快照
+已发布 OntologyRuleSnapshot
+本次 Run 固定输入、Discovery、Capability 与 OntologyRuleSnapshot
+DFM工程分析与计算能力
+工程分析与计算层
+04
+二维识别·三维几何
+二维图纸识别分析
+2D／3D 特征融合
+OCCTC++特征识别
+OCCTC++指标计算
+知识检索／LLM／ML辅助
+客观测量·AI 辅助
+OCR·尺寸/公差·GD&T·材料/皮纹
+Observation → Feature/Region - FusionLink
+主壁·螺钉柱·筋·凸台·孔·倒扣
+壁厚·拔模·圆角·孔深·距离/比例
+候选增强·依据检索·原因解释·整改建议
+数据、契约与IT基础设施
+数据与基础设施层
+05
+版本契约·资产存储
+管理MySQL
+Agent Local SQLite
+Project / Run Workspace
+对象存储／检索索引
+版本化数据契约
+任务、安全与可观测性
+任务调度·安全运维
+本体·规则·审核·发布审计
+只读本体规则快照
+Manifest - Plan · Evaluation
+STEP·图纸·Evidence·Chunk
+Schema · Stable ID · Hash - Signature
+Job/API·权限·日志·Trace
+目标生产架构：Hermes 负责流程与判定；OCCT 负责客观几何；知识与 AI负责辅助，不替代确定性计算和工程审核。
+DFM Architecture · 2026-08-26

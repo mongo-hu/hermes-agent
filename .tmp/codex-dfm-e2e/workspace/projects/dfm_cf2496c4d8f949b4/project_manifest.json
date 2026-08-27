@@ -1,0 +1,630 @@
+{
+  "schema_version": 1,
+  "project_id": "dfm_cf2496c4d8f949b4",
+  "name": "Mixed STEP and drawing E2E",
+  "created_at": "2026-08-27T07:51:42.402317Z",
+  "updated_at": "2026-08-27T07:51:51.054819Z",
+  "domain": "injection_molding",
+  "process": "injection",
+  "process_source": "user_confirmed",
+  "input_mode": "fusion",
+  "revision": 20,
+  "idempotency_key": null,
+  "inputs": [
+    {
+      "input_id": "input_step_d4d9c9729564172e",
+      "kind": "step",
+      "source_name": "injection_plate_with_hole.step",
+      "relative_path": "inputs/input_d4d9c9729564172e.step",
+      "size_bytes": 20215,
+      "sha256": "d4d9c9729564172eb00751afb08aa9822539782d3c29740edbc38f4f0dd29231",
+      "created_at": "2026-08-27T07:51:42.482937Z",
+      "preflight": {
+        "status": "passed",
+        "format": "iso-10303-21",
+        "brep_representation": "declared",
+        "entity_count": 442,
+        "complexity": {
+          "entity_count": 442
+        }
+      },
+      "supersedes_input_id": null,
+      "format_id": "step",
+      "representation": "brep"
+    },
+    {
+      "input_id": "input_drawing_c562e5e0ec1aac08",
+      "kind": "drawing",
+      "source_name": "dfm-system-architecture-ppt.png",
+      "relative_path": "inputs/input_c562e5e0ec1aac08.png",
+      "size_bytes": 229940,
+      "sha256": "c562e5e0ec1aac08abca1382366bcbb2797b23ea83810f565549b22d13a34cf7",
+      "created_at": "2026-08-27T07:51:42.544059Z",
+      "preflight": {},
+      "supersedes_input_id": null,
+      "format_id": "drawing",
+      "representation": "document"
+    }
+  ],
+  "facts": [
+    {
+      "fact_id": "fact_0b69668bd6c54806",
+      "name": "process",
+      "value": "injection",
+      "source": "user",
+      "status": "confirmed",
+      "unit": null,
+      "evidence_refs": [],
+      "version": "1"
+    },
+    {
+      "fact_id": "fact_e4545551c8e64d23",
+      "name": "model_units",
+      "value": "mm",
+      "source": "user",
+      "status": "confirmed",
+      "unit": null,
+      "evidence_refs": [],
+      "version": "1"
+    },
+    {
+      "fact_id": "fact_27d8a327281d4fa4",
+      "name": "material",
+      "value": "ABS",
+      "source": "user",
+      "status": "confirmed",
+      "unit": null,
+      "evidence_refs": [],
+      "version": "1"
+    },
+    {
+      "fact_id": "fact_9c5fc38e38fe4b9e",
+      "name": "pull_dir",
+      "value": [
+        0,
+        0,
+        1
+      ],
+      "source": "user",
+      "status": "confirmed",
+      "unit": null,
+      "evidence_refs": [],
+      "version": "1"
+    }
+  ],
+  "regions": [
+    {
+      "region_id": "region.ordinary.d4d9c9729564172e",
+      "input_sha256": "d4d9c9729564172eb00751afb08aa9822539782d3c29740edbc38f4f0dd29231",
+      "coordinate_system": "model",
+      "mode": "whole_model",
+      "semantic_label": "ordinary_model_region",
+      "source_refs": [
+        "recognizer:ordinary-region-fallback@1.0.0",
+        "input:input_step_d4d9c9729564172e"
+      ],
+      "version": "1.0.0",
+      "content_sha256": "58a85e8e8aec21030a6ffac06c80388f3b00744c0e85c84a24d475ce220b3df3",
+      "bbox": null,
+      "geometry_refs": [],
+      "excluded_geometry_refs": [],
+      "role": "ordinary",
+      "feature_refs": [
+        "feature.ordinary.d4d9c9729564172e"
+      ]
+    }
+  ],
+  "clarifications": [
+    {
+      "clarification_id": "clarification_process",
+      "question": "Should this project be analyzed as injection molding or die casting?",
+      "status": "answered",
+      "answer": "injection"
+    },
+    {
+      "clarification_id": "clarification_model_units",
+      "question": "What length unit was used to author the STEP model?",
+      "status": "answered",
+      "answer": "mm"
+    },
+    {
+      "clarification_id": "clarification_material",
+      "question": "What resin/material grade will be used for this part?",
+      "status": "answered",
+      "answer": "ABS"
+    },
+    {
+      "clarification_id": "clarification_pull_dir",
+      "question": "What is the confirmed mold pull direction as [x, y, z]?",
+      "status": "answered",
+      "answer": [
+        0,
+        0,
+        1
+      ]
+    }
+  ],
+  "features": [
+    {
+      "feature_id": "feature.ordinary.d4d9c9729564172e",
+      "kind": "ordinary_part",
+      "source_refs": [
+        "recognizer:ordinary-region-fallback@1.0.0",
+        "input:input_step_d4d9c9729564172e"
+      ],
+      "confidence": 1.0,
+      "input_sha256": "d4d9c9729564172eb00751afb08aa9822539782d3c29740edbc38f4f0dd29231",
+      "region_refs": [
+        "region.ordinary.d4d9c9729564172e"
+      ],
+      "properties": {
+        "fallback": true,
+        "coverage": "whole_model",
+        "requested_feature_recognizers": [
+          "injection-pull-direction-candidate",
+          "injection-main-wall",
+          "injection-screw-boss",
+          "injection-boss",
+          "injection-rib",
+          "injection-undercut-side-action",
+          "injection-appearance-surface-candidate",
+          "generic-hole"
+        ]
+      },
+      "relationships": [],
+      "recognizer": "ordinary-region-fallback",
+      "recognizer_version": "1.0.0",
+      "status": "confirmed"
+    }
+  ],
+  "observations": [],
+  "fusion_links": [],
+  "discovery_snapshots": [
+    {
+      "snapshot_id": "discovery.snapshot.4de358d3b851bc44",
+      "created_at": "2026-08-27T07:51:50.920960Z",
+      "input_hashes": {
+        "input_step_d4d9c9729564172e": "d4d9c9729564172eb00751afb08aa9822539782d3c29740edbc38f4f0dd29231",
+        "input_drawing_c562e5e0ec1aac08": "c562e5e0ec1aac08abca1382366bcbb2797b23ea83810f565549b22d13a34cf7"
+      },
+      "observation_refs": [],
+      "feature_refs": [
+        "feature.ordinary.d4d9c9729564172e"
+      ],
+      "region_refs": [
+        "region.ordinary.d4d9c9729564172e"
+      ],
+      "fusion_link_refs": [],
+      "provider_versions": {
+        "hermes_discovery": "hermes-discovery-v2",
+        "ordinary_region": "1.0.0",
+        "drawing": "2.0.0",
+        "drawing_geometry_fusion": "2.0.0",
+        "occt_cpp_feature_recognition": "external-contract-1:not_implemented"
+      },
+      "content_sha256": "4de358d3b851bc4419db65b33fca038ea81b9e6d27dd0938a41846203763b052",
+      "status": "frozen",
+      "process": "injection",
+      "confirmed_fact_refs": [
+        "fact_0b69668bd6c54806",
+        "fact_e4545551c8e64d23"
+      ],
+      "geometry_snapshot_ref": "",
+      "topology_snapshot_id": "",
+      "render_mesh_snapshot_id": "",
+      "artifact_refs": []
+    }
+  ],
+  "plans": [
+    {
+      "plan_id": "plan_84059c2937ed4329",
+      "input_mode": "fusion",
+      "analyzer_keys": [
+        "hermes_discovery"
+      ],
+      "status": "completed",
+      "created_at": "2026-08-27T07:51:50.921024Z",
+      "process": "injection",
+      "process_adapter_version": "hermes-discovery-v2",
+      "scope_id": "injection.wall-draft.features",
+      "scope_version": "2.1.0",
+      "ontology_snapshot_id": "",
+      "ontology_snapshot_sha256": "",
+      "input_ids": [
+        "input_step_d4d9c9729564172e",
+        "input_drawing_c562e5e0ec1aac08"
+      ],
+      "input_hashes": {
+        "input_step_d4d9c9729564172e": "d4d9c9729564172eb00751afb08aa9822539782d3c29740edbc38f4f0dd29231",
+        "input_drawing_c562e5e0ec1aac08": "c562e5e0ec1aac08abca1382366bcbb2797b23ea83810f565549b22d13a34cf7"
+      },
+      "rules": {},
+      "rule_bindings": [],
+      "operations": [
+        {
+          "operation_id": "discovery.drawing_observations",
+          "calculator_id": "extract_drawing_observations",
+          "depends_on": [],
+          "metric_ids": [],
+          "required_quantities": [],
+          "required_artifacts": [],
+          "required_fact_names": [],
+          "feature_refs": [],
+          "region_refs": [],
+          "arguments": {},
+          "algorithm_options": {}
+        },
+        {
+          "operation_id": "discovery.generic_geometry",
+          "calculator_id": "recognize_ordinary_region",
+          "depends_on": [
+            "discovery.drawing_observations"
+          ],
+          "metric_ids": [],
+          "required_quantities": [],
+          "required_artifacts": [],
+          "required_fact_names": [
+            "model_units"
+          ],
+          "feature_refs": [],
+          "region_refs": [],
+          "arguments": {},
+          "algorithm_options": {}
+        },
+        {
+          "operation_id": "discovery.process_features",
+          "calculator_id": "recognize_process_features_placeholder",
+          "depends_on": [
+            "discovery.generic_geometry"
+          ],
+          "metric_ids": [],
+          "required_quantities": [],
+          "required_artifacts": [],
+          "required_fact_names": [
+            "process",
+            "model_units"
+          ],
+          "feature_refs": [
+            "feature.ordinary.d4d9c9729564172e"
+          ],
+          "region_refs": [
+            "region.ordinary.d4d9c9729564172e"
+          ],
+          "arguments": {},
+          "algorithm_options": {}
+        },
+        {
+          "operation_id": "discovery.fusion",
+          "calculator_id": "resolve_observation_feature_links",
+          "depends_on": [
+            "discovery.process_features"
+          ],
+          "metric_ids": [],
+          "required_quantities": [],
+          "required_artifacts": [],
+          "required_fact_names": [],
+          "feature_refs": [
+            "feature.ordinary.d4d9c9729564172e"
+          ],
+          "region_refs": [
+            "region.ordinary.d4d9c9729564172e"
+          ],
+          "arguments": {},
+          "algorithm_options": {}
+        }
+      ],
+      "parent_plan_id": null,
+      "invalidated_by": null,
+      "affected_operation_ids": [],
+      "phase": "discovery",
+      "discovery_snapshot_refs": [
+        "discovery.snapshot.4de358d3b851bc44"
+      ],
+      "regions": [
+        {
+          "region_id": "region.ordinary.d4d9c9729564172e",
+          "input_sha256": "d4d9c9729564172eb00751afb08aa9822539782d3c29740edbc38f4f0dd29231",
+          "coordinate_system": "model",
+          "mode": "whole_model",
+          "semantic_label": "ordinary_model_region",
+          "source_refs": [
+            "recognizer:ordinary-region-fallback@1.0.0",
+            "input:input_step_d4d9c9729564172e"
+          ],
+          "version": "1.0.0",
+          "content_sha256": "58a85e8e8aec21030a6ffac06c80388f3b00744c0e85c84a24d475ce220b3df3",
+          "bbox": null,
+          "geometry_refs": [],
+          "excluded_geometry_refs": [],
+          "role": "ordinary",
+          "feature_refs": [
+            "feature.ordinary.d4d9c9729564172e"
+          ]
+        }
+      ]
+    },
+    {
+      "plan_id": "plan_13ffc71304b04e5e",
+      "input_mode": "fusion",
+      "analyzer_keys": [
+        "step"
+      ],
+      "status": "blocked",
+      "created_at": "2026-08-27T07:51:51.044520Z",
+      "process": "injection",
+      "process_adapter_version": "injection-ontology-runtime-v1",
+      "scope_id": "injection.default",
+      "scope_version": "1.1.0",
+      "ontology_snapshot_id": "ontology.injection.default@1.2.0",
+      "ontology_snapshot_sha256": "409df1f29403cf692c526f1c18ca45d105b6853906b05df11e660ae5f4edacdc",
+      "input_ids": [
+        "input_step_d4d9c9729564172e",
+        "input_drawing_c562e5e0ec1aac08"
+      ],
+      "input_hashes": {
+        "input_step_d4d9c9729564172e": "d4d9c9729564172eb00751afb08aa9822539782d3c29740edbc38f4f0dd29231",
+        "input_drawing_c562e5e0ec1aac08": "c562e5e0ec1aac08abca1382366bcbb2797b23ea83810f565549b22d13a34cf7"
+      },
+      "rules": {
+        "R_INJ_MAIN_WALL_MIN_ABS": {
+          "value": 1.2,
+          "unit": "mm",
+          "source": "ontology:ontology.injection.default@1.2.0/R_INJ_MAIN_WALL_MIN_ABS@1.0.0#cfd2921dec45eb01620ac097664b173e4ea041714e22c252a9a526697b443b9e",
+          "version": "1.0.0"
+        },
+        "R_INJ_MAIN_WALL_DRAFT_DEFAULT": {
+          "value": 1.0,
+          "unit": "degree",
+          "source": "ontology:ontology.injection.default@1.2.0/R_INJ_MAIN_WALL_DRAFT_DEFAULT@1.0.0#e6adaed86ccd3b843f49e8fc9e6f03928176032d37ab618dd1c54b4d3a3e2d81",
+          "version": "1.0.0"
+        }
+      },
+      "rule_bindings": [
+        {
+          "binding_id": "binding.check.main_wall_minimum_thickness.R_INJ_MAIN_WALL_MIN_ABS.58a85e8e8aec",
+          "operation_id": "geometry.wall_thickness.58a85e8e8aec",
+          "metric_id": "injection.geometry.wall_thickness",
+          "quantity_id": "thickness_mm",
+          "rule_id": "R_INJ_MAIN_WALL_MIN_ABS",
+          "operator": ">=",
+          "aggregation": "minimum",
+          "required_fact_names": [
+            "material"
+          ],
+          "feature_refs": [
+            "feature.ordinary.d4d9c9729564172e"
+          ],
+          "region_refs": [
+            "region.ordinary.d4d9c9729564172e"
+          ],
+          "check_id": "check.main_wall_minimum_thickness",
+          "operand_alias": "actual",
+          "additional_operands": [],
+          "expression": {
+            "operand": "actual"
+          }
+        },
+        {
+          "binding_id": "binding.check.main_wall_minimum_draft.R_INJ_MAIN_WALL_DRAFT_DEFAULT.58a85e8e8aec",
+          "operation_id": "geometry.draft.58a85e8e8aec",
+          "metric_id": "injection.geometry.draft",
+          "quantity_id": "draft_angle_deg",
+          "rule_id": "R_INJ_MAIN_WALL_DRAFT_DEFAULT",
+          "operator": ">=",
+          "aggregation": "minimum",
+          "required_fact_names": [],
+          "feature_refs": [
+            "feature.ordinary.d4d9c9729564172e"
+          ],
+          "region_refs": [
+            "region.ordinary.d4d9c9729564172e"
+          ],
+          "check_id": "check.main_wall_minimum_draft",
+          "operand_alias": "actual",
+          "additional_operands": [],
+          "expression": {
+            "operand": "actual"
+          }
+        }
+      ],
+      "operations": [
+        {
+          "operation_id": "geometry.load",
+          "calculator_id": "load_geometry",
+          "depends_on": [],
+          "metric_ids": [],
+          "required_quantities": [],
+          "required_artifacts": [],
+          "required_fact_names": [
+            "model_units"
+          ],
+          "feature_refs": [],
+          "region_refs": [],
+          "arguments": {
+            "model_unit": {
+              "value": "mm",
+              "source_ref": "fact:fact_e4545551c8e64d23",
+              "unit": null
+            }
+          },
+          "algorithm_options": {}
+        },
+        {
+          "operation_id": "geometry.topology",
+          "calculator_id": "inspect_topology",
+          "depends_on": [
+            "geometry.load"
+          ],
+          "metric_ids": [],
+          "required_quantities": [],
+          "required_artifacts": [],
+          "required_fact_names": [],
+          "feature_refs": [],
+          "region_refs": [],
+          "arguments": {},
+          "algorithm_options": {}
+        },
+        {
+          "operation_id": "geometry.draft.58a85e8e8aec",
+          "calculator_id": "measure_draft",
+          "depends_on": [
+            "geometry.topology"
+          ],
+          "metric_ids": [
+            "injection.geometry.draft"
+          ],
+          "required_quantities": [
+            "draft_angle_deg"
+          ],
+          "required_artifacts": [
+            "scalar_field",
+            "render_scene",
+            "topology_map"
+          ],
+          "required_fact_names": [
+            "pull_dir",
+            "model_units"
+          ],
+          "feature_refs": [
+            "feature.ordinary.d4d9c9729564172e"
+          ],
+          "region_refs": [
+            "region.ordinary.d4d9c9729564172e"
+          ],
+          "arguments": {
+            "pull_direction": {
+              "value": [
+                0.0,
+                0.0,
+                1.0
+              ],
+              "source_ref": "fact:fact_9c5fc38e38fe4b9e",
+              "unit": null
+            }
+          },
+          "algorithm_options": {}
+        },
+        {
+          "operation_id": "geometry.wall_thickness.58a85e8e8aec",
+          "calculator_id": "measure_wall_thickness",
+          "depends_on": [
+            "geometry.topology"
+          ],
+          "metric_ids": [
+            "injection.geometry.wall_thickness"
+          ],
+          "required_quantities": [
+            "thickness_mm"
+          ],
+          "required_artifacts": [
+            "scalar_field",
+            "render_scene",
+            "topology_map"
+          ],
+          "required_fact_names": [
+            "model_units"
+          ],
+          "feature_refs": [
+            "feature.ordinary.d4d9c9729564172e"
+          ],
+          "region_refs": [
+            "region.ordinary.d4d9c9729564172e"
+          ],
+          "arguments": {},
+          "algorithm_options": {}
+        }
+      ],
+      "parent_plan_id": null,
+      "invalidated_by": null,
+      "affected_operation_ids": [],
+      "phase": "analysis",
+      "discovery_snapshot_refs": [
+        "discovery.snapshot.4de358d3b851bc44"
+      ],
+      "regions": [
+        {
+          "region_id": "region.ordinary.d4d9c9729564172e",
+          "input_sha256": "d4d9c9729564172eb00751afb08aa9822539782d3c29740edbc38f4f0dd29231",
+          "coordinate_system": "model",
+          "mode": "whole_model",
+          "semantic_label": "ordinary_model_region",
+          "source_refs": [
+            "recognizer:ordinary-region-fallback@1.0.0",
+            "input:input_step_d4d9c9729564172e"
+          ],
+          "version": "1.0.0",
+          "content_sha256": "58a85e8e8aec21030a6ffac06c80388f3b00744c0e85c84a24d475ce220b3df3",
+          "bbox": null,
+          "geometry_refs": [],
+          "excluded_geometry_refs": [],
+          "role": "ordinary",
+          "feature_refs": [
+            "feature.ordinary.d4d9c9729564172e"
+          ]
+        }
+      ]
+    }
+  ],
+  "runs": [],
+  "findings": [],
+  "artifacts": [
+    {
+      "artifact_id": "artifact_drawing-raw-text_304e0d3309e9ffc8",
+      "kind": "drawing_raw_text",
+      "relative_path": "discovery/drawing/c562e5e0ec1aac08/drawing_c562e5e0ec1aac08_raw_ocr.txt",
+      "media_type": "text/plain",
+      "created_at": "2026-08-27T07:51:50.867296Z",
+      "run_id": "",
+      "logical_id": "drawing-raw:input_drawing_c562e5e0ec1aac08:2.0.0:acb1730326d8",
+      "size_bytes": 2609,
+      "sha256": "304e0d3309e9ffc898ce4dc26737f2fa8155c2246edc1132502fe672a44569c3"
+    },
+    {
+      "artifact_id": "artifact_drawing-observations_e3b0c44298fc1c14",
+      "kind": "drawing_observations",
+      "relative_path": "discovery/drawing/c562e5e0ec1aac08/drawing_c562e5e0ec1aac08_observations.jsonl",
+      "media_type": "application/x-ndjson",
+      "created_at": "2026-08-27T07:51:50.867951Z",
+      "run_id": "",
+      "logical_id": "drawing-observations:input_drawing_c562e5e0ec1aac08:2.0.0:acb1730326d8",
+      "size_bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact_id": "artifact_drawing-diagnostics_74db3e66df0193ab",
+      "kind": "drawing_diagnostics",
+      "relative_path": "discovery/drawing/c562e5e0ec1aac08/drawing_c562e5e0ec1aac08_diagnostics.json",
+      "media_type": "application/json",
+      "created_at": "2026-08-27T07:51:50.877766Z",
+      "run_id": "",
+      "logical_id": "drawing-diagnostics:input_drawing_c562e5e0ec1aac08:2.0.0:acb1730326d8",
+      "size_bytes": 342,
+      "sha256": "74db3e66df0193ab86a08de1a34e8cf73f67313470568b99198ad559cf20a3ec"
+    }
+  ],
+  "capabilities": {
+    "drawing_discovery": {
+      "status": "completed",
+      "inputs": {
+        "input_drawing_c562e5e0ec1aac08": {
+          "status": "completed",
+          "provider_version": "2.0.0",
+          "observation_count": 0,
+          "diagnostics": [
+            {
+              "input_id": "input_drawing_c562e5e0ec1aac08",
+              "input_sha256": "c562e5e0ec1aac08abca1382366bcbb2797b23ea83810f565549b22d13a34cf7",
+              "provider": "hermes_drawing_pipeline",
+              "provider_version": "2.0.0",
+              "observation_count": 0,
+              "ocr_fragment_count": 89,
+              "semantic_extraction": {
+                "status": "disabled_missing_configuration"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

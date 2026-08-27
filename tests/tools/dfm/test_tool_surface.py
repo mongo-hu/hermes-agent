@@ -15,15 +15,33 @@ def test_dfm_tools_are_discovered_with_stable_schemas_and_dispatch(tmp_path):
     project_schema = registry.get_schema("dfm_project")
     analysis_schema = registry.get_schema("dfm_analysis")
     assert project_schema["parameters"]["properties"]["action"]["enum"] == [
-        "create", "add_input", "status", "confirm_fact", "list"
+        "create",
+        "add_input",
+        "status",
+        "confirm_fact",
+        "list",
     ]
     assert analysis_schema["parameters"]["properties"]["action"]["enum"] == [
-        "discover", "plan", "start", "status", "cancel", "result", "context"
+        "discover",
+        "drawing_context",
+        "submit_observations",
+        "fusion_context",
+        "submit_fusion_links",
+        "plan",
+        "start",
+        "status",
+        "cancel",
+        "result",
+        "context",
     ]
+    assert "observations" in analysis_schema["parameters"]["properties"]
+    assert "fusion_links" in analysis_schema["parameters"]["properties"]
 
     token = set_hermes_home_override(tmp_path / "home")
     try:
-        result = json.loads(registry.dispatch("dfm_project", {"action": "create", "name": "Bracket"}))
+        result = json.loads(
+            registry.dispatch("dfm_project", {"action": "create", "name": "Bracket"})
+        )
     finally:
         reset_hermes_home_override(token)
     assert result["ok"] is True
@@ -32,7 +50,10 @@ def test_dfm_tools_are_discovered_with_stable_schemas_and_dispatch(tmp_path):
 def test_dfm_project_resolves_quoted_desktop_ref_from_task_cwd(tmp_path):
     from tools.dfm.service import get_dfm_service
     from tools.registry import discover_builtin_tools, registry
-    from tools.terminal_tool import clear_task_env_overrides, register_task_env_overrides
+    from tools.terminal_tool import (
+        clear_task_env_overrides,
+        register_task_env_overrides,
+    )
 
     workspace = tmp_path / "session workspace"
     attachment = workspace / ".hermes" / "desktop-attachments" / "mold bracket.step"
@@ -71,7 +92,9 @@ def test_dfm_project_resolves_quoted_desktop_ref_from_task_cwd(tmp_path):
     assert added["input"]["source_name"] == "mold bracket.step"
 
 
-def test_dfm_start_receives_internal_progress_context_without_schema_changes(monkeypatch):
+def test_dfm_start_receives_internal_progress_context_without_schema_changes(
+    monkeypatch,
+):
     from tools import dfm_tool
     from tools.registry import discover_builtin_tools, registry
 
@@ -101,12 +124,18 @@ def test_dfm_start_receives_internal_progress_context_without_schema_changes(mon
 
 
 def test_dfm_toolset_is_default_off_but_explicitly_configurable():
-    from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _DEFAULT_OFF_TOOLSETS, _get_platform_tools
+    from hermes_cli.tools_config import (
+        CONFIGURABLE_TOOLSETS,
+        _DEFAULT_OFF_TOOLSETS,
+        _get_platform_tools,
+    )
     from toolsets import resolve_toolset
 
     assert "dfm" in {item[0] for item in CONFIGURABLE_TOOLSETS}
     assert "dfm" in _DEFAULT_OFF_TOOLSETS
-    assert "dfm" not in _get_platform_tools({}, "cli", include_default_mcp_servers=False)
+    assert "dfm" not in _get_platform_tools(
+        {}, "cli", include_default_mcp_servers=False
+    )
     enabled = _get_platform_tools(
         {"platform_toolsets": {"cli": ["dfm"]}},
         "cli",

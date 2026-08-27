@@ -66,9 +66,7 @@ def test_default_registry_propagates_runtime_configuration():
     config = DFMConfig(
         runtime_python="C:/dfm/python.exe",
         timeout_seconds=123,
-        drawing_model="drawing-model",
-        drawing_base_url="https://models.example/v1",
-        drawing_request_timeout_seconds=45,
+        max_pages=17,
     )
 
     registry = build_default_registry(config)
@@ -77,9 +75,11 @@ def test_default_registry_propagates_runtime_configuration():
 
     assert analyzer.python_executable == "C:/dfm/python.exe"
     assert analyzer.timeout_seconds == 123
-    assert drawing.model_name == "drawing-model"
-    assert drawing.base_url == "https://models.example/v1"
-    assert drawing.timeout_seconds == 45
+    assert drawing.max_pages == 17
+    assert (
+        drawing.capability(_context(Path.cwd())).details["semantic_interpreter"]
+        == "hermes_agent_event_loop"
+    )
 
 
 @pytest.mark.parametrize("key", ["drawing", "fusion"])

@@ -32,7 +32,7 @@ type: product-development-plan
 | 工艺 | 注塑 `injection` |
 | 指标 | 壁厚、拔模角 |
 | 三维输入 | PythonOCC 参考实现支持 STEP；生产目标为外部 OCCT C++ 项目支持 STEP |
-| 二维输入 | PDF/图片 OCR、正式 Observation、原文/诊断 Artifact 和候选 FusionLink 基础链路已实现；复杂工程标注和空间融合尚未生产验收 |
+| 二维输入 | 程序化 PDF/图片 OCR；Hermes Agent 语义提议、程序校验落库、几何验证的 Observation/FusionLink 基础链路已实现；复杂工程标注和空间融合尚未生产验收 |
 | 特征识别 | 普通全模型区域可运行；主壁、螺钉柱、凸台、筋、孔、倒扣和外观面候选由 OCCT C++ Provider 显式占位 |
 | 本体/规则 | Snapshot Schema 2、`ontology.injection.default@1.2.0`、Factor `source_policy`、本地 SQLite、Check Context 和通用 RuleBinding 编译已实现；中心管理后台与同步尚未交付 |
 | 证据 | Hermes 根据 ScalarField 和同源 RenderScene 生成三视角截图 |
@@ -128,17 +128,19 @@ Region、Operation、规则、输入哈希、Snapshot 和 C++ 实现版本。
 
 Ground Truth 只用于研发验收，不进入生产分析，也不回写运行结果。
 
-### M3：二维图纸信息提取（基础链路已实现，工程化待完成）
+### M3：二维图纸信息提取（混合模式基础链路已实现，工程化待完成）
 
-- 已实现 PDF/图片 OCR、独立语义提取和多图输入；版面、表格和复杂工程符号继续完善；
-- 已输出带页码、bbox、原文片段、单位、置信度和 Provider 版本的正式 Observation；
+- 已实现 PDF/图片程序化 OCR 和多图输入；版面、表格和复杂工程符号继续完善；
+- 不部署独立二维语义模型，默认复用当前 Hermes 会话大模型读取有界 OCR Fragment；
+- Agent 只提议语义，程序校验 Fragment ID、Schema、置信度与 Manifest Revision 后保存带证据的正式 Observation；
 - 已接入 `source_policy`，支持自动采信、强制确认和冲突状态；
 - 无可靠比例或明确标注时，不从像素推断精确几何尺寸。
 
 ### M4：二维工程特征与三维融合（候选关系基线已实现）
 
 - 识别公差、材料、表面要求、基准和局部工程标注；
-- 已根据明确引用或受控语义提示建立 candidate/ambiguous FusionLink；
+- Agent 基于有界 Observation/Feature/Region 上下文提议关联，程序校验 ID 并由几何算法验证关系；
+- 只有通过校验的关联才保存为 candidate/ambiguous FusionLink，Agent 不得直接确认；
 - 冲突和低置信度映射保持可审核状态，不自动确认；
 - 视图、尺寸线、引线、投影变换和三维区域的空间匹配仍待工程化；
 - 图纸信息参与规则选择，但不替代三维客观计算。
@@ -186,8 +188,8 @@ Ground Truth 只用于研发验收，不进入生产分析，也不回写运行�
 | P2 | 用螺钉柱壁厚比例完成“不改 Agent 业务代码”的 Golden E2E | Agent 完成签名同步、版本选择、回滚和撤销处理 |
 | P3 | 并发、资源隔离、数值与工程认证后逐项扩展指标 | 规则生成 AI、知识 Citation、企业规则管理和审计 |
 
-二维图纸识别与 2D/3D Fusion 在三维 Golden E2E 之后进入实现，但其 Observation、FusionLink 和
-Clarification 契约继续保留，避免后续破坏主数据链。
+二维图纸 OCR 与混合式 Observation/FusionLink 基础链路已经实现；生产验收仍安排在三维 Golden
+E2E 之后，重点补齐复杂工程标注、投影空间匹配、Golden Drawing 和工程审核体验。
 
 文档只记录已批准方向。字段和状态以 `tools/dfm/schemas/`、`tools/dfm/contracts.py` 和
 `tools/dfm/scopes/` 为当前可执行依据；中心管理后台交付后，以签名发布 Snapshot 和对应 Schema 为

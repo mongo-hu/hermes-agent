@@ -1,58 +1,37 @@
-# DFM 二维图纸解析管线
+# DFM 二维图纸 OCR 管线
+
+该目录只负责确定性的二维图纸预处理与 OCR，不单独连接大模型，也不直接生成
+`ObservationRecord` 或 `FusionLinkRecord`。
 
 ## 职责边界
 
-Drawing Pipeline 是 Hermes DFM Discovery 的底层文档解析模块，负责：
+输入支持 PDF、PNG、JPG/JPEG。管线输出三类可追溯 Artifact：
 
-- PDF、PNG、JPG、JPEG 的 OCR；
-- 保留 OCR 页码、bbox、原文片段和置信度；
-- 在独立模型调用中提取材料、公差、表面要求和制造备注候选；
-- 返回 `DrawingPipelineResult`，不读取项目规则，不决定 Fact 和 DFM 结论。
+- `drawing_raw_text`：按页保存的 OCR 原文；
+- `drawing_ocr_fragments`：带稳定 `fragment_id`、页码、bbox 和置信度的 NDJSON；
+- `drawing_diagnostics`：OCR Provider、版本和降级诊断。
 
-Hermes 侧 `DrawingAnalyzer` 负责将候选转换为正式 `ObservationRecord`，并生成三个可追溯制品：
-
-- `drawing_observations`：`application/x-ndjson`，每行一条正式 Observation；
-- `drawing_raw_text`：OCR 原文，只作为受控 Artifact 保存；
-- `drawing_diagnostics`：依赖、模型调用、警告和数量统计。
-
-## Discovery 数据流
+OCR 完成后的语义理解复用当前 Hermes Agent event loop 中已经配置的大模型：
 
 ```text
-InputRecord(drawing)
-→ Drawing Pipeline
-→ DrawingCandidate[]
-→ DrawingAnalyzer
-→ ObservationRecord[] + ArtifactRecord[]
-→ source_policy
-→ confirmed Fact / needs_confirmation / conflict
-→ 3D FeatureRecord + RegionRecord
-→ FusionAnalyzer.resolve
-→ candidate / ambiguous FusionLinkRecord[]
-→ DiscoverySnapshotRecord
+二维文件
+→ 程序化 OCR
+→ drawing_context（有界 OCR 片段）
+→ Hermes Agent 判断尺寸、材料、皮纹等语义
+→ submit_observations
+→ 程序校验 fragment_id、Schema、置信度与 Revision 后落库
+→ fusion_context（Observation + Feature + Region）
+→ Hermes Agent 提议 2D/3D 关联
+→ submit_fusion_links
+→ 程序校验 ID 和 Feature/Region 关系，几何算法验证拓扑
+→ 保存 candidate/ambiguous FusionLink
 ```
 
-`FusionAnalyzer` 只解析 Observation 与 Feature/Region 的可审核关系，不启动 STEP Analyzer，也不把
-二维文字当作三维客观测量。全局材料、公差等信息默认不建立局部 FusionLink。
+Agent 不能创建输入、Fragment、Feature 或 Region 标识，不能把 FusionLink 直接设为
+`confirmed`。没有可靠语义或关联时应提交空数组；像素位置不能直接充当 CAD
+`GeometryRef`。
 
-## 错误和降级
+## 模型和凭据
 
-- Drawing Pipeline 失败时抛出带稳定错误码的异常，不输出伪成功 JSONL；
-- 纯二维项目失败会显式阻塞；
-- 2D+3D 项目允许三维主链路继续，但降级原因写入 Manifest 的 `drawing_discovery` capability；
-- LLM 语义提取失败会记录 warning，已经完成的 OCR 原文仍可追溯；
-- 原文不会作为“等待模型处理”的 Observation 值写入项目。
-
-## 配置与依赖
-
-二维依赖属于 `[dfm]` 可选依赖组：
-
-```toml
-dfm = [
-  "python-pptx==1.0.2",
-  "rapidocr-onnxruntime>=1.4.0",
-  "pymupdf>=1.20.0"
-]
-```
-
-模型、Base URL 和超时配置在 `config.yaml` 的 `dfm.drawing` 下；API Key 属于凭据，继续使用 secret
-存储或 `.env`。DWG 尚未纳入正式输入格式，避免将商业 CAD SDK 变成基础依赖。
+此管线没有独立的模型、Endpoint、API Key 或超时配置。模型选择和凭据沿用 Hermes
+当前会话配置，从而避免重复路由、重复计费和两套模型治理。

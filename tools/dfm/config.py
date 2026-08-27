@@ -22,9 +22,6 @@ class DFMConfig:
     nx_request_timeout_seconds: int = 30
     nx_poll_interval_seconds: int = 2
     drawing_enabled: bool = True
-    drawing_model: str = "gpt-4o"
-    drawing_base_url: str = "https://api.openai.com/v1"
-    drawing_request_timeout_seconds: int = 60
     geometry_backend: str = "step"
 
 
@@ -68,12 +65,6 @@ def load_dfm_config(config: Mapping[str, Any] | None = None) -> DFMConfig:
     drawing_enabled = _nested(
         config, "dfm", "drawing", "enabled", default=defaults.drawing_enabled
     )
-    drawing_model = _nested(
-        config, "dfm", "drawing", "model", default=defaults.drawing_model
-    )
-    drawing_base_url = _nested(
-        config, "dfm", "drawing", "base_url", default=defaults.drawing_base_url
-    )
     geometry_backend = _nested(
         config, "dfm", "geometry", "backend", default=defaults.geometry_backend
     )
@@ -81,10 +72,6 @@ def load_dfm_config(config: Mapping[str, Any] | None = None) -> DFMConfig:
         raise DFMError("config_invalid", "dfm.nx.endpoint must be a string.")
     if not isinstance(drawing_enabled, bool):
         raise DFMError("config_invalid", "dfm.drawing.enabled must be boolean.")
-    if not isinstance(drawing_model, str):
-        raise DFMError("config_invalid", "dfm.drawing.model must be a string.")
-    if not isinstance(drawing_base_url, str):
-        raise DFMError("config_invalid", "dfm.drawing.base_url must be a string.")
     if not isinstance(geometry_backend, str) or not geometry_backend.strip():
         raise DFMError(
             "config_invalid", "dfm.geometry.backend must be a non-empty string."
@@ -174,17 +161,5 @@ def load_dfm_config(config: Mapping[str, Any] | None = None) -> DFMConfig:
             "dfm.nx.poll_interval_seconds",
         ),
         drawing_enabled=drawing_enabled,
-        drawing_model=drawing_model.strip(),
-        drawing_base_url=drawing_base_url.strip().rstrip("/"),
-        drawing_request_timeout_seconds=_positive_int(
-            _nested(
-                config,
-                "dfm",
-                "drawing",
-                "request_timeout_seconds",
-                default=defaults.drawing_request_timeout_seconds,
-            ),
-            "dfm.drawing.request_timeout_seconds",
-        ),
         geometry_backend=geometry_backend.strip(),
     )

@@ -2,7 +2,7 @@
 title: "单次 DFM 分析数据说明"
 status: active
 milestone: M2.5-A
-last_updated: 2026-08-25
+last_updated: 2026-08-27
 type: living-runbook
 owners: DFM 工程团队
 ---
@@ -21,10 +21,10 @@ owners: DFM 工程团队
 | --- | --- |
 | 制造工艺 | 注塑 `injection` 完整基线；压铸 `die_casting` 首条 STEP 拓扑有效性门 |
 | 三维输入 | PythonOCC 参考实现支持 STEP/STP；Parasolid `x_t` 仅保留登记和显式不可用边界 |
-| 2D 图纸/OCR | 接口预留，尚未形成生产分析闭环 |
-| 混合输入融合 | 接口预留，尚未形成生产分析闭环 |
+| 2D 图纸/OCR | PDF/图片程序化 OCR；输出可追溯 Fragment、原文和诊断 Artifact |
+| 混合输入融合 | Hermes 当前会话模型提议 Observation/FusionLink，程序校验落库，几何算法验证关系；当前为基础闭环，尚未生产认证 |
 | 几何计算 | 当前为 OpenCascade / `pythonocc-core` 参考 Worker；生产目标为独立 OCCT C++ 项目 |
-| 本体/工艺规则 | Ontology Snapshot Schema 2；注塑 `injection.default@1.1.0` 和本地只读 SQLite；压铸 `die_casting.topology-baseline@1.0.0` |
+| 本体/工艺规则 | Ontology Snapshot Schema 2；注塑 `ontology.injection.default@1.2.0` 和本地只读 SQLite；压铸 `die_casting.topology-baseline@1.0.0` |
 | 执行方式 | Hermes 主进程管理 Run，STEP worker 隔离子进程执行 |
 | 结果 | Worker `measurements.json`、Hermes `evaluations.json`、兼容报告 JSON、Markdown、PPTX、PNG 证据、高亮 STEP |
 | Desktop | 复用附件上传、聊天进度和 Artifacts 展示 |
@@ -41,7 +41,7 @@ Parasolid 路线延期，不作为当前部署成功条件。
 ```text
 用户 / Desktop
   │
-  ├─ 上传 STEP（或登记 x_t）
+  ├─ 上传 STEP，可选 PDF/图片（或登记 x_t）
   │
   v
 Hermes Agent
@@ -50,7 +50,14 @@ Hermes Agent
   ├─ dfm_project(create)
   ├─ dfm_project(add_input)
   ├─ dfm_project(confirm_fact)      # 回答 discovery 阶段澄清
-  ├─ dfm_analysis(discover)         # 必须先冻结 DiscoverySnapshot
+  ├─ dfm_analysis(discover)
+  │    ├─ agent_interpretation_required（有二维输入时）
+  │    │    ├─ dfm_analysis(drawing_context)
+  │    │    └─ dfm_analysis(submit_observations)
+  │    └─ agent_fusion_required（同时存在有效 2D/3D 结果时）
+  │         ├─ dfm_analysis(fusion_context)
+  │         └─ dfm_analysis(submit_fusion_links)
+  ├─ dfm_analysis(discover)         # 上述阶段完成后冻结 DiscoverySnapshot
   ├─ dfm_project(confirm_fact)      # 回答 analysis 阶段澄清
   ├─ dfm_analysis(context)          # 可选；按需读取单个 Check 的本体上下文
   ├─ dfm_analysis(plan)             # 编译 analysis Plan
@@ -60,6 +67,9 @@ Hermes Agent
           │
           v
 DFMService
+  ├─ DrawingAnalyzer → 程序化 OCR Fragment Artifact（可选）
+  ├─ Hermes Agent → 有界语义/融合提议
+  ├─ DFMService → Observation 校验落库 + Fusion 几何关系验证
   ├─ DiscoveryEngine → ordinary whole-model fallback（当前）
   ├─ Local Ontology SQLite + ProcessAdapter → AnalysisPlan
   └─ JobManager → PythonOCC reference worker → Measurement/Field/Scene/Map
@@ -69,6 +79,10 @@ DFMService
 ### 2.1 Agent 与确定性计划的分工
 
 - Hermes Agent 负责理解用户意图、选择工艺、补充或确认工程事实，并决定何时调用 DFM 工具。
+- 二维 OCR 保持程序化；OCR 后的语义和 2D/3D 关联默认复用当前 Hermes 会话大模型，不配置第二个
+  模型 Endpoint。Agent 只能使用 `drawing_context`/`fusion_context` 返回的稳定 ID 提议结果。
+- `DFMService` 校验 Fragment、Feature、Region、Schema 和 Manifest Revision 后落库；几何关系与
+  拓扑验证决定 FusionLink 是 `candidate` 还是 `ambiguous`，Agent 不能直接写成 `confirmed`。
 - `DFMService` 不直接执行模型临时生成的几何步骤。它将本地已发布本体/规则快照与几何 Capability
   组合，根据已确认事实编译结构化 Plan。
 - `discover` 必须先于 analysis `plan`。当前 Discovery 只产生可审计的 ordinary 全模型区域和
@@ -140,6 +154,10 @@ Docker 中通常通过 `HERMES_HOME` 指向持久卷，例如：
 │       │           ├── dfm_report.md
 │       │           └── dfm_report.pptx       # 安装 python-pptx 时
 │       ├── artifacts/
+│       │   ├── drawing_<输入哈希前16位>_raw_ocr.txt
+│       │   ├── drawing_<输入哈希前16位>_ocr_fragments.jsonl
+│       │   ├── drawing_<输入哈希前16位>_diagnostics.json
+│       │   └── drawing_<输入哈希前16位>_agent_observations.jsonl
 │       └── reports/
 ├── tmp/
 └── .locks/
@@ -157,12 +175,12 @@ Desktop 上传或选择的文件只是 intake 来源，不是 DFM 项目的权�
 
 ### 5.2 项目输入副本
 
-登记 STEP 时会：
+登记 STEP 或二维图纸时会：
 
 1. 检查扩展名和文件大小；
 2. 流式计算 SHA-256；
 3. 复制到项目 `inputs/`；
-4. 校验 ISO 10303-21 格式、B-Rep 声明并记录实体复杂度摘要；
+4. STEP 校验 ISO 10303-21、B-Rep 声明并记录复杂度；PDF/图片执行对应预检；
 5. 以内容哈希命名；
 6. 将 InputRecord 写入 `project_manifest.json`。预检失败不会保留项目输入副本。
 
@@ -171,7 +189,7 @@ InputRecord 主要字段：
 ```json
 {
   "input_id": "input_step_<sha256前16位>",
-  "kind": "step",
+  "kind": "step | drawing",
   "source_name": "用户上传文件名.stp",
   "relative_path": "inputs/input_<sha256前16位>.stp",
   "size_bytes": 123456,
@@ -191,6 +209,12 @@ STEP 项目按阶段确认事实：`model_units` 属于当前 Discovery 前置�
 只保存用户明确回答并关闭对应问题。`plan` 在没有有效 DiscoverySnapshot 时返回
 `discovery_required`，不会跳过发现阶段。新增输入或确认影响既有计划的事实会把相关 Plan 标记为
 `invalidated`，需要重新发现或重新规划。
+
+有活动二维输入时，首次 `discover` 只运行 OCR 并返回 `agent_interpretation_required`。Agent 必须先用
+`drawing_context` 取得当前 Revision 和有界 Fragment，再用 `submit_observations` 提交；不能从聊天
+文本伪造 OCR 证据。三维 Feature/Region 就绪后，`discover` 可能返回 `agent_fusion_required`，此时按
+`fusion_context` → `submit_fusion_links` 完成提议与验证。两个提交动作都要求使用 Context 返回的
+`expected_revision`，并发修改会返回冲突而不是覆盖新数据。没有可靠语义或关联时提交空数组。
 
 同名同类型的新输入会以 `supersedes_input_id` 指向旧版本；后续 Plan 仅引用未被替代的活动输入。失效 Plan 会保存 `invalidated_by` 和 `affected_operation_ids`。调用 `dfm_analysis(plan, base_plan_id=...)` 可以从失效 Plan 生成仅包含受影响检查及其依赖的重跑 Plan；例如仅修改拔模方向时，重跑范围为 STEP 加载、拓扑、拔模和倒扣检查，而不是完整检查族。
 
@@ -212,9 +236,12 @@ STEP 项目按阶段确认事实：`model_units` 属于当前 Discovery 前置�
 
 ### 当前边界
 
-`facts`、`clarifications`、`observations`、`features`、`regions`、`discovery_snapshots` 和 `findings`
+`facts`、`clarifications`、`observations`、`features`、`regions`、`fusion_links`、`artifacts`、
+`discovery_snapshots` 和 `findings`
 契约已经存在。当前实现将失败 Evaluation 归一化为带规则引用的项目级 Finding：
 
+- 二维 OCR Fragment 保存在 Artifact；经 Agent 提议和程序校验后的 Observation、经几何关系验证的
+  candidate/ambiguous FusionLink 保存在 Manifest，并保留输入哈希、Provider 版本和证据引用；
 - 已确认工艺参数可以写入 `facts` 并参与 Plan 编译；
 - 每次 STEP Run 都生成 `measurements.json`，保存输入哈希、算法版本、实际 operations、客观模型测量、问题测量及规则 Evaluation；
 - 原始兼容问题仍保存在 `dfm_report.json` 和最终报告中，旧报告格式没有被改写；

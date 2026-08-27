@@ -138,21 +138,28 @@ Metric 下漏算或由两个 Region 重复认领。低置信度或未实现 Reco
 
 ### 3.4 二维图纸与 2D/3D Fusion 边界
 
-当前 `drawing` Analyzer 已将 PDF/图片 OCR 和独立语义提取结果转换为带页码、bbox、原文片段、
-单位、置信度及 Provider 版本的正式 Observation，并将 OCR 原文和诊断保存为独立 Artifact。
-`source_policy` 决定候选能否自动采信、必须确认或进入冲突；`fusion` Analyzer 根据明确引用或受控
-Feature/Region 提示生成 candidate/ambiguous `FusionLink`。当前基础实现不把像素位置直接当成 CAD
-GeometryRef，也不允许图纸文本替代三维客观测量。尺寸线、GD&T、视图投影和空间匹配仍需后续
-工程化与 Golden Drawing 验收。
+当前 `drawing` Analyzer 只执行 PDF/图片程序化 OCR，将带稳定 Fragment ID、页码、bbox、原文、
+置信度及 Provider 版本的结果和诊断保存为 Artifact，不单独调用模型，也不直接创建 Observation。
+当前 Hermes Agent event loop 通过 `drawing_context` 取得有界 OCR 证据并提议语义；
+`submit_observations` 由程序校验 Fragment ID、Schema、置信度和 Revision 后落库。
+
+存在三维 Feature/Region 时，Agent 通过 `fusion_context` 提议 2D/3D 关联；
+`submit_fusion_links` 校验所有稳定 ID 和 Feature/Region 双向关系，几何算法进一步验证拓扑，最终只
+保存 candidate/ambiguous `FusionLink`，Agent 不能直接确认。`source_policy` 再决定 Observation 候选
+能否自动采信、必须确认或进入冲突。像素位置不直接当成 CAD GeometryRef，图纸文本也不替代三维
+客观测量。尺寸线、GD&T、视图投影和空间匹配仍需后续工程化与 Golden Drawing 验收。
 
 ## 4. 核心数据链
 
 ```text
 InputRecord
 → OntologyRuleSnapshot
+→ DrawingOcrFragment Artifact
+→ Agent-proposed / Program-validated Observation
 → GeometryDiscoveryTaskRequest
 → GeometryDiscoveryResultManifest
-→ Observation / FeatureRecord / RegionRecord
+→ FeatureRecord / RegionRecord
+→ Agent-proposed / Geometry-validated FusionLink
 → DiscoverySnapshotRecord
 → RuleBinding + PlanOperation
 → ObjectiveTaskRequest
