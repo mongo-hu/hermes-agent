@@ -15,6 +15,7 @@ from tools.dfm.contracts import (
     PlanRecord,
     WorkerEvent,
 )
+from tools.dfm.geometry.snapshot_hash import render_mesh_content_sha256
 from tools.dfm.runtime.process import ProcessResult
 from tools.dfm.workers.step_worker import WORKER_VERSION
 
@@ -62,7 +63,15 @@ class SuccessfulRunner:
                 "producer_version": WORKER_VERSION,
                 "tessellation": {},
                 "triangle_count": 1,
-                "render_mesh_sha256": "4aaeb28bc7dcaba88317204d428315223c5bbf06bacbc3a487ce4da1b509058c",
+                "render_mesh_sha256": render_mesh_content_sha256(
+                    [
+                        {
+                            "primitive_id": "face-1",
+                            "vertices": [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+                            "triangles": [[0, 1, 2]],
+                        }
+                    ]
+                ),
             },
             "primitives": [{
                 "primitive_id": "face-1",

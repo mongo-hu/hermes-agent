@@ -15,6 +15,7 @@ from tools.dfm.analyzers.occt import (
 from tools.dfm.contracts import (
     GEOMETRY_EVENT_CONTRACT,
     GEOMETRY_RESULT_CONTRACT,
+    OBJECTIVE_SCHEMA_VERSION,
     ArtifactRecord,
     CapabilityStatus,
     InputRecord,
@@ -23,10 +24,12 @@ from tools.dfm.contracts import (
     ObjectiveResultManifest,
     PlanOperation,
     PlanRecord,
+    RegionRecord,
     ResolvedArgument,
     WorkerEvent,
 )
 from tools.dfm.errors import DFMError
+from tools.dfm.geometry.snapshot_hash import render_mesh_content_sha256
 from tools.dfm.runtime.process import ProcessResult
 
 
@@ -53,6 +56,7 @@ OPERATION_PAIRS = (
 CAPABILITIES = {
     "contract_version": "dfm.geometry.capabilities/v1",
     "engine_version": ENGINE_VERSION,
+    "objective_schema_version": OBJECTIVE_SCHEMA_VERSION,
     "backend": "analysis_situs+occt",
     "analysis_situs_version": "v2025.2",
     "analysis_situs_commit": "aa5958932c8c85c068566ab685f2b99c0436b926",
@@ -65,10 +69,10 @@ CAPABILITIES = {
     "output_artifact_kinds": [
         "preflight",
         "topology_map",
-        "render_mesh",
+        "render_scene",
         "features",
         "measurements",
-        "metric_fields",
+        "scalar_field",
     ],
     "operations": [
         {
@@ -174,81 +178,88 @@ class SuccessfulRunner:
             }),
             encoding="utf-8",
         )
-        topology = output / "topology.json"
+        topology_snapshot_id = "topology_test"
+        geometry_ref = {
+            "kind": "face",
+            "index": 1,
+            "input_sha256": self.request.task.input_sha256,
+            "topology_snapshot_id": topology_snapshot_id,
+            "entity_id": "face-1",
+        }
+        primitive_content = [{
+            "primitive_id": "face-1",
+            "vertices": [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+            "triangles": [[0, 1, 2]],
+        }]
+        mesh_sha256 = render_mesh_content_sha256(primitive_content)
+        mesh_snapshot_id = f"mesh_{mesh_sha256[:16]}"
+        primitives = [
+            {**item, "render_mesh_snapshot_id": mesh_snapshot_id}
+            for item in primitive_content
+        ]
+        topology_content = [
+            {"entity_id": "face-1", "kind": "face", "index": 1}
+        ]
+        topology_sha256 = hashlib.sha256(
+            json.dumps(
+                topology_content,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        topology = output / "topology_map.json"
         topology.write_text(
             json.dumps({
-                **identity,
-                "contract_version": "dfm.geometry.artifact/topology/v1",
-                "map_id": "topology-"
-                + hashlib.sha256(
-                    f"{self.request.task.input_sha256}:{ENGINE_VERSION}".encode()
-                ).hexdigest()[:20],
-                "engine_version": ENGINE_VERSION,
-                "scene_ref": "render_scene",
-                "index_base": 1,
-                "identity_scope": "input_sha256+engine_version",
-                "bbox": {},
-                "faces": [
-                    {
-                        "index": 1,
-                        "geometry_ref": {
-                            "kind": "face",
-                            "index": 1,
-                            "input_sha256": self.request.task.input_sha256,
-                        },
-                        "triangle_refs": [
-                            {"primitive_id": "face-1", "triangle_id": 0}
-                        ],
-                        "surface_type": "plane",
-                        "area_mm2": 1.0,
-                    }
-                ],
-                "edges": [],
-                "aag": [],
-                "quality": {
+                "schema_version": 2,
+                "map_id": "topology_geometry",
+                "run_id": self.request.task.run_id,
+                "input_sha256": self.request.task.input_sha256,
+                "scene_ref": "scene_geometry",
+                "topology_snapshot": {
+                    "topology_snapshot_id": topology_snapshot_id,
+                    "input_sha256": self.request.task.input_sha256,
                     "backend": "analysis_situs+occt",
-                    "maturity": "experimental",
-                    "certified": False,
+                    "backend_version": ENGINE_VERSION,
+                    "loader_id": "occt-step-loader",
+                    "loader_version": ENGINE_VERSION,
+                    "indexer_id": "occt-topexp-face-indexer",
+                    "indexer_version": "1",
+                    "entity_count": {"body": 1, "face": 1},
+                    "topology_content_sha256": topology_sha256,
                 },
-                "diagnostics": (
-                    {
-                        "geometry_healing_applied": True,
-                        "selected_transfer": "shape_processed",
-                    }
-                    if self.healed
-                    else {}
-                ),
+                "render_mesh_snapshot_ref": mesh_snapshot_id,
+                "faces": [{
+                    "geometry_ref": geometry_ref,
+                    "triangle_refs": [{
+                        "primitive_id": "face-1",
+                        "triangle_id": 0,
+                        "render_mesh_snapshot_id": mesh_snapshot_id,
+                    }],
+                }],
             }),
             encoding="utf-8",
         )
-        render_mesh = output / "render_mesh.json"
-        render_mesh.write_text(
+        render_scene = output / "render_scene.json"
+        render_scene.write_text(
             json.dumps({
-                "schema_version": 1,
-                "contract_version": "dfm.geometry.artifact/render-mesh/v1",
+                "schema_version": 2,
+                "scene_id": "scene_geometry",
                 "run_id": self.request.task.run_id,
                 "input_sha256": self.request.task.input_sha256,
-                "engine_version": ENGINE_VERSION,
+                "coordinate_system": "model",
                 "unit": "mm",
-                "bbox": {
-                    "status": "finite",
-                    "minimum": [0, 0, 0],
-                    "maximum": [1, 1, 1],
+                "topology_snapshot_ref": topology_snapshot_id,
+                "render_mesh_snapshot": {
+                    "render_mesh_snapshot_id": mesh_snapshot_id,
+                    "topology_snapshot_id": topology_snapshot_id,
+                    "input_sha256": self.request.task.input_sha256,
+                    "producer": "occt",
+                    "producer_version": ENGINE_VERSION,
+                    "tessellation": {"linear_deflection_mm": 0.1},
+                    "triangle_count": 1,
+                    "render_mesh_sha256": mesh_sha256,
                 },
-                "triangle_count": 1,
-                "faces": [
-                    {
-                        "face_index": 1,
-                        "positions": [0, 0, 0, 1, 0, 0, 0, 1, 0],
-                        "indices": [0, 1, 2],
-                    }
-                ],
-                "quality": {
-                    "backend": "occt",
-                    "maturity": "experimental",
-                    "certified": False,
-                },
-                "diagnostics": {},
+                "primitives": primitives,
             }),
             encoding="utf-8",
         )
@@ -268,11 +279,7 @@ class SuccessfulRunner:
                         "confidence": 0.8,
                         "subtype": "through_hole",
                         "geometry_refs": [
-                            {
-                                "kind": "face",
-                                "index": 1,
-                                "input_sha256": self.request.task.input_sha256,
-                            }
+                            geometry_ref
                         ],
                         "parameters": {"diameter_mm": 4.0},
                         "method": "analysis_situs_recognize_drill_holes",
@@ -314,11 +321,7 @@ class SuccessfulRunner:
                         "unit": "degree",
                         "status": "measured",
                         "geometry_refs": [
-                            {
-                                "kind": "face",
-                                "index": 1,
-                                "input_sha256": self.request.task.input_sha256,
-                            }
+                            geometry_ref
                         ],
                         "method": "freecad_dfm_uv_grid_draft",
                         "algorithm_version": ENGINE_VERSION,
@@ -329,28 +332,62 @@ class SuccessfulRunner:
                             "certified": False,
                         },
                         "diagnostics": {},
-                        "region_refs": [],
-                        "field_refs": [],
+                        "feature_refs": draft_operation.feature_refs,
+                        "region_refs": draft_operation.region_refs,
+                        "field_refs": ["scalar-field-measure-draft"],
                     }
                 ],
             }),
             encoding="utf-8",
         )
-        metric_fields = output / "metric_fields.json"
-        metric_fields.write_text(
+        scalar_field = output / "scalar_field_1.json"
+        scalar_field.write_text(
             json.dumps({
-                **identity,
-                "contract_version": "dfm.geometry.artifact/metric-fields/v1",
-                "process": "injection",
-                "scope_id": "injection.geometry-core",
-                "scope_version": "4.0.0",
-                "fields": [],
-                "views": [],
+                "schema_version": 2,
+                "field_id": "scalar-field-measure-draft",
+                "run_id": self.request.task.run_id,
+                "input_sha256": self.request.task.input_sha256,
+                "operation_id": draft_operation.operation_id,
+                "metric_id": draft_operation.metric_ids[0],
+                "quantity_id": draft_operation.required_quantities[0],
+                "unit": "degree",
+                "scene_ref": "scene_geometry",
+                "topology_map_ref": "topology_geometry",
+                "topology_snapshot_ref": topology_snapshot_id,
+                "render_mesh_snapshot_ref": mesh_snapshot_id,
+                "interpolation": "constant_per_triangle",
+                "calculation_context": {"pull_direction": [0, 0, 1]},
+                "feature_refs": draft_operation.feature_refs,
+                "region_refs": draft_operation.region_refs,
+                "samples": [{
+                    "sample_id": "draft-sample-1",
+                    "point": [0.25, 0.25, 0],
+                    "uv": [0.25, 0.25],
+                    "surface_normal": [0, 0, 1],
+                    "value": 2.0,
+                    "geometry_ref": geometry_ref,
+                    "mesh_vertex_ref": None,
+                }],
+                "cells": [{
+                    "cell_id": "draft-cell-1",
+                    "sample_ids": ["draft-sample-1"],
+                    "geometry_ref": geometry_ref,
+                    "triangle_ref": {
+                        "primitive_id": "face-1",
+                        "triangle_id": 0,
+                        "render_mesh_snapshot_id": mesh_snapshot_id,
+                    },
+                }],
+                "quality": {
+                    "backend": "occt",
+                    "maturity": "experimental",
+                    "certified": False,
+                },
             }),
             encoding="utf-8",
         )
         result = ObjectiveResultManifest(
-            schema_version=2,
+            schema_version=OBJECTIVE_SCHEMA_VERSION,
             producer_version=ENGINE_VERSION,
             run_id=self.request.task.run_id,
             input_sha256=self.request.task.input_sha256,
@@ -361,10 +398,14 @@ class SuccessfulRunner:
             artifacts=[
                 _artifact(preflight, "preflight", "preflight"),
                 _artifact(topology, "topology_geometry", "topology_map"),
-                _artifact(render_mesh, "render_mesh", "render_mesh"),
+                _artifact(render_scene, "scene_geometry", "render_scene"),
                 _artifact(features, "features", "features"),
                 _artifact(measurements, "measurements", "measurements"),
-                _artifact(metric_fields, "metric_fields", "metric_fields"),
+                _artifact(
+                    scalar_field,
+                    "scalar-field-measure-draft",
+                    "scalar_field",
+                ),
             ],
             contract_version=GEOMETRY_RESULT_CONTRACT,
         )
@@ -374,11 +415,11 @@ class SuccessfulRunner:
         emitted = []
         for kind, path in (
             ("preflight", "preflight.json"),
-            ("topology_map", "topology.json"),
-            ("render_mesh", "render_mesh.json"),
+            ("topology_map", "topology_map.json"),
+            ("render_scene", "render_scene.json"),
             ("features", "features.json"),
             ("measurements", "measurements.json"),
-            ("metric_fields", "metric_fields.json"),
+            ("scalar_field", "scalar_field_1.json"),
             ("worker_result", "engine_result.json"),
         ):
             event = WorkerEvent(
@@ -441,27 +482,28 @@ class TamperingRunner(SuccessfulRunner):
             artifact["size_bytes"] = len(content)
             artifact["sha256"] = hashlib.sha256(content).hexdigest()
             result_path.write_text(json.dumps(manifest), encoding="utf-8")
-        elif self.mode in {"aag_ref", "adjacent_ref"}:
-            topology_path = output / "topology.json"
+        elif self.mode == "topology_hash":
+            topology_path = output / "topology_map.json"
             topology = json.loads(topology_path.read_text(encoding="utf-8"))
-            topology["edges"] = [
-                {"index": 1, "length_mm": 1.0, "adjacent_face_indices": [1]}
-            ]
-            if self.mode == "aag_ref":
-                topology["aag"] = [
-                    {
-                        "edge_indices": [1],
-                        "face_indices": [1, 999],
-                        "normal_angle_deg": 90.0,
-                        "relation": "concave",
-                    }
-                ]
-            else:
-                topology["edges"][0]["adjacent_face_indices"] = [999]
+            topology["topology_snapshot"]["topology_content_sha256"] = "0" * 64
             topology_path.write_text(json.dumps(topology), encoding="utf-8")
             content = topology_path.read_bytes()
             artifact = next(
                 item for item in manifest["artifacts"] if item["kind"] == "topology_map"
+            )
+            artifact["size_bytes"] = len(content)
+            artifact["sha256"] = hashlib.sha256(content).hexdigest()
+            result_path.write_text(json.dumps(manifest), encoding="utf-8")
+        elif self.mode == "mesh_hash":
+            scene_path = output / "render_scene.json"
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            scene["render_mesh_snapshot"]["render_mesh_sha256"] = "0" * 64
+            scene_path.write_text(json.dumps(scene), encoding="utf-8")
+            content = scene_path.read_bytes()
+            artifact = next(
+                item
+                for item in manifest["artifacts"]
+                if item["kind"] == "render_scene"
             )
             artifact["size_bytes"] = len(content)
             artifact["sha256"] = hashlib.sha256(content).hexdigest()
@@ -583,8 +625,14 @@ def _plan():
                 depends_on=["topology.aag"],
                 metric_ids=["injection.geometry.draft"],
                 required_quantities=["draft_angle_deg"],
-                required_artifacts=["topology_map"],
-                arguments={"pull_direction": ResolvedArgument([0, 0, 1], "scope:+z")},
+                required_artifacts=["topology_map", "scalar_field"],
+                arguments={
+                    "pull_direction": ResolvedArgument(
+                        [0, 0, 1], "fact:pull_dir"
+                    )
+                },
+                feature_refs=["feature.ordinary.1"],
+                region_refs=["region.ordinary.1"],
             ),
             PlanOperation(
                 "recognize_drilled_hole",
@@ -592,6 +640,20 @@ def _plan():
                 depends_on=["topology.aag"],
                 required_artifacts=["features"],
             ),
+        ],
+        regions=[
+            RegionRecord(
+                region_id="region.ordinary.1",
+                input_sha256="a" * 64,
+                coordinate_system="model",
+                mode="whole_model",
+                semantic_label="ordinary_model_region",
+                source_refs=["test:fixture"],
+                version="1.0.0",
+                content_sha256="b" * 64,
+                role="ordinary",
+                feature_refs=["feature.ordinary.1"],
+            )
         ],
     )
 
@@ -693,15 +755,18 @@ def test_occt_analyzer_runs_versioned_request_and_returns_validated_artifacts(tm
 
     assert runner.argv[:3] == ["C:/dfm/dfm-geometry.exe", "analyze", "--request"]
     assert runner.request.contract_version == "dfm.geometry.request/v1"
-    assert runner.request.task.verification_level == "experimental"
-    assert runner.request.task.assumed_pull_direction is True
+    assert runner.request.task.schema_version == OBJECTIVE_SCHEMA_VERSION
+    assert runner.request.task.regions == context.plan.regions
+    assert runner.request.task.operations == context.plan.operations
+    assert "verification_level" not in runner.request.task.to_dict()
+    assert "assumed_pull_direction" not in runner.request.task.to_dict()
     assert {item.kind for item in artifacts} == {
         "preflight",
         "topology_map",
-        "render_mesh",
+        "render_scene",
         "features",
         "measurements",
-        "metric_fields",
+        "scalar_field",
         "worker_result",
     }
 
@@ -749,8 +814,8 @@ def test_missing_native_engine_is_an_explicit_dependency_error(tmp_path):
         ("input_hash", "objective_result_invalid"),
         ("path_escape", "objective_result_invalid"),
         ("topology_ref", "objective_result_invalid"),
-        ("aag_ref", "objective_result_invalid"),
-        ("adjacent_ref", "objective_result_invalid"),
+        ("topology_hash", "objective_result_invalid"),
+        ("mesh_hash", "objective_result_invalid"),
         ("algorithm_version", "objective_result_invalid"),
         ("healing_audit", "objective_result_invalid"),
         ("duplicate_event", "geometry_protocol_invalid"),
@@ -797,12 +862,12 @@ def test_native_protocol_and_artifact_json_schemas_validate_real_adapter_shapes(
         "event.schema",
         "features.schema",
         "measurements.schema",
-        "metric_fields.schema",
         "preflight.schema",
         "request.schema",
-        "render_mesh.schema",
+        "render_scene.schema",
         "result.schema",
-        "topology.schema",
+        "scalar_field.schema",
+        "topology_map.schema",
     }
     for schema in schemas.values():
         Draft202012Validator.check_schema(schema)
@@ -842,11 +907,11 @@ def test_native_protocol_and_artifact_json_schemas_validate_real_adapter_shapes(
     output = Path(runner.request.output_dir)
     for stem, filename in (
         ("preflight.schema", "preflight.json"),
-        ("topology.schema", "topology.json"),
-        ("render_mesh.schema", "render_mesh.json"),
+        ("topology_map.schema", "topology_map.json"),
+        ("render_scene.schema", "render_scene.json"),
         ("features.schema", "features.json"),
         ("measurements.schema", "measurements.json"),
-        ("metric_fields.schema", "metric_fields.json"),
+        ("scalar_field.schema", "scalar_field_1.json"),
         ("result.schema", "engine_result.json"),
     ):
         Draft202012Validator(schemas[stem]).validate(

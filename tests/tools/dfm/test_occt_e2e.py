@@ -82,10 +82,10 @@ def test_real_occt_injection_vertical_slice(tmp_path):
         assert {item["kind"] for item in run["artifacts"]} >= {
             "preflight",
             "topology_map",
-            "render_mesh",
+            "render_scene",
             "features",
             "measurements",
-            "metric_fields",
+            "scalar_field",
             "evaluations",
             "dfm_viewer",
         }
@@ -93,11 +93,11 @@ def test_real_occt_injection_vertical_slice(tmp_path):
         schema_root = Path("dfm-geometry/schemas").resolve()
         schema_by_kind = {
             "preflight": "preflight.schema.json",
-            "topology_map": "topology.schema.json",
-            "render_mesh": "render_mesh.schema.json",
+            "topology_map": "topology_map.schema.json",
+            "render_scene": "render_scene.schema.json",
             "features": "features.schema.json",
             "measurements": "measurements.schema.json",
-            "metric_fields": "metric_fields.schema.json",
+            "scalar_field": "scalar_field.schema.json",
             "worker_result": "result.schema.json",
         }
         project_dir = service.workspace.project_dir(project_id)

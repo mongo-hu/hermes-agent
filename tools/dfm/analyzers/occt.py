@@ -15,22 +15,23 @@ from ..contracts import (
     GEOMETRY_EVENT_CONTRACT,
     GEOMETRY_REQUEST_CONTRACT,
     GEOMETRY_RESULT_CONTRACT,
-    OCCT_OBJECTIVE_SCHEMA_VERSION,
+    OBJECTIVE_SCHEMA_VERSION,
     WORKER_SCHEMA_VERSION,
     ArtifactRecord,
     Capability,
     CapabilityStatus,
     LocalObjectiveWorkerRequest,
-    OcctObjectiveTaskRequest,
     ObjectiveResultManifest,
+    ObjectiveTaskRequest,
     WorkerEvent,
 )
 from ..errors import DFMError
 from ..runtime.process import ProcessRunner
 from .base import AnalyzerContext, CancellationToken
+from .objective_result import validate_objective_result
 
 
-ENGINE_VERSION = "occt-dfm-geometry-1.2.0"
+ENGINE_VERSION = "occt-dfm-geometry-1.4.1"
 GEOMETRY_SCOPE_ID = "injection.geometry-core"
 GEOMETRY_SCOPE_VERSION = "4.0.0"
 CAPABILITY_CONTRACT = "dfm.geometry.capabilities/v1"
@@ -214,6 +215,8 @@ class OcctAnalyzer:
                             != "aa5958932c8c85c068566ab685f2b99c0436b926"
                             or payload.get("status") != "available"
                             or payload.get("maturity") != "experimental"
+                            or payload.get("objective_schema_version")
+                            != OBJECTIVE_SCHEMA_VERSION
                             or payload.get("supported_processes") != ["injection"]
                             or payload.get("supported_formats") != ["step"]
                             or payload.get("supported_extensions") != [".step", ".stp"]
@@ -221,10 +224,10 @@ class OcctAnalyzer:
                             != [
                                 "preflight",
                                 "topology_map",
-                                "render_mesh",
+                                "render_scene",
                                 "features",
                                 "measurements",
-                                "metric_fields",
+                                "scalar_field",
                             ]
                             or not _valid_capability_operations(
                                 payload.get("operations")
@@ -347,8 +350,8 @@ class OcctAnalyzer:
         run_dir = context.project_dir / "runs" / context.run_id
         output_dir = run_dir / "artifacts"
         output_dir.mkdir(parents=True, exist_ok=True)
-        task = OcctObjectiveTaskRequest(
-            schema_version=OCCT_OBJECTIVE_SCHEMA_VERSION,
+        task = ObjectiveTaskRequest(
+            schema_version=OBJECTIVE_SCHEMA_VERSION,
             run_id=context.run_id,
             input_sha256=input_record.sha256,
             input_format="step",
@@ -359,8 +362,7 @@ class OcctAnalyzer:
             scope_id=GEOMETRY_SCOPE_ID,
             scope_version=GEOMETRY_SCOPE_VERSION,
             operations=context.plan.operations,
-            verification_level="experimental",
-            assumed_pull_direction=self._assumed_pull_direction(context.plan),
+            regions=context.plan.regions,
         )
         request = LocalObjectiveWorkerRequest(
             schema_version=WORKER_SCHEMA_VERSION,
@@ -438,22 +440,10 @@ class OcctAnalyzer:
             )
         artifact_events = [event for event in events if event.type == "artifact"]
         artifact_pairs = [(event.kind, event.path) for event in artifact_events]
-        expected_artifact_pairs = {
-            ("preflight", "preflight.json"),
-            ("topology_map", "topology.json"),
-            ("render_mesh", "render_mesh.json"),
-            ("features", "features.json"),
-            ("measurements", "measurements.json"),
-            ("metric_fields", "metric_fields.json"),
-            ("worker_result", "engine_result.json"),
-        }
-        if (
-            len(artifact_pairs) != len(set(artifact_pairs))
-            or set(artifact_pairs) != expected_artifact_pairs
-        ):
+        if len(artifact_pairs) != len(set(artifact_pairs)):
             raise DFMError(
                 "geometry_protocol_invalid",
-                "The OCCT engine emitted an incomplete, duplicate, or unexpected artifact event set.",
+                "The OCCT engine emitted duplicate artifact events.",
             )
         result_path = self._contained_file(output_dir, completed[0].path)
         try:
@@ -466,7 +456,7 @@ class OcctAnalyzer:
                 "The OCCT engine result could not be loaded.",
             ) from exc
         if (
-            result.schema_version != OCCT_OBJECTIVE_SCHEMA_VERSION
+            result.schema_version != OBJECTIVE_SCHEMA_VERSION
             or result.contract_version != GEOMETRY_RESULT_CONTRACT
             or result.producer_version != self.version
             or result.run_id != context.run_id
@@ -483,24 +473,37 @@ class OcctAnalyzer:
         required_kinds = {
             "preflight",
             "topology_map",
-            "render_mesh",
+            "render_scene",
             "features",
             "measurements",
-            "metric_fields",
         }
+        allowed_kinds = required_kinds | {"scalar_field"}
         artifact_kinds = [item.kind for item in result.artifacts]
+        kind_counts = {kind: artifact_kinds.count(kind) for kind in allowed_kinds}
+        requires_scalar_field = any(
+            "scalar_field" in operation.required_artifacts
+            for operation in context.plan.operations
+        )
         if (
-            len(artifact_kinds) != len(required_kinds)
-            or len(artifact_kinds) != len(set(artifact_kinds))
-            or set(artifact_kinds) != required_kinds
+            any(kind_counts[kind] != 1 for kind in required_kinds)
+            or set(artifact_kinds) - allowed_kinds
+            or (requires_scalar_field and kind_counts["scalar_field"] == 0)
         ):
             raise DFMError(
                 "objective_result_invalid",
                 "The OCCT engine result has an incomplete or unexpected artifact set.",
             )
+        expected_artifact_pairs = {
+            (item.kind, item.filename) for item in result.artifacts
+        } | {("worker_result", "engine_result.json")}
+        if set(artifact_pairs) != expected_artifact_pairs:
+            raise DFMError(
+                "geometry_protocol_invalid",
+                "The OCCT artifact events do not match the signed result manifest.",
+            )
 
         artifacts: list[ArtifactRecord] = []
-        documents: dict[str, dict[str, Any]] = {}
+        documents: dict[str, tuple[ArtifactRecord, dict[str, Any]]] = {}
         for item in result.artifacts:
             path = self._contained_file(output_dir, item.filename)
             if (
@@ -526,20 +529,19 @@ class OcctAnalyzer:
                     "An OCCT artifact must contain a JSON object.",
                     {"artifact_id": item.artifact_id},
                 )
-            documents[item.kind] = document
-            artifacts.append(
-                ArtifactRecord(
-                    item.artifact_id,
-                    item.kind,
-                    path.relative_to(context.project_dir).as_posix(),
-                    item.media_type,
-                    _utc_now(),
-                    run_id=context.run_id,
-                    logical_id=item.artifact_id,
-                    size_bytes=item.size_bytes,
-                    sha256=item.sha256,
-                )
+            record = ArtifactRecord(
+                item.artifact_id,
+                item.kind,
+                path.relative_to(context.project_dir).as_posix(),
+                item.media_type,
+                _utc_now(),
+                run_id=context.run_id,
+                logical_id=item.artifact_id,
+                size_bytes=item.size_bytes,
+                sha256=item.sha256,
             )
+            documents[item.artifact_id] = (record, document)
+            artifacts.append(record)
         self._validate_artifact_contracts(
             documents,
             run_id=context.run_id,
@@ -547,6 +549,16 @@ class OcctAnalyzer:
             process=context.plan.process,
             scope_id=GEOMETRY_SCOPE_ID,
             scope_version=GEOMETRY_SCOPE_VERSION,
+        )
+        validate_objective_result(
+            context.plan.operations,
+            context.project_dir,
+            artifacts,
+            run_id=context.run_id,
+            input_sha256=input_record.sha256,
+            process=context.plan.process,
+            scope_id=GEOMETRY_SCOPE_ID,
+            regions=context.plan.regions,
         )
         artifacts.append(
             self._artifact_record(
@@ -562,7 +574,7 @@ class OcctAnalyzer:
     @classmethod
     def _validate_artifact_contracts(
         cls,
-        documents: dict[str, dict[str, Any]],
+        documents: dict[str, tuple[ArtifactRecord, dict[str, Any]]],
         *,
         run_id: str,
         input_sha256: str,
@@ -570,42 +582,46 @@ class OcctAnalyzer:
         scope_id: str,
         scope_version: str,
     ) -> None:
-        contracts = {
+        by_kind: dict[str, list[tuple[ArtifactRecord, dict[str, Any]]]] = {}
+        for record, document in documents.values():
+            by_kind.setdefault(record.kind, []).append((record, document))
+        for kind in (
+            "preflight",
+            "topology_map",
+            "render_scene",
+            "features",
+            "measurements",
+        ):
+            if len(by_kind.get(kind, [])) != 1:
+                raise DFMError(
+                    "objective_result_invalid",
+                    "OCCT artifact documents are incomplete.",
+                    {"kind": kind},
+                )
+
+        preflight = by_kind["preflight"][0][1]
+        features_document = by_kind["features"][0][1]
+        measurements_document = by_kind["measurements"][0][1]
+        native_contracts = {
             "preflight": "dfm.geometry.artifact/preflight/v1",
-            "topology_map": "dfm.geometry.artifact/topology/v1",
-            "render_mesh": "dfm.geometry.artifact/render-mesh/v1",
             "features": "dfm.geometry.artifact/features/v1",
             "measurements": "dfm.geometry.artifact/measurements/v1",
-            "metric_fields": "dfm.geometry.artifact/metric-fields/v1",
         }
-        if set(documents) != set(contracts):
-            raise DFMError(
-                "objective_result_invalid",
-                "OCCT artifact documents are incomplete.",
-            )
-        for kind, document in documents.items():
+        for kind, contract in native_contracts.items():
+            document = by_kind[kind][0][1]
             if (
                 document.get("schema_version") != 1
-                or document.get("contract_version") != contracts[kind]
+                or document.get("contract_version") != contract
                 or document.get("run_id") != run_id
                 or document.get("input_sha256") != input_sha256
             ):
                 raise DFMError(
                     "objective_result_invalid",
-                    "An OCCT artifact has an incompatible identity.",
+                    "An OCCT native artifact has an incompatible identity.",
                     {"kind": kind},
                 )
 
-        preflight = documents["preflight"]
-        topology = documents["topology_map"]
-        render_mesh = documents["render_mesh"]
         healed = preflight.get("healed")
-        expected_map_id = (
-            "topology-"
-            + hashlib.sha256(f"{input_sha256}:{ENGINE_VERSION}".encode()).hexdigest()[
-                :20
-            ]
-        )
         if (
             preflight.get("engine_version") != ENGINE_VERSION
             or preflight.get("format") != "step"
@@ -613,26 +629,14 @@ class OcctAnalyzer:
             or not isinstance(healed, bool)
             or preflight.get("status") != "passed"
             or preflight.get("valid_brep") is not True
-            or topology.get("engine_version") != ENGINE_VERSION
-            or topology.get("map_id") != expected_map_id
-            or topology.get("identity_scope") != "input_sha256+engine_version"
-            or render_mesh.get("engine_version") != ENGINE_VERSION
-            or render_mesh.get("unit") != "mm"
-            or not isinstance(render_mesh.get("faces"), list)
-            or not render_mesh["faces"]
-            or not isinstance(render_mesh.get("triangle_count"), int)
-            or render_mesh["triangle_count"] <= 0
         ):
             raise DFMError(
                 "objective_result_invalid",
-                "OCCT preflight/topology identity is invalid.",
+                "OCCT preflight identity is invalid.",
             )
 
         preflight_diagnostics = preflight.get("diagnostics")
-        topology_diagnostics = topology.get("diagnostics")
-        if not isinstance(preflight_diagnostics, dict) or not isinstance(
-            topology_diagnostics, dict
-        ):
+        if not isinstance(preflight_diagnostics, dict):
             raise DFMError(
                 "objective_result_invalid",
                 "OCCT geometry normalization audit is missing.",
@@ -657,8 +661,6 @@ class OcctAnalyzer:
                 or processed_validation.get("analyzable") is not True
                 or processed_validation.get("valid_brep") is not True
                 or processed_validation.get("bbox_status") != "finite"
-                or topology_diagnostics.get("geometry_healing_applied") is not True
-                or topology_diagnostics.get("selected_transfer") != "shape_processed"
             ):
                 raise DFMError(
                     "objective_result_invalid",
@@ -669,15 +671,15 @@ class OcctAnalyzer:
             or preflight_diagnostics.get("geometry_healing_applied") is True
             or preflight_diagnostics.get("geometry_healing_succeeded") is True
             or preflight_diagnostics.get("selected_transfer") == "shape_processed"
-            or topology_diagnostics.get("geometry_healing_applied") is True
-            or topology_diagnostics.get("selected_transfer") == "shape_processed"
         ):
             raise DFMError(
                 "objective_result_invalid",
                 "OCCT artifacts claim unaudited geometry normalization.",
             )
-        for kind in ("features", "measurements", "metric_fields"):
-            document = documents[kind]
+        for kind, document in (
+            ("features", features_document),
+            ("measurements", measurements_document),
+        ):
             if (
                 document.get("process") != process
                 or document.get("scope_id") != scope_id
@@ -689,22 +691,16 @@ class OcctAnalyzer:
                     {"kind": kind},
                 )
 
-        features = documents["features"].get("features")
-        measurements = documents["measurements"].get("measurements")
-        metric_fields = documents["metric_fields"].get("fields")
-        metric_views = documents["metric_fields"].get("views")
-        if (
-            not isinstance(features, list)
-            or not isinstance(measurements, list)
-            or not isinstance(metric_fields, list)
-            or not isinstance(metric_views, list)
-        ):
+        features = features_document.get("features")
+        measurements = measurements_document.get("measurements")
+        if not isinstance(features, list) or not isinstance(measurements, list):
             raise DFMError(
                 "objective_result_invalid",
-                "OCCT feature, measurement, and metric-field collections must be arrays.",
+                "OCCT feature and measurement collections must be arrays.",
             )
-        records = [*features, *measurements, *metric_fields]
-        quality_records = [preflight, topology, render_mesh, *records]
+        records = [*features, *measurements]
+        scalar_fields = [document for _, document in by_kind.get("scalar_field", [])]
+        quality_records = [preflight, *records, *scalar_fields]
         if any(
             not isinstance(record, dict)
             or not isinstance(record.get("quality"), dict)
@@ -712,12 +708,19 @@ class OcctAnalyzer:
             not in {"occt", "analysis_situs+occt"}
             or record["quality"].get("maturity") != "experimental"
             or record["quality"].get("certified") is not False
-            or not isinstance(record.get("diagnostics"), dict)
             for record in quality_records
         ):
             raise DFMError(
                 "objective_result_invalid",
                 "OCCT artifact quality metadata is invalid.",
+            )
+        if any(
+            not isinstance(record.get("diagnostics"), dict)
+            for record in [preflight, *records]
+        ):
+            raise DFMError(
+                "objective_result_invalid",
+                "OCCT native artifact diagnostics are invalid.",
             )
         if any(
             record.get("algorithm_version") != ENGINE_VERSION
@@ -731,124 +734,50 @@ class OcctAnalyzer:
                 "OCCT feature/measurement algorithm identity is invalid.",
             )
 
-        face_indices = cls._topology_indices(topology.get("faces"))
-        edge_indices = cls._topology_indices(topology.get("edges"))
-        cls._validate_topology_references(topology, face_indices, edge_indices)
-        for record in [*features, *measurements]:
-            cls._validate_geometry_refs(
-                record.get("geometry_refs"),
-                input_sha256,
-                face_indices,
-                edge_indices,
-            )
+        for record, document in documents.values():
+            identity_key = {
+                "topology_map": "map_id",
+                "render_scene": "scene_id",
+                "scalar_field": "field_id",
+            }.get(record.kind)
+            if identity_key is not None and document.get(identity_key) != record.artifact_id:
+                raise DFMError(
+                    "objective_result_invalid",
+                    "A shared OCCT artifact ID does not match its payload identity.",
+                    {"kind": record.kind, "artifact_id": record.artifact_id},
+                )
 
-    @staticmethod
-    def _assumed_pull_direction(plan: Any) -> bool:
-        sources = [
-            argument.source_ref
-            for operation in plan.operations
-            for name, argument in operation.arguments.items()
-            if name == "pull_direction"
-        ]
-        if not sources:
-            return False
-        return not any(source.startswith("fact:") for source in sources)
-
-    @staticmethod
-    def _topology_indices(values: object) -> set[int]:
-        if not isinstance(values, list):
-            raise DFMError(
-                "objective_result_invalid",
-                "Topology index collections must be arrays.",
+        topology = by_kind["topology_map"][0][1]
+        topology_snapshot_id = str(
+            topology.get("topology_snapshot", {}).get("topology_snapshot_id") or ""
+        )
+        topology_entities = {
+            (
+                item.get("geometry_ref", {}).get("kind"),
+                item.get("geometry_ref", {}).get("index"),
+                item.get("geometry_ref", {}).get("entity_id"),
             )
-        indices = {
-            item.get("index")
-            for item in values
+            for item in topology.get("faces", [])
             if isinstance(item, dict)
-            and isinstance(item.get("index"), int)
-            and not isinstance(item.get("index"), bool)
-            and item["index"] > 0
         }
-        if len(indices) != len(values) or indices != set(range(1, len(values) + 1)):
-            raise DFMError(
-                "objective_result_invalid",
-                "Topology indices must be contiguous, positive, and unique.",
-            )
-        return indices
-
-    @staticmethod
-    def _validate_topology_references(
-        topology: dict[str, Any],
-        face_indices: set[int],
-        edge_indices: set[int],
-    ) -> None:
-        if topology.get("index_base") != 1:
-            raise DFMError(
-                "objective_result_invalid", "Topology index_base must be 1."
-            )
-        for edge in topology.get("edges", []):
-            adjacent = edge.get("adjacent_face_indices") if isinstance(edge, dict) else None
-            if (
-                not isinstance(adjacent, list)
-                or any(index not in face_indices for index in adjacent)
-                or len(adjacent) != len(set(adjacent))
+        for record in records:
+            refs = record.get("geometry_refs")
+            if not isinstance(refs, list) or any(
+                not isinstance(ref, dict)
+                or ref.get("input_sha256") != input_sha256
+                or ref.get("topology_snapshot_id") != topology_snapshot_id
+                or not ref.get("entity_id")
+                or ref.get("kind") not in {"face", "edge"}
+                or (
+                    ref.get("kind") == "face"
+                    and (ref.get("kind"), ref.get("index"), ref.get("entity_id"))
+                    not in topology_entities
+                )
+                for ref in refs
             ):
                 raise DFMError(
                     "objective_result_invalid",
-                    "Topology edge adjacency does not resolve.",
-                )
-        seen_arcs: set[tuple[int, int]] = set()
-        for arc in topology.get("aag", []):
-            arc_edges = arc.get("edge_indices") if isinstance(arc, dict) else None
-            faces = arc.get("face_indices") if isinstance(arc, dict) else None
-            if (
-                not isinstance(arc_edges, list)
-                or not arc_edges
-                or any(index not in edge_indices for index in arc_edges)
-                or len(arc_edges) != len(set(arc_edges))
-                or not isinstance(faces, list)
-                or len(faces) != 2
-                or any(index not in face_indices for index in faces)
-                or len(set(faces)) != 2
-            ):
-                raise DFMError(
-                    "objective_result_invalid",
-                    "Topology AAG references do not resolve.",
-                )
-            identity = tuple(sorted(faces))
-            if identity in seen_arcs:
-                raise DFMError(
-                    "objective_result_invalid",
-                    "Topology AAG contains a duplicate face arc.",
-                )
-            seen_arcs.add(identity)
-
-    @staticmethod
-    def _validate_geometry_refs(
-        values: object,
-        input_sha256: str,
-        face_indices: set[int],
-        edge_indices: set[int],
-    ) -> None:
-        if not isinstance(values, list):
-            raise DFMError(
-                "objective_result_invalid", "Geometry references must be an array."
-            )
-        for item in values:
-            kind = item.get("kind") if isinstance(item, dict) else None
-            index = item.get("index") if isinstance(item, dict) else None
-            allowed = face_indices if kind == "face" else edge_indices if kind == "edge" else None
-            if (
-                not isinstance(item, dict)
-                or item.get("input_sha256") != input_sha256
-                or allowed is None
-                or not isinstance(index, int)
-                or isinstance(index, bool)
-                or index not in allowed
-            ):
-                raise DFMError(
-                    "objective_result_invalid",
-                    "Geometry reference does not resolve in topology.",
+                    "An OCCT geometry reference does not resolve in the shared topology snapshot.",
                 )
 
     @staticmethod

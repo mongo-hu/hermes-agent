@@ -51,7 +51,7 @@
         "producer_version": {"type": "string", "minLength": 1},
         "tessellation": {"type": "object"},
         "triangle_count": {"type": "integer", "minimum": 1},
-        "render_mesh_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        "render_mesh_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "SHA-256 of the dfm.render-mesh-snapshot/v2 canonical binary stream: uint64 big-endian length prefixes, UTF-8 primitive IDs, normalized IEEE-754 binary64 big-endian coordinates, and uint64 big-endian triangle indices; render_mesh_snapshot_id is excluded."}
       }
     }
   }

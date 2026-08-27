@@ -30,17 +30,16 @@ class PreviewAnalyzer:
         output = context.project_dir / "runs" / context.run_id / "artifacts"
         output.mkdir(parents=True, exist_ok=True)
         payloads = {
-            "render_mesh": (
-                "render_mesh.json",
+            "render_scene": (
+                "render_scene.json",
                 {
-                    "contract_version": "dfm.geometry.artifact/render-mesh/v1",
-                    "faces": [],
-                    "triangle_count": 0,
+                    "schema_version": 2,
+                    "primitives": [],
                 },
             ),
             "topology_map": (
-                "topology.json",
-                {"contract_version": "dfm.geometry.artifact/topology/v1", "edges": []},
+                "topology_map.json",
+                {"schema_version": 2, "faces": []},
             ),
         }
         artifacts = []

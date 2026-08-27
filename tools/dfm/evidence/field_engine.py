@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 from ..contracts import ArtifactRecord, EvidenceRecord, GeometryRef
 from ..errors import DFMError
+from ..geometry.snapshot_hash import render_mesh_content_sha256
 
 
 EVIDENCE_SCHEMA_VERSION = 2
@@ -86,7 +87,13 @@ class FieldEvidenceEngine:
             # thickness ratios) need a dedicated renderer for their numerator
             # and denominator regions; applying the derived threshold to each
             # raw field sample would create false evidence.
-            if evaluation.get("expression") is not None:
+            expression = evaluation.get("expression")
+            if expression is not None and not (
+                isinstance(expression, dict)
+                and set(expression) == {"operand"}
+                and isinstance(expression.get("operand"), str)
+                and expression["operand"] in (evaluation.get("operand_values") or {})
+            ):
                 continue
             comparison = _OPERATORS.get(str(evaluation.get("operator") or ""))
             if comparison is None:
@@ -383,10 +390,13 @@ class FieldEvidenceEngine:
                 "Scalar field, topology, and render mesh do not share one immutable snapshot.",
             )
         primitives = linked_payloads["render_scene"].get("primitives", [])
-        mesh_payload = [
-            {key: value for key, value in item.items() if key != "render_mesh_snapshot_id"}
-            for item in primitives
-        ]
+        try:
+            mesh_content_sha256 = render_mesh_content_sha256(primitives)
+        except ValueError as exc:
+            raise DFMError(
+                "evidence_artifact_invalid",
+                "The render mesh snapshot content is not canonicalizable.",
+            ) from exc
         topology_payload = [
             {
                 "entity_id": face.get("geometry_ref", {}).get("entity_id"),
@@ -396,7 +406,7 @@ class FieldEvidenceEngine:
             for face in linked_payloads["topology_map"].get("faces", [])
         ]
         if (
-            scene_snapshot.get("render_mesh_sha256") != _stable_content_sha256(mesh_payload)
+            scene_snapshot.get("render_mesh_sha256") != mesh_content_sha256
             or scene_snapshot.get("triangle_count")
             != sum(len(item.get("triangles", [])) for item in primitives)
             or topology_snapshot.get("topology_content_sha256")

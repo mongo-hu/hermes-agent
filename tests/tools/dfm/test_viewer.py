@@ -22,8 +22,18 @@ def _artifact(
 
 def test_viewer_manifest_maps_failed_evaluation_to_geometry_refs(tmp_path):
     artifacts = [
-        _artifact(tmp_path, "render_mesh", "render_mesh.json", {"faces": []}),
-        _artifact(tmp_path, "topology_map", "topology.json", {"edges": []}),
+        _artifact(
+            tmp_path,
+            "render_scene",
+            "render_scene.json",
+            {"schema_version": 2, "primitives": []},
+        ),
+        _artifact(
+            tmp_path,
+            "topology_map",
+            "topology_map.json",
+            {"schema_version": 2, "faces": []},
+        ),
         _artifact(
             tmp_path,
             "measurements",
@@ -105,7 +115,9 @@ def test_viewer_manifest_maps_failed_evaluation_to_geometry_refs(tmp_path):
 
     assert result is not None
     payload = json.loads((tmp_path / result.relative_path).read_text(encoding="utf-8"))
-    assert payload["contract_version"] == "hermes.dfm.viewer/v1"
+    assert payload["contract_version"] == "hermes.dfm.viewer/v2"
+    assert payload["scene_path"] == "render_scene.json"
+    assert "mesh_path" not in payload
     assert payload["issue_count"] == 1
     assert payload["issues"][0]["geometry_refs"] == [
         {"kind": "face", "index": 7, "input_sha256": "a" * 64}
@@ -125,8 +137,18 @@ def test_viewer_manifest_maps_failed_evaluation_to_geometry_refs(tmp_path):
 
 def test_preview_manifest_renders_before_rule_evaluation(tmp_path):
     artifacts = [
-        _artifact(tmp_path, "render_mesh", "render_mesh.json", {"faces": []}),
-        _artifact(tmp_path, "topology_map", "topology.json", {"edges": []}),
+        _artifact(
+            tmp_path,
+            "render_scene",
+            "render_scene.json",
+            {"schema_version": 2, "primitives": []},
+        ),
+        _artifact(
+            tmp_path,
+            "topology_map",
+            "topology_map.json",
+            {"schema_version": 2, "faces": []},
+        ),
     ]
 
     result = materialize_preview_manifest(tmp_path, "run_1", "b" * 64, artifacts)

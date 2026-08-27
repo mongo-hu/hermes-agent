@@ -10,7 +10,7 @@
   "scene_ref": "scene_golden_part",
   "topology_map_ref": "topology_golden_part",
   "topology_snapshot_ref": "topology_ba5565e33756d25",
-  "render_mesh_snapshot_ref": "mesh_910e4f54e289d3ee",
+  "render_mesh_snapshot_ref": "mesh_b7904fbd1a0dfc0c",
   "interpolation": "linear_on_triangle",
   "calculation_context": {"pull_direction": [0, 0, 1]},
   "feature_refs": ["feature.screw_boss.003"],
@@ -23,7 +23,7 @@
       "surface_normal": [0.999, 0, 0.01],
       "value": 0.6,
       "geometry_ref": {"kind": "face", "index": 17, "input_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "topology_snapshot_id": "topology_ba5565e33756d25", "entity_id": "face_000017"},
-      "mesh_vertex_ref": {"primitive_id": "body-1", "vertex_id": 0, "render_mesh_snapshot_id": "mesh_910e4f54e289d3ee"}
+      "mesh_vertex_ref": {"primitive_id": "body-1", "vertex_id": 0, "render_mesh_snapshot_id": "mesh_b7904fbd1a0dfc0c"}
     },
     {
       "sample_id": "sample-2",
@@ -32,7 +32,7 @@
       "surface_normal": [0.998, 0, 0.02],
       "value": 1.2,
       "geometry_ref": {"kind": "face", "index": 17, "input_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "topology_snapshot_id": "topology_ba5565e33756d25", "entity_id": "face_000017"},
-      "mesh_vertex_ref": {"primitive_id": "body-1", "vertex_id": 1, "render_mesh_snapshot_id": "mesh_910e4f54e289d3ee"}
+      "mesh_vertex_ref": {"primitive_id": "body-1", "vertex_id": 1, "render_mesh_snapshot_id": "mesh_b7904fbd1a0dfc0c"}
     },
     {
       "sample_id": "sample-3",
@@ -41,7 +41,7 @@
       "surface_normal": [0.99, 0, 0.1],
       "value": 1.8,
       "geometry_ref": {"kind": "face", "index": 17, "input_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "topology_snapshot_id": "topology_ba5565e33756d25", "entity_id": "face_000017"},
-      "mesh_vertex_ref": {"primitive_id": "body-1", "vertex_id": 2, "render_mesh_snapshot_id": "mesh_910e4f54e289d3ee"}
+      "mesh_vertex_ref": {"primitive_id": "body-1", "vertex_id": 2, "render_mesh_snapshot_id": "mesh_b7904fbd1a0dfc0c"}
     }
   ],
   "cells": [
@@ -49,7 +49,7 @@
       "cell_id": "cell-1",
       "sample_ids": ["sample-1", "sample-2", "sample-3"],
       "geometry_ref": {"kind": "face", "index": 17, "input_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "topology_snapshot_id": "topology_ba5565e33756d25", "entity_id": "face_000017"},
-      "triangle_ref": {"primitive_id": "body-1", "triangle_id": 0, "render_mesh_snapshot_id": "mesh_910e4f54e289d3ee"}
+      "triangle_ref": {"primitive_id": "body-1", "triangle_id": 0, "render_mesh_snapshot_id": "mesh_b7904fbd1a0dfc0c"}
     }
   ],
   "quality": {"max_chordal_deviation_mm": 0.05, "includes_controlling_extrema": true}

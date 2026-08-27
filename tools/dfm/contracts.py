@@ -16,7 +16,6 @@ MANIFEST_SCHEMA_VERSION = 1
 WORKER_SCHEMA_VERSION = 1
 DISCOVERY_SCHEMA_VERSION = 1
 OBJECTIVE_SCHEMA_VERSION = 4
-OCCT_OBJECTIVE_SCHEMA_VERSION = 2
 GEOMETRY_REQUEST_CONTRACT = "dfm.geometry.request/v1"
 GEOMETRY_EVENT_CONTRACT = "dfm.geometry.event/v1"
 GEOMETRY_RESULT_CONTRACT = "dfm.geometry.result/v1"
@@ -1107,71 +1106,6 @@ class ObjectiveTaskRequest:
 
 
 @dataclass(frozen=True)
-class OcctObjectiveTaskRequest:
-    """Adapter-owned request for the currently deployed dfm-geometry CLI.
-
-    Hermes keeps Objective Schema 4 as its backend-neutral contract.  The
-    external executable currently consumes Schema 2, so this type is kept at
-    the adapter boundary instead of replacing the shared request above.
-    """
-
-    schema_version: int
-    run_id: str
-    input_sha256: str
-    input_format: str
-    process: str
-    scope_id: str
-    scope_version: str
-    operations: list[PlanOperation] = field(default_factory=list)
-    verification_level: str = "experimental"
-    assumed_pull_direction: bool = False
-
-    def __post_init__(self) -> None:
-        if (
-            self.schema_version != OCCT_OBJECTIVE_SCHEMA_VERSION
-            or not self.run_id
-            or not re.fullmatch(r"[0-9a-f]{64}", self.input_sha256)
-            or self.input_format != "step"
-            or self.process != "injection"
-            or not self.scope_id
-            or not self.scope_version
-            or not self.operations
-            or self.verification_level != "experimental"
-        ):
-            raise ValueError("OCCT objective task identity is invalid.")
-        for operation in self.operations:
-            operation.validate()
-
-    def to_dict(self) -> dict[str, Any]:
-        operations = []
-        for operation in self.operations:
-            payload = operation.to_dict()
-            for name in ("required_fact_names", "feature_refs", "region_refs"):
-                payload.pop(name, None)
-            operations.append(payload)
-        return {
-            "schema_version": self.schema_version,
-            "run_id": self.run_id,
-            "input_sha256": self.input_sha256,
-            "input_format": self.input_format,
-            "process": self.process,
-            "scope_id": self.scope_id,
-            "scope_version": self.scope_version,
-            "operations": operations,
-            "verification_level": self.verification_level,
-            "assumed_pull_direction": self.assumed_pull_direction,
-        }
-
-    @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "OcctObjectiveTaskRequest":
-        values = dict(payload)
-        values["operations"] = [
-            PlanOperation.from_dict(value) for value in values.get("operations", [])
-        ]
-        return cls(**values)
-
-
-@dataclass(frozen=True)
 class LocalObjectiveWorkerRequest:
     """Local process envelope around the same task sent to a remote backend."""
 
@@ -1179,7 +1113,7 @@ class LocalObjectiveWorkerRequest:
     backend_version: str
     input_path: str
     output_dir: str
-    task: ObjectiveTaskRequest | OcctObjectiveTaskRequest
+    task: ObjectiveTaskRequest
     contract_version: str = ""
 
     def __post_init__(self) -> None:
@@ -1207,14 +1141,7 @@ class LocalObjectiveWorkerRequest:
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "LocalObjectiveWorkerRequest":
         values = dict(payload)
-        task_payload = values["task"]
-        task_type = (
-            OcctObjectiveTaskRequest
-            if task_payload.get("schema_version") == OCCT_OBJECTIVE_SCHEMA_VERSION
-            and values.get("contract_version") == GEOMETRY_REQUEST_CONTRACT
-            else ObjectiveTaskRequest
-        )
-        values["task"] = task_type.from_dict(task_payload)
+        values["task"] = ObjectiveTaskRequest.from_dict(values["task"])
         return cls(**values)
 
 
@@ -1561,7 +1488,7 @@ class ObjectiveResultManifest:
 
     def __post_init__(self) -> None:
         if (
-            self.schema_version not in {OBJECTIVE_SCHEMA_VERSION, OCCT_OBJECTIVE_SCHEMA_VERSION}
+            self.schema_version != OBJECTIVE_SCHEMA_VERSION
             or not self.producer_version
             or not self.run_id
             or not re.fullmatch(r"[0-9a-f]{64}", self.input_sha256)
@@ -1571,10 +1498,6 @@ class ObjectiveResultManifest:
             or not self.result_path
             or not self.artifacts
             or self.contract_version not in {"", GEOMETRY_RESULT_CONTRACT}
-            or (
-                self.schema_version == OCCT_OBJECTIVE_SCHEMA_VERSION
-                and self.contract_version != GEOMETRY_RESULT_CONTRACT
-            )
         ):
             raise ValueError("Objective result manifest identity is invalid.")
         artifact_ids = [item.artifact_id for item in self.artifacts]

@@ -44,7 +44,7 @@ def test_dfm_doctor_reports_workspace_config_and_capabilities(tmp_path, capsys):
         )
         assert production_backend["discovery_contract_version"] == 1
         assert production_backend["objective_contract_version"] == 4
-        assert production_backend["adapter_task_schema_version"] == 2
+        assert "adapter_task_schema_version" not in production_backend
         assert "experimental" in production_backend["note"]
         assert "PythonOCC" in production_backend["note"]
         assert "NX" in production_backend["note"]

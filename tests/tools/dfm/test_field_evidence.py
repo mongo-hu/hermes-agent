@@ -116,7 +116,7 @@ def test_failed_scalar_field_renders_precise_evidence_and_finding(tmp_path):
     patch = geometry["failed_patches"][0]
     assert patch["sample_ids"] == ["sample-1", "sample-2"]
     assert patch["triangle_refs"] == [
-        {"primitive_id": "body-1", "triangle_id": 0, "render_mesh_snapshot_id": "mesh_910e4f54e289d3ee"}
+        {"primitive_id": "body-1", "triangle_id": 0, "render_mesh_snapshot_id": "mesh_b7904fbd1a0dfc0c"}
     ]
     assert patch["geometry_refs"] == [
         {"kind": "face", "index": 17, "input_sha256": "a" * 64, "topology_snapshot_id": "topology_ba5565e33756d25", "entity_id": "face_000017"}
@@ -277,7 +277,16 @@ def _write_pipeline_inputs(tmp_path: Path) -> list[ArtifactRecord]:
                 "operator": ">=",
                 "expected": 1.5,
                 "actual": 1.2,
-                "outcome": "fail"
+                "outcome": "fail",
+                "expression": {"operand": "actual"},
+                "operand_values": {
+                    "actual": {
+                        "value": 1.2,
+                        "unit": "degree",
+                        "aggregation": "minimum",
+                        "measurement_ids": ["measurement_draft_fixed_half_min"],
+                    }
+                },
             }]
         }),
         encoding="utf-8",

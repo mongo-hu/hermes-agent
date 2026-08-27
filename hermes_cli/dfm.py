@@ -14,7 +14,6 @@ from tools.dfm.config import load_dfm_config
 from tools.dfm.contracts import (
     DISCOVERY_SCHEMA_VERSION,
     OBJECTIVE_SCHEMA_VERSION,
-    OCCT_OBJECTIVE_SCHEMA_VERSION,
 )
 from tools.dfm.errors import DFMError
 from tools.dfm.project.workspace import DFMWorkspace
@@ -96,7 +95,6 @@ def collect_diagnostics() -> dict:
             "connected": capabilities["occt"]["status"] == "available",
             "discovery_contract_version": DISCOVERY_SCHEMA_VERSION,
             "objective_contract_version": OBJECTIVE_SCHEMA_VERSION,
-            "adapter_task_schema_version": OCCT_OBJECTIVE_SCHEMA_VERSION,
             "note": "The external OCCT CLI is experimental; PythonOCC remains the reference backend and NX remains optional.",
         },
         "processes": processes,

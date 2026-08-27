@@ -1,12 +1,17 @@
-export interface RenderFace {
-  face_index: number
-  indices: number[]
-  positions: number[]
-}
-
 export interface GeometryReference {
   index: number
   kind: 'edge' | 'face' | 'solid' | 'vertex'
+}
+
+export interface RenderPrimitive {
+  primitive_id: string
+  triangles: number[][]
+  vertices: number[][]
+}
+
+export interface TopologyFace {
+  geometry_ref: GeometryReference
+  triangle_refs: { primitive_id: string; triangle_id: number }[]
 }
 
 export interface MergedFaceGroup {
@@ -25,78 +30,99 @@ export interface MergedFaceMeshData {
 const MAX_UINT32 = 0xffffffff
 const MAX_FLOAT32 = 3.4028234663852886e38
 
-/** Resolve exact face references and AAG edge references to stable OCCT face IDs. */
-export function resolveGeometryRefFaceIndices(
-  refs: GeometryReference[] | undefined,
-  edgeFaces: Map<number, number[]>
-): Set<number> {
-  const faceIndices = new Set(refs?.filter(ref => ref.kind === 'face').map(ref => ref.index) ?? [])
-
-  for (const ref of refs ?? []) {
-    if (ref.kind !== 'edge') {
-      continue
-    }
-
-    for (const faceIndex of edgeFaces.get(ref.index) ?? []) {
-      faceIndices.add(faceIndex)
-    }
-  }
-
-  return faceIndices
+/** Resolve only topology identities that the shared scene/map contract can render. */
+export function resolveGeometryRefFaceIndices(refs: GeometryReference[] | undefined): Set<number> {
+  return new Set(refs?.filter(ref => ref.kind === 'face').map(ref => ref.index) ?? [])
 }
 
-function validateFace(face: RenderFace, seen: Set<number>): void {
-  if (!Number.isInteger(face.face_index) || face.face_index <= 0 || face.face_index > MAX_UINT32) {
-    throw new Error(`无效的 OCCT 面索引：${face.face_index}`)
+function validatePrimitive(primitive: RenderPrimitive, seen: Set<string>): void {
+  if (!primitive.primitive_id || seen.has(primitive.primitive_id)) {
+    throw new Error(`无效或重复的渲染图元：${primitive.primitive_id || 'unknown'}`)
   }
 
-  if (seen.has(face.face_index)) {
-    throw new Error(`重复的 OCCT 面索引：${face.face_index}`)
+  seen.add(primitive.primitive_id)
+
+  if (!Array.isArray(primitive.vertices) || primitive.vertices.length < 3) {
+    throw new Error(`渲染图元 ${primitive.primitive_id} 的顶点数据无效`)
   }
 
-  seen.add(face.face_index)
-
-  if (face.positions.length < 9 || face.positions.length % 3 !== 0) {
-    throw new Error(`面 #${face.face_index} 的顶点数据无效`)
-  }
-
-  if (face.indices.length < 3 || face.indices.length % 3 !== 0) {
-    throw new Error(`面 #${face.face_index} 的三角形索引无效`)
-  }
-
-  for (const value of face.positions) {
-    if (!Number.isFinite(value) || Math.abs(value) > MAX_FLOAT32) {
-      throw new Error(`面 #${face.face_index} 包含无法渲染的坐标`)
+  for (const vertex of primitive.vertices) {
+    if (
+      !Array.isArray(vertex) ||
+      vertex.length !== 3 ||
+      vertex.some(value => !Number.isFinite(value) || Math.abs(value) > MAX_FLOAT32)
+    ) {
+      throw new Error(`渲染图元 ${primitive.primitive_id} 包含无法渲染的坐标`)
     }
   }
 
-  const vertexCount = face.positions.length / 3
+  if (!Array.isArray(primitive.triangles) || primitive.triangles.length === 0) {
+    throw new Error(`渲染图元 ${primitive.primitive_id} 的三角形索引无效`)
+  }
 
-  for (const index of face.indices) {
-    if (!Number.isInteger(index) || index < 0 || index >= vertexCount) {
-      throw new Error(`面 #${face.face_index} 包含越界的三角形索引`)
+  for (const triangle of primitive.triangles) {
+    if (
+      !Array.isArray(triangle) ||
+      triangle.length !== 3 ||
+      triangle.some(index => !Number.isInteger(index) || index < 0 || index >= primitive.vertices.length)
+    ) {
+      throw new Error(`渲染图元 ${primitive.primitive_id} 包含越界的三角形索引`)
     }
   }
 }
 
-/** Merge exact OCCT face meshes into the grouped layout used by testUG_WEB. */
-export function mergeRenderFaces(faces: RenderFace[]): MergedFaceMeshData {
-  if (faces.length === 0) {
-    throw new Error('OCCT 网格中没有可显示的面')
+/** Merge RenderScene Schema 2 primitives using TopologyMap Schema 2 face identity. */
+export function mergeRenderScene(primitives: RenderPrimitive[], topologyFaces: TopologyFace[]): MergedFaceMeshData {
+  if (primitives.length === 0) {
+    throw new Error('共享渲染场景中没有可显示的图元')
   }
 
-  const seen = new Set<number>()
+  const seen = new Set<string>()
+  const primitiveById = new Map<string, RenderPrimitive>()
+  const faceIndicesByPrimitive = new Map<string, number[]>()
   let positionCount = 0
   let indexCount = 0
 
-  for (const face of faces) {
-    validateFace(face, seen)
-    positionCount += face.positions.length
-    indexCount += face.indices.length
+  for (const primitive of primitives) {
+    validatePrimitive(primitive, seen)
+    primitiveById.set(primitive.primitive_id, primitive)
+    faceIndicesByPrimitive.set(primitive.primitive_id, new Array(primitive.triangles.length).fill(0))
+    positionCount += primitive.vertices.length * 3
+    indexCount += primitive.triangles.length * 3
   }
 
   if (!Number.isSafeInteger(positionCount) || !Number.isSafeInteger(indexCount)) {
-    throw new Error('OCCT 网格数据过大，无法安全渲染')
+    throw new Error('共享渲染场景过大，无法安全渲染')
+  }
+
+  for (const face of topologyFaces) {
+    const faceIndex = face.geometry_ref?.index
+
+    if (
+      face.geometry_ref?.kind !== 'face' ||
+      !Number.isInteger(faceIndex) ||
+      faceIndex <= 0 ||
+      faceIndex > MAX_UINT32
+    ) {
+      throw new Error('拓扑映射包含无效的面标识')
+    }
+
+    for (const ref of face.triangle_refs ?? []) {
+      const primitive = primitiveById.get(ref.primitive_id)
+      const mappedFaces = faceIndicesByPrimitive.get(ref.primitive_id)
+
+      if (!primitive || !mappedFaces) {
+        throw new Error(`面 #${faceIndex} 引用了不存在的渲染图元 ${ref.primitive_id || 'unknown'}`)
+      }
+      if (!Number.isInteger(ref.triangle_id) || ref.triangle_id < 0 || ref.triangle_id >= primitive.triangles.length) {
+        throw new Error(`面 #${faceIndex} 包含越界的三角形引用`)
+      }
+      if (mappedFaces[ref.triangle_id] !== 0) {
+        throw new Error(`渲染图元 ${ref.primitive_id} 的三角形 #${ref.triangle_id} 被重复映射`)
+      }
+
+      mappedFaces[ref.triangle_id] = faceIndex
+    }
   }
 
   const positions = new Float32Array(positionCount)
@@ -104,25 +130,41 @@ export function mergeRenderFaces(faces: RenderFace[]): MergedFaceMeshData {
   const triangleFaceIndices = new Uint32Array(indexCount / 3)
   const groups: MergedFaceGroup[] = []
   let positionOffset = 0
+  let vertexOffset = 0
+  const indicesByFace = new Map<number, number[]>()
+
+  for (const primitive of primitives) {
+    const flattenedVertices = primitive.vertices.flat()
+    const mappedFaces = faceIndicesByPrimitive.get(primitive.primitive_id)!
+    positions.set(flattenedVertices, positionOffset)
+
+    primitive.triangles.forEach((triangle, triangleIndex) => {
+      const faceIndex = mappedFaces[triangleIndex]
+
+      if (faceIndex === 0) {
+        throw new Error(`渲染图元 ${primitive.primitive_id} 的三角形 #${triangleIndex} 没有对应的拓扑面`)
+      }
+
+      const faceIndices = indicesByFace.get(faceIndex) ?? []
+      faceIndices.push(...triangle.map(index => index + vertexOffset))
+      indicesByFace.set(faceIndex, faceIndices)
+    })
+
+    positionOffset += flattenedVertices.length
+    vertexOffset += primitive.vertices.length
+  }
+
   let indexOffset = 0
   let triangleOffset = 0
-  let vertexOffset = 0
 
-  for (const face of faces) {
-    positions.set(face.positions, positionOffset)
+  for (const [faceIndex, faceIndices] of indicesByFace) {
+    indices.set(faceIndices, indexOffset)
+    const triangleCount = faceIndices.length / 3
+    triangleFaceIndices.fill(faceIndex, triangleOffset, triangleOffset + triangleCount)
+    groups.push({ count: faceIndices.length, faceIndex, start: indexOffset })
 
-    for (let index = 0; index < face.indices.length; index += 1) {
-      indices[indexOffset + index] = face.indices[index] + vertexOffset
-    }
-
-    const triangleCount = face.indices.length / 3
-    triangleFaceIndices.fill(face.face_index, triangleOffset, triangleOffset + triangleCount)
-    groups.push({ count: face.indices.length, faceIndex: face.face_index, start: indexOffset })
-
-    positionOffset += face.positions.length
-    indexOffset += face.indices.length
+    indexOffset += faceIndices.length
     triangleOffset += triangleCount
-    vertexOffset += face.positions.length / 3
   }
 
   return { groups, indices, positions, triangleFaceIndices }

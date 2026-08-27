@@ -8,7 +8,7 @@ type: deployment-guide
 # DFM 部署环境定义
 
 本文定义 Hermes DFM 能力的当前参考环境和目标生产环境。PythonOCC Worker 继续用于开发、
-演示和契约回归；独立 OCCT C++ `dfm-geometry` 可执行程序已经以 experimental Adapter 接入，
+演示和契约回归；独立 OCCT C++ `dfm-geometry` 可执行程序已经以 experimental Analyzer 接入，
 但生产级特征识别与指标计算仍需 certified 工程验收。两者不要求安装在同一个 Python 环境。
 
 一次分析的数据和排障方式见 [单次 DFM 分析数据说明](dfm-analysis-runbook.md)，生产架构和
@@ -23,7 +23,7 @@ type: deployment-guide
 | 指标 | PythonOCC 壁厚/拔模角参考场；C++ Calculator 为 experimental | certified OCCT C++ 区域化 Calculator |
 | 本体/规则 | 随仓库 Snapshot Schema 2、本地 SQLite、Hermes 确定性执行 | Django 发布系统/企业 Snapshot；Hermes 固定版本并执行 |
 | 报告 | Hermes | Hermes，保持不变 |
-| Desktop 3D | Three.js 查看器消费 `dfm_viewer` Manifest | 同一 Manifest 契约，随生产 Artifact 验收 |
+| Desktop 3D | Three.js 查看器消费 `hermes.dfm.viewer/v2` Manifest，直接读取共享 RenderScene/TopologyMap | 同一 Manifest 契约，随生产 Artifact 验收 |
 | Parasolid/NX | 登记或遗留边界，当前延期 | 未来可选 Backend，不阻塞 STEP |
 | 2D/OCR/Fusion | 占位 | 后续里程碑 |
 
@@ -103,7 +103,7 @@ Hermes 不链接或 vendoring C++ 内部库，只发现已构建的可执行程�
 | Ontology Snapshot | Schema 2；默认 `ontology.injection.default@1.1.0` |
 | Geometry Discovery | Schema 1 |
 | Objective | Schema 4 |
-| 本地 Geometry 进程边界 | `dfm.geometry.request/v1`、`dfm.geometry.event/v1`、`dfm.geometry.result/v1`；C++ Objective Task Schema 2 |
+| 本地 Geometry 进程边界 | `dfm.geometry.request/v1`、`dfm.geometry.event/v1`、`dfm.geometry.result/v1`；信封内 Objective Task/Result 均为 Schema 4 |
 | ScalarField/RenderScene/TopologyMap/Evidence | Schema 2 |
 | Geometry Backend Capability | Schema 1 |
 

@@ -151,7 +151,7 @@ class DFMService:
             if viewer is None:
                 raise DFMError(
                     "preview_artifact_missing",
-                    "The OCCT preview did not produce a render mesh and topology map.",
+                    "The OCCT preview did not produce a render scene and topology map.",
                 )
             return {
                 "status": "ready",

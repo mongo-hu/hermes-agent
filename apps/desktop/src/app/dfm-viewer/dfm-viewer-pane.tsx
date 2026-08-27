@@ -31,9 +31,10 @@ import type { DfmViewerTarget } from '@/store/dfm-viewer'
 
 import {
   type GeometryReference,
-  mergeRenderFaces,
-  type RenderFace,
-  resolveGeometryRefFaceIndices
+  mergeRenderScene,
+  type RenderPrimitive,
+  resolveGeometryRefFaceIndices,
+  type TopologyFace
 } from './dfm-viewer-geometry'
 
 interface ViewerIssue {
@@ -58,26 +59,27 @@ interface ViewerFeature {
 }
 
 interface ViewerManifest {
-  contract_version: 'hermes.dfm.viewer/v1'
+  contract_version: 'hermes.dfm.viewer/v2'
   feature_count?: number
   features?: ViewerFeature[]
   issue_count: number
   issues: ViewerIssue[]
-  mesh_path: string
+  scene_path: string
   scope_id: string
   status?: 'completed' | 'preview'
   topology_path: string
   verification_level: string
 }
 
-interface RenderMeshDocument {
-  contract_version: 'dfm.geometry.artifact/render-mesh/v1'
-  faces: RenderFace[]
-  triangle_count: number
+interface RenderSceneDocument {
+  primitives: RenderPrimitive[]
+  render_mesh_snapshot: { triangle_count: number }
+  schema_version: 2
 }
 
 interface TopologyDocument {
-  edges: { adjacent_face_indices: number[]; index: number }[]
+  faces: TopologyFace[]
+  schema_version: 2
 }
 
 interface SceneResources {
@@ -118,32 +120,26 @@ function ModelCanvas({
   activeFeature,
   activeIssue,
   document,
-  edgeFaces,
   fitRequest,
   onFacePick,
-  pickedFaceIndex
+  pickedFaceIndex,
+  topologyFaces
 }: {
   activeFeature: ViewerFeature | null
   activeIssue: ViewerIssue | null
-  document: RenderMeshDocument
-  edgeFaces: Map<number, number[]>
+  document: RenderSceneDocument
   fitRequest: number
   onFacePick: (faceIndex: number) => void
   pickedFaceIndex: number | null
+  topologyFaces: TopologyFace[]
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
   const resourcesRef = useRef<SceneResources | null>(null)
   const onFacePickRef = useRef(onFacePick)
 
-  const problemFaces = useMemo(
-    () => resolveGeometryRefFaceIndices(activeIssue?.geometry_refs, edgeFaces),
-    [activeIssue, edgeFaces]
-  )
+  const problemFaces = useMemo(() => resolveGeometryRefFaceIndices(activeIssue?.geometry_refs), [activeIssue])
 
-  const featureFaces = useMemo(
-    () => resolveGeometryRefFaceIndices(activeFeature?.geometry_refs, edgeFaces),
-    [activeFeature, edgeFaces]
-  )
+  const featureFaces = useMemo(() => resolveGeometryRefFaceIndices(activeFeature?.geometry_refs), [activeFeature])
 
   useEffect(() => {
     onFacePickRef.current = onFacePick
@@ -170,7 +166,7 @@ function ModelCanvas({
     host.appendChild(renderer.domElement)
 
     const modelGroup = new Group()
-    const merged = mergeRenderFaces(document.faces)
+    const merged = mergeRenderScene(document.primitives, topologyFaces)
     const geometry = new BufferGeometry()
     geometry.setAttribute('position', new Float32BufferAttribute(merged.positions, 3))
     geometry.setIndex(new Uint32BufferAttribute(merged.indices, 1))
@@ -376,7 +372,7 @@ function ModelCanvas({
       renderer.domElement.remove()
       resourcesRef.current = null
     }
-  }, [document])
+  }, [document, topologyFaces])
 
   useEffect(() => {
     const resources = resourcesRef.current
@@ -480,8 +476,8 @@ function formatFeatureParameters(parameters: Record<string, unknown>): string {
 
 export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean; target: DfmViewerTarget }) {
   const [manifest, setManifest] = useState<ViewerManifest | null>(null)
-  const [mesh, setMesh] = useState<RenderMeshDocument | null>(null)
-  const [edgeFaces, setEdgeFaces] = useState<Map<number, number[]>>(new Map())
+  const [scene, setScene] = useState<RenderSceneDocument | null>(null)
+  const [topologyFaces, setTopologyFaces] = useState<TopologyFace[]>([])
   const [activeIssueId, setActiveIssueId] = useState<string | null>(null)
   const [activeFeatureId, setActiveFeatureId] = useState<string | null>(null)
   const [pickedFaceIndex, setPickedFaceIndex] = useState<number | null>(null)
@@ -496,25 +492,26 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
       try {
         setError('')
         setManifest(null)
-        setMesh(null)
+        setScene(null)
+        setTopologyFaces([])
         setPickedFaceIndex(null)
         setActiveIssueId(null)
         setActiveFeatureId(null)
         const nextManifest = await readJson<ViewerManifest>(target.manifestPath)
 
-        if (nextManifest.contract_version !== 'hermes.dfm.viewer/v1') {
+        if (nextManifest.contract_version !== 'hermes.dfm.viewer/v2') {
           throw new Error('不支持的 DFM 查看器协议')
         }
 
         const artifactDir = dirname(target.manifestPath)
 
-        const [nextMesh, topology] = await Promise.all([
-          readJson<RenderMeshDocument>(joinPath(artifactDir, nextManifest.mesh_path)),
+        const [nextScene, topology] = await Promise.all([
+          readJson<RenderSceneDocument>(joinPath(artifactDir, nextManifest.scene_path)),
           readJson<TopologyDocument>(joinPath(artifactDir, nextManifest.topology_path))
         ])
 
-        if (nextMesh.contract_version !== 'dfm.geometry.artifact/render-mesh/v1') {
-          throw new Error('不支持的 OCCT 网格协议')
+        if (nextScene.schema_version !== 2 || topology.schema_version !== 2) {
+          throw new Error('不支持的共享几何工件协议')
         }
 
         if (cancelled) {
@@ -522,8 +519,8 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
         }
 
         setManifest(nextManifest)
-        setMesh(nextMesh)
-        setEdgeFaces(new Map(topology.edges.map(edge => [edge.index, edge.adjacent_face_indices])))
+        setScene(nextScene)
+        setTopologyFaces(topology.faces)
         const initialIssueId = nextManifest.issues[0]?.evaluation_id ?? null
         setActiveIssueId(initialIssueId)
         setActiveFeatureId(initialIssueId ? null : (nextManifest.features?.[0]?.feature_id ?? null))
@@ -548,20 +545,20 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
     () =>
       new Map(
         (manifest?.issues ?? []).map(
-          issue => [issue.evaluation_id, resolveGeometryRefFaceIndices(issue.geometry_refs, edgeFaces)] as const
+          issue => [issue.evaluation_id, resolveGeometryRefFaceIndices(issue.geometry_refs)] as const
         )
       ),
-    [edgeFaces, manifest]
+    [manifest]
   )
 
   const featureFacesById = useMemo(
     () =>
       new Map(
         (manifest?.features ?? []).map(
-          feature => [feature.feature_id, resolveGeometryRefFaceIndices(feature.geometry_refs, edgeFaces)] as const
+          feature => [feature.feature_id, resolveGeometryRefFaceIndices(feature.geometry_refs)] as const
         )
       ),
-    [edgeFaces, manifest]
+    [manifest]
   )
 
   const handleFacePick = useCallback(
@@ -626,7 +623,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
     )
   }
 
-  if (!manifest || !mesh) {
+  if (!manifest || !scene) {
     return (
       <main className="grid h-full place-items-center bg-[#10151d] text-xs text-slate-300">正在生成 STEP 预览…</main>
     )
@@ -641,7 +638,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
             {status === 'preview'
               ? 'STEP 预览 · 等待风险分析'
               : `${manifest.scope_id} · ${manifest.verification_level}`}{' '}
-            · {mesh.triangle_count.toLocaleString()} 个三角形
+            · {scene.render_mesh_snapshot.triangle_count.toLocaleString()} 个三角形
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
@@ -684,11 +681,11 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
           <ModelCanvas
             activeFeature={activeFeature}
             activeIssue={activeIssue}
-            document={mesh}
-            edgeFaces={edgeFaces}
+            document={scene}
             fitRequest={fitRequest}
             onFacePick={handleFacePick}
             pickedFaceIndex={pickedFaceIndex}
+            topologyFaces={topologyFaces}
           />
           <div className="pointer-events-none absolute bottom-2 left-2 rounded-md bg-black/55 px-2 py-1 text-[10px] text-slate-300 backdrop-blur">
             左键旋转 · 滚轮缩放 · 右键平移 · 单击选择面

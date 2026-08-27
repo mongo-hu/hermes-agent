@@ -60,7 +60,7 @@ flowchart LR
 
 当前 Hermes 保留“随仓库 Snapshot Schema 2 → 本地 SQLite → ordinary 全模型 Discovery fallback
 → PythonOCC 参考 Objective → Hermes Evaluation/Evidence/Report”链路；同时新增显式选择的
-`dfm-geometry` experimental Objective Adapter 和 Desktop 3D Viewer。外部程序已经接通不代表生产
+`dfm-geometry` experimental Objective Analyzer 和 Desktop 3D Viewer。外部程序已经接通不代表生产
 认证完成：Django 发布、C++ Geometry Discovery 闭环和 certified Calculator 仍是目标生产链路。
 
 本体只描述稳定业务语义和关系，不保存算法实现。发布器必须验证本体中的 `worker_kind`、
@@ -270,10 +270,16 @@ Feature 的 provenance/properties 必须记录模型 ID、模型版本、输入�
 声明的 ScalarField、RenderScene、TopologyMap 等客观 Artifact。Backend 不返回 Evaluation、
 FailedPatch、Evidence、severity、rule 或 recommendation。
 
-Hermes 内部 Objective Schema 保持版本 4，不因为生产实现从 PythonOCC 切换到 OCCT C++ 而修改。
-本地 Adapter 在进程边界把 Plan 映射为 `dfm.geometry.request/v1` 与 C++ Objective Task Schema 2，
-再把结果还原为 Hermes 的 Measurement/Artifact 语义；这个传输层版本不替代共享 Schema 4。
-只有数据语义本身发生不兼容变化才升级共享版本。
+Hermes 与 OCCT C++ 共同消费 Objective Schema 4，不因为生产实现从 PythonOCC 切换到 OCCT C++
+而分叉任务语义。本地进程仍使用 `dfm.geometry.request/v1` 信封传递绝对输入路径、输出目录和
+Backend 版本，但信封中的 `task` 是未经降级的 `ObjectiveTaskRequest`：完整保留 Region、
+Feature/Region 引用、Required Fact 和带 `source_ref` 的解析参数。C++ 结果同样以 Schema 4 的
+`ObjectiveResultManifest` 返回；只有数据语义本身发生不兼容变化才升级共享版本。
+
+OCCT C++ 必须直接生成共享 `render_scene`、`topology_map` 和逐测量 `scalar_field`（均为
+Geometry Artifact Schema 2），并在 Manifest 中用这些工件的真实 ID、文件哈希和大小登记。
+Hermes 只校验和消费共享工件；禁止恢复 `Adapter → 旧 Objective Schema → C++`，也禁止输出
+`render_mesh` / `metric_fields` 后再由 Python 转换或双写兼容。
 
 ## 7. Snapshot 与拓扑身份
 
@@ -296,6 +302,11 @@ Discovery 必须持久化 GeometrySnapshot，并由后续 Objective 任务复用
 `TopologyMap` 必须来自生成 `RenderScene` 的同一次离散化，并将 GeometryRef 映射到
 `primitive_id + triangle_id + render_mesh_snapshot_id`。Hermes 只绘制 Backend 返回的 Scene，
 不重新打开 CAD。
+
+`render_mesh_sha256` 不得对 JSON 文本直接取哈希，因为不同语言对浮点数的最短十进制表示并不
+构成跨语言规范。Schema 2 的网格内容哈希采用 `dfm.render-mesh-snapshot/v2` 域分隔的二进制
+canonical stream：所有长度和三角形索引为 uint64 大端，`primitive_id` 为带长度的 UTF-8，
+坐标为 IEEE-754 binary64 大端且 `-0.0` 归一为 `0.0`；快照 ID 字段自身不参与哈希。
 
 ## 8. Capability 契约
 
@@ -389,7 +400,7 @@ Result 原子发布；Artifact 下载后由 Hermes 再次校验大小和 SHA256�
 - 当前几何能力声明：`tools/dfm/scopes/injection/geometry_capability_v1.json`
 - 特征目录：`tools/dfm/scopes/injection/feature_catalog.json`
 - OCCT C++ Provider 边界：`tools/dfm/feature_recognition/occt_cpp.py`
-- OCCT C++ Objective Adapter：`tools/dfm/analyzers/occt.py`
+- OCCT C++ Objective Analyzer 与共享结果校验入口：`tools/dfm/analyzers/occt.py`
 - OCCT C++ 操作图：`tools/dfm/scopes/injection/geometry_core_v4.json`
 - Viewer Manifest 物化：`tools/dfm/viewer.py`
 - Desktop 3D Viewer：`apps/desktop/src/app/dfm-viewer/`

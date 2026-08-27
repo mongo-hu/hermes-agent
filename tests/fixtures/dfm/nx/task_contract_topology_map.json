@@ -16,7 +16,7 @@
     "entity_count": {"body": 1, "face": 1},
     "topology_content_sha256": "ba5565e33756d25541998611d418354f2baf58ac695f834de6f1fedef31f2048"
   },
-  "render_mesh_snapshot_ref": "mesh_910e4f54e289d3ee",
+  "render_mesh_snapshot_ref": "mesh_b7904fbd1a0dfc0c",
   "faces": [
     {
       "geometry_ref": {
@@ -27,8 +27,8 @@
         "entity_id": "face_000017"
       },
       "triangle_refs": [
-        {"primitive_id": "body-1", "triangle_id": 0, "render_mesh_snapshot_id": "mesh_910e4f54e289d3ee"},
-        {"primitive_id": "body-1", "triangle_id": 1, "render_mesh_snapshot_id": "mesh_910e4f54e289d3ee"}
+        {"primitive_id": "body-1", "triangle_id": 0, "render_mesh_snapshot_id": "mesh_b7904fbd1a0dfc0c"},
+        {"primitive_id": "body-1", "triangle_id": 1, "render_mesh_snapshot_id": "mesh_b7904fbd1a0dfc0c"}
       ]
     }
   ]

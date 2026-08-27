@@ -23,7 +23,7 @@ owners: DFM 工程团队
 | 三维输入 | PythonOCC 参考实现支持 STEP/STP；外部 `dfm-geometry` 以 experimental OCCT C++ Analyzer 接入 STEP；Parasolid `x_t` 仅保留登记和显式不可用边界 |
 | 2D 图纸/OCR | 接口预留，尚未形成生产分析闭环 |
 | 混合输入融合 | 接口预留，尚未形成生产分析闭环 |
-| 几何计算 | OpenCascade / `pythonocc-core` 参考 Worker继续保留；独立 `dfm-geometry` 可执行程序已作为 experimental Adapter 接入，尚未通过生产认证 |
+| 几何计算 | OpenCascade / `pythonocc-core` 参考 Worker继续保留；独立 `dfm-geometry` 可执行程序已作为 experimental Analyzer 接入并直接输出共享 Scene/Map/ScalarField，尚未通过生产认证 |
 | 本体/工艺规则 | Ontology Snapshot Schema 2；注塑 `injection.default@1.1.0` 和本地只读 SQLite；压铸 `die_casting.topology-baseline@1.0.0` |
 | 执行方式 | Hermes 主进程管理 Run；PythonOCC STEP Worker 或外部 `dfm-geometry` 进程隔离执行 |
 | 结果 | Worker `measurements.json`、Hermes `evaluations.json`、兼容报告 JSON、Markdown、PPTX、PNG 证据、高亮 STEP |
@@ -330,6 +330,7 @@ Artifact 和 Hermes 阶段更新推进。
 | `evidence_geometry.json` | 失败 Evaluation 对应的 FailedPatch 几何 | 证据审计 |
 | `evidence_records.json` | Evaluation、Measurement、Region 与图片的结构化关系 | 报告、Finding |
 | `evidence_*.png` | 当前失败区域证据图 | 问题详情、PPTX |
+| `dfm_viewer.json` | Viewer v2 Manifest，直接引用同一 Run 的 `render_scene` 与 `topology_map` | Desktop 3D 查看器 |
 | `dfm_report.json` | 汇总 Measurement、Evaluation 和 Evidence 的结构化 DFM 结果 | Desktop、系统集成 |
 | `dfm_report.md` | 可读文本报告和兼容交付 | Agent、开发者 |
 | `dfm_report.pptx` | 安装 `python-pptx` 时生成的演示交付报告 | Desktop 用户 |

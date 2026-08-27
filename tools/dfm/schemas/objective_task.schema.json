@@ -27,7 +27,7 @@
           "depends_on": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
           "metric_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
           "required_quantities": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
-          "required_artifacts": {"type": "array", "uniqueItems": true, "items": {"enum": ["feature_set", "region_set", "scalar_field", "render_scene", "topology_map"]}},
+          "required_artifacts": {"type": "array", "uniqueItems": true, "items": {"enum": ["preflight", "features", "feature_set", "region_set", "scalar_field", "render_scene", "topology_map"]}},
           "required_fact_names": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
           "feature_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
           "region_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},

@@ -39,11 +39,11 @@ def materialize_viewer_manifest(
     plan: PlanRecord,
     artifacts: list[ArtifactRecord],
 ) -> ArtifactRecord | None:
-    """Link the render mesh, findings and exact topology references for Desktop."""
+    """Link the shared render scene, findings and topology for Desktop."""
 
     by_kind = {item.kind: item for item in artifacts}
     required = {
-        "render_mesh",
+        "render_scene",
         "topology_map",
         "measurements",
         "features",
@@ -123,8 +123,8 @@ def materialize_viewer_manifest(
     output_dir = project_dir / "runs" / run_id / "artifacts"
     output_path = output_dir / "dfm_viewer.json"
     payload = {
-        "schema_version": 1,
-        "contract_version": "hermes.dfm.viewer/v1",
+        "schema_version": 2,
+        "contract_version": "hermes.dfm.viewer/v2",
         "status": "completed",
         "run_id": run_id,
         "input_sha256": measurements_payload.get("input_sha256"),
@@ -134,7 +134,7 @@ def materialize_viewer_manifest(
         "verification_level": (
             "experimental" if "occt" in plan.analyzer_keys else "reference"
         ),
-        "mesh_path": Path(by_kind["render_mesh"].relative_path).name,
+        "scene_path": Path(by_kind["render_scene"].relative_path).name,
         "topology_path": Path(by_kind["topology_map"].relative_path).name,
         "measurements_path": Path(by_kind["measurements"].relative_path).name,
         "issue_count": len(issues),
@@ -163,14 +163,14 @@ def materialize_preview_manifest(
     """Create the same viewer contract immediately after STEP registration."""
 
     by_kind = {item.kind: item for item in artifacts}
-    if not {"render_mesh", "topology_map"}.issubset(by_kind):
+    if not {"render_scene", "topology_map"}.issubset(by_kind):
         return None
 
     output_dir = project_dir / "runs" / run_id / "artifacts"
     output_path = output_dir / "dfm_viewer.json"
     payload = {
-        "schema_version": 1,
-        "contract_version": "hermes.dfm.viewer/v1",
+        "schema_version": 2,
+        "contract_version": "hermes.dfm.viewer/v2",
         "status": "preview",
         "run_id": run_id,
         "input_sha256": input_sha256,
@@ -178,7 +178,7 @@ def materialize_preview_manifest(
         "scope_id": "injection.geometry-core",
         "scope_version": "4.0.0",
         "verification_level": "experimental",
-        "mesh_path": Path(by_kind["render_mesh"].relative_path).name,
+        "scene_path": Path(by_kind["render_scene"].relative_path).name,
         "topology_path": Path(by_kind["topology_map"].relative_path).name,
         "measurements_path": None,
         "issue_count": 0,

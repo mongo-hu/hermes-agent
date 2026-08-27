@@ -9,6 +9,7 @@ from pathlib import Path
 
 from ..contracts import ArtifactRecord, PlanOperation, RegionRecord
 from ..errors import DFMError
+from ..geometry.snapshot_hash import render_mesh_content_sha256
 
 
 def validate_objective_result(
@@ -144,6 +145,16 @@ def validate_objective_result(
             raise DFMError(error_code, "Render scene has no immutable mesh snapshot.")
         mesh_id = str(snapshot.get("render_mesh_snapshot_id") or "")
         primitives = scene.get("primitives")
+        try:
+            mesh_content_sha256 = (
+                render_mesh_content_sha256(primitives)
+                if isinstance(primitives, list)
+                else ""
+            )
+        except ValueError as exc:
+            raise DFMError(
+                error_code, "Render mesh snapshot content is not canonicalizable."
+            ) from exc
         if (
             not mesh_id
             or not isinstance(primitives, list)
@@ -152,7 +163,7 @@ def validate_objective_result(
             or any(item.get("render_mesh_snapshot_id") != mesh_id for item in primitives)
             or snapshot.get("triangle_count")
             != sum(len(item.get("triangles", [])) for item in primitives)
-            or snapshot.get("render_mesh_sha256") != _mesh_content_sha256(primitives)
+            or snapshot.get("render_mesh_sha256") != mesh_content_sha256
         ):
             raise DFMError(error_code, "Render mesh snapshot identity or content is invalid.")
     for topology in topology_maps:
@@ -294,12 +305,6 @@ def _stable_sha256(payload: object) -> str:
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     ).hexdigest()
-
-
-def _mesh_content_sha256(primitives: list[dict]) -> str:
-    return _stable_sha256(
-        [{key: value for key, value in item.items() if key != "render_mesh_snapshot_id"} for item in primitives]
-    )
 
 
 def _topology_content_sha256(faces: list[dict]) -> str:

@@ -124,3 +124,27 @@ def test_objective_task_and_result_round_trip_exclude_rule_and_render_policy():
     assert ObjectiveTaskRequest.from_dict(payload) == task
     assert LocalObjectiveWorkerRequest.from_dict(request.to_dict()) == request
     assert ObjectiveResultManifest.from_dict(result.to_dict()) == result
+
+
+def test_local_objective_worker_request_rejects_removed_schema_2_task():
+    task = ObjectiveTaskRequest(
+        schema_version=4,
+        run_id="run_1",
+        input_sha256="a" * 64,
+        input_format="step",
+        process="injection",
+        scope_id="injection.geometry-core",
+        scope_version="4.0.0",
+        operations=[PlanOperation("geometry.preflight", "geometry_preflight")],
+    )
+    request = LocalObjectiveWorkerRequest(
+        schema_version=1,
+        backend_version="occt-dfm-geometry-1.4.1",
+        input_path="inputs/part.step",
+        output_dir="runs/run_1/artifacts",
+        task=task,
+    ).to_dict()
+    request["task"]["schema_version"] = 2
+
+    with pytest.raises(ValueError, match="Objective task identity is invalid"):
+        LocalObjectiveWorkerRequest.from_dict(request)
