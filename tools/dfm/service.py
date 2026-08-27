@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import math
 import os
 import threading
 from dataclasses import replace
@@ -27,7 +29,7 @@ from .contracts import (
 )
 from .discovery import DiscoveryEngine
 from .errors import DFMError
-from .ontology import LocalOntologyStore
+from .ontology import BackgroundOntologySync, LocalOntologyStore, OntologySynchronizer
 from .project.inputs import InputRegistrar
 from .project.manifest import ManifestStore
 from .project.workspace import DFMWorkspace
@@ -59,7 +61,9 @@ class DFMService:
         "unit": "model_units",
         "units": "model_units",
         "model_unit": "model_units",
+        "model_length_unit": "model_units",
         "model_units": "model_units",
+        "tool_main_draw_dir": "pull_dir",
         "pull_direction": "pull_dir",
         "mold_pull_direction": "pull_dir",
         "pull_dir": "pull_dir",
@@ -81,6 +85,19 @@ class DFMService:
             / "injection"
             / "ontology_snapshot_v2.json"
         )
+        self.ontology_synchronizer: OntologySynchronizer | None = None
+        self._ontology_background_sync: BackgroundOntologySync | None = None
+        if self.config.ontology_endpoint:
+            self.ontology_synchronizer = OntologySynchronizer(
+                store=self.ontology_store,
+                root=self.workspace.root / "ontology",
+                config=self.config,
+            )
+            self._ontology_background_sync = BackgroundOntologySync(
+                self.ontology_synchronizer,
+                self.config.ontology_sync_interval_seconds,
+            )
+            self._ontology_background_sync.start()
         self.process_registry = process_registry or build_default_process_registry(
             self.ontology_store
         )
@@ -139,6 +156,214 @@ class DFMService:
                 pass
                 
         return raw_value
+
+    @staticmethod
+    def _factor_value_matches_schema(value: Any, schema: Any) -> bool:
+        """Validate the bounded JSON-Schema subset used by published Factors."""
+
+        if not isinstance(schema, dict):
+            return True
+        if "enum" in schema and value not in schema["enum"]:
+            return False
+        expected = schema.get("type")
+        type_checks = {
+            "string": lambda item: isinstance(item, str),
+            "number": lambda item: isinstance(item, (int, float))
+            and not isinstance(item, bool)
+            and math.isfinite(float(item)),
+            "integer": lambda item: isinstance(item, int) and not isinstance(item, bool),
+            "boolean": lambda item: isinstance(item, bool),
+            "array": lambda item: isinstance(item, list),
+            "object": lambda item: isinstance(item, dict),
+            "null": lambda item: item is None,
+        }
+        if isinstance(expected, str) and expected in type_checks and not type_checks[expected](value):
+            return False
+        if isinstance(expected, list) and not any(
+            type_checks[item](value) for item in expected if item in type_checks
+        ):
+            return False
+        if isinstance(value, list):
+            if len(value) < int(schema.get("minItems", 0)):
+                return False
+            if "maxItems" in schema and len(value) > int(schema["maxItems"]):
+                return False
+            item_schema = schema.get("items")
+            if item_schema and any(
+                not DFMService._factor_value_matches_schema(item, item_schema)
+                for item in value
+            ):
+                return False
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            if "minimum" in schema and value < schema["minimum"]:
+                return False
+            if "exclusiveMinimum" in schema and value <= schema["exclusiveMinimum"]:
+                return False
+            if "maximum" in schema and value > schema["maximum"]:
+                return False
+            if "exclusiveMaximum" in schema and value >= schema["exclusiveMaximum"]:
+                return False
+        return True
+
+    @classmethod
+    def _observation_factor_name(cls, observation: Any) -> str:
+        """Resolve an Observation to a Factor runtime key without guessing values."""
+
+        provenance = observation.provenance or {}
+        raw = (
+            provenance.get("factor_runtime_key")
+            or provenance.get("runtime_key")
+            or provenance.get("factor_id")
+            or observation.kind
+        )
+        return cls._canonical_fact_name(str(raw or ""))
+
+    def _resolve_factor_observations(
+        self, manifest: ProjectManifest
+    ) -> ProjectManifest:
+        """Apply published source_policy before an Observation becomes a Fact."""
+
+        definitions = self.ontology_store.factor_definitions(
+            manifest.process or self.config.default_process
+        )
+        if not definitions:
+            return manifest
+        by_key = {}
+        for definition in definitions:
+            by_key[self._canonical_fact_name(definition["runtime_key"])] = definition
+            by_key[self._canonical_fact_name(definition["concept_id"])] = definition
+
+        observations = list(manifest.observations)
+        facts = list(manifest.facts)
+        clarifications = list(manifest.clarifications)
+        changed = False
+        needs_confirmation: dict[str, str] = {}
+        candidates: dict[str, list[tuple[int, Any, str, list[str]]]] = {}
+
+        for index, observation in enumerate(observations):
+            if observation.status != "candidate":
+                continue
+            definition = by_key.get(self._observation_factor_name(observation))
+            if definition is None:
+                continue
+            name = self._canonical_fact_name(definition["runtime_key"])
+            policy = definition["source_policy"]
+            provenance = observation.provenance or {}
+            source = str(
+                provenance.get("source") or provenance.get("source_code") or ""
+            )
+            evidence_refs = list(
+                dict.fromkeys(
+                    [
+                        *observation.source_refs,
+                        *(
+                            provenance.get("evidence_refs", [])
+                            if isinstance(provenance.get("evidence_refs", []), list)
+                            else []
+                        ),
+                    ]
+                )
+            )
+            status = None
+            if source not in policy["allowed_sources"]:
+                status = "rejected_source"
+            elif not self._factor_value_matches_schema(
+                observation.value, definition["data_schema"]
+            ):
+                status = "rejected_schema"
+            elif source in {"drawing_recognition", "geometry_recognition"} and (
+                policy["min_confidence"] is not None
+                and observation.confidence < policy["min_confidence"]
+            ):
+                status = "rejected_confidence"
+            elif (
+                policy["evidence_required"]
+                and source != "user"
+                and not evidence_refs
+            ):
+                status = "rejected_evidence"
+            elif source in policy["auto_accept_sources"]:
+                candidates.setdefault(name, []).append(
+                    (index, observation, source, evidence_refs)
+                )
+            else:
+                status = "needs_confirmation"
+                needs_confirmation[name] = definition["question"]
+            if status is not None:
+                observations[index] = replace(observation, status=status)
+                changed = True
+
+        for name, items in candidates.items():
+            values = {
+                json.dumps(item[1].value, ensure_ascii=False, sort_keys=True)
+                for item in items
+            }
+            confirmed = [
+                item for item in facts if item.name == name and item.status == "confirmed"
+            ]
+            confirmed_values = {
+                json.dumps(item.value, ensure_ascii=False, sort_keys=True)
+                for item in confirmed
+            }
+            if len(values | confirmed_values) > 1:
+                for index, observation, _source, _evidence in items:
+                    observations[index] = replace(observation, status="conflict")
+                facts = [
+                    replace(item, status="conflict")
+                    if item.name == name and item.status == "confirmed"
+                    else item
+                    for item in facts
+                ]
+                definition = by_key[name]
+                needs_confirmation[name] = definition["question"]
+                changed = True
+                continue
+            if not confirmed:
+                _index, observation, source, evidence_refs = items[0]
+                facts.append(
+                    FactRecord(
+                        f"fact_{uuid4().hex[:16]}",
+                        name,
+                        observation.value,
+                        source,
+                        "confirmed",
+                        unit=observation.unit,
+                        evidence_refs=evidence_refs,
+                    )
+                )
+            for index, observation, _source, _evidence in items:
+                observations[index] = replace(observation, status="accepted")
+            changed = True
+
+        for name, question in needs_confirmation.items():
+            clarification_id = f"clarification_{name}"
+            existing_index = next(
+                (
+                    index
+                    for index, item in enumerate(clarifications)
+                    if item.clarification_id == clarification_id
+                ),
+                None,
+            )
+            if existing_index is None:
+                clarifications.append(
+                    ClarificationRecord(clarification_id, question, "open")
+                )
+            else:
+                clarifications[existing_index] = replace(
+                    clarifications[existing_index], status="open", answer=None
+                )
+            changed = True
+
+        if not changed:
+            return manifest
+        return replace(
+            manifest,
+            observations=observations,
+            facts=facts,
+            clarifications=clarifications,
+            updated_at=_utc_now(),
+        )
 
     @staticmethod
     def _active_inputs(manifest: ProjectManifest):
@@ -230,7 +455,8 @@ class DFMService:
                 required_in_phase = True
             if phase != "all" and not required_in_phase:
                 continue
-            name, question = requirement.name, requirement.question
+            name = self._canonical_fact_name(requirement.name)
+            question = requirement.question
             if name in confirmed:
                 continue
             clarification_id = f"clarification_{name}"
@@ -508,7 +734,11 @@ class DFMService:
         if action == "add_input":
             source_path = _resolve_input_path(params.get("path"), params.get("working_dir"))
             record = self.inputs.register(project_id, source_path)
-            self._store(project_id).update(self.discovery.refresh_candidates)
+            self._store(project_id).update(
+                lambda current: self._resolve_factor_observations(
+                    self.discovery.refresh_candidates(current)
+                )
+            )
             manifest = self._ensure_clarifications(project_id, phase="discovery")
             return {
                 "ok": True,
@@ -554,6 +784,14 @@ class DFMService:
                 return replace(
                     current,
                     facts=[*current.facts, fact],
+                    observations=[
+                        replace(item, status="confirmed_by_user")
+                        if self._observation_factor_name(item) == name
+                        and item.value == normalized_value
+                        and item.status in {"candidate", "needs_confirmation", "conflict"}
+                        else item
+                        for item in current.observations
+                    ],
                     process=normalized_value if name == "process" else current.process,
                     process_source=(
                         "user_confirmed" if name == "process" else current.process_source
@@ -593,6 +831,11 @@ class DFMService:
         raise DFMError("action_invalid", f"Unsupported dfm_project action: {action}")
 
     def analysis(self, action: str, **params: Any) -> dict[str, Any]:
+        if (
+            self.ontology_synchronizer is not None
+            and action not in {"status", "cancel", "result"}
+        ):
+            self.ontology_synchronizer.ensure_current_not_revoked()
         project_id = params.get("project_id") or ""
         if action == "context":
             manifest = self._store(project_id).load()
@@ -632,6 +875,9 @@ class DFMService:
         if action == "discover":
             store = self._store(project_id)
             manifest = self._reconcile_clarifications(project_id)
+            resolved = self._resolve_factor_observations(manifest)
+            if resolved is not manifest:
+                manifest = store.update(lambda _current: resolved)
             requested_process = str(params.get("process") or manifest.process or "")
             if params.get("process"):
                 manifest = self._select_process(
@@ -888,8 +1134,14 @@ class DFMService:
             store.update(lambda current: replace(current, plans=[*current.plans, plan], updated_at=_utc_now()))
             return {"ok": True, "project_id": project_id, "plan": plan.to_dict(), "capability": capability.to_dict()}
         if action == "start":
+            plan_id = str(params.get("plan_id") or "").strip()
+            if not plan_id:
+                raise DFMError(
+                    "plan_id_required",
+                    "Starting DFM analysis requires the explicit plan_id returned by planning.",
+                    {"action": "start"},
+                )
             manifest = self._store(project_id).load()
-            plan_id = params.get("plan_id")
             plan = next((item for item in manifest.plans if item.plan_id == plan_id), None)
             if plan is None:
                 raise DFMError("plan_not_found", "DFM analysis plan was not found.", {"plan_id": plan_id})
@@ -980,6 +1232,8 @@ class DFMService:
         return payload
 
     def close(self) -> None:
+        if self._ontology_background_sync is not None:
+            self._ontology_background_sync.close()
         self.jobs.shutdown()
         self.ontology_store.close()
 

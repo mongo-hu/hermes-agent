@@ -5,9 +5,12 @@ from .store import (
     LocalOntologyStore,
     OntologySnapshotIdentity,
 )
+from .sync import BackgroundOntologySync, OntologySynchronizer
 
 __all__ = [
     "CompiledOntologyPlan",
     "LocalOntologyStore",
     "OntologySnapshotIdentity",
+    "OntologySynchronizer",
+    "BackgroundOntologySync",
 ]

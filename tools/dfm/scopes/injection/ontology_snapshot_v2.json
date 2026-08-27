@@ -3,7 +3,7 @@
   "snapshot_id": "ontology.injection.default@1.1.0",
   "ontology_version": "1.1.0",
   "published_at": "2026-08-25T00:00:00Z",
-  "content_sha256": "c6603a1170ee4d6fb3f57107257c6028a4d3f94e85387760d4ad3e3e5fd7d198",
+  "content_sha256": "358da383bcfd36b02600b8849dc8e789df5707b8f8fcc28954e0b626b6567858",
   "rule_set": {
     "rule_set_code": "injection.default",
     "version": "1.1.0",
@@ -85,7 +85,16 @@
       "properties": {
         "runtime_key": "model_units",
         "default_value": "mm",
-        "question": "What length unit was used to author the STEP model?"
+        "question": "What length unit was used to author the STEP model?",
+        "source_policy": {
+          "allowed_sources": ["user", "project_metadata", "drawing_recognition"],
+          "auto_accept_sources": ["project_metadata"],
+          "confirmation_required_sources": ["drawing_recognition"],
+          "min_confidence": 0.9,
+          "evidence_required": true,
+          "conflict_policy": "ask_user",
+          "missing_policy": "ask_user"
+        }
       },
       "status": "active"
     },
@@ -100,7 +109,16 @@
       "properties": {
         "runtime_key": "material",
         "default_value": "ABS",
-        "question": "What resin/material grade will be used for this part?"
+        "question": "What resin/material grade will be used for this part?",
+        "source_policy": {
+          "allowed_sources": ["user", "project_metadata", "drawing_recognition", "derived_program"],
+          "auto_accept_sources": ["project_metadata", "derived_program"],
+          "confirmation_required_sources": ["drawing_recognition"],
+          "min_confidence": 0.9,
+          "evidence_required": true,
+          "conflict_policy": "ask_user",
+          "missing_policy": "ask_user"
+        }
       },
       "status": "active"
     },
@@ -120,7 +138,16 @@
       "properties": {
         "runtime_key": "pull_dir",
         "default_value": [0, 0, 1],
-        "question": "What is the confirmed mold pull direction as [x, y, z]?"
+        "question": "What is the confirmed mold pull direction as [x, y, z]?",
+        "source_policy": {
+          "allowed_sources": ["user", "drawing_recognition", "geometry_recognition", "derived_program"],
+          "auto_accept_sources": ["derived_program"],
+          "confirmation_required_sources": ["drawing_recognition", "geometry_recognition"],
+          "min_confidence": 0.9,
+          "evidence_required": true,
+          "conflict_policy": "ask_user",
+          "missing_policy": "ask_user"
+        }
       },
       "status": "active"
     },

@@ -69,6 +69,60 @@
         "data_schema": {"type": ["object", "null"]},
         "properties": {"type": "object"},
         "status": {"enum": ["draft", "active", "retired"]}
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["concept_type"],
+            "properties": {"concept_type": {"const": "factor"}}
+          },
+          "then": {
+            "required": ["properties"],
+            "properties": {
+              "properties": {
+                "required": ["source_policy"],
+                "properties": {
+                  "source_policy": {"$ref": "#/$defs/sourcePolicy"}
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "sourcePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowed_sources",
+        "auto_accept_sources",
+        "confirmation_required_sources",
+        "min_confidence",
+        "evidence_required",
+        "conflict_policy",
+        "missing_policy"
+      ],
+      "properties": {
+        "allowed_sources": {"$ref": "#/$defs/factorSources"},
+        "auto_accept_sources": {"$ref": "#/$defs/factorSources"},
+        "confirmation_required_sources": {"$ref": "#/$defs/factorSources"},
+        "min_confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "evidence_required": {"type": "boolean"},
+        "conflict_policy": {"const": "ask_user"},
+        "missing_policy": {"const": "ask_user"}
+      }
+    },
+    "factorSources": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "user",
+          "project_metadata",
+          "drawing_recognition",
+          "geometry_recognition",
+          "derived_program"
+        ]
       }
     },
     "relation": {

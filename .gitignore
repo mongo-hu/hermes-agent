@@ -71,6 +71,10 @@ apps/desktop/dist/
 apps/desktop/release/
 apps/desktop/*.tsbuildinfo
 
+# TypeScript output accidentally emitted beside source files
+apps/desktop/src/**/*.js
+apps/shared/src/**/*.js
+
 # Web UI assets — synced from @nous-research/ui at build time via
 # `npm run sync-assets` (see web/package.json).
 web/public/fonts/

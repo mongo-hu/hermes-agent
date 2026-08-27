@@ -53,6 +53,7 @@ _RELATION_ENDPOINT_TYPES = {
     "APPLIES_TO_REGION": ({"check"}, {"region_type"}),
     "USES_OPERAND": ({"check"}, {"metric"}),
     "REQUIRES_FACTOR": ({"process", "check"}, {"factor"}),
+    "AFFECTS": ({"factor", "feature_type"}, {"check"}),
 }
 _LEGACY_OPERAND_SELECTOR_KEYS = {
     "worker_metric_id",
@@ -63,6 +64,23 @@ _LEGACY_OPERAND_SELECTOR_KEYS = {
     "region_role",
 }
 _CONDITION_OPERATORS = {"EQ", "IN", "GT", "GTE", "LT", "LTE", "BETWEEN", "EXISTS"}
+_FACTOR_SOURCE_CODES = {
+    "user",
+    "project_metadata",
+    "drawing_recognition",
+    "geometry_recognition",
+    "derived_program",
+}
+_RECOGNITION_SOURCE_CODES = {"drawing_recognition", "geometry_recognition"}
+_SOURCE_POLICY_FIELDS = {
+    "allowed_sources",
+    "auto_accept_sources",
+    "confirmation_required_sources",
+    "min_confidence",
+    "evidence_required",
+    "conflict_policy",
+    "missing_policy",
+}
 _COMPARATORS = {
     "GT": ">",
     "GTE": ">=",
@@ -260,6 +278,8 @@ class LocalOntologyStore:
         for row in rows:
             properties = _load_json(row["properties_json"], {})
             qualifiers = _load_json(row["qualifiers_json"], {})
+            if qualifiers.get("required") is False:
+                continue
             runtime_key = str(properties.get("runtime_key") or row["concept_id"])
             requirement = {
                 "name": runtime_key,
@@ -285,9 +305,50 @@ class LocalOntologyStore:
                 current["question"] = requirement["question"]
         return tuple(merged[key] for key in sorted(merged))
 
+    def factor_definitions(self, process: str) -> tuple[dict[str, Any], ...]:
+        """Return published Factor schemas and source policies for Fact Resolver."""
+
+        if self.identity().process != process:
+            return ()
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT factor.concept_id,
+                       factor.data_schema_json,
+                       factor.properties_json
+                FROM ontology_relation AS relation
+                JOIN ontology_concept AS subject
+                  ON subject.concept_id = relation.subject_id
+                JOIN ontology_concept AS factor
+                  ON factor.concept_id = relation.object_id
+                WHERE relation.predicate = 'REQUIRES_FACTOR'
+                  AND subject.concept_type IN ('process', 'check')
+                  AND factor.concept_type = 'factor'
+                  AND factor.status = 'active'
+                ORDER BY factor.concept_id
+                """
+            ).fetchall()
+        result = []
+        for row in rows:
+            properties = _load_json(row["properties_json"], {})
+            result.append(
+                {
+                    "concept_id": str(row["concept_id"]),
+                    "runtime_key": str(
+                        properties.get("runtime_key") or row["concept_id"]
+                    ),
+                    "question": str(properties.get("question") or ""),
+                    "data_schema": _load_json(row["data_schema_json"], None),
+                    "source_policy": properties.get("source_policy", {}),
+                }
+            )
+        return tuple(result)
+
     def check_context(self, check_id: str) -> dict[str, Any]:
         """Return the bounded semantic context supplied to planners or an LLM."""
 
+        identity = self.identity()
+        process_id = f"process.{identity.process}"
         with self._connect() as connection:
             check = connection.execute(
                 "SELECT * FROM ontology_concept WHERE concept_id = ? AND concept_type = 'check'",
@@ -299,27 +360,49 @@ class LocalOntologyStore:
                     "The requested DFM Check is absent from the installed ontology.",
                     {"check_id": check_id},
                 )
-            relations = connection.execute(
+            relation_rows = connection.execute(
                 """
-                SELECT relation.*, object.concept_type AS object_type,
+                SELECT relation.*,
+                       subject.concept_type AS subject_type,
+                       subject.name_zh AS subject_name_zh,
+                       subject.definition AS subject_definition,
+                       subject.data_schema_json AS subject_data_schema_json,
+                       subject.properties_json AS subject_properties_json,
+                       object.concept_type AS object_type,
                        object.name_zh AS object_name_zh,
                        object.definition AS object_definition,
                        object.data_schema_json AS object_data_schema_json,
                        object.properties_json AS object_properties_json
                 FROM ontology_relation AS relation
+                JOIN ontology_concept AS subject ON subject.concept_id = relation.subject_id
                 JOIN ontology_concept AS object ON object.concept_id = relation.object_id
-                WHERE relation.subject_id = ?
+                WHERE relation.subject_id IN (?, ?)
+                   OR (
+                        relation.object_id = ?
+                        AND relation.predicate IN ('AFFECTS', 'RELATED_TO')
+                   )
                 ORDER BY relation.sort_order, relation.relation_id
                 """,
-                (check_id,),
+                (check_id, process_id, check_id),
             ).fetchall()
+            relations = []
+            for row in relation_rows:
+                if row["subject_id"] == check_id:
+                    relations.append((row, "object"))
+                elif (
+                    row["object_id"] == check_id
+                    and row["predicate"] in {"AFFECTS", "RELATED_TO"}
+                ):
+                    relations.append((row, "subject"))
+                elif row["predicate"] == "REQUIRES_FACTOR":
+                    relations.append((row, "object"))
             rules = connection.execute(
                 "SELECT * FROM rule_version WHERE check_id = ? ORDER BY priority DESC, rule_id",
                 (check_id,),
             ).fetchall()
             factor_ids = [
                 row["object_id"]
-                for row in relations
+                for row, _ in relations
                 if row["predicate"] == "REQUIRES_FACTOR"
             ]
             options: list[sqlite3.Row] = []
@@ -331,9 +414,12 @@ class LocalOntologyStore:
                     factor_ids,
                 ).fetchall()
         return {
-            "snapshot": self.identity().to_dict(),
+            "snapshot": identity.to_dict(),
             "check": self._concept_payload(check),
-            "relations": [self._relation_context_payload(row) for row in relations],
+            "relations": [
+                self._relation_context_payload(row, related_side=related_side)
+                for row, related_side in relations
+            ],
             "factor_options": [self._factor_option_payload(row) for row in options],
             "rules": [self._rule_payload(row) for row in rules],
         }
@@ -653,6 +739,17 @@ class LocalOntologyStore:
             for concept_id, item in concepts.items()
             if item["concept_type"] == "factor"
         }
+        if int(payload["schema_version"]) >= 2:
+            for factor_id in sorted(factor_ids):
+                properties = concepts[factor_id].get("properties", {})
+                if not isinstance(properties, Mapping):
+                    cls._invalid(
+                        "A Factor concept requires runtime properties.",
+                        {"factor_id": factor_id},
+                    )
+                cls._validate_factor_source_policy(
+                    properties.get("source_policy"), factor_id=factor_id
+                )
         for item in payload["relations"]:
             if not isinstance(item, Mapping):
                 cls._invalid("Ontology relations must be objects.")
@@ -717,6 +814,75 @@ class LocalOntologyStore:
                         {"rule_version_id": version_id},
                     )
             versions.add(version_id)
+
+    @classmethod
+    def _validate_factor_source_policy(
+        cls, policy: Any, *, factor_id: str
+    ) -> None:
+        """Enforce the phase-one Factor source-policy contract from the design."""
+
+        if not isinstance(policy, Mapping) or set(policy) != _SOURCE_POLICY_FIELDS:
+            cls._invalid(
+                "A Schema 2 Factor requires the complete source_policy object.",
+                {"factor_id": factor_id},
+            )
+        source_sets: dict[str, set[str]] = {}
+        for field in (
+            "allowed_sources",
+            "auto_accept_sources",
+            "confirmation_required_sources",
+        ):
+            value = policy.get(field)
+            if (
+                not isinstance(value, list)
+                or any(
+                    not isinstance(item, str) or item not in _FACTOR_SOURCE_CODES
+                    for item in value
+                )
+                or len(value) != len(set(value))
+            ):
+                cls._invalid(
+                    "A Factor source_policy contains invalid source codes.",
+                    {"factor_id": factor_id, "field": field},
+                )
+            source_sets[field] = set(value)
+        allowed = source_sets["allowed_sources"]
+        automatic = source_sets["auto_accept_sources"]
+        confirmation = source_sets["confirmation_required_sources"]
+        if (
+            not automatic.issubset(allowed)
+            or not confirmation.issubset(allowed)
+            or automatic.intersection(confirmation)
+        ):
+            cls._invalid(
+                "A Factor source_policy has incompatible acceptance sets.",
+                {"factor_id": factor_id},
+            )
+        confidence = policy.get("min_confidence")
+        if confidence is not None and (
+            not isinstance(confidence, (int, float))
+            or isinstance(confidence, bool)
+            or not math.isfinite(float(confidence))
+            or not 0 <= float(confidence) <= 1
+        ):
+            cls._invalid(
+                "A Factor source_policy min_confidence must be null or between 0 and 1.",
+                {"factor_id": factor_id},
+            )
+        if (automatic | confirmation).intersection(_RECOGNITION_SOURCE_CODES) and confidence is None:
+            cls._invalid(
+                "Recognition sources require a Factor min_confidence.",
+                {"factor_id": factor_id},
+            )
+        if (
+            not isinstance(policy.get("evidence_required"), bool)
+            or policy.get("conflict_policy") != "ask_user"
+            or policy.get("missing_policy") != "ask_user"
+        ):
+            cls._invalid(
+                "A Factor source_policy uses unsupported phase-one policies.",
+                {"factor_id": factor_id},
+            )
 
     @classmethod
     def _validate_relation_graph(
@@ -1075,17 +1241,25 @@ class LocalOntologyStore:
         }
 
     @staticmethod
-    def _relation_context_payload(row: sqlite3.Row) -> dict[str, Any]:
+    def _relation_context_payload(
+        row: sqlite3.Row, *, related_side: str = "object"
+    ) -> dict[str, Any]:
+        """Orient a stored relation around the Check owning the bounded context."""
+
         return {
             "relation_id": row["relation_id"],
             "predicate": row["predicate"],
             "object": {
-                "concept_id": row["object_id"],
-                "concept_type": row["object_type"],
-                "name_zh": row["object_name_zh"],
-                "definition": row["object_definition"],
-                "data_schema": _load_json(row["object_data_schema_json"], None),
-                "properties": _load_json(row["object_properties_json"], {}),
+                "concept_id": row[f"{related_side}_id"],
+                "concept_type": row[f"{related_side}_type"],
+                "name_zh": row[f"{related_side}_name_zh"],
+                "definition": row[f"{related_side}_definition"],
+                "data_schema": _load_json(
+                    row[f"{related_side}_data_schema_json"], None
+                ),
+                "properties": _load_json(
+                    row[f"{related_side}_properties_json"], {}
+                ),
             },
             "qualifiers": _load_json(row["qualifiers_json"], {}),
         }
@@ -1150,14 +1324,9 @@ class LocalOntologyStore:
         non_default = [item for item in matched if not bool(item[0]["is_default"])]
         candidates = non_default or matched
         if not candidates:
-            if missing_factors:
-                return None
-            if rows:
-                raise DFMError(
-                    "ontology_rule_not_found",
-                    "No released rule matches the confirmed factors for a DFM Check.",
-                    {"check_id": check_id},
-                )
+            # Skip checks whose rules don't match current facts/features.
+            # This allows plan to generate only applicable checks (e.g., wall/draft
+            # basics) when advanced features (screw_boss, etc.) are not discovered.
             return None
         candidates.sort(
             key=lambda item: (int(item[0]["priority"]), item[1]), reverse=True
