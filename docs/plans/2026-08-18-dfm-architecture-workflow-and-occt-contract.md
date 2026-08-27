@@ -138,11 +138,12 @@ Metric 下漏算或由两个 Region 重复认领。低置信度或未实现 Reco
 
 ### 3.4 二维图纸与 2D/3D Fusion 边界
 
-当前 `drawing` 和 `fusion` Analyzer 只是显式占位，不能产生生产结论。后续二维输入先输出带
-页码、bbox、原文、单位、置信度和 Provider 版本的 Observation；材料、公差、皮纹等高置信度信息
-经过冲突检查后成为 Fact，歧义项进入 Clarification。2D Observation 与 3D Feature/Region 之间
-通过可审核 `FusionLink` 关联，不把像素位置直接当成 CAD GeometryRef，也不允许图纸文本替代
-三维客观测量。二维实现可后置，但 Observation/FusionLink 必须沿用现有 Manifest 数据链。
+当前 `drawing` Analyzer 已将 PDF/图片 OCR 和独立语义提取结果转换为带页码、bbox、原文片段、
+单位、置信度及 Provider 版本的正式 Observation，并将 OCR 原文和诊断保存为独立 Artifact。
+`source_policy` 决定候选能否自动采信、必须确认或进入冲突；`fusion` Analyzer 根据明确引用或受控
+Feature/Region 提示生成 candidate/ambiguous `FusionLink`。当前基础实现不把像素位置直接当成 CAD
+GeometryRef，也不允许图纸文本替代三维客观测量。尺寸线、GD&T、视图投影和空间匹配仍需后续
+工程化与 Golden Drawing 验收。
 
 ## 4. 核心数据链
 
@@ -383,7 +384,7 @@ Result 原子发布；Artifact 下载后由 Hermes 再次校验大小和 SHA256�
 - 本体/规则发布契约：`tools/dfm/schemas/ontology_snapshot.schema.json`（当前 Schema 2）
 - Agent 本地本体运行时：`tools/dfm/ontology/store.py`
 - 当前注塑发布快照：`tools/dfm/scopes/injection/ontology_snapshot_v2.json`
-  （`ontology.injection.default@1.1.0`）
+  （`ontology.injection.default@1.2.0`）
 - 当前几何能力声明：`tools/dfm/scopes/injection/geometry_capability_v1.json`
 - 特征目录：`tools/dfm/scopes/injection/feature_catalog.json`
 - OCCT C++ Provider 边界：`tools/dfm/feature_recognition/occt_cpp.py`

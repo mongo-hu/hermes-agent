@@ -21,6 +21,11 @@ class DFMConfig:
     nx_endpoint: str = ""
     nx_request_timeout_seconds: int = 30
     nx_poll_interval_seconds: int = 2
+    drawing_enabled: bool = True
+    drawing_model: str = "gpt-4o"
+    drawing_base_url: str = "https://api.openai.com/v1"
+    drawing_request_timeout_seconds: int = 60
+    geometry_backend: str = "step"
 
 
 def _nested(mapping: Mapping[str, Any], *keys: str, default: Any) -> Any:
@@ -34,7 +39,9 @@ def _nested(mapping: Mapping[str, Any], *keys: str, default: Any) -> Any:
 
 def _positive_int(value: Any, path: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise DFMError("config_invalid", f"{path} must be a positive integer.", {"path": path})
+        raise DFMError(
+            "config_invalid", f"{path} must be a positive integer.", {"path": path}
+        )
     return value
 
 
@@ -44,36 +51,90 @@ def load_dfm_config(config: Mapping[str, Any] | None = None) -> DFMConfig:
 
         config = load_config_readonly()
     defaults = DFMConfig()
-    runtime_python = _nested(config, "dfm", "runtime", "python", default=defaults.runtime_python)
-    default_process = _nested(config, "dfm", "defaults", "process", default=defaults.default_process)
+    runtime_python = _nested(
+        config, "dfm", "runtime", "python", default=defaults.runtime_python
+    )
+    default_process = _nested(
+        config, "dfm", "defaults", "process", default=defaults.default_process
+    )
     keep_failed = _nested(
-        config, "dfm", "retention", "keep_failed_runs", default=defaults.keep_failed_runs
+        config,
+        "dfm",
+        "retention",
+        "keep_failed_runs",
+        default=defaults.keep_failed_runs,
     )
     nx_endpoint = _nested(config, "dfm", "nx", "endpoint", default=defaults.nx_endpoint)
+    drawing_enabled = _nested(
+        config, "dfm", "drawing", "enabled", default=defaults.drawing_enabled
+    )
+    drawing_model = _nested(
+        config, "dfm", "drawing", "model", default=defaults.drawing_model
+    )
+    drawing_base_url = _nested(
+        config, "dfm", "drawing", "base_url", default=defaults.drawing_base_url
+    )
+    geometry_backend = _nested(
+        config, "dfm", "geometry", "backend", default=defaults.geometry_backend
+    )
     if not isinstance(nx_endpoint, str):
         raise DFMError("config_invalid", "dfm.nx.endpoint must be a string.")
+    if not isinstance(drawing_enabled, bool):
+        raise DFMError("config_invalid", "dfm.drawing.enabled must be boolean.")
+    if not isinstance(drawing_model, str):
+        raise DFMError("config_invalid", "dfm.drawing.model must be a string.")
+    if not isinstance(drawing_base_url, str):
+        raise DFMError("config_invalid", "dfm.drawing.base_url must be a string.")
+    if not isinstance(geometry_backend, str) or not geometry_backend.strip():
+        raise DFMError(
+            "config_invalid", "dfm.geometry.backend must be a non-empty string."
+        )
     if not isinstance(runtime_python, str) or not runtime_python.strip():
-        raise DFMError("config_invalid", "dfm.runtime.python must be a non-empty string.")
+        raise DFMError(
+            "config_invalid", "dfm.runtime.python must be a non-empty string."
+        )
     if not isinstance(default_process, str) or not default_process.strip():
-        raise DFMError("config_invalid", "dfm.defaults.process must be a non-empty string.")
+        raise DFMError(
+            "config_invalid", "dfm.defaults.process must be a non-empty string."
+        )
     normalized_process = default_process.strip()
     if normalized_process == "injection_molding":
         normalized_process = "injection"
     if not isinstance(keep_failed, bool):
-        raise DFMError("config_invalid", "dfm.retention.keep_failed_runs must be boolean.")
+        raise DFMError(
+            "config_invalid", "dfm.retention.keep_failed_runs must be boolean."
+        )
     return DFMConfig(
         runtime_python=runtime_python.strip(),
         default_process=normalized_process,
         max_concurrent_runs=_positive_int(
-            _nested(config, "dfm", "runtime", "max_concurrent_runs", default=defaults.max_concurrent_runs),
+            _nested(
+                config,
+                "dfm",
+                "runtime",
+                "max_concurrent_runs",
+                default=defaults.max_concurrent_runs,
+            ),
             "dfm.runtime.max_concurrent_runs",
         ),
         timeout_seconds=_positive_int(
-            _nested(config, "dfm", "runtime", "timeout_seconds", default=defaults.timeout_seconds),
+            _nested(
+                config,
+                "dfm",
+                "runtime",
+                "timeout_seconds",
+                default=defaults.timeout_seconds,
+            ),
             "dfm.runtime.timeout_seconds",
         ),
         max_file_size_mb=_positive_int(
-            _nested(config, "dfm", "intake", "max_file_size_mb", default=defaults.max_file_size_mb),
+            _nested(
+                config,
+                "dfm",
+                "intake",
+                "max_file_size_mb",
+                default=defaults.max_file_size_mb,
+            ),
             "dfm.intake.max_file_size_mb",
         ),
         max_pages=_positive_int(
@@ -93,11 +154,37 @@ def load_dfm_config(config: Mapping[str, Any] | None = None) -> DFMConfig:
         ),
         nx_endpoint=nx_endpoint.strip().rstrip("/"),
         nx_request_timeout_seconds=_positive_int(
-            _nested(config, "dfm", "nx", "request_timeout_seconds", default=defaults.nx_request_timeout_seconds),
+            _nested(
+                config,
+                "dfm",
+                "nx",
+                "request_timeout_seconds",
+                default=defaults.nx_request_timeout_seconds,
+            ),
             "dfm.nx.request_timeout_seconds",
         ),
         nx_poll_interval_seconds=_positive_int(
-            _nested(config, "dfm", "nx", "poll_interval_seconds", default=defaults.nx_poll_interval_seconds),
+            _nested(
+                config,
+                "dfm",
+                "nx",
+                "poll_interval_seconds",
+                default=defaults.nx_poll_interval_seconds,
+            ),
             "dfm.nx.poll_interval_seconds",
         ),
+        drawing_enabled=drawing_enabled,
+        drawing_model=drawing_model.strip(),
+        drawing_base_url=drawing_base_url.strip().rstrip("/"),
+        drawing_request_timeout_seconds=_positive_int(
+            _nested(
+                config,
+                "dfm",
+                "drawing",
+                "request_timeout_seconds",
+                default=defaults.drawing_request_timeout_seconds,
+            ),
+            "dfm.drawing.request_timeout_seconds",
+        ),
+        geometry_backend=geometry_backend.strip(),
     )

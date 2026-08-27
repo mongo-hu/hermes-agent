@@ -32,9 +32,9 @@ type: product-development-plan
 | 工艺 | 注塑 `injection` |
 | 指标 | 壁厚、拔模角 |
 | 三维输入 | PythonOCC 参考实现支持 STEP；生产目标为外部 OCCT C++ 项目支持 STEP |
-| 二维输入 | 契约和 Provider 占位，尚无生产识别 |
+| 二维输入 | PDF/图片 OCR、正式 Observation、原文/诊断 Artifact 和候选 FusionLink 基础链路已实现；复杂工程标注和空间融合尚未生产验收 |
 | 特征识别 | 普通全模型区域可运行；主壁、螺钉柱、凸台、筋、孔、倒扣和外观面候选由 OCCT C++ Provider 显式占位 |
-| 本体/规则 | Snapshot Schema 2、`injection.default@1.1.0`、本地 SQLite、Check Context 和通用 RuleBinding 编译已实现；中心管理后台与同步尚未交付 |
+| 本体/规则 | Snapshot Schema 2、`ontology.injection.default@1.2.0`、Factor `source_policy`、本地 SQLite、Check Context 和通用 RuleBinding 编译已实现；中心管理后台与同步尚未交付 |
 | 证据 | Hermes 根据 ScalarField 和同源 RenderScene 生成三视角截图 |
 
 已完成的基础能力包括项目 Manifest、两阶段发现骨架、区域化 AnalysisPlan、PythonOCC
@@ -128,18 +128,19 @@ Region、Operation、规则、输入哈希、Snapshot 和 C++ 实现版本。
 
 Ground Truth 只用于研发验收，不进入生产分析，也不回写运行结果。
 
-### M3：二维图纸信息提取（待实施）
+### M3：二维图纸信息提取（基础链路已实现，工程化待完成）
 
-- PDF/图片解析、OCR、版面和表格识别；
-- 输出带页码、bbox、原文、单位和置信度的 Observation；
-- 高置信度且无冲突的信息可转为 Fact，歧义进入 Clarification；
+- 已实现 PDF/图片 OCR、独立语义提取和多图输入；版面、表格和复杂工程符号继续完善；
+- 已输出带页码、bbox、原文片段、单位、置信度和 Provider 版本的正式 Observation；
+- 已接入 `source_policy`，支持自动采信、强制确认和冲突状态；
 - 无可靠比例或明确标注时，不从像素推断精确几何尺寸。
 
-### M4：二维工程特征与三维融合（待实施）
+### M4：二维工程特征与三维融合（候选关系基线已实现）
 
 - 识别公差、材料、表面要求、基准和局部工程标注；
-- 将二维 Observation 与三维 Feature/Region 建立可审核 FusionLink；
-- 冲突和低置信度映射由用户确认；
+- 已根据明确引用或受控语义提示建立 candidate/ambiguous FusionLink；
+- 冲突和低置信度映射保持可审核状态，不自动确认；
+- 视图、尺寸线、引线、投影变换和三维区域的空间匹配仍待工程化；
 - 图纸信息参与规则选择，但不替代三维客观计算。
 
 ### M5：平台化与多工艺扩展（待实施）

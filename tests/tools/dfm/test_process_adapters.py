@@ -52,11 +52,11 @@ def test_injection_plan_uses_published_ontology_and_capability_provenance(contex
     assert plan.scope_id == "injection.default"
     assert plan.scope_version == "1.1.0"
     assert plan.adapter_version == "injection-ontology-runtime-v1"
-    assert plan.ontology_snapshot_id == "ontology.injection.default@1.1.0"
+    assert plan.ontology_snapshot_id == "ontology.injection.default@1.2.0"
     assert len(plan.ontology_snapshot_sha256) == 64
     assert plan.rules["R_INJ_MAIN_WALL_MIN_ABS"].value == 1.2
     assert plan.rules["R_INJ_MAIN_WALL_MIN_ABS"].source.startswith(
-        "ontology:ontology.injection.default@1.1.0/"
+        "ontology:ontology.injection.default@1.2.0/"
     )
     assert plan.rules["R_INJ_MAIN_WALL_DRAFT_DEFAULT"].value == 1.0
     assert plan.rules["R_INJ_MAIN_WALL_DRAFT_DEFAULT"].unit == "degree"
@@ -73,7 +73,9 @@ def test_injection_plan_uses_published_ontology_and_capability_provenance(contex
         "draft_angle_deg",
     }
     wall_operation = next(
-        item for item in plan.operations if item.calculator_id == "measure_wall_thickness"
+        item
+        for item in plan.operations
+        if item.calculator_id == "measure_wall_thickness"
     )
     wall_binding = next(
         item for item in plan.rule_bindings if item.quantity_id == "thickness_mm"
@@ -89,7 +91,8 @@ def test_injection_plan_uses_published_ontology_and_capability_provenance(contex
     assert requirements["pull_dir"].required_by == ("geometry.draft",)
     measured = plan.operations[2:]
     assert all(
-        item.required_artifacts == [
+        item.required_artifacts
+        == [
             "scalar_field",
             "render_scene",
             "topology_map",
@@ -113,12 +116,16 @@ def test_confirmed_geometry_fact_is_normalized_and_traced(context):
     )
 
     assert plan.rules["R_INJ_MAIN_WALL_MIN_ABS"].value == 1.2
-    draft = next(item for item in plan.operations if item.calculator_id == "measure_draft")
+    draft = next(
+        item for item in plan.operations if item.calculator_id == "measure_draft"
+    )
     assert draft.arguments["pull_direction"].value == [0.0, 1.0, 0.0]
     assert draft.arguments["pull_direction"].source_ref == "fact:fact_pull_direction"
 
 
-def test_material_profile_changes_hermes_rule_without_entering_backend_arguments(context):
+def test_material_profile_changes_hermes_rule_without_entering_backend_arguments(
+    context,
+):
     adapter = build_default_process_registry().get("injection")
 
     plan = adapter.compile(context, {"material": "ABS", "model_units": "mm"})

@@ -376,5 +376,5 @@ InputRecord + DrawingObservation + confirmed Fact + OntologyRuleSnapshot
 | 本体/规则库 | 仓库内 Snapshot Schema 2 + Agent 本地只读 SQLite | Django 中心管理、默认/企业继承、审核、签名发布、同步/撤销/回滚 |
 | 知识库 | 数据模型和 Citation 边界已设计，尚未形成生产模块 | 文档版本、Chunk、检索、固定 Citation，服务规则起草和分析解释 |
 | 三维几何 | PythonOCC 参考实现；普通全模型区域和少量参考指标 | 独立 OCCT C++ Worker 完成生产级特征识别、区域计算和几何证据 Artifact |
-| 2D/Fusion | Analyzer 和契约占位 | 图纸 Observation、Fact Resolver、FusionLink 和 2D/3D 可审核融合闭环 |
+| 2D/Fusion | PDF/图片 OCR、正式 Observation、材料 `source_policy`、候选/歧义 FusionLink 和降级诊断已形成基础闭环 | 完善尺寸/公差/GD&T、视图与引线识别、投影空间匹配和工程审核体验 |
 | AI | Hermes 可完成交互和说明 | 使用有界 Check Context 与带版本知识引用；始终不负责客观数值和最终判定 |

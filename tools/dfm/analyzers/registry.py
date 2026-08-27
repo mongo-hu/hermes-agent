@@ -44,11 +44,21 @@ def build_default_registry(config: DFMConfig | None = None) -> AnalyzerRegistry:
     registry = AnalyzerRegistry()
     registry.register(
         StepAnalyzer(
-            python_executable=None if config.runtime_python == "auto" else config.runtime_python,
+            python_executable=None
+            if config.runtime_python == "auto"
+            else config.runtime_python,
             timeout_seconds=config.timeout_seconds,
         )
     )
-    registry.register(DrawingAnalyzer())
+    registry.register(
+        DrawingAnalyzer(
+            enabled=config.drawing_enabled,
+            max_pages=config.max_pages,
+            model_name=config.drawing_model,
+            base_url=config.drawing_base_url,
+            timeout_seconds=config.drawing_request_timeout_seconds,
+        )
+    )
     registry.register(FusionAnalyzer())
     nx_client = (
         HttpNXBackendClient(

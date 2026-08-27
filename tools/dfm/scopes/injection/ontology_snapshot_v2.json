@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
-  "snapshot_id": "ontology.injection.default@1.1.0",
-  "ontology_version": "1.1.0",
-  "published_at": "2026-08-25T00:00:00Z",
-  "content_sha256": "c6603a1170ee4d6fb3f57107257c6028a4d3f94e85387760d4ad3e3e5fd7d198",
+  "snapshot_id": "ontology.injection.default@1.2.0",
+  "ontology_version": "1.2.0",
+  "published_at": "2026-08-27T00:00:00Z",
+  "content_sha256": "409df1f29403cf692c526f1c18ca45d105b6853906b05df11e660ae5f4edacdc",
   "rule_set": {
     "rule_set_code": "injection.default",
     "version": "1.1.0",
@@ -100,7 +100,20 @@
       "properties": {
         "runtime_key": "material",
         "default_value": "ABS",
-        "question": "What resin/material grade will be used for this part?"
+        "question": "What resin/material grade will be used for this part?",
+        "source_policy": {
+          "allowed_sources": [
+            "user",
+            "project_metadata",
+            "drawing_recognition"
+          ],
+          "auto_accept_sources": ["project_metadata"],
+          "confirmation_required_sources": ["drawing_recognition"],
+          "min_confidence": 0.75,
+          "evidence_required": true,
+          "conflict_policy": "ask_user",
+          "missing_policy": "ask_user"
+        }
       },
       "status": "active"
     },

@@ -98,7 +98,7 @@ Capability 自我描述，Hermes 只依赖协议版本。
 
 | 契约 | 当前版本 |
 | --- | --- |
-| Ontology Snapshot | Schema 2；默认 `ontology.injection.default@1.1.0` |
+| Ontology Snapshot | Schema 2；默认 `ontology.injection.default@1.2.0` |
 | Geometry Discovery | Schema 1 |
 | Objective | Schema 4 |
 | ScalarField/RenderScene/TopologyMap/Evidence | Schema 2 |
@@ -184,13 +184,21 @@ dfm:
     max_rendered_findings: 12
   retention:
     keep_failed_runs: true
+  geometry:
+    backend: step       # 当前参考实现；生产 OCCT C++ Adapter 注册后改为其 analyzer key
+  drawing:
+    enabled: true
+    model: gpt-4o
+    base_url: https://api.openai.com/v1
+    request_timeout_seconds: 60
 ```
 
 生产 OCCT C++ Adapter 的本地可执行文件或远程 Endpoint 配置应与真正的 Adapter 在同一变更
 中加入。在 Adapter 尚未实现时不预埋无消费者配置，也不通过 `.env` 创建功能开关。
 
-Endpoint、并发、超时等行为设置进入 `config.yaml`；Token 等凭据进入 Hermes secret 存储或
-`.env`。NX 的遗留配置不是当前生产路线，新的部署不得依赖它完成 STEP 分析。
+Endpoint、模型、并发、超时等行为设置进入 `config.yaml`；二维语义提取的 `OPENAI_API_KEY` 等凭据
+进入 Hermes secret 存储或 `.env`。NX 的遗留配置不是当前生产路线，新的部署不得依赖它完成 STEP
+分析。DWG 当前未纳入正式输入格式，也不安装 Aspose.CAD 等商业 SDK。
 
 ## 7. 容器部署
 

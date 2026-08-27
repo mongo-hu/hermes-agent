@@ -437,7 +437,7 @@ Agent 不复制管理库全部表，只安装一次发布后展开的运行投�
 保存 `snapshot_id`、数据库 Schema、Ontology Version、Rule Set Code/Version、Process、企业作用域、
 发布时间和内容哈希。每个分析 Plan 固定记录 `scope_id/scope_version`，历史运行不受后续发布影响。
 
-当前随仓库提供的默认身份是 `ontology.injection.default@1.1.0`。Schema 2 使用
+当前随仓库提供的默认身份是 `ontology.injection.default@1.2.0`。Schema 2 使用
 `APPLIES_TO_REGION` 解析 Operand 目标；运行时仍能读取已经安装的 Schema 1 快照，但新发布物不得
 继续使用 Schema 1 的重复 Selector 格式。
 
