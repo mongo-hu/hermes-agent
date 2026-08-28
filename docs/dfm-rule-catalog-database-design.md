@@ -172,7 +172,7 @@ Web 使用字典/Context API，Agent 下载签名发布物，OCCT 只交换 Capa
 | --- | --- |
 | `user` | 用户明确输入或确认 |
 | `project_metadata` | 项目表单、PLM/BOM 等结构化项目属性 |
-| `drawing_recognition` | 二维图纸 OCR、标注或符号识别结果 |
+| `drawing_recognition` | 程序化 OCR 证据经 Hermes Agent 语义提议、程序校验后形成的二维图纸识别结果 |
 | `geometry_recognition` | STEP/OCCT 特征识别推断结果 |
 | `derived_program` | 程序基于已确认事实进行的确定性推导 |
 

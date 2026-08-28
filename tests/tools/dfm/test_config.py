@@ -17,9 +17,6 @@ def test_dfm_config_defaults_match_m0_contract():
         keep_failed_runs=True,
         max_evidence_findings=12,
         drawing_enabled=True,
-        drawing_model="gpt-4o",
-        drawing_base_url="https://api.openai.com/v1",
-        drawing_request_timeout_seconds=60,
         geometry_backend="step",
     )
 
@@ -43,9 +40,6 @@ def test_dfm_config_reads_nested_values():
             },
             "drawing": {
                 "enabled": True,
-                "model": "drawing-model",
-                "base_url": "https://models.example/v1/",
-                "request_timeout_seconds": 45,
             },
             "geometry": {"backend": "occt_cpp"},
         }
@@ -62,9 +56,6 @@ def test_dfm_config_reads_nested_values():
     assert config.nx_endpoint == "https://nx.example.internal"
     assert config.nx_request_timeout_seconds == 15
     assert config.nx_poll_interval_seconds == 1
-    assert config.drawing_model == "drawing-model"
-    assert config.drawing_base_url == "https://models.example/v1"
-    assert config.drawing_request_timeout_seconds == 45
     assert config.geometry_backend == "occt_cpp"
 
 
@@ -83,7 +74,6 @@ def test_dfm_config_normalizes_the_m0_process_name():
         {"dfm": {"retention": {"keep_failed_runs": "yes"}}},
         {"dfm": {"evidence": {"max_rendered_findings": 0}}},
         {"dfm": {"drawing": {"enabled": "yes"}}},
-        {"dfm": {"drawing": {"request_timeout_seconds": 0}}},
         {"dfm": {"geometry": {"backend": ""}}},
     ],
 )

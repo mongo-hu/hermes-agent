@@ -1,4 +1,4 @@
-"""Adapter from the isolated 2D pipeline to formal DFM observations."""
+"""Adapter from isolated 2D OCR to Agent-readable evidence artifacts."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from ..contracts import (
     Capability,
     CapabilityStatus,
     InputRecord,
-    ObservationRecord,
     WorkerEvent,
 )
 from ..drawing_pipeline.interface import (
@@ -68,7 +67,7 @@ def _artifact(
 
 @dataclass(frozen=True)
 class DrawingDiscoveryBatch:
-    observations: list[ObservationRecord] = field(default_factory=list)
+    fragment_count: int = 0
     artifacts: list[ArtifactRecord] = field(default_factory=list)
     diagnostics: list[dict[str, Any]] = field(default_factory=list)
 
@@ -83,9 +82,6 @@ class DrawingAnalyzer:
         *,
         enabled: bool = True,
         max_pages: int = 50,
-        model_name: str = "",
-        base_url: str = "",
-        timeout_seconds: int = 60,
         pipeline: Callable[..., DrawingPipelineResult] = execute_2d_pipeline,
         capability_probe: Callable[
             [set[str] | None], dict[str, Any]
@@ -93,9 +89,6 @@ class DrawingAnalyzer:
     ) -> None:
         self.enabled = enabled
         self.max_pages = max_pages
-        self.model_name = model_name
-        self.base_url = base_url
-        self.timeout_seconds = timeout_seconds
         self.pipeline = pipeline
         self.capability_probe = capability_probe
 
@@ -104,9 +97,8 @@ class DrawingAnalyzer:
         payload = json.dumps(
             {
                 "version": self.version,
-                "model": self.model_name,
-                "base_url": self.base_url,
                 "max_pages": self.max_pages,
+                "semantic_interpreter": "hermes_agent_event_loop",
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -123,7 +115,7 @@ class DrawingAnalyzer:
         details = {
             **details,
             "applicable": bool(drawing_inputs),
-            "semantic_model": self.model_name or None,
+            "semantic_interpreter": "hermes_agent_event_loop",
         }
         if not self.enabled:
             return Capability(
@@ -153,24 +145,6 @@ class DrawingAnalyzer:
         if context.event_sink is not None:
             context.event_sink(event)
 
-    @staticmethod
-    def _source_ref(
-        input_record: InputRecord, raw_artifact: ArtifactRecord | None, candidate
-    ) -> str:
-        base = (
-            f"artifact:{raw_artifact.artifact_id}"
-            if raw_artifact is not None
-            else f"input:{input_record.input_id}"
-        )
-        qualifiers = []
-        if candidate.page is not None:
-            qualifiers.append(f"page={candidate.page}")
-        if candidate.bbox:
-            qualifiers.append(
-                "bbox=" + ",".join(f"{value:g}" for value in candidate.bbox)
-            )
-        return base + ("#" + "&".join(qualifiers) if qualifiers else "")
-
     def discover_input(
         self,
         context: AnalyzerContext,
@@ -189,9 +163,6 @@ class DrawingAnalyzer:
             result = self.pipeline(
                 str(path),
                 max_pages=self.max_pages,
-                model_name=self.model_name,
-                base_url=self.base_url,
-                timeout_seconds=self.timeout_seconds,
             )
         except DrawingPipelineError as exc:
             raise DFMError(exc.code, str(exc), exc.details) from exc
@@ -229,69 +200,58 @@ class DrawingAnalyzer:
             )
             artifacts.append(raw_artifact)
 
-        observations: list[ObservationRecord] = []
-        counts: dict[str, int] = {}
-        for candidate in result.candidates:
-            counts[candidate.kind] = counts.get(candidate.kind, 0) + 1
-            sequence = counts[candidate.kind]
-            observation_id = (
-                f"observation.drawing.{input_record.sha256[:16]}."
-                f"{candidate.kind}.{sequence:03d}"
+        fragments = []
+        for sequence, fragment in enumerate(result.fragments, start=1):
+            identity = json.dumps(
+                {
+                    "input_sha256": input_record.sha256,
+                    "sequence": sequence,
+                    "page": fragment.page,
+                    "bbox": fragment.bbox,
+                    "text": fragment.text,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
             )
-            observations.append(
-                ObservationRecord(
-                    observation_id=observation_id,
-                    input_id=input_record.input_id,
-                    kind=candidate.kind,
-                    value=candidate.value,
-                    source_refs=[
-                        self._source_ref(input_record, raw_artifact, candidate)
-                    ],
-                    confidence=max(0.0, min(float(candidate.confidence), 1.0)),
-                    status="candidate",
-                    unit=candidate.unit,
-                    provenance={
-                        "provider": result.provider,
-                        "provider_version": result.provider_version,
-                        "pipeline_config": self.cache_identity,
-                        "input_sha256": input_record.sha256,
-                        "page": candidate.page,
-                        "bbox": candidate.bbox,
-                        "original_text": candidate.original_text[:500],
-                        "feature_kind": candidate.feature_kind,
-                        "region_role": candidate.region_role,
-                    },
-                )
-            )
+            fragment_hash = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+            fragments.append({
+                "fragment_id": f"fragment.drawing.{fragment_hash[:20]}",
+                "input_id": input_record.input_id,
+                "input_sha256": input_record.sha256,
+                "sequence": sequence,
+                **fragment.to_dict(),
+            })
 
-        observations_path = output_dir / f"{base_name}_observations.jsonl"
-        observations_path.write_text(
+        fragments_path = output_dir / f"{base_name}_ocr_fragments.jsonl"
+        fragments_path.write_text(
             "".join(
-                json.dumps(item.to_dict(), ensure_ascii=False, sort_keys=True) + "\n"
-                for item in observations
+                json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n"
+                for item in fragments
             ),
             encoding="utf-8",
             newline="\n",
         )
-        observations_artifact = _artifact(
+        fragments_artifact = _artifact(
             context.project_dir,
-            relative_dir / observations_path.name,
-            kind="drawing_observations",
+            relative_dir / fragments_path.name,
+            kind="drawing_ocr_fragments",
             media_type="application/x-ndjson",
             run_id=context.run_id,
             logical_id=(
-                f"drawing-observations:{input_record.input_id}:"
+                f"drawing-fragments:{input_record.input_id}:"
                 f"{self.version}:{self.cache_identity}"
             ),
         )
-        artifacts.append(observations_artifact)
+        artifacts.append(fragments_artifact)
 
         diagnostic = {
             "input_id": input_record.input_id,
             "input_sha256": input_record.sha256,
             "provider": result.provider,
             "provider_version": result.provider_version,
-            "observation_count": len(observations),
+            "ocr_fragment_count": len(fragments),
+            "interpretation_status": "pending_agent",
             **result.diagnostics,
         }
         diagnostics_path = output_dir / f"{base_name}_diagnostics.json"
@@ -313,7 +273,7 @@ class DrawingAnalyzer:
                 ),
             )
         )
-        return DrawingDiscoveryBatch(observations, artifacts, [diagnostic])
+        return DrawingDiscoveryBatch(len(fragments), artifacts, [diagnostic])
 
     def run(
         self,

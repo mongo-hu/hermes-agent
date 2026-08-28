@@ -25,7 +25,7 @@ type: deployment-guide
 | 报告 | Hermes | Hermes，保持不变 |
 | Desktop 3D | Three.js 查看器消费 `hermes.dfm.viewer/v2` Manifest，直接读取共享 RenderScene/TopologyMap | 同一 Manifest 契约，随生产 Artifact 验收 |
 | Parasolid/NX | 登记或遗留边界，当前延期 | 未来可选 Backend，不阻塞 STEP |
-| 2D/OCR/Fusion | 占位 | 后续里程碑 |
+| 2D/OCR/Fusion | PDF/图片程序化 OCR；Hermes Agent 提议，程序落库，几何验证的基础闭环 | 复杂标注与空间融合后续验收 |
 
 只有通过 `certified` Capability、正式 E2E 和工程验收的 OCCT C++ 版本才能被声明为生产可用。
 PythonOCC 的 `available` 只表示参考 Worker 依赖齐全。
@@ -194,18 +194,18 @@ dfm:
     backend: step       # 当前参考实现；生产 OCCT C++ Adapter 注册后改为其 analyzer key
   drawing:
     enabled: true
-    model: gpt-4o
-    base_url: https://api.openai.com/v1
-    request_timeout_seconds: 60
 ```
 
 `dfm.geometry.executable` 可留空；此时 Hermes 会检查仓库旁的标准 `dfm-geometry` 构建/安装
 目录，再检查 `PATH`。配置相对路径时以 Hermes 仓库根目录解析。找不到程序时 OCCT Capability
 显式返回依赖缺失，PythonOCC、NX/Parasolid 和其他占位能力仍按各自原有状态保留。
 
-Endpoint、模型、并发、超时等行为设置进入 `config.yaml`；二维语义提取的 `OPENAI_API_KEY` 等凭据
-进入 Hermes secret 存储或 `.env`。NX 的遗留配置不是当前生产路线，新的部署不得依赖它完成 STEP
-分析。DWG 当前未纳入正式输入格式，也不安装 Aspose.CAD 等商业 SDK。
+二维图纸管线只执行程序化 OCR，没有独立模型、Endpoint、API Key 或模型超时配置。OCR 后的语义
+判断与 2D/3D 关联复用当前 Hermes 会话已经选择的大模型和凭据；Agent 提议 Observation/FusionLink，
+DFM Runtime 校验契约并落库，几何模块验证 Feature/Region 与拓扑关系。其他行为设置进入
+`config.yaml`，凭据仍按 Hermes 通用规则进入 secret 存储或 `.env`。NX 的遗留配置不是当前生产
+路线，新的部署不得依赖它完成 STEP 分析。DWG 当前未纳入正式输入格式，也不安装 Aspose.CAD 等
+商业 SDK。
 
 ## 7. 容器部署
 

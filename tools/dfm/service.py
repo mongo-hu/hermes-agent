@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import re
 import threading
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -15,12 +17,15 @@ from agent.context_references import parse_context_references
 from hermes_constants import get_hermes_home
 
 from .analyzers.base import AnalyzerContext, CancellationToken
+from .analyzers.fusion import GLOBAL_OBSERVATION_KINDS
 from .analyzers.registry import AnalyzerRegistry, build_default_registry
 from .config import DFMConfig, load_dfm_config
 from .contracts import (
+    ArtifactRecord,
     ClarificationRecord,
     FactRecord,
     InputRecord,
+    ObservationRecord,
     PlanOperation,
     PlanRecord,
     ProjectManifest,
@@ -65,6 +70,24 @@ def _resolve_input_path(raw_path: object, working_dir: object = None) -> Path:
 
 
 class DFMService:
+    _AGENT_INTERPRETATION_VERSION = "1.0.0"
+    _AGENT_OBSERVATION_PROVIDER = "hermes_agent_event_loop"
+    _OBSERVATION_KIND_GUIDANCE = (
+        "material",
+        "general_tolerance",
+        "surface_finish",
+        "part_name",
+        "manufacturing_constraint",
+        "thread_requirement",
+        "global_note",
+        "dimension",
+        "tolerance",
+        "wall_thickness",
+        "draft_angle",
+        "radius",
+        "hole_diameter",
+        "hole_depth",
+    )
     _FACTS_REQUIRING_NORMALIZATION = {"pull_dir"}
     _FACT_ALIASES = {
         "unit": "model_units",
@@ -302,6 +325,604 @@ class DFMService:
             for key in self.registry.keys()
         }
 
+    @staticmethod
+    def _read_ndjson(path: Path) -> list[dict[str, Any]]:
+        try:
+            return [
+                json.loads(line)
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise DFMError(
+                "drawing_artifact_invalid",
+                "The persisted drawing OCR fragments cannot be read.",
+                {"path": str(path)},
+            ) from exc
+
+    @staticmethod
+    def _file_sha256(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _drawing_fragment_artifact(
+        self, manifest: ProjectManifest, input_id: str
+    ) -> ArtifactRecord:
+        artifact = next(
+            (
+                item
+                for item in reversed(manifest.artifacts)
+                if item.kind == "drawing_ocr_fragments"
+                and f":{input_id}:" in item.logical_id
+            ),
+            None,
+        )
+        if artifact is None:
+            raise DFMError(
+                "drawing_context_unavailable",
+                "Run drawing OCR discovery before requesting Agent interpretation context.",
+                {"input_id": input_id},
+            )
+        return artifact
+
+    def _pending_drawing_interpretations(self, manifest: ProjectManifest) -> list[str]:
+        state = (manifest.capabilities.get("drawing_discovery") or {}).get("inputs", {})
+        return [
+            item.input_id
+            for item in self._active_inputs(manifest)
+            if item.kind == "drawing"
+            and (state.get(item.input_id) or {}).get("interpretation_status")
+            != "completed"
+        ]
+
+    def _drawing_context(
+        self, project_id: str, input_id: str, page: object = None
+    ) -> dict[str, Any]:
+        manifest = self._refresh_drawing_ocr(project_id)
+        active_drawings = [
+            item for item in self._active_inputs(manifest) if item.kind == "drawing"
+        ]
+        if not input_id and len(active_drawings) == 1:
+            input_id = active_drawings[0].input_id
+        input_record = next(
+            (item for item in active_drawings if item.input_id == input_id), None
+        )
+        if input_record is None:
+            raise DFMError(
+                "drawing_input_missing",
+                "drawing_context requires one active drawing input_id.",
+                {"available_input_ids": [item.input_id for item in active_drawings]},
+            )
+        page_number = None
+        if page is not None:
+            if isinstance(page, bool) or not isinstance(page, int) or page <= 0:
+                raise DFMError(
+                    "drawing_context_invalid",
+                    "drawing_context page must be a positive integer.",
+                )
+            page_number = page
+        artifact = self._drawing_fragment_artifact(manifest, input_record.input_id)
+        artifact_path = self.workspace.project_dir(project_id) / artifact.relative_path
+        fragments = self._read_ndjson(artifact_path)
+        if page_number is not None:
+            fragments = [item for item in fragments if item.get("page") == page_number]
+        truncated = len(fragments) > 200
+        fragments = fragments[:200]
+        return {
+            "ok": True,
+            "project_id": project_id,
+            "revision": manifest.revision,
+            "input": input_record.to_dict(),
+            "fragment_artifact": artifact.to_dict(),
+            "page": page_number,
+            "fragments": fragments,
+            "truncated": truncated,
+            "interpretation_contract": {
+                "provider": self._AGENT_OBSERVATION_PROVIDER,
+                "version": self._AGENT_INTERPRETATION_VERSION,
+                "allowed_kind_pattern": "^[a-z][a-z0-9_.-]{0,99}$",
+                "kind_guidance": list(self._OBSERVATION_KIND_GUIDANCE),
+                "required_fields": [
+                    "kind",
+                    "value",
+                    "confidence",
+                    "source_fragment_refs",
+                ],
+                "rules": [
+                    "Extract only explicitly stated drawing facts.",
+                    "Every observation must cite one or more returned fragment_id values.",
+                    "Do not create feature_refs, region_refs, IDs, or confirmed status.",
+                    "Submit an empty observations list when no explicit fact is present.",
+                ],
+            },
+        }
+
+    def _validate_agent_observations(
+        self,
+        manifest: ProjectManifest,
+        input_id: str,
+        proposals: object,
+    ) -> tuple[list[ObservationRecord], ArtifactRecord]:
+        if not isinstance(proposals, list) or len(proposals) > 200:
+            raise DFMError(
+                "observation_submission_invalid",
+                "observations must be an array containing at most 200 proposals.",
+            )
+        input_record = next(
+            (
+                item
+                for item in self._active_inputs(manifest)
+                if item.input_id == input_id and item.kind == "drawing"
+            ),
+            None,
+        )
+        if input_record is None:
+            raise DFMError(
+                "drawing_input_missing",
+                "submit_observations requires one active drawing input_id.",
+                {"input_id": input_id},
+            )
+        fragment_artifact = self._drawing_fragment_artifact(manifest, input_id)
+        fragments = self._read_ndjson(
+            self.workspace.project_dir(manifest.project_id)
+            / fragment_artifact.relative_path
+        )
+        fragment_by_id = {
+            str(item.get("fragment_id")): item
+            for item in fragments
+            if item.get("fragment_id")
+        }
+        allowed = {
+            "kind",
+            "value",
+            "unit",
+            "confidence",
+            "source_fragment_refs",
+        }
+        observations: list[ObservationRecord] = []
+        seen: set[str] = set()
+        for index, proposal in enumerate(proposals):
+            if not isinstance(proposal, dict) or set(proposal) - allowed:
+                raise DFMError(
+                    "observation_submission_invalid",
+                    "An observation proposal contains unsupported fields.",
+                    {"index": index, "allowed_fields": sorted(allowed)},
+                )
+            kind = str(proposal.get("kind") or "").strip().lower().replace(" ", "_")
+            value = proposal.get("value")
+            unit = proposal.get("unit")
+            source_fragment_refs = proposal.get("source_fragment_refs")
+            raw_confidence = proposal.get("confidence")
+            if not re.fullmatch(r"[a-z][a-z0-9_.-]{0,99}", kind):
+                raise DFMError(
+                    "observation_kind_invalid",
+                    "Observation kind must be a canonical lower-case identifier.",
+                    {"index": index, "kind": kind},
+                )
+            if (
+                value is None
+                or isinstance(value, (dict, list))
+                or (isinstance(value, str) and not value.strip())
+            ):
+                raise DFMError(
+                    "observation_value_invalid",
+                    "Observation value must be one explicit scalar drawing value.",
+                    {"index": index},
+                )
+            if unit is not None and (
+                not isinstance(unit, str) or not unit.strip() or len(unit) > 32
+            ):
+                raise DFMError(
+                    "observation_unit_invalid",
+                    "Observation unit must be null or a short non-empty string.",
+                    {"index": index},
+                )
+            if (
+                isinstance(raw_confidence, bool)
+                or not isinstance(raw_confidence, (int, float))
+                or not 0 <= float(raw_confidence) <= 1
+            ):
+                raise DFMError(
+                    "observation_confidence_invalid",
+                    "Observation confidence must be a number between zero and one.",
+                    {"index": index},
+                )
+            if (
+                not isinstance(source_fragment_refs, list)
+                or not 1 <= len(source_fragment_refs) <= 20
+                or len(source_fragment_refs) != len(set(source_fragment_refs))
+                or any(
+                    not isinstance(item, str) or item not in fragment_by_id
+                    for item in source_fragment_refs
+                )
+            ):
+                raise DFMError(
+                    "observation_evidence_invalid",
+                    "Every observation must cite one to twenty unique OCR fragment IDs from the selected drawing.",
+                    {"index": index},
+                )
+            sources = [fragment_by_id[item] for item in source_fragment_refs]
+            confidence = min(
+                float(raw_confidence),
+                min(float(item.get("confidence") or 0.0) for item in sources),
+            )
+            identity = json.dumps(
+                {
+                    "input_id": input_id,
+                    "kind": kind,
+                    "value": value,
+                    "unit": unit,
+                    "source_fragment_refs": source_fragment_refs,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+            observation_id = f"observation.agent.{digest[:20]}"
+            if observation_id in seen:
+                raise DFMError(
+                    "observation_submission_duplicate",
+                    "The observation submission contains a duplicate proposal.",
+                    {"index": index, "observation_id": observation_id},
+                )
+            seen.add(observation_id)
+            observations.append(
+                ObservationRecord(
+                    observation_id=observation_id,
+                    input_id=input_id,
+                    kind=kind,
+                    value=value.strip() if isinstance(value, str) else value,
+                    source_refs=[
+                        f"artifact:{fragment_artifact.artifact_id}#fragment={item}"
+                        for item in source_fragment_refs
+                    ],
+                    confidence=confidence,
+                    status="candidate",
+                    unit=unit.strip() if isinstance(unit, str) else None,
+                    provenance={
+                        "provider": self._AGENT_OBSERVATION_PROVIDER,
+                        "provider_version": self._AGENT_INTERPRETATION_VERSION,
+                        "source_type": "drawing_recognition",
+                        "input_sha256": input_record.sha256,
+                        "fragment_refs": list(source_fragment_refs),
+                        "pages": sorted({
+                            int(item["page"])
+                            for item in sources
+                            if item.get("page") is not None
+                        }),
+                        "original_text": "\n".join(
+                            str(item.get("text") or "") for item in sources
+                        )[:1000],
+                    },
+                )
+            )
+        return observations, fragment_artifact
+
+    @staticmethod
+    def _invalidate_plans_for_semantics(current: ProjectManifest, reason: str):
+        return [
+            replace(
+                plan,
+                status="invalidated",
+                invalidated_by=reason,
+                affected_operation_ids=[item.operation_id for item in plan.operations],
+            )
+            if plan.phase == "analysis" and plan.status != "invalidated"
+            else plan
+            for plan in current.plans
+        ]
+
+    def _materialize_agent_observations(
+        self,
+        manifest: ProjectManifest,
+        input_id: str,
+        observations: list[ObservationRecord],
+    ) -> ArtifactRecord:
+        input_record = next(
+            item for item in manifest.inputs if item.input_id == input_id
+        )
+        relative_dir = Path("discovery") / "drawing" / input_record.sha256[:16]
+        output_dir = self.workspace.project_dir(manifest.project_id) / relative_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / (
+            f"drawing_{input_record.sha256[:16]}_agent_observations.jsonl"
+        )
+        output_path.write_text(
+            "".join(
+                json.dumps(item.to_dict(), ensure_ascii=False, sort_keys=True) + "\n"
+                for item in observations
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        digest = self._file_sha256(output_path)
+        return ArtifactRecord(
+            artifact_id=f"artifact_drawing-observations_{digest[:16]}",
+            kind="drawing_observations",
+            relative_path=(relative_dir / output_path.name).as_posix(),
+            media_type="application/x-ndjson",
+            created_at=_utc_now(),
+            logical_id=(
+                f"drawing-observations:{input_id}:{self._AGENT_INTERPRETATION_VERSION}"
+            ),
+            size_bytes=output_path.stat().st_size,
+            sha256=digest,
+        )
+
+    def _submit_observations(
+        self,
+        project_id: str,
+        input_id: str,
+        proposals: object,
+        expected_revision: object,
+    ) -> dict[str, Any]:
+        manifest = self._refresh_drawing_ocr(project_id)
+        if isinstance(expected_revision, bool) or not isinstance(
+            expected_revision, int
+        ):
+            raise DFMError(
+                "manifest_revision_required",
+                "submit_observations requires the revision returned by drawing_context.",
+            )
+        observations, _fragment_artifact = self._validate_agent_observations(
+            manifest, input_id, proposals
+        )
+        observation_artifact = self._materialize_agent_observations(
+            manifest, input_id, observations
+        )
+
+        def submit(current: ProjectManifest) -> ProjectManifest:
+            previous_ids = {
+                item.observation_id
+                for item in current.observations
+                if item.input_id == input_id
+                and item.provenance.get("provider") == self._AGENT_OBSERVATION_PROVIDER
+            }
+            capabilities = dict(current.capabilities)
+            drawing = dict(capabilities.get("drawing_discovery") or {})
+            inputs = dict(drawing.get("inputs") or {})
+            input_state = dict(inputs.get(input_id) or {})
+            input_state.update({
+                "interpretation_status": "completed",
+                "interpretation_provider": self._AGENT_OBSERVATION_PROVIDER,
+                "interpretation_version": self._AGENT_INTERPRETATION_VERSION,
+                "observation_count": len(observations),
+            })
+            inputs[input_id] = input_state
+            drawing["inputs"] = inputs
+            capabilities["drawing_discovery"] = drawing
+            capabilities.pop("fusion_review", None)
+            return replace(
+                current,
+                observations=[
+                    item
+                    for item in current.observations
+                    if not (
+                        item.input_id == input_id
+                        and item.provenance.get("provider")
+                        == self._AGENT_OBSERVATION_PROVIDER
+                    )
+                ]
+                + observations,
+                fusion_links=[
+                    item
+                    for item in current.fusion_links
+                    if not previous_ids.intersection(item.observation_refs)
+                ],
+                artifacts=[
+                    item
+                    for item in current.artifacts
+                    if item.logical_id != observation_artifact.logical_id
+                ]
+                + [observation_artifact],
+                capabilities=capabilities,
+                plans=self._invalidate_plans_for_semantics(
+                    current, "drawing_interpretation"
+                ),
+                updated_at=_utc_now(),
+            )
+
+        updated = self._store(project_id).update(
+            submit, expected_revision=expected_revision
+        )
+        updated = self._apply_drawing_source_policies(project_id)
+        accepted = [
+            item.to_dict()
+            for item in updated.observations
+            if item.input_id == input_id
+            and item.provenance.get("provider") == self._AGENT_OBSERVATION_PROVIDER
+        ]
+        return {
+            "ok": True,
+            "project_id": project_id,
+            "revision": updated.revision,
+            "observations": accepted,
+            "artifact": observation_artifact.to_dict(),
+            "next_action": "discover",
+        }
+
+    def _agent_drawing_observations(
+        self, manifest: ProjectManifest
+    ) -> list[ObservationRecord]:
+        drawing_input_ids = {
+            item.input_id
+            for item in self._active_inputs(manifest)
+            if item.kind == "drawing"
+        }
+        return [
+            item
+            for item in manifest.observations
+            if item.input_id in drawing_input_ids
+            and item.provenance.get("provider") == self._AGENT_OBSERVATION_PROVIDER
+            and item.provenance.get("source_type") == "drawing_recognition"
+            and item.kind not in GLOBAL_OBSERVATION_KINDS
+            and item.status not in {"rejected", "conflict"}
+        ]
+
+    def _fusion_review_digest(self, manifest: ProjectManifest) -> str:
+        payload = {
+            "observations": [
+                item.to_dict() for item in self._agent_drawing_observations(manifest)
+            ],
+            "features": [item.to_dict() for item in manifest.features],
+            "regions": [item.to_dict() for item in manifest.regions],
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+
+    def _persist_geometry_candidates(self, project_id: str) -> ProjectManifest:
+        store = self._store(project_id)
+        current = store.load()
+        refreshed = self.discovery.refresh_candidates(current)
+        if (
+            refreshed.features == current.features
+            and refreshed.regions == current.regions
+        ):
+            return current
+        return store.update(
+            lambda latest: replace(
+                latest,
+                features=refreshed.features,
+                regions=refreshed.regions,
+                updated_at=_utc_now(),
+            ),
+            expected_revision=current.revision,
+        )
+
+    def _fusion_review_required(self, manifest: ProjectManifest) -> bool:
+        if not any(
+            item.kind in {"step", "parasolid"} for item in self._active_inputs(manifest)
+        ):
+            return False
+        local_observations = self._agent_drawing_observations(manifest)
+        if not local_observations:
+            return False
+        review = manifest.capabilities.get("fusion_review") or {}
+        return not (
+            review.get("status") == "completed"
+            and review.get("digest") == self._fusion_review_digest(manifest)
+        )
+
+    def _fusion_context(self, project_id: str) -> dict[str, Any]:
+        manifest = self._persist_geometry_candidates(project_id)
+        observations = self._agent_drawing_observations(manifest)
+        return {
+            "ok": True,
+            "project_id": project_id,
+            "revision": manifest.revision,
+            "review_digest": self._fusion_review_digest(manifest),
+            "observations": [item.to_dict() for item in observations],
+            "features": [
+                {
+                    "feature_id": item.feature_id,
+                    "kind": item.kind,
+                    "region_refs": item.region_refs,
+                    "confidence": item.confidence,
+                    "status": item.status,
+                    "recognizer": item.recognizer,
+                    "fallback": bool(item.properties.get("fallback")),
+                }
+                for item in manifest.features
+            ],
+            "regions": [
+                {
+                    "region_id": item.region_id,
+                    "role": item.role,
+                    "semantic_label": item.semantic_label,
+                    "mode": item.mode,
+                    "feature_refs": item.feature_refs,
+                    "geometry_ref_count": len(item.geometry_refs),
+                }
+                for item in manifest.regions
+            ],
+            "fusion_contract": {
+                "required_fields": [
+                    "observation_refs",
+                    "feature_refs",
+                    "region_refs",
+                    "confidence",
+                ],
+                "rules": [
+                    "Link only local observations whose target is explicit in the drawing.",
+                    "Use only returned observation, feature, and region IDs.",
+                    "Submit an empty fusion_links list when no defensible link exists.",
+                    "The service derives status and validates geometry consistency.",
+                ],
+            },
+        }
+
+    def _submit_fusion_links(
+        self,
+        project_id: str,
+        proposals: object,
+        expected_revision: object,
+    ) -> dict[str, Any]:
+        if isinstance(expected_revision, bool) or not isinstance(
+            expected_revision, int
+        ):
+            raise DFMError(
+                "manifest_revision_required",
+                "submit_fusion_links requires the revision returned by fusion_context.",
+            )
+        if not isinstance(proposals, list):
+            raise DFMError(
+                "fusion_submission_invalid", "fusion_links must be an array."
+            )
+        manifest = self._store(project_id).load()
+        if manifest.revision != expected_revision:
+            raise DFMError(
+                "manifest_conflict",
+                "The DFM project changed after fusion_context was read.",
+                {"expected": expected_revision, "actual": manifest.revision},
+            )
+        analyzer = self.registry.get("fusion")
+        if not hasattr(analyzer, "validate_agent_proposals"):
+            raise DFMError(
+                "fusion_contract_missing",
+                "The configured fusion analyzer cannot validate Agent proposals.",
+            )
+        links = analyzer.validate_agent_proposals(manifest, proposals)
+        digest = self._fusion_review_digest(manifest)
+
+        def submit(current: ProjectManifest) -> ProjectManifest:
+            capabilities = dict(current.capabilities)
+            capabilities["fusion_review"] = {
+                "status": "completed",
+                "digest": digest,
+                "provider": self._AGENT_OBSERVATION_PROVIDER,
+                "provider_version": self._AGENT_INTERPRETATION_VERSION,
+                "link_count": len(links),
+            }
+            return replace(
+                current,
+                fusion_links=[
+                    item
+                    for item in current.fusion_links
+                    if item.diagnostics.get("provider") != "hermes_agent_fusion"
+                ]
+                + links,
+                capabilities=capabilities,
+                plans=self._invalidate_plans_for_semantics(current, "fusion_review"),
+                updated_at=_utc_now(),
+            )
+
+        updated = self._store(project_id).update(
+            submit, expected_revision=expected_revision
+        )
+        return {
+            "ok": True,
+            "project_id": project_id,
+            "revision": updated.revision,
+            "fusion_links": [item.to_dict() for item in links],
+            "geometry_validation": "completed",
+            "next_action": "discover",
+        }
+
     def _record_drawing_discovery_status(
         self,
         project_id: str,
@@ -320,7 +941,7 @@ class DFMService:
 
         return self._store(project_id).update(update)
 
-    def _refresh_drawing_observations(self, project_id: str) -> ProjectManifest:
+    def _refresh_drawing_ocr(self, project_id: str) -> ProjectManifest:
         store = self._store(project_id)
         manifest = store.load()
         drawing_inputs = [
@@ -332,7 +953,7 @@ class DFMService:
         if not hasattr(analyzer, "discover_input"):
             raise DFMError(
                 "drawing_contract_missing",
-                "The configured drawing analyzer does not implement discovery observations.",
+                "The configured drawing analyzer does not implement OCR discovery.",
             )
 
         for input_record in drawing_inputs:
@@ -418,17 +1039,22 @@ class DFMService:
                 inputs[input_record.input_id] = {
                     "status": "completed",
                     "provider_version": analyzer.version,
-                    "observation_count": len(batch.observations),
+                    "ocr_fragment_count": batch.fragment_count,
+                    "interpretation_status": "pending_agent",
                     "diagnostics": batch.diagnostics,
                 }
                 drawing.update({"status": "completed", "inputs": inputs})
                 capabilities["drawing_discovery"] = drawing
+                capabilities.pop("fusion_review", None)
                 return replace(
                     current,
-                    observations=[*observations, *batch.observations],
+                    observations=observations,
                     fusion_links=fusion_links,
                     artifacts=[*artifacts, *batch.artifacts],
                     capabilities=capabilities,
+                    plans=self._invalidate_plans_for_semantics(
+                        current, "drawing_ocr_refresh"
+                    ),
                     updated_at=_utc_now(),
                 )
 
@@ -436,9 +1062,12 @@ class DFMService:
         return self._apply_drawing_source_policies(project_id)
 
     def _apply_drawing_source_policies(self, project_id: str) -> ProjectManifest:
-        policies = self.ontology_store.factor_source_policies("injection")
+        manifest = self._store(project_id).load()
+        policies = self.ontology_store.factor_source_policies(
+            manifest.process or "injection"
+        )
         if not policies:
-            return self._store(project_id).load()
+            return manifest
 
         def apply(current: ProjectManifest) -> ProjectManifest:
             confirmed = {
@@ -448,7 +1077,7 @@ class DFMService:
             observations = []
             changed = False
             for observation in current.observations:
-                if observation.provenance.get("provider") != "hermes_drawing_pipeline":
+                if observation.provenance.get("source_type") != "drawing_recognition":
                     observations.append(observation)
                     continue
                 policy = policies.get(observation.kind)
@@ -517,7 +1146,12 @@ class DFMService:
                 updated_at=_utc_now(),
             )
 
-        return self._store(project_id).update(apply)
+        store = self._store(project_id)
+        current = store.load()
+        preview = apply(current)
+        if preview == current:
+            return current
+        return store.update(apply, expected_revision=current.revision)
 
     def _resolve_fusion_links(self, manifest: ProjectManifest) -> ProjectManifest:
         if not manifest.observations or not any(
@@ -662,25 +1296,13 @@ class DFMService:
         return payload
 
     def _latest_discovery_snapshot(self, manifest: ProjectManifest):
-        input_hashes = {
-            item.input_id: item.sha256 for item in self._active_inputs(manifest)
-        }
-        discovery_fact_names = {"process", *self.discovery.required_fact_names()}
-        latest_discovery_facts = {
-            fact.name: fact.fact_id
-            for fact in manifest.facts
-            if fact.status == "confirmed" and fact.name in discovery_fact_names
-        }
+        _refreshed, current_snapshot = self.discovery.freeze(manifest)
         return next(
             (
                 item
                 for item in reversed(manifest.discovery_snapshots)
-                if item.input_hashes == input_hashes
-                and item.process == manifest.process
+                if item.content_sha256 == current_snapshot.content_sha256
                 and item.status == "frozen"
-                and set(latest_discovery_facts.values()).issubset(
-                    set(item.confirmed_fact_refs)
-                )
             ),
             None,
         )
@@ -1016,6 +1638,27 @@ class DFMService:
 
     def analysis(self, action: str, **params: Any) -> dict[str, Any]:
         project_id = params.get("project_id") or ""
+        if action == "drawing_context":
+            return self._drawing_context(
+                project_id,
+                str(params.get("input_id") or ""),
+                params.get("page"),
+            )
+        if action == "submit_observations":
+            return self._submit_observations(
+                project_id,
+                str(params.get("input_id") or ""),
+                params.get("observations"),
+                params.get("expected_revision"),
+            )
+        if action == "fusion_context":
+            return self._fusion_context(project_id)
+        if action == "submit_fusion_links":
+            return self._submit_fusion_links(
+                project_id,
+                params.get("fusion_links"),
+                params.get("expected_revision"),
+            )
         if action == "context":
             manifest = self._store(project_id).load()
             process = str(manifest.process or self.config.default_process)
@@ -1059,8 +1702,23 @@ class DFMService:
                 manifest = self._select_process(
                     project_id, requested_process, "user_selected"
                 )
-            manifest = self._refresh_drawing_observations(project_id)
+            manifest = self._refresh_drawing_ocr(project_id)
             manifest = self._ensure_clarifications(project_id, phase="discovery")
+            pending_interpretations = self._pending_drawing_interpretations(manifest)
+            if pending_interpretations:
+                return {
+                    "ok": False,
+                    "project_id": project_id,
+                    "status": "agent_interpretation_required",
+                    "phase": "drawing_interpretation",
+                    "requires_user_response": False,
+                    "next_action": "drawing_context",
+                    "pending_input_ids": pending_interpretations,
+                    "instructions": (
+                        "Use the current Hermes model to interpret bounded OCR fragments, "
+                        "then call submit_observations."
+                    ),
+                }
             open_clarifications = self._open_clarifications(
                 manifest, requested_process, phase="discovery"
             )
@@ -1081,7 +1739,21 @@ class DFMService:
                         in {"candidate", "needs_confirmation", "conflict"}
                     ],
                 }
-            discovered = self.discovery.refresh_candidates(manifest)
+            discovered = self._persist_geometry_candidates(project_id)
+            if self._fusion_review_required(discovered):
+                return {
+                    "ok": False,
+                    "project_id": project_id,
+                    "status": "agent_fusion_required",
+                    "phase": "drawing_geometry_fusion",
+                    "requires_user_response": False,
+                    "next_action": "fusion_context",
+                    "review_digest": self._fusion_review_digest(discovered),
+                    "instructions": (
+                        "Use the current Hermes model to propose semantic links; the "
+                        "service will validate all geometry references."
+                    ),
+                }
             discovered = self._resolve_fusion_links(discovered)
             discovered, snapshot = self.discovery.freeze(discovered)
             existing_plan = next(
@@ -1109,13 +1781,18 @@ class DFMService:
                 input_hashes={item.input_id: item.sha256 for item in active_inputs},
                 operations=[
                     PlanOperation(
-                        "discovery.drawing_observations",
-                        "extract_drawing_observations",
+                        "discovery.drawing_ocr",
+                        "extract_drawing_ocr_fragments",
+                    ),
+                    PlanOperation(
+                        "discovery.agent_interpretation",
+                        "persist_agent_drawing_observations",
+                        depends_on=["discovery.drawing_ocr"],
                     ),
                     PlanOperation(
                         "discovery.generic_geometry",
                         "recognize_ordinary_region",
-                        depends_on=["discovery.drawing_observations"],
+                        depends_on=["discovery.agent_interpretation"],
                         required_fact_names=["model_units"],
                     ),
                     PlanOperation(
@@ -1128,7 +1805,7 @@ class DFMService:
                     ),
                     PlanOperation(
                         "discovery.fusion",
-                        "resolve_observation_feature_links",
+                        "validate_agent_fusion_links",
                         depends_on=["discovery.process_features"],
                         feature_refs=list(snapshot.feature_refs),
                         region_refs=list(snapshot.region_refs),

@@ -61,9 +61,6 @@ def build_default_registry(config: DFMConfig | None = None) -> AnalyzerRegistry:
         DrawingAnalyzer(
             enabled=config.drawing_enabled,
             max_pages=config.max_pages,
-            model_name=config.drawing_model,
-            base_url=config.drawing_base_url,
-            timeout_seconds=config.drawing_request_timeout_seconds,
         )
     )
     registry.register(FusionAnalyzer())

@@ -27,12 +27,18 @@ def test_dfm_skill_prescribes_safe_complete_tool_workflow():
         "result",
         "capability",
         "artifact",
+        "drawing_context",
+        "submit_observations",
+        "fusion_context",
+        "submit_fusion_links",
     ):
         assert token in text
     assert "Never invent" in text
     assert "confirmed" in text
     assert "dependency_missing" in text
     assert "not_implemented" in text
+    assert "current Hermes conversation model" in text
+    assert "Do not call a second model endpoint" in text
 
 
 def test_dfm_skill_defines_the_m1_injection_plan_boundary():
@@ -42,6 +48,6 @@ def test_dfm_skill_defines_the_m1_injection_plan_boundary():
     assert "action=context" in text
     assert "injection" in text
     assert "unsupported_capability" in text
-    assert "Agent -> plan -> Agent -> start" in text
+    assert "Agent interpretation -> validated persistence -> plan -> start" in text
     assert "never invent" in text.lower()
     assert "standards" in text.lower()

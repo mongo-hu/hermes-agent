@@ -22,7 +22,7 @@ from ..project.manifest import ManifestStore
 from .base import AnalyzerContext, CancellationToken
 
 
-_GLOBAL_OBSERVATION_KINDS = {
+GLOBAL_OBSERVATION_KINDS = {
     "general_tolerance",
     "global_note",
     "manufacturing_constraint",
@@ -72,6 +72,8 @@ class FusionAnalyzer:
         for observation in manifest.observations:
             if observation.status in {"rejected", "conflict"}:
                 continue
+            if observation.provenance.get("provider") == "hermes_agent_event_loop":
+                continue
             provenance = observation.provenance or {}
             explicit_features = [
                 item for item in observation.feature_refs if item in feature_by_id
@@ -101,7 +103,7 @@ class FusionAnalyzer:
                     if feature_id in feature_by_id
                 })
             if not feature_refs and not region_refs:
-                if observation.kind in _GLOBAL_OBSERVATION_KINDS:
+                if observation.kind in GLOBAL_OBSERVATION_KINDS:
                     continue
                 continue
 
@@ -150,6 +152,211 @@ class FusionAnalyzer:
                 )
             )
         return links
+
+    def validate_agent_proposals(
+        self,
+        manifest: ProjectManifest,
+        proposals: list[dict[str, Any]],
+    ) -> list[FusionLinkRecord]:
+        """Validate Agent semantic proposals against persisted geometry identities.
+
+        The Agent may select semantic targets, but it cannot create identifiers,
+        confirm a link, or bypass feature/region consistency checks.
+        """
+
+        if len(proposals) > 200:
+            raise DFMError(
+                "fusion_submission_invalid",
+                "A FusionLink submission may contain at most 200 proposals.",
+            )
+        observation_by_id = {
+            item.observation_id: item for item in manifest.observations
+        }
+        superseded_input_ids = {
+            item.supersedes_input_id
+            for item in manifest.inputs
+            if item.supersedes_input_id
+        }
+        drawing_input_ids = {
+            item.input_id
+            for item in manifest.inputs
+            if item.input_id not in superseded_input_ids and item.kind == "drawing"
+        }
+        feature_by_id = {item.feature_id: item for item in manifest.features}
+        region_by_id = {item.region_id: item for item in manifest.regions}
+        output: list[FusionLinkRecord] = []
+        seen: set[str] = set()
+        allowed = {
+            "observation_refs",
+            "feature_refs",
+            "region_refs",
+            "confidence",
+            "rationale",
+        }
+        for index, proposal in enumerate(proposals):
+            if not isinstance(proposal, dict) or set(proposal) - allowed:
+                raise DFMError(
+                    "fusion_submission_invalid",
+                    "A FusionLink proposal contains unsupported fields.",
+                    {"index": index, "allowed_fields": sorted(allowed)},
+                )
+            observation_refs = proposal.get("observation_refs")
+            feature_refs = proposal.get("feature_refs") or []
+            region_refs = proposal.get("region_refs") or []
+            if (
+                not isinstance(observation_refs, list)
+                or len(observation_refs) != 1
+                or not isinstance(feature_refs, list)
+                or not isinstance(region_refs, list)
+                or any(
+                    not isinstance(item, str) or not item for item in observation_refs
+                )
+                or any(not isinstance(item, str) or not item for item in feature_refs)
+                or any(not isinstance(item, str) or not item for item in region_refs)
+                or len(feature_refs) != len(set(feature_refs))
+                or len(region_refs) != len(set(region_refs))
+                or (not feature_refs and not region_refs)
+            ):
+                raise DFMError(
+                    "fusion_submission_invalid",
+                    "Each FusionLink proposal requires one observation and at least one unique feature or region reference.",
+                    {"index": index},
+                )
+            observation = observation_by_id.get(observation_refs[0])
+            if observation is None:
+                raise DFMError(
+                    "fusion_observation_missing",
+                    "A FusionLink proposal references an unknown observation.",
+                    {"index": index, "observation_ref": observation_refs[0]},
+                )
+            if (
+                observation.kind in GLOBAL_OBSERVATION_KINDS
+                or observation.status in {"rejected", "conflict"}
+                or observation.input_id not in drawing_input_ids
+                or observation.provenance.get("provider") != "hermes_agent_event_loop"
+                or observation.provenance.get("source_type") != "drawing_recognition"
+            ):
+                raise DFMError(
+                    "fusion_observation_not_local",
+                    "Only active drawing observations validated from the Hermes Agent event loop may target geometry.",
+                    {"index": index, "observation_ref": observation.observation_id},
+                )
+            missing_features = sorted(set(feature_refs) - set(feature_by_id))
+            missing_regions = sorted(set(region_refs) - set(region_by_id))
+            if missing_features or missing_regions:
+                raise DFMError(
+                    "fusion_geometry_reference_missing",
+                    "A FusionLink proposal references unknown geometry identities.",
+                    {
+                        "index": index,
+                        "missing_feature_refs": missing_features,
+                        "missing_region_refs": missing_regions,
+                    },
+                )
+            if feature_refs and not region_refs:
+                region_refs = sorted({
+                    region_id
+                    for feature_id in feature_refs
+                    for region_id in feature_by_id[feature_id].region_refs
+                    if region_id in region_by_id
+                })
+            if region_refs and not feature_refs:
+                feature_refs = sorted({
+                    feature_id
+                    for region_id in region_refs
+                    for feature_id in region_by_id[region_id].feature_refs
+                    if feature_id in feature_by_id
+                })
+            if (
+                not feature_refs
+                or not region_refs
+                or any(
+                    not set(feature_by_id[feature_id].region_refs).intersection(
+                        region_refs
+                    )
+                    for feature_id in feature_refs
+                )
+                or any(
+                    not set(region_by_id[region_id].feature_refs).intersection(
+                        feature_refs
+                    )
+                    for region_id in region_refs
+                )
+            ):
+                raise DFMError(
+                    "fusion_geometry_mismatch",
+                    "The proposed feature and region references are not geometrically related.",
+                    {"index": index},
+                )
+            raw_confidence = proposal.get("confidence", observation.confidence)
+            if isinstance(raw_confidence, bool) or not isinstance(
+                raw_confidence, (int, float)
+            ):
+                raise DFMError(
+                    "fusion_submission_invalid",
+                    "FusionLink confidence must be a number between zero and one.",
+                    {"index": index},
+                )
+            proposal_confidence = float(raw_confidence)
+            if not 0 <= proposal_confidence <= 1:
+                raise DFMError(
+                    "fusion_submission_invalid",
+                    "FusionLink confidence must be a number between zero and one.",
+                    {"index": index},
+                )
+            topology_validated = all(
+                region_by_id[region_id].mode == "topology_refs"
+                and bool(region_by_id[region_id].geometry_refs)
+                for region_id in region_refs
+            )
+            geometry_validation = (
+                "topology_validated" if topology_validated else "reference_only"
+            )
+            status = (
+                "candidate"
+                if topology_validated
+                and len(feature_refs) == 1
+                and len(region_refs) == 1
+                else "ambiguous"
+            )
+            identity = {
+                "observation_refs": observation_refs,
+                "feature_refs": sorted(feature_refs),
+                "region_refs": sorted(region_refs),
+                "method": "agent_semantic_proposal_geometry_validated",
+            }
+            digest = hashlib.sha256(
+                json.dumps(identity, sort_keys=True, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+            fusion_link_id = f"fusion.agent.{digest[:16]}"
+            if fusion_link_id in seen:
+                raise DFMError(
+                    "fusion_submission_duplicate",
+                    "The FusionLink submission contains a duplicate proposal.",
+                    {"index": index, "fusion_link_id": fusion_link_id},
+                )
+            seen.add(fusion_link_id)
+            output.append(
+                FusionLinkRecord(
+                    fusion_link_id=fusion_link_id,
+                    observation_refs=observation_refs,
+                    feature_refs=sorted(feature_refs),
+                    region_refs=sorted(region_refs),
+                    confidence=min(observation.confidence, proposal_confidence),
+                    status=status,
+                    method="agent_semantic_proposal_geometry_validated",
+                    diagnostics={
+                        "provider": "hermes_agent_fusion",
+                        "provider_version": self.version,
+                        "geometry_validation": geometry_validation,
+                        "requires_review": True,
+                        "rationale": str(proposal.get("rationale") or "")[:1000],
+                    },
+                )
+            )
+        return output
 
     def run(
         self,

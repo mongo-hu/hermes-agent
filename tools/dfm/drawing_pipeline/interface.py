@@ -21,16 +21,11 @@ class DrawingPipelineError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class DrawingCandidate:
-    kind: str
-    value: Any
-    unit: str | None = None
+class DrawingFragment:
+    text: str
     confidence: float = 0.0
     page: int | None = None
     bbox: list[float] | None = None
-    original_text: str = ""
-    feature_kind: str = ""
-    region_role: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -40,7 +35,7 @@ class DrawingCandidate:
 class DrawingPipelineResult:
     provider: str
     provider_version: str
-    candidates: list[DrawingCandidate] = field(default_factory=list)
+    fragments: list[DrawingFragment] = field(default_factory=list)
     raw_text: str = ""
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
@@ -48,20 +43,9 @@ class DrawingPipelineResult:
         return {
             "provider": self.provider,
             "provider_version": self.provider_version,
-            "candidates": [item.to_dict() for item in self.candidates],
+            "fragments": [item.to_dict() for item in self.fragments],
             "diagnostics": dict(self.diagnostics),
         }
-
-
-_FIELDS: dict[str, tuple[str, str | None, bool]] = {
-    "material": ("material", None, False),
-    "general_tolerance": ("general_tolerance", None, False),
-    "surface_finish": ("surface_finish", None, False),
-    "part_name": ("part_name", None, False),
-    "manufacturing_constraints": ("manufacturing_constraint", None, True),
-    "thread_requirements": ("thread_requirement", None, True),
-    "other_global_notes": ("global_note", None, True),
-}
 
 
 def pipeline_capability(suffixes: set[str] | None = None) -> dict[str, Any]:
@@ -77,62 +61,10 @@ def pipeline_capability(suffixes: set[str] | None = None) -> dict[str, Any]:
     }
 
 
-def _source_fragment(
-    value: Any, fragments: list[dict[str, Any]]
-) -> dict[str, Any] | None:
-    needle = str(value or "").strip().casefold()
-    if not needle:
-        return None
-    return next(
-        (
-            item
-            for item in fragments
-            if needle in str(item.get("text") or "").casefold()
-        ),
-        None,
-    )
-
-
-def _candidates(payload: dict[str, Any]) -> list[DrawingCandidate]:
-    extraction = payload.get("extraction") or {}
-    fragments = list(payload.get("fragments") or [])
-    output: list[DrawingCandidate] = []
-    for field_name, (kind, unit, repeated) in _FIELDS.items():
-        raw_value = extraction.get(field_name)
-        values = raw_value if repeated and isinstance(raw_value, list) else [raw_value]
-        for value in values:
-            if value is None or str(value).strip().lower() in {
-                "",
-                "null",
-                "none",
-                "unknown",
-            }:
-                continue
-            if kind == "material" and isinstance(value, str):
-                value = value.strip().upper()
-            fragment = _source_fragment(value, fragments)
-            fragment_confidence = float((fragment or {}).get("confidence") or 0.0)
-            output.append(
-                DrawingCandidate(
-                    kind=kind,
-                    value=value,
-                    unit=unit,
-                    confidence=max(0.75, min(fragment_confidence, 0.98)),
-                    page=(fragment or {}).get("page"),
-                    bbox=(fragment or {}).get("bbox"),
-                    original_text=str((fragment or {}).get("text") or "")[:500],
-                )
-            )
-    return output
-
-
 def execute_2d_pipeline(
     file_path: str,
     *,
     max_pages: int = 50,
-    model_name: str = "",
-    base_url: str = "",
-    timeout_seconds: int = 60,
     processor: Callable[..., tuple[dict[str, Any], str]] = process_file,
 ) -> DrawingPipelineResult:
     path = Path(file_path)
@@ -159,9 +91,6 @@ def execute_2d_pipeline(
         payload, raw_text = processor(
             str(path),
             max_pages=max_pages,
-            model_name=model_name,
-            base_url=base_url,
-            timeout_seconds=timeout_seconds,
         )
     except DrawingPipelineError:
         raise
@@ -172,18 +101,23 @@ def execute_2d_pipeline(
             {"error_type": type(exc).__name__},
         ) from exc
     diagnostics = dict(payload.get("diagnostics") or {})
-    semantic = diagnostics.get("semantic_extraction") or {}
-    if semantic.get("status") == "failed":
-        diagnostics["warnings"] = [
-            {
-                "code": "drawing_semantic_extraction_failed",
-                "message": semantic.get("message") or "Semantic extraction failed.",
-            }
-        ]
+    fragments = []
+    for item in payload.get("fragments") or []:
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        fragments.append(
+            DrawingFragment(
+                text=text,
+                confidence=max(0.0, min(float(item.get("confidence") or 0.0), 1.0)),
+                page=item.get("page"),
+                bbox=item.get("bbox"),
+            )
+        )
     return DrawingPipelineResult(
         provider="hermes_drawing_pipeline",
         provider_version=DRAWING_PIPELINE_VERSION,
-        candidates=_candidates(payload),
+        fragments=fragments,
         raw_text=raw_text,
         diagnostics=diagnostics,
     )
