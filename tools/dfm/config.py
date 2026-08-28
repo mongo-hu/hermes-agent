@@ -24,7 +24,7 @@ class DFMConfig:
     geometry_executable: str = ""
     geometry_timeout_seconds: int = 900
     drawing_enabled: bool = True
-    geometry_backend: str = "step"
+    geometry_backend: str = "occt_cpp"
 
 
 def _nested(mapping: Mapping[str, Any], *keys: str, default: Any) -> Any:
