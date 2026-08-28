@@ -103,6 +103,7 @@ def discover_geometry_executable(configured: str = "") -> str | None:
 
     names = ("dfm-geometry.exe", "dfm-geometry")
     directories = (
+        root / "dfm-geometry-exe" / "windows-x64",
         root / "dfm-geometry" / "out" / "install" / "windows-vcpkg-vs2026-sln" / "bin",
         root / "dfm-geometry" / "out" / "install" / "windows-vcpkg-release" / "bin",
         root
