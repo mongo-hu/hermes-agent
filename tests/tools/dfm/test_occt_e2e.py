@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import time
 
@@ -10,7 +11,7 @@ from tools.dfm.config import DFMConfig
 from tools.dfm.service import DFMService
 
 
-EXECUTABLE = discover_geometry_executable()
+EXECUTABLE = os.environ.get("DFM_GEOMETRY_E2E_EXECUTABLE") or discover_geometry_executable()
 FIXTURE = Path("tests/fixtures/dfm/step/injection_plate_with_hole.step").resolve()
 
 
@@ -56,7 +57,23 @@ def test_real_occt_injection_vertical_slice(tmp_path):
             fact_name="pull_dir",
             fact_value=[0, 0, 1],
         )
-        service.analysis("discover", project_id=project_id)
+        discovery = service.analysis("discover", project_id=project_id)
+        main_wall = next(
+            item for item in discovery["features"] if item["kind"] == "main_wall"
+        )
+        main_wall_region = next(
+            item
+            for item in discovery["regions"]
+            if main_wall["feature_id"] in item["feature_refs"]
+        )
+        ordinary_region = next(
+            item for item in discovery["regions"] if item["role"] == "ordinary"
+        )
+        assert main_wall_region["mode"] == "topology_refs"
+        assert main_wall_region["role"] == "wall"
+        assert main_wall_region["geometry_refs"]
+        assert ordinary_region["mode"] == "topology_complement"
+        assert ordinary_region["excluded_geometry_refs"] == main_wall_region["geometry_refs"]
         plan = service.analysis(
             "plan",
             project_id=project_id,
@@ -64,6 +81,14 @@ def test_real_occt_injection_vertical_slice(tmp_path):
         )["plan"]
         assert plan["scope_id"] == "injection.default"
         assert plan["ontology_snapshot_id"] == "ontology.injection.default@1.2.0"
+        wall_operations = [
+            item
+            for item in plan["operations"]
+            if item["calculator_id"] == "measure_wall_thickness"
+        ]
+        assert len(wall_operations) == 1
+        assert wall_operations[0]["feature_refs"] == [main_wall["feature_id"]]
+        assert wall_operations[0]["region_refs"] == [main_wall_region["region_id"]]
         started = service.analysis(
             "start", project_id=project_id, plan_id=plan["plan_id"]
         )
@@ -90,7 +115,12 @@ def test_real_occt_injection_vertical_slice(tmp_path):
             "dfm_viewer",
         }
         jsonschema = pytest.importorskip("jsonschema")
-        schema_root = Path("dfm-geometry/schemas").resolve()
+        configured_schema_root = os.environ.get("DFM_GEOMETRY_SCHEMA_ROOT")
+        schema_root = Path(
+            configured_schema_root or "dfm-geometry/schemas"
+        ).resolve()
+        if configured_schema_root:
+            assert schema_root.is_dir(), schema_root
         schema_by_kind = {
             "preflight": "preflight.schema.json",
             "topology_map": "topology_map.schema.json",
@@ -124,7 +154,7 @@ def test_real_occt_injection_vertical_slice(tmp_path):
             measurements["average_thickness_mm"]["diagnostics"]["material_independent"]
             is True
         )
-        for artifact in run["artifacts"]:
+        for artifact in run["artifacts"] if schema_root.is_dir() else []:
             schema_name = schema_by_kind.get(artifact["kind"])
             if schema_name is None:
                 continue

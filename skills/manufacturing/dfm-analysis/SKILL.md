@@ -37,12 +37,13 @@ those decisions or return control to the Agent Loop from inside the worker.
    ontology snapshot ID/hash, DiscoverySnapshot reference, RuleBindings, and parameter provenance. Explain blocked checks and assumptions before
    execution. Pass `analyzer_key=occt_cpp` only when the external experimental OCCT C++ path is intentionally selected; omit it to retain the PythonOCC STEP reference path. Material and pull direction remain user-confirmed facts—never substitute ABS or `+Z` for a missing answer.
 7. Call `start` only when the selected capability is `available`. Preserve its `run_id`.
-8. `start` is non-blocking. Immediately save the returned `run_id` and pass that exact ID to every subsequent `status`, `result`, or `cancel` call; never omit it or invent a replacement. The run publishes background stage, percentage,
+8. `start` is non-blocking. Immediately save the returned `run_id` and pass that exact ID to every subsequent `status` or `result` call; never omit it or invent a replacement. The run publishes background stage, percentage,
    heartbeat, and incremental artifact updates to supported clients. Return
    control to the user after starting; do not spend Agent turns on terminal
    sleep loops or rapid status polling. Use `status` when the user asks, after
-   reconnecting, or after a meaningful external wait. Use `cancel` when
-   requested. Call `result` only after `succeeded`.
+   reconnecting, or after a meaningful external wait. The Agent must never
+   cancel a DFM run; cancellation is reserved for an explicit user-interface
+   action. Call `result` only after `succeeded`.
 9. Summarize Findings with measurement, rule, evidence, confidence, backend quality, and artifact path. State unresolved checks separately. Present `dfm_report.pptx`, when available, as the primary human-readable report for either geometry backend; retain JSON and Markdown as traceable engineering artifacts. Do not ask the model to recreate the deterministic PPTX.
 10. Call `dfm_analysis` with `action=context` and a returned `check_id` only when
    you need to explain that Check, its Factors, or its candidate rules. Treat this

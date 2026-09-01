@@ -455,14 +455,23 @@ class JobManager:
                 artifacts.append(artifact)
             percent = run.progress_percent
             stage = run.stage
+            processed_faces = run.processed_faces
+            total_faces = run.total_faces
+            elapsed_seconds = run.elapsed_seconds
             if event.type == "progress":
                 percent = max(percent, int(event.percent or 0))
                 stage = event.stage or stage
+                processed_faces = event.processed_faces
+                total_faces = event.total_faces
+                elapsed_seconds = event.elapsed_seconds
             return replace(
                 run,
                 artifacts=artifacts,
                 progress_percent=percent,
                 stage=stage,
+                processed_faces=processed_faces,
+                total_faces=total_faces,
+                elapsed_seconds=elapsed_seconds,
                 heartbeat_at=now,
                 updated_at=now,
                 external_job_id=event.external_job_id or run.external_job_id,

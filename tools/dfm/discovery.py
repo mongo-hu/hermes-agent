@@ -16,6 +16,7 @@ from .contracts import (
     ProjectManifest,
     RegionRecord,
     GeometryRef,
+    ResolvedArgument,
 )
 from .errors import DFMError
 from .feature_recognition import (
@@ -40,7 +41,7 @@ def _content_hash(payload: dict[str, Any]) -> str:
 
 
 class DiscoveryEngine:
-    """Own discovery identities while the external OCCT C++ engine is pending."""
+    """Own immutable discovery identities and the ordinary-region fallback."""
 
     version = "hermes-discovery-v2"
 
@@ -50,6 +51,7 @@ class DiscoveryEngine:
         ontology_store: LocalOntologyStore | None = None,
         drawing_provider_version: str = "not_configured",
         fusion_provider_version: str = "not_configured",
+        geometry_provider: OCCTCppFeatureRecognitionProvider | None = None,
     ) -> None:
         self.catalog_path = catalog_path or (
             Path(__file__).resolve().parent
@@ -61,7 +63,8 @@ class DiscoveryEngine:
         self.ontology_store = ontology_store
         self.drawing_provider_version = drawing_provider_version
         self.fusion_provider_version = fusion_provider_version
-        self.placeholder_providers = (OCCTCppFeatureRecognitionProvider(),)
+        self.geometry_provider = geometry_provider or OCCTCppFeatureRecognitionProvider()
+        self.geometry_providers = (self.geometry_provider,)
 
     @staticmethod
     def active_inputs(manifest: ProjectManifest) -> list[InputRecord]:
@@ -72,8 +75,10 @@ class DiscoveryEngine:
         }
         return [item for item in manifest.inputs if item.input_id not in superseded]
 
-    def refresh_candidates(self, manifest: ProjectManifest) -> ProjectManifest:
-        """Create one whole-model ordinary region for every active geometry input."""
+    def refresh_candidates(
+        self, manifest: ProjectManifest, *, project_dir: Path | None = None
+    ) -> ProjectManifest:
+        """Run available geometry discovery, then maintain the honest fallback."""
 
         geometry_inputs = [
             item
@@ -94,6 +99,77 @@ class DiscoveryEngine:
             or not item.source_refs[0].startswith(f"recognizer:{FALLBACK_RECOGNIZER}")
             or item.input_sha256 in active_hashes
         ]
+        artifacts = list(manifest.artifacts)
+        capabilities = dict(manifest.capabilities)
+        discovery_state = dict(capabilities.get("geometry_discovery") or {})
+        by_input = dict(discovery_state.get("inputs") or {})
+        provider_capability = self.geometry_provider.capability()
+        if provider_capability.get("status") == "available" and project_dir is not None:
+            for input_record in geometry_inputs:
+                already_discovered = any(
+                    item.input_sha256 == input_record.sha256
+                    and item.kind == "main_wall"
+                    and item.recognizer == self.geometry_provider.key
+                    and item.recognizer_version == self.geometry_provider.version
+                    for item in features
+                )
+                if already_discovered and input_record.sha256 in by_input:
+                    continue
+                resolved_facts = {
+                    item.name: ResolvedArgument(
+                        value=item.value,
+                        source_ref=f"fact:{item.fact_id}",
+                        unit=item.unit,
+                    )
+                    for item in manifest.facts
+                    if item.status == "confirmed"
+                }
+                resolved_facts.setdefault(
+                    "process", ResolvedArgument(
+                        value=manifest.process or "injection",
+                        source_ref="project:process",
+                    )
+                )
+                result = self.geometry_provider.recognize(
+                    input_record,
+                    process=manifest.process or "injection",
+                    facts=resolved_facts,
+                    project_dir=project_dir,
+                )
+                replaced_feature_ids = {item.feature_id for item in result.features}
+                replaced_region_ids = {item.region_id for item in result.regions}
+                features = [
+                    item for item in features
+                    if item.feature_id not in replaced_feature_ids
+                    and not (
+                        item.input_sha256 == input_record.sha256
+                        and item.recognizer == self.geometry_provider.key
+                    )
+                ] + result.features
+                regions = [
+                    item for item in regions
+                    if item.region_id not in replaced_region_ids
+                    and not (
+                        item.input_sha256 == input_record.sha256
+                        and any(ref in replaced_feature_ids for ref in item.feature_refs)
+                    )
+                ] + result.regions
+                artifact_ids = {item.artifact_id for item in result.artifacts}
+                artifacts = [
+                    item for item in artifacts if item.artifact_id not in artifact_ids
+                ] + result.artifacts
+                by_input[input_record.sha256] = {
+                    "provider": self.geometry_provider.key,
+                    "provider_version": self.geometry_provider.version,
+                    "topology_snapshot_id": result.topology_snapshot_id,
+                    "render_mesh_snapshot_id": result.render_mesh_snapshot_id,
+                    "geometry_snapshot_ref": result.geometry_snapshot_ref,
+                    "artifact_refs": [item.artifact_id for item in result.artifacts],
+                }
+        discovery_state.update(
+            {"status": provider_capability.get("status"), "inputs": by_input}
+        )
+        capabilities["geometry_discovery"] = discovery_state
         feature_ids = {item.feature_id for item in features}
         region_ids = {item.region_id for item in regions}
         for input_record in geometry_inputs:
@@ -155,7 +231,12 @@ class DiscoveryEngine:
             features, regions, manifest.process or "injection"
         )
         return replace(
-            manifest, features=features, regions=regions, updated_at=_utc_now()
+            manifest,
+            features=features,
+            regions=regions,
+            artifacts=artifacts,
+            capabilities=capabilities,
+            updated_at=_utc_now(),
         )
 
     @staticmethod
@@ -248,6 +329,10 @@ class DiscoveryEngine:
             if item.feature_id in snapshot.feature_refs
         }
         bindings = self._metric_bindings(manifest.process or "injection")
+        main_wall_inputs = {
+            item.input_sha256 for item in features.values()
+            if item.kind == "main_wall" and item.status in {"confirmed", "detected"}
+        }
         targets: list[dict[str, Any]] = []
         claims: dict[tuple[str, tuple[str, int, str]], str] = {}
         for region in manifest.regions:
@@ -275,6 +360,12 @@ class DiscoveryEngine:
             if binding is None:
                 continue
             for metric_id in binding["metrics"]:
+                if (
+                    metric_id == "injection.geometry.wall_thickness"
+                    and feature.kind == "ordinary_part"
+                    and feature.input_sha256 in main_wall_inputs
+                ):
+                    continue
                 for ref in region.geometry_refs:
                     key = (metric_id, self._geometry_key(ref))
                     owner = claims.get(key)
@@ -298,11 +389,24 @@ class DiscoveryEngine:
         return targets
 
     def _metric_bindings(self, process: str) -> list[dict[str, Any]]:
+        catalog_bindings = [
+            dict(item) for item in self.catalog["feature_metric_bindings"]
+        ]
         if self.ontology_store is not None:
             published = self.ontology_store.analysis_target_specs(process)
             if published:
-                return [dict(item) for item in published]
-        return list(self.catalog["feature_metric_bindings"])
+                combined = [dict(item) for item in published]
+                keys = {
+                    (item["feature_kind"], item["region_role"])
+                    for item in combined
+                }
+                combined.extend(
+                    item for item in catalog_bindings
+                    if item.get("status") in {"available", "released"}
+                    and (item["feature_kind"], item["region_role"]) not in keys
+                )
+                return combined
+        return catalog_bindings
 
     def freeze(
         self, manifest: ProjectManifest
@@ -351,6 +455,12 @@ class DiscoveryEngine:
             "provider_versions": self.provider_versions(),
         }
         content_sha256 = _content_hash(identity)
+        discovery_inputs = (
+            refreshed.capabilities.get("geometry_discovery", {}).get("inputs", {})
+        )
+        geometry_metadata = (
+            discovery_inputs.get(active[0].sha256, {}) if len(active) == 1 else {}
+        )
         existing = next(
             (
                 item
@@ -373,6 +483,12 @@ class DiscoveryEngine:
             content_sha256=content_sha256,
             process=refreshed.process,
             confirmed_fact_refs=identity["confirmed_fact_refs"],
+            geometry_snapshot_ref=geometry_metadata.get("geometry_snapshot_ref", ""),
+            topology_snapshot_id=geometry_metadata.get("topology_snapshot_id", ""),
+            render_mesh_snapshot_id=geometry_metadata.get(
+                "render_mesh_snapshot_id", ""
+            ),
+            artifact_refs=list(geometry_metadata.get("artifact_refs", [])),
         )
         return (
             replace(
@@ -391,8 +507,8 @@ class DiscoveryEngine:
             "drawing_geometry_fusion": self.fusion_provider_version,
         }
         versions.update({
-            provider.key: f"{provider.version}:not_implemented"
-            for provider in self.placeholder_providers
+            provider.key: f"{provider.version}:{provider.capability().get('status')}"
+            for provider in self.geometry_providers
         })
         return versions
 
@@ -403,7 +519,7 @@ class DiscoveryEngine:
             "catalog_version": self.catalog["version"],
             "providers": self.provider_versions(),
             "provider_capabilities": [
-                provider.capability() for provider in self.placeholder_providers
+                provider.capability() for provider in self.geometry_providers
             ],
             "recognizers": self.catalog["recognizers"],
             "placeholder_policy": self.catalog["placeholder_policy"],

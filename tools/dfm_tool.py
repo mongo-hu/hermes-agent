@@ -9,6 +9,11 @@ from tools.registry import registry
 
 def _call(kind: str, args: dict, **context) -> str:
     try:
+        if kind == "analysis" and args.get("action") == "cancel":
+            raise DFMError(
+                "user_action_required",
+                "DFM cancellation is reserved for an explicit user-interface action; the Agent cannot cancel a run.",
+            )
         service = get_dfm_service()
         params = {key: value for key, value in args.items() if key != "action"}
         if kind == "project" and args.get("action") == "add_input":
@@ -81,7 +86,6 @@ DFM_ANALYSIS_SCHEMA = {
                     "plan",
                     "start",
                     "status",
-                    "cancel",
                     "result",
                     "context",
                 ],
@@ -90,7 +94,7 @@ DFM_ANALYSIS_SCHEMA = {
             "plan_id": {"type": "string"},
             "run_id": {
                 "type": "string",
-                "description": "Run ID returned by start. Always pass it to status, result, or cancel; if omitted, the service can infer it only when unambiguous.",
+                "description": "Run ID returned by start. Always pass it to status or result; if omitted, the service can infer it only when unambiguous.",
             },
             "input_id": {
                 "type": "string",

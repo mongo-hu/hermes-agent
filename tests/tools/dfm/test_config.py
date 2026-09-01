@@ -17,7 +17,7 @@ def test_dfm_config_defaults_match_m0_contract():
         keep_failed_runs=True,
         max_evidence_findings=12,
         drawing_enabled=True,
-        geometry_backend="step",
+        geometry_backend="occt_cpp",
     )
 
 

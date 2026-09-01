@@ -51,7 +51,46 @@ OPERATION_PAIRS = (
     ("recognize_surface_probe", "recognize_surface_probe"),
     ("recognize_chamfer", "recognize_chamfer"),
     ("recognize_rib", "recognize_rib"),
+    ("recognize_main_wall", "recognize_main_wall"),
 )
+
+OPERATION_LIMITS = {
+    "measure_draft": {"timeout_seconds": 120, "ray_query_limit": 4096},
+    "measure_wall_thickness": {
+        "timeout_seconds": 420,
+        "ray_query_limit": 50000,
+        "extrema_query_limit": 500000,
+        "extrema_multithreaded": True,
+        "spatial_index": "face_aabb_sweep",
+    },
+    "measure_undercut": {"timeout_seconds": 180, "ray_query_limit": 32768},
+}
+WALL_ALGORITHM_OPTIONS = [
+    {"name": "minimum_grid_size", "default": 5, "minimum": 2, "maximum": 20},
+    {"name": "maximum_grid_size", "default": 10, "minimum": 2, "maximum": 30},
+    {"name": "maximum_shrink_iterations", "default": 10, "minimum": 1, "maximum": 30},
+    {"name": "maximum_climb_iterations", "default": 50, "minimum": 0, "maximum": 200},
+]
+MAIN_WALL_ALGORITHM_OPTIONS = [
+    {
+        "name": "cumulative_area_ratio",
+        "default": 0.70,
+        "minimum": 0.50,
+        "maximum": 0.95,
+    },
+    {
+        "name": "minimum_relative_face_area",
+        "default": 0.01,
+        "minimum": 0.0,
+        "maximum": 0.25,
+    },
+    {
+        "name": "area_tie_relative_tolerance",
+        "default": 1.0e-9,
+        "minimum": 0.0,
+        "maximum": 0.01,
+    },
+]
 
 CAPABILITIES = {
     "contract_version": "dfm.geometry.capabilities/v1",
@@ -74,12 +113,25 @@ CAPABILITIES = {
         "measurements",
         "scalar_field",
     ],
+    "runtime_limits": {
+        "recommended_process_timeout_seconds": 900,
+        "maximum_operation_timeout_seconds": 420,
+        "progress_heartbeat_interval_seconds": 5,
+    },
     "operations": [
         {
             "operation_id": operation_id,
             "calculator_id": calculator_id,
             "maturity": "experimental",
             "algorithm_version": ENGINE_VERSION,
+            "limits": OPERATION_LIMITS.get(calculator_id, {}),
+            "algorithm_options": (
+                WALL_ALGORITHM_OPTIONS
+                if calculator_id == "measure_wall_thickness"
+                else MAIN_WALL_ALGORITHM_OPTIONS
+                if calculator_id == "recognize_main_wall"
+                else []
+            ),
         }
         for operation_id, calculator_id in OPERATION_PAIRS
     ],
@@ -115,6 +167,7 @@ class SuccessfulRunner:
         stderr_log_path=None,
     ):
         self.argv = list(argv)
+        self.timeout_seconds = timeout_seconds
         request_path = Path(argv[-1])
         self.request = LocalObjectiveWorkerRequest.from_dict(
             json.loads(request_path.read_text(encoding="utf-8"))
@@ -745,7 +798,7 @@ def test_occt_analyzer_runs_versioned_request_and_returns_validated_artifacts(tm
         "C:/dfm/dfm-geometry.exe",
         runner=runner,
         capability_probe=lambda executable: CAPABILITIES,
-        timeout_seconds=123,
+        timeout_seconds=900,
     )
     context = AnalyzerContext(
         "dfm_1", tmp_path, "step", [input_record], "run_1", _plan()
@@ -758,6 +811,7 @@ def test_occt_analyzer_runs_versioned_request_and_returns_validated_artifacts(tm
     assert runner.request.task.schema_version == OBJECTIVE_SCHEMA_VERSION
     assert runner.request.task.regions == context.plan.regions
     assert runner.request.task.operations == context.plan.operations
+    assert runner.timeout_seconds == 900
     assert "verification_level" not in runner.request.task.to_dict()
     assert "assumed_pull_direction" not in runner.request.task.to_dict()
     assert {item.kind for item in artifacts} == {

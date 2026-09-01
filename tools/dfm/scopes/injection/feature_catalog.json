@@ -24,8 +24,8 @@
       "feature_kind": "main_wall",
       "region_roles": ["wall", "appearance_candidate"],
       "provider": "occt_cpp_external",
-      "required_fact_names": ["process", "model_units"],
-      "status": "placeholder"
+      "required_fact_names": ["model_units"],
+      "status": "available"
     },
     {
       "recognizer_id": "injection-screw-boss",
@@ -77,6 +77,13 @@
     }
   ],
   "feature_metric_bindings": [
+    {
+      "feature_kind": "main_wall",
+      "region_role": "wall",
+      "metrics": ["injection.geometry.wall_thickness"],
+      "rule_profile": "main_wall.wall_thickness",
+      "status": "available"
+    },
     {
       "feature_kind": "ordinary_part",
       "region_role": "ordinary",

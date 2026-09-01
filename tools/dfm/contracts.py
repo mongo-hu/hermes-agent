@@ -1151,6 +1151,9 @@ class WorkerEvent:
     type: str
     stage: str | None = None
     percent: int | None = None
+    processed_faces: int | None = None
+    total_faces: int | None = None
+    elapsed_seconds: float | None = None
     kind: str | None = None
     path: str | None = None
     code: str | None = None
@@ -1196,6 +1199,21 @@ class WorkerEvent:
             raise DFMError(
                 "worker_event_invalid",
                 "DFM worker progress percent must be between 0 and 100.",
+            )
+        if event.type == "progress" and (
+            (event.processed_faces is None) != (event.total_faces is None)
+            or event.processed_faces is not None
+            and (
+                event.processed_faces < 0
+                or event.total_faces is None
+                or event.total_faces < event.processed_faces
+            )
+            or event.elapsed_seconds is not None
+            and event.elapsed_seconds < 0
+        ):
+            raise DFMError(
+                "worker_event_invalid",
+                "DFM worker progress details are invalid.",
             )
         return event
 
@@ -1632,6 +1650,9 @@ class RunRecord:
     plan_snapshot: dict[str, Any] | None = None
     stage: str | None = None
     progress_percent: int = 0
+    processed_faces: int | None = None
+    total_faces: int | None = None
+    elapsed_seconds: float | None = None
     heartbeat_at: str | None = None
     event_log_path: str | None = None
     worker_stdout_path: str | None = None
@@ -1655,6 +1676,9 @@ class RunRecord:
             "plan_snapshot": self.plan_snapshot,
             "stage": self.stage,
             "progress_percent": self.progress_percent,
+            "processed_faces": self.processed_faces,
+            "total_faces": self.total_faces,
+            "elapsed_seconds": self.elapsed_seconds,
             "heartbeat_at": self.heartbeat_at,
             "event_log_path": self.event_log_path,
             "worker_stdout_path": self.worker_stdout_path,

@@ -31,7 +31,7 @@ from .base import AnalyzerContext, CancellationToken
 from .objective_result import validate_objective_result
 
 
-ENGINE_VERSION = "occt-dfm-geometry-1.4.1"
+ENGINE_VERSION = "occt-dfm-geometry-1.4.2"
 GEOMETRY_SCOPE_ID = "injection.geometry-core"
 GEOMETRY_SCOPE_VERSION = "4.0.0"
 CAPABILITY_CONTRACT = "dfm.geometry.capabilities/v1"
@@ -53,6 +53,7 @@ GEOMETRY_OPERATION_PAIRS = (
     ("recognize_surface_probe", "recognize_surface_probe"),
     ("recognize_chamfer", "recognize_chamfer"),
     ("recognize_rib", "recognize_rib"),
+    ("recognize_main_wall", "recognize_main_wall"),
 )
 
 
@@ -66,10 +67,20 @@ def _valid_capability_operations(payload: object) -> bool:
             if isinstance(item, dict)
             and item.get("maturity") == "experimental"
             and item.get("algorithm_version") == ENGINE_VERSION
+            and isinstance(item.get("limits"), dict)
+            and isinstance(item.get("algorithm_options"), list)
         }
     except (KeyError, TypeError):
         return False
     return observed == set(GEOMETRY_OPERATION_PAIRS)
+
+
+def _valid_runtime_limits(payload: object) -> bool:
+    return isinstance(payload, dict) and payload == {
+        "recommended_process_timeout_seconds": 900,
+        "maximum_operation_timeout_seconds": 420,
+        "progress_heartbeat_interval_seconds": 5,
+    }
 
 
 def _utc_now() -> str:
@@ -233,6 +244,10 @@ class OcctAnalyzer:
                             or not _valid_capability_operations(
                                 payload.get("operations")
                             )
+                            or not _valid_runtime_limits(payload.get("runtime_limits"))
+                            or self.timeout_seconds
+                            < payload["runtime_limits"]["maximum_operation_timeout_seconds"]
+                            + 30
                         ):
                             raise DFMError(
                                 "geometry_protocol_invalid",
@@ -309,6 +324,7 @@ class OcctAnalyzer:
                 "supported_processes": ["injection"],
                 "format_ids": ["step"],
                 "operations": payload.get("operations", []),
+                "runtime_limits": payload.get("runtime_limits", {}),
             },
         )
 
@@ -812,13 +828,22 @@ class OcctAnalyzer:
                     "The OCCT engine stdout contains an incompatible event contract.",
                 )
             common = {"schema_version", "contract_version", "type"}
-            fields_by_type = {
+            required_fields_by_type = {
                 "progress": {"stage", "percent"},
                 "artifact": {"kind", "path"},
                 "completed": {"path"},
                 "error": {"code", "message"},
             }
-            if set(payload) != common | fields_by_type[event.type]:
+            optional_fields_by_type = {
+                "progress": {"processed_faces", "total_faces", "elapsed_seconds"},
+                "artifact": set(),
+                "completed": set(),
+                "error": set(),
+            }
+            payload_fields = set(payload)
+            required_fields = common | required_fields_by_type[event.type]
+            allowed_fields = required_fields | optional_fields_by_type[event.type]
+            if not required_fields <= payload_fields or not payload_fields <= allowed_fields:
                 raise DFMError(
                     "geometry_protocol_invalid",
                     "The OCCT engine event fields do not match their event type.",
@@ -831,6 +856,15 @@ class OcctAnalyzer:
                     and isinstance(event.stage, str)
                     and bool(event.stage)
                     and type(event.percent) is int
+                    and (
+                        event.processed_faces is None
+                        or type(event.processed_faces) is int
+                    )
+                    and (event.total_faces is None or type(event.total_faces) is int)
+                    and (
+                        event.elapsed_seconds is None
+                        or type(event.elapsed_seconds) in {int, float}
+                    )
                     or event.type == "artifact"
                     and isinstance(event.kind, str)
                     and bool(event.kind)

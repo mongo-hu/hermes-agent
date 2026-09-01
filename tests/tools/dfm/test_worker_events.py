@@ -33,6 +33,44 @@ def test_raw_geometry_jsonl_event_is_accepted_without_legacy_prefix():
     assert parse_worker_event(json.dumps({"type": "ordinary-json-log"})) is None
 
 
+def test_wall_thickness_face_progress_round_trips():
+    event = WorkerEvent(
+        1,
+        "progress",
+        stage="measure_wall_thickness_faces",
+        percent=37,
+        processed_faces=12,
+        total_faces=32,
+        elapsed_seconds=5.25,
+        contract_version=GEOMETRY_EVENT_CONTRACT,
+    )
+
+    assert parse_worker_event(json.dumps(event.to_dict())) == event
+
+
+@pytest.mark.parametrize(
+    "details",
+    [
+        {"processed_faces": 2},
+        {"processed_faces": 3, "total_faces": 2},
+        {"processed_faces": 1, "total_faces": 2, "elapsed_seconds": -0.1},
+    ],
+)
+def test_invalid_wall_thickness_face_progress_is_rejected(details):
+    with pytest.raises(DFMError) as exc_info:
+        WorkerEvent.from_dict(
+            {
+                "schema_version": 1,
+                "type": "progress",
+                "stage": "measure_wall_thickness_faces",
+                "percent": 10,
+                **details,
+            }
+        )
+
+    assert exc_info.value.code == "worker_event_invalid"
+
+
 @pytest.mark.parametrize(
     "line",
     [

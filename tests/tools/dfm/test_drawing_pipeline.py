@@ -309,7 +309,7 @@ def test_mixed_input_uses_agent_observation_and_fusion_submission_flow(tmp_path)
     registry.register(FusionAnalyzer())
     registry.register(ParasolidAnalyzer())
     service = DFMService(
-        config=DFMConfig(),
+        config=DFMConfig(geometry_backend="step"),
         workspace=DFMWorkspace(tmp_path / "workspace"),
         registry=registry,
         reconcile_jobs=False,

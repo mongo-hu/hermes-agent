@@ -30,7 +30,6 @@ def test_dfm_tools_are_discovered_with_stable_schemas_and_dispatch(tmp_path):
         "plan",
         "start",
         "status",
-        "cancel",
         "result",
         "context",
     ]
@@ -121,6 +120,26 @@ def test_dfm_start_receives_internal_progress_context_without_schema_changes(
     assert result["ok"] is True
     assert captured["_tool_progress_callback"] is callback
     assert captured["_tool_call_id"] == "tool_1"
+
+
+def test_dfm_agent_tool_rejects_cancel_even_if_called_outside_its_schema(monkeypatch):
+    from tools import dfm_tool
+
+    class FakeService:
+        def analysis(self, action, **params):
+            raise AssertionError("Agent cancellation must not reach the service")
+
+    monkeypatch.setattr(dfm_tool, "get_dfm_service", lambda: FakeService())
+
+    result = json.loads(
+        dfm_tool._call(
+            "analysis",
+            {"action": "cancel", "project_id": "dfm_1", "run_id": "run_1"},
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "user_action_required"
 
 
 def test_dfm_toolset_is_default_off_but_explicitly_configurable():

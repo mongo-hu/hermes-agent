@@ -34,6 +34,7 @@ from .contracts import (
 )
 from .discovery import DiscoveryEngine
 from .errors import DFMError
+from .feature_recognition.occt_cpp import build_occt_feature_recognition_provider
 from .ontology import LocalOntologyStore
 from .project.inputs import InputRegistrar
 from .project.manifest import ManifestStore
@@ -131,6 +132,10 @@ class DFMService:
         registry_keys = set(self.registry.keys())
         self.discovery = DiscoveryEngine(
             ontology_store=self.ontology_store,
+            geometry_provider=build_occt_feature_recognition_provider(
+                self.config.geometry_executable,
+                timeout_seconds=self.config.geometry_timeout_seconds,
+            ),
             drawing_provider_version=(
                 self.registry.get("drawing").version
                 if "drawing" in registry_keys
@@ -778,10 +783,14 @@ class DFMService:
     def _persist_geometry_candidates(self, project_id: str) -> ProjectManifest:
         store = self._store(project_id)
         current = store.load()
-        refreshed = self.discovery.refresh_candidates(current)
+        refreshed = self.discovery.refresh_candidates(
+            current, project_dir=self.workspace.project_dir(project_id)
+        )
         if (
             refreshed.features == current.features
             and refreshed.regions == current.regions
+            and refreshed.artifacts == current.artifacts
+            and refreshed.capabilities == current.capabilities
         ):
             return current
         return store.update(
@@ -789,6 +798,8 @@ class DFMService:
                 latest,
                 features=refreshed.features,
                 regions=refreshed.regions,
+                artifacts=refreshed.artifacts,
+                capabilities=refreshed.capabilities,
                 updated_at=_utc_now(),
             ),
             expected_revision=current.revision,

@@ -69,7 +69,17 @@ class ProgressAnalyzer(ControlledAnalyzer):
         partial = output / "partial.png"
         partial.write_bytes(b"partial-image")
         assert context.event_sink is not None
-        context.event_sink(WorkerEvent(1, "progress", stage="render_evidence", percent=42))
+        context.event_sink(
+            WorkerEvent(
+                1,
+                "progress",
+                stage="measure_wall_thickness_faces",
+                percent=42,
+                processed_faces=21,
+                total_faces=50,
+                elapsed_seconds=5.5,
+            )
+        )
         context.event_sink(
             WorkerEvent(1, "artifact", kind="evidence_image", path="partial.png")
         )
@@ -171,14 +181,17 @@ def test_run_persists_incremental_progress_artifacts_and_event_log(job_env):
     running = manager.status(project_id, run.run_id)
 
     assert running.status is RunStatus.RUNNING
-    assert running.stage == "render_evidence"
+    assert running.stage == "measure_wall_thickness_faces"
     assert running.progress_percent == 42
+    assert running.processed_faces == 21
+    assert running.total_faces == 50
+    assert running.elapsed_seconds == 5.5
     assert running.heartbeat_at is not None
     assert [item.kind for item in running.artifacts] == ["evidence_image"]
     assert running.event_log_path is not None
     assert updates[-1].progress_percent == 42
     event_log = workspace.project_dir(project_id) / running.event_log_path
-    assert '"render_evidence"' in event_log.read_text(encoding="utf-8")
+    assert '"measure_wall_thickness_faces"' in event_log.read_text(encoding="utf-8")
 
     analyzer.release.set()
     finished = _wait_status(manager, project_id, run.run_id, RunStatus.SUCCEEDED)

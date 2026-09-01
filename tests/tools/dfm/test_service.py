@@ -9,6 +9,7 @@ from tools.dfm.analyzers.fusion import FusionAnalyzer
 from tools.dfm.analyzers.parasolid import ParasolidAnalyzer
 from tools.dfm.analyzers.registry import AnalyzerRegistry
 from tools.dfm.analyzers.step import StepAnalyzer
+from tools.dfm.config import DFMConfig
 from tools.dfm.errors import DFMError
 from tools.dfm.service import DFMService
 from tools.dfm.contracts import FeatureRecord, GeometryRef, RegionRecord
@@ -44,7 +45,14 @@ def service(tmp_path):
     registry.register(DrawingAnalyzer())
     registry.register(FusionAnalyzer())
     registry.register(ParasolidAnalyzer())
-    instance = DFMService(registry=registry, reconcile_jobs=False)
+    instance = DFMService(
+        config=DFMConfig(
+            geometry_backend="step",
+            geometry_executable=str(tmp_path / "missing-dfm-geometry.exe"),
+        ),
+        registry=registry,
+        reconcile_jobs=False,
+    )
     try:
         yield instance, tmp_path
     finally:
@@ -193,7 +201,7 @@ def test_plan_is_persisted_but_unavailable_production_start_fails_explicitly(ser
     assert discovery["features"][0]["kind"] == "ordinary_part"
     assert discovery["regions"][0]["mode"] == "whole_model"
     assert discovery["capability"]["providers"]["occt_cpp_feature_recognition"] == (
-        "external-contract-1:not_implemented"
+        "occt-main-wall-adapter-1.0.0:dependency_missing"
     )
     assert plan["plan"]["analyzer_keys"] == ["step"]
     assert plan["plan"]["discovery_snapshot_refs"] == [
