@@ -6,7 +6,10 @@ import time
 import pytest
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-from tools.dfm.analyzers.occt import discover_geometry_executable
+from tools.dfm.analyzers.occt import (
+    discover_geometry_executable,
+    probe_geometry_executable,
+)
 from tools.dfm.config import DFMConfig
 from tools.dfm.service import DFMService
 
@@ -121,6 +124,23 @@ def test_real_occt_injection_vertical_slice(tmp_path):
         ).resolve()
         if configured_schema_root:
             assert schema_root.is_dir(), schema_root
+        schemas = {
+            path.name: json.loads(path.read_text(encoding="utf-8"))
+            for path in schema_root.glob("*.schema.json")
+        }
+        from referencing import Registry, Resource
+
+        registry = Registry().with_resources(
+            (schema["$id"], Resource.from_contents(schema))
+            for schema in schemas.values()
+            if "$id" in schema
+        )
+
+        def validate(schema_name, payload):
+            jsonschema.Draft202012Validator(
+                schemas[schema_name], registry=registry
+            ).validate(payload)
+
         schema_by_kind = {
             "preflight": "preflight.schema.json",
             "topology_map": "topology_map.schema.json",
@@ -131,6 +151,18 @@ def test_real_occt_injection_vertical_slice(tmp_path):
             "worker_result": "result.schema.json",
         }
         project_dir = service.workspace.project_dir(project_id)
+        if schema_root.is_dir():
+            validate("capabilities.schema.json", probe_geometry_executable(EXECUTABLE))
+            run_dir = project_dir / "runs" / run_id
+            validate(
+                "request.schema.json",
+                json.loads((run_dir / "request.json").read_text(encoding="utf-8")),
+            )
+            for line in (run_dir / "worker.stdout.log").read_text(
+                encoding="utf-8"
+            ).splitlines():
+                if line.strip():
+                    validate("event.schema.json", json.loads(line))
         measurement_artifact = next(
             item for item in run["artifacts"] if item["kind"] == "measurements"
         )
@@ -162,7 +194,7 @@ def test_real_occt_injection_vertical_slice(tmp_path):
             payload = json.loads(
                 (project_dir / artifact["relative_path"]).read_text(encoding="utf-8")
             )
-            jsonschema.Draft202012Validator(schema).validate(payload)
+            validate(schema_name, payload)
         status = service.project("status", project_id=project_id)
         assert status["project"]["features"]
     finally:
