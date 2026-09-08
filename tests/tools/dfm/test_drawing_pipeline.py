@@ -343,6 +343,7 @@ def test_mixed_input_uses_agent_observation_and_fusion_submission_flow(tmp_path)
             project_id=project_id,
             input_id=drawing_input["input_id"],
         )
+        assert drawing_context["available_pages"] == [1]
         material_fragment, wall_fragment = drawing_context["fragments"]
         submitted = service.analysis(
             "submit_observations",

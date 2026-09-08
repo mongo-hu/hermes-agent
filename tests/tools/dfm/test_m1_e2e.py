@@ -106,9 +106,11 @@ def test_m1_real_tool_vertical_slice(tmp_path):
         assert {item["kind"] for item in result["run"]["artifacts"]} >= {
             "report_json",
             "report_markdown",
-            "report_presentation",
             "measurements",
             "worker_result",
+        }
+        assert "report_presentation" not in {
+            item["kind"] for item in result["run"]["artifacts"]
         }
         assert all(Path(item["path"]).is_file() for item in result["run"]["artifacts"])
         measurement_artifact = next(

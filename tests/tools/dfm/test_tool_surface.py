@@ -31,10 +31,12 @@ def test_dfm_tools_are_discovered_with_stable_schemas_and_dispatch(tmp_path):
         "start",
         "status",
         "result",
+        "render_html",
         "context",
     ]
     assert "observations" in analysis_schema["parameters"]["properties"]
     assert "fusion_links" in analysis_schema["parameters"]["properties"]
+    assert "llm_content" in analysis_schema["parameters"]["properties"]
 
     token = set_hermes_home_override(tmp_path / "home")
     try:

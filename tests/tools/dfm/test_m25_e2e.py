@@ -38,7 +38,10 @@ def test_die_casting_step_topology_vertical_slice(tmp_path):
         assert run["status"] == "succeeded", run.get("error")
         assert run["plan_snapshot"]["process"] == "die_casting"
         assert {item["kind"] for item in run["artifacts"]} >= {
-            "measurements", "report_json", "report_markdown", "report_presentation", "worker_result"
+            "measurements", "report_json", "report_markdown", "worker_result"
+        }
+        assert "report_presentation" not in {
+            item["kind"] for item in run["artifacts"]
         }
     finally:
         service.close()
