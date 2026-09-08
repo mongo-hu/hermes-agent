@@ -8,9 +8,10 @@ import { translateNow } from '@/i18n'
 import { type GatewayEventPayload, textPart } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
-import { dfmViewerTargetFromToolComplete } from '@/lib/dfm-viewer-events'
+import { dfmHtmlReportPathFromToolComplete, dfmViewerTargetFromToolComplete } from '@/lib/dfm-viewer-events'
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
+import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
@@ -21,6 +22,7 @@ import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
+import { registerSessionPreview, setSessionPreviewTarget } from '@/store/preview'
 import { followActiveSessionCwd } from '@/store/projects'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
@@ -408,6 +410,22 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (sessionId && dfmViewerTarget) {
           showDfmViewer(sessionId, dfmViewerTarget, { activate: isActiveEvent })
+        }
+
+        const dfmHtmlReportPath = dfmHtmlReportPathFromToolComplete(payload)
+
+        if (sessionId && dfmHtmlReportPath) {
+          void normalizeOrLocalPreviewTarget(dfmHtmlReportPath).then(target => {
+            if (!target) {
+              return
+            }
+
+            if (sessionId === activeSessionIdRef.current) {
+              setSessionPreviewTarget(sessionId, target, 'tool-result', dfmHtmlReportPath)
+            } else {
+              registerSessionPreview(sessionId, target, 'tool-result', dfmHtmlReportPath)
+            }
+          })
         }
       } else if (SUBAGENT_EVENT_TYPES.has(event.type)) {
         if (sessionId && payload && !sessionInterrupted(sessionId)) {

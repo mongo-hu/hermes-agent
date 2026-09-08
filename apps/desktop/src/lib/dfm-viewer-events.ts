@@ -60,3 +60,22 @@ export function dfmViewerTargetFromToolComplete(payload?: GatewayEventPayload): 
     status: completed ? 'completed' : 'preview'
   }
 }
+
+export function dfmHtmlReportPathFromToolComplete(payload?: GatewayEventPayload): string | null {
+  if (payload?.name !== 'dfm_analysis') {
+    return null
+  }
+
+  const result = record(payload.result)
+  const run = record(result.run)
+  const report = record(result.report)
+  const status = stringField(run.status, result.status, payload.status)
+  const kind = stringField(report.kind)
+  const path = stringField(report.path)
+
+  if (status !== 'succeeded' || kind !== 'report_html' || !path) {
+    return null
+  }
+
+  return path
+}
