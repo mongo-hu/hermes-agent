@@ -22,7 +22,7 @@ import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
-import { registerSessionPreview, setSessionPreviewTarget } from '@/store/preview'
+import { registerSessionPreview, setCurrentSessionPreviewTarget } from '@/store/preview'
 import { followActiveSessionCwd } from '@/store/projects'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
@@ -426,7 +426,11 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             }
 
             if (sessionId === activeSessionIdRef.current) {
-              setSessionPreviewTarget(sessionId, target, 'tool-result', dfmHtmlReportPath)
+              // Gateway events are keyed by the ephemeral runtime id, while
+              // preview restoration prefers the selected persisted-session
+              // id. Register the active report through the current-session
+              // resolver so the restore effect cannot immediately clear it.
+              setCurrentSessionPreviewTarget(target, 'tool-result', dfmHtmlReportPath)
             } else {
               registerSessionPreview(sessionId, target, 'tool-result', dfmHtmlReportPath)
             }
