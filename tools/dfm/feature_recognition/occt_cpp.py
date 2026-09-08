@@ -186,7 +186,7 @@ class OCCTCppFeatureRecognitionProvider:
                 self._operation(
                     "recognize_main_wall",
                     "recognize_main_wall",
-                    ["topology.aag"],
+                    ["topology.index"],
                     "features",
                 ),
             ],

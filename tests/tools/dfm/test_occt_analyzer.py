@@ -51,6 +51,7 @@ OPERATION_PAIRS = (
     ("recognize_surface_probe", "recognize_surface_probe"),
     ("recognize_chamfer", "recognize_chamfer"),
     ("recognize_rib", "recognize_rib"),
+    ("recognize_boss", "recognize_boss"),
     ("recognize_main_wall", "recognize_main_wall"),
 )
 
@@ -66,26 +67,29 @@ OPERATION_LIMITS = {
     "measure_undercut": {"timeout_seconds": 180, "ray_query_limit": 32768},
 }
 WALL_ALGORITHM_OPTIONS = [
-    {"name": "minimum_grid_size", "default": 5, "minimum": 2, "maximum": 20},
-    {"name": "maximum_grid_size", "default": 10, "minimum": 2, "maximum": 30},
-    {"name": "maximum_shrink_iterations", "default": 10, "minimum": 1, "maximum": 30},
-    {"name": "maximum_climb_iterations", "default": 50, "minimum": 0, "maximum": 200},
+    {"name": "minimum_grid_size", "type": "integer", "default": 5, "minimum": 2, "maximum": 20},
+    {"name": "maximum_grid_size", "type": "integer", "default": 10, "minimum": 2, "maximum": 30},
+    {"name": "maximum_shrink_iterations", "type": "integer", "default": 10, "minimum": 1, "maximum": 30},
+    {"name": "maximum_climb_iterations", "type": "integer", "default": 50, "minimum": 0, "maximum": 200},
 ]
 MAIN_WALL_ALGORITHM_OPTIONS = [
     {
         "name": "cumulative_area_ratio",
+        "type": "number",
         "default": 0.70,
         "minimum": 0.50,
         "maximum": 0.95,
     },
     {
         "name": "minimum_relative_face_area",
+        "type": "number",
         "default": 0.01,
         "minimum": 0.0,
         "maximum": 0.25,
     },
     {
         "name": "area_tie_relative_tolerance",
+        "type": "number",
         "default": 1.0e-9,
         "minimum": 0.0,
         "maximum": 0.01,
@@ -122,6 +126,20 @@ CAPABILITIES = {
         {
             "operation_id": operation_id,
             "calculator_id": calculator_id,
+            "kind": (
+                "infrastructure"
+                if operation_id.startswith(("geometry.", "topology."))
+                else "measurement"
+                if calculator_id.startswith("measure_")
+                else "feature_recognition"
+            ),
+            "process": "injection",
+            "depends_on": [],
+            "metric_ids": [],
+            "required_quantities": [],
+            "required_artifacts": [],
+            "status": "available",
+            "unavailable_reason": None,
             "maturity": "experimental",
             "algorithm_version": ENGINE_VERSION,
             "limits": OPERATION_LIMITS.get(calculator_id, {}),

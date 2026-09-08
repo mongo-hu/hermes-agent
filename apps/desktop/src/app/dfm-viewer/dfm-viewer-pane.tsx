@@ -411,6 +411,7 @@ function formatValue(value: unknown): string {
 }
 
 const FEATURE_LABELS: Record<string, string> = {
+  boss: 'Boss柱',
   blend: '圆角链',
   canonical_surface: '规范曲面',
   cavity: '型腔',
@@ -424,6 +425,8 @@ const FEATURE_LABELS: Record<string, string> = {
 }
 
 const FEATURE_SUBTYPE_LABELS: Record<string, string> = {
+  hollow_boss: '空心柱',
+  solid_boss: '实心柱',
   arbitrary_cavity: '任意型腔',
   blind_hole: '盲孔',
   cliff_blend_chain: '悬崖圆角链',

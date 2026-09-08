@@ -142,9 +142,11 @@ def test_real_occt_injection_vertical_slice(tmp_path):
         measurements = {
             item["quantity_id"]: item for item in measurement_payload["measurements"]
         }
-        assert measurements["thickness_mm"]["method"] == "freecad_dfm_rolling_sphere"
+        assert measurements["thickness_mm"]["method"] == (
+            "WallThicknessAlgorithm"
+        )
         assert measurements["average_thickness_mm"]["method"] == (
-            "freecad_dfm_rolling_sphere"
+            "WallThicknessAlgorithm"
         )
         assert (
             measurements["average_thickness_mm"]["value"]

@@ -37,7 +37,7 @@
     {
       "operation_id": "measure_draft",
       "calculator_id": "measure_draft",
-      "depends_on": ["topology.aag"],
+      "depends_on": ["topology.index"],
       "metric_ids": ["injection.geometry.draft"],
       "required_quantities": ["draft_angle_deg"],
       "required_artifacts": ["topology_map", "scalar_field"],
@@ -47,7 +47,7 @@
     {
       "operation_id": "measure_wall_thickness",
       "calculator_id": "measure_wall_thickness",
-      "depends_on": ["topology.aag"],
+      "depends_on": ["topology.index"],
       "metric_ids": ["injection.geometry.wall_thickness"],
       "required_quantities": ["thickness_mm", "average_thickness_mm"],
       "required_artifacts": ["topology_map", "scalar_field"],
@@ -57,7 +57,7 @@
     {
       "operation_id": "measure_undercut",
       "calculator_id": "measure_undercut",
-      "depends_on": ["topology.aag"],
+      "depends_on": ["topology.index"],
       "metric_ids": ["injection.geometry.undercut"],
       "required_quantities": ["undercut_count"],
       "required_artifacts": ["topology_map", "scalar_field"],
@@ -180,6 +180,16 @@
     {
       "operation_id": "recognize_surface_probe",
       "calculator_id": "recognize_surface_probe",
+      "depends_on": ["topology.aag"],
+      "metric_ids": [],
+      "required_quantities": [],
+      "required_artifacts": ["features"],
+      "arguments": {},
+      "algorithm_options": {}
+    },
+    {
+      "operation_id": "recognize_boss",
+      "calculator_id": "recognize_boss",
       "depends_on": ["topology.aag"],
       "metric_ids": [],
       "required_quantities": [],
