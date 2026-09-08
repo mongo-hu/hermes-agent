@@ -71,7 +71,7 @@ DFM_PROJECT_SCHEMA = {
 
 DFM_ANALYSIS_SCHEMA = {
     "name": "dfm_analysis",
-    "description": "Run the DFM workflow. Drawing OCR is deterministic; use drawing_context and the current Hermes model to interpret explicit facts, then submit_observations for validated persistence. Use fusion_context and submit_fusion_links for Agent semantic proposals that the service checks against geometry IDs. The external OCCT C++ analyzer is integrated as experimental; PythonOCC remains the reference STEP backend and NX/Parasolid remains optional. Unavailable analyzers fail explicitly; never infer engineering findings from that status.",
+    "description": "Run the DFM workflow. Drawing OCR is deterministic; use drawing_context and the current Hermes model once to organize every explicit drawing fact into validated drawing observations. Use fusion_context and submit_fusion_links for Agent semantic proposals that the service checks against geometry IDs. After a successful STEP+PDF run, the current Hermes model must organize the persisted drawing observations and deterministic report runtime into dfm-html-llm/v1 and call render_html; do not reinterpret OCR during reporting. The external OCCT C++ analyzer is integrated as experimental; PythonOCC remains the reference STEP backend and NX/Parasolid remains optional. Unavailable analyzers fail explicitly; never infer engineering findings from that status.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -87,6 +87,7 @@ DFM_ANALYSIS_SCHEMA = {
                     "start",
                     "status",
                     "result",
+                    "render_html",
                     "context",
                 ],
             },
@@ -190,6 +191,81 @@ DFM_ANALYSIS_SCHEMA = {
                 "enum": ["occt_cpp", "step", "parasolid", "drawing", "fusion"],
             },
             "idempotency_key": {"type": "string"},
+            "llm_content": {
+                "type": "object",
+                "additionalProperties": False,
+                "description": "Current-Agent final editorial report for action=render_html. Summarize, organize, and localize persisted drawing observations plus deterministic report facts into the user's language; preserve IDs, codes, numbers, operators, units, and versions exactly. Do not reinterpret OCR, invent engineering facts, claim unevaluated checks passed, or mechanically copy raw Runtime prose as the final report.",
+                "properties": {
+                    "schema_version": {
+                        "type": "string",
+                        "const": "dfm-html-llm/v1",
+                    },
+                    "part": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string", "minLength": 1},
+                            "general_tolerance": {"type": ["string", "null"]},
+                            "technical_note": {"type": ["string", "null"]},
+                        },
+                        "required": [
+                            "name",
+                            "general_tolerance",
+                            "technical_note",
+                        ],
+                    },
+                    "issues": {
+                        "type": "array",
+                        "maxItems": 200,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "issue_id": {"type": "string", "minLength": 1},
+                                "title": {"type": "string", "minLength": 1},
+                                "description": {"type": "string", "minLength": 1},
+                            },
+                            "required": ["issue_id", "title", "description"],
+                        },
+                    },
+                    "conclusion": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "assessment_level": {"type": "string", "minLength": 1},
+                            "summary": {"type": "string", "minLength": 1},
+                            "risks": {
+                                "type": "array",
+                                "maxItems": 20,
+                                "items": {"$ref": "#/$defs/report_copy_item"},
+                            },
+                            "actions": {
+                                "type": "array",
+                                "maxItems": 20,
+                                "items": {"$ref": "#/$defs/report_copy_item"},
+                            },
+                        },
+                        "required": [
+                            "assessment_level",
+                            "summary",
+                            "risks",
+                            "actions",
+                        ],
+                    },
+                },
+                "required": ["schema_version", "part", "issues", "conclusion"],
+            },
+        },
+        "$defs": {
+            "report_copy_item": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "title": {"type": "string", "minLength": 1},
+                    "description": {"type": "string", "minLength": 1},
+                },
+                "required": ["title", "description"],
+            }
         },
         "required": ["action", "project_id"],
     },

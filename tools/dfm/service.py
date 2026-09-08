@@ -44,6 +44,7 @@ from .processes.occt_injection import (
     compile_occt_injection_plan,
     preview_operations,
 )
+from .reporting.html import render_html_report
 from .runtime.jobs import JobManager
 from .viewer import materialize_preview_manifest
 
@@ -412,10 +413,16 @@ class DFMService:
         artifact = self._drawing_fragment_artifact(manifest, input_record.input_id)
         artifact_path = self.workspace.project_dir(project_id) / artifact.relative_path
         fragments = self._read_ndjson(artifact_path)
+        available_pages = sorted({
+            int(item["page"])
+            for item in fragments
+            if isinstance(item.get("page"), int) and item["page"] > 0
+        })
         if page_number is not None:
             fragments = [item for item in fragments if item.get("page") == page_number]
-        truncated = len(fragments) > 200
-        fragments = fragments[:200]
+        truncated = page_number is None and len(fragments) > 200
+        if page_number is None:
+            fragments = fragments[:200]
         return {
             "ok": True,
             "project_id": project_id,
@@ -423,6 +430,7 @@ class DFMService:
             "input": input_record.to_dict(),
             "fragment_artifact": artifact.to_dict(),
             "page": page_number,
+            "available_pages": available_pages,
             "fragments": fragments,
             "truncated": truncated,
             "interpretation_contract": {
@@ -1514,6 +1522,96 @@ class DFMService:
             },
         )
 
+    def _render_html(
+        self,
+        project_id: str,
+        run_id: str,
+        llm_content: object,
+    ) -> dict[str, Any]:
+        """Render HTML after the current Agent supplies the narrative contract."""
+
+        if not isinstance(llm_content, dict):
+            raise DFMError(
+                "report_content_invalid",
+                "render_html requires an llm_content object.",
+            )
+        run = self.jobs.result(project_id, run_id)
+        runtime_artifact = next(
+            (
+                item
+                for item in reversed(run.artifacts)
+                if item.kind == "report_html_runtime"
+            ),
+            None,
+        )
+        if runtime_artifact is None:
+            raise DFMError(
+                "report_input_missing",
+                "This run does not contain the resources required by the HTML report.",
+                {"run_id": run_id},
+            )
+
+        project_dir = self.workspace.project_dir(project_id)
+        output_dir = project_dir / "runs" / run_id / "artifacts"
+        llm_path = output_dir / "llm_content.jsonl"
+        html_path = output_dir / "report.html"
+        suffix = uuid4().hex
+        llm_candidate = llm_path.with_name(f".{llm_path.name}.{suffix}.tmp")
+        html_candidate = html_path.with_name(f".{html_path.name}.{suffix}.candidate")
+        try:
+            llm_candidate.write_text(
+                json.dumps(llm_content, ensure_ascii=False, separators=(",", ":"))
+                + "\n",
+                encoding="utf-8",
+            )
+            render_html_report(
+                llm_candidate,
+                project_dir / runtime_artifact.relative_path,
+                html_candidate,
+            )
+            os.replace(llm_candidate, llm_path)
+            os.replace(html_candidate, html_path)
+        except (OSError, TypeError, ValueError) as exc:
+            raise DFMError(
+                "report_content_invalid",
+                "The Agent-authored HTML report content could not be materialized.",
+                {"error": str(exc)},
+            ) from exc
+        finally:
+            llm_candidate.unlink(missing_ok=True)
+            html_candidate.unlink(missing_ok=True)
+
+        now = _utc_now()
+        attached = self.jobs.attach_artifacts(
+            project_id,
+            run_id,
+            [
+                ArtifactRecord(
+                    f"artifact_{run_id}_report_html_llm",
+                    "report_html_llm",
+                    llm_path.relative_to(project_dir).as_posix(),
+                    "application/x-ndjson",
+                    now,
+                ),
+                ArtifactRecord(
+                    f"artifact_{run_id}_report_html",
+                    "report_html",
+                    html_path.relative_to(project_dir).as_posix(),
+                    "text/html; charset=utf-8",
+                    now,
+                ),
+            ],
+        )
+        report_artifact = next(
+            item for item in attached.artifacts if item.kind == "report_html"
+        )
+        return {
+            "ok": True,
+            "project_id": project_id,
+            "run": self._run_dict(project_id, attached),
+            "report": {**report_artifact.to_dict(), "path": str(html_path)},
+        }
+
     def project(self, action: str, **params: Any) -> dict[str, Any]:
         if action == "create":
             manifest = self.workspace.create_project(
@@ -2143,6 +2241,12 @@ class DFMService:
         run_id = self._resolve_run_id(
             self._store(project_id).load(), params.get("run_id"), action
         )
+        if action == "render_html":
+            return self._render_html(
+                project_id,
+                run_id,
+                params.get("llm_content"),
+            )
         if action == "status":
             run = self.jobs.status(project_id, run_id)
         elif action == "cancel":

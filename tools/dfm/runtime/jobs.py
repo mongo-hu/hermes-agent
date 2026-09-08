@@ -37,6 +37,7 @@ from ..evaluation import EvaluationEngine
 from ..findings import materialize_evaluated_findings
 from ..project.manifest import ManifestStore
 from ..project.workspace import DFMWorkspace
+from ..reporting.html import materialize_html_runtime
 from ..reporting.result_assembler import materialize_result_reports
 from ..viewer import materialize_viewer_manifest
 from .objective_cache import ObjectiveOperationCache
@@ -306,6 +307,24 @@ class JobManager:
                     self._validate_artifact(context.project_dir, item)
                     for item in report_artifacts
                 )
+                html_runtime = materialize_html_runtime(
+                    context.project_dir,
+                    run_id,
+                    plan,
+                    manifest.inputs,
+                    checked,
+                    semantic_artifacts=manifest.artifacts,
+                    observation_refs={
+                        observation_id
+                        for snapshot in manifest.discovery_snapshots
+                        if snapshot.snapshot_id in plan.discovery_snapshot_refs
+                        for observation_id in snapshot.observation_refs
+                    },
+                )
+                if html_runtime is not None:
+                    checked.append(
+                        self._validate_artifact(context.project_dir, html_runtime)
+                    )
                 viewer_artifact = materialize_viewer_manifest(
                     context.project_dir,
                     run_id,
@@ -602,6 +621,67 @@ class JobManager:
                 {"run_id": run_id, "status": run.status.value},
             )
         return run
+
+    def attach_artifacts(
+        self,
+        project_id: str,
+        run_id: str,
+        artifacts: list[ArtifactRecord],
+    ) -> RunRecord:
+        """Attach validated report artifacts to an already successful run."""
+
+        project_dir = self.workspace.project_dir(project_id)
+        validated = [self._validate_artifact(project_dir, item) for item in artifacts]
+        if any(item.run_id != run_id for item in validated):
+            raise DFMError(
+                "artifact_invalid",
+                "A report artifact belongs to a different DFM run.",
+                {"run_id": run_id},
+            )
+        now = _utc_now()
+
+        def attach(current: ProjectManifest) -> ProjectManifest:
+            runs: list[RunRecord] = []
+            found = False
+            for run in current.runs:
+                if run.run_id != run_id:
+                    runs.append(run)
+                    continue
+                found = True
+                if run.status is not RunStatus.SUCCEEDED:
+                    raise DFMError(
+                        "result_not_ready",
+                        "HTML reports require a successful DFM run.",
+                        {"run_id": run_id, "status": run.status.value},
+                    )
+                combined = {item.relative_path: item for item in run.artifacts}
+                combined.update({item.relative_path: item for item in validated})
+                runs.append(
+                    replace(
+                        run,
+                        artifacts=list(combined.values()),
+                        updated_at=now,
+                    )
+                )
+            if not found:
+                raise DFMError(
+                    "run_not_found", "DFM run was not found.", {"run_id": run_id}
+                )
+            project_artifacts = {
+                item.relative_path: item for item in current.artifacts
+            }
+            project_artifacts.update(
+                {item.relative_path: item for item in validated}
+            )
+            return replace(
+                current,
+                runs=runs,
+                artifacts=list(project_artifacts.values()),
+                updated_at=now,
+            )
+
+        updated = self._store(project_id).update(attach)
+        return self._find_run(updated, run_id)
 
     def reconcile_incomplete_runs(self) -> None:
         if not self.workspace.projects_dir.exists():
