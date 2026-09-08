@@ -8,6 +8,8 @@
 
 成功条件纠偏日期：2026-09-08。HTML-capable run 在确定性 Runtime 完成后进入 `reporting/report_editing/98%`，不再提前标记 `succeeded`。新增既有 `dfm_analysis` 工具内的 `report_context` action，将完整 Runtime 内联交给当前 Hermes Agent；只有 `render_html` 成功生成、校验并登记 `report.html` 后，run 才进入 `succeeded/complete/100%`。
 
+Desktop 自动展示增量日期：2026-09-08。Desktop 现在监听既有 `dfm_analysis` 工具完成事件；当且仅当 run 成功且返回的 artifact 为 `report_html` 时，将 `report.html` 路径交给 Desktop 已有的 HTML 预览面板自动展示。该增量没有修改 DFM 后端、报告生成器或成功条件。
+
 本次纠偏及报告编辑更新涉及 **11 个既有集成范围内文件**，没有增加新的生产模块或改变下文集成总文件数：
 
 1. `tools/dfm/reporting/html/runtime_adapter.py`
@@ -26,7 +28,7 @@
 
 ## 结论
 
-截至成功条件纠偏，本次任务包含 **24 个实现/配置/测试/使用说明文件**；加上本追溯文档，共 **25 个文件**。
+截至成功条件纠偏，DFM HTML 主 pipeline 包含 **24 个实现/配置/测试/使用说明文件**；加上本追溯文档，共 **25 个文件**。随后 Desktop 自动展示增量修改 **3 个既有文件**，因此当前 `dfm-html-report` 分支相对任务起点共涉及 **28 个文件**。
 
 这里的文件数包含 HTML 模板、两份离线 JavaScript 依赖、测试、打包配置和说明文档。HTML 集成及后续纠偏涉及的既有 Python 文件有 **5 个**：
 
@@ -133,9 +135,10 @@ current Hermes Agent -> dfm_analysis(report_context -> render_html)
 | 打包声明 | 2 | 否 |
 | 测试 | 9 | 否 |
 | 文档 | 3 | 否 |
-| **总计** | **25** | OCR/几何/评估层无改动 |
+| Desktop HTML 自动展示 | 3 | 仅 Desktop 事件路由和既有预览状态，不依赖 DFM 内部模块 |
+| **总计** | **28** | OCR/几何/评估层无改动 |
 
-另一个统计口径：相对任务开始时，既有已跟踪文件有 16 个实际内容差异；新增实现/测试/资源文件 7 个；任务说明文档和本追溯文档 2 个。
+另一个统计口径：相对任务开始时，既有已跟踪文件有 19 个实际内容差异；新增实现/测试/资源文件 7 个；任务说明文档和本追溯文档 2 个。
 
 解耦性结论：HTML renderer 的实现和资源全部位于 reporting 内；外部接线用于完成“worker 产 Runtime、当前 Agent 产文案、service 登记报告”的两阶段交付。它扩展了既有 DFM tool/service 的报告接口，但没有向分析计算层扩散。
 
@@ -155,6 +158,16 @@ current Hermes Agent -> dfm_analysis(report_context -> render_html)
 ```
 
 没有新增 OCR、几何、规则、证据或评分计算，也没有第二个模型客户端。OCR 原文只在 Discovery 阶段由当前 Hermes 会话模型解释一次；报告文案由同一会话模型基于已持久化的 observations 和 Runtime 生成。
+
+## 六、Desktop HTML 自动展示后续增量
+
+| 文件 | 状态 | 职责 |
+|---|---|---|
+| `apps/desktop/src/lib/dfm-viewer-events.ts` | 修改 | 从成功的 `dfm_analysis` tool-complete 结果中严格提取 `report_html` 路径；忽略失败、未完成和其他 HTML 结果。 |
+| `apps/desktop/src/app/session/hooks/use-message-stream/gateway-event.ts` | 修改 | 当前会话成功生成报告时调用既有预览状态，自动打开 HTML 右侧预览；后台会话只登记目标，不抢占当前界面。 |
+| `apps/desktop/src/lib/dfm-viewer-events.test.ts` | 修改 | 覆盖成功路径、失败 run、非 HTML artifact、空路径及无关工具事件。 |
+
+该增量复用 Desktop 现有 `setSessionPreviewTarget` 和 HTML webview，没有新增 RPC、model tool、DFM action 或报告格式。数据边界是 `dfm_analysis` 已返回的最终报告描述，不读取 observations、Runtime 或 HTML 内容，因此不使 Desktop 与 DFM 分析内部实现耦合。
 
 ## 既有实现复用校验
 
@@ -189,6 +202,14 @@ current Hermes Agent -> dfm_analysis(report_context -> render_html)
 - worker 报告门禁冒烟测试通过：HTML Runtime 完成后为 `reporting/report_editing/98%`；
 - service 报告闭环冒烟测试通过：`reporting` 时 `result` 被拒绝，`report_context` 返回完整内联 Runtime，HTML 写入后转为 `succeeded/complete/100%`；
 - 当前环境仍未安装 `pytest`，尚未执行完整 pytest suite。
+
+2026-09-08 Desktop 自动展示增量验证：
+
+- `dfm-viewer-events.test.ts` 针对性测试 5/5 通过；
+- Desktop TypeScript typecheck 通过；
+- 相关文件 Prettier 检查通过；
+- Desktop ESLint 通过（0 errors；113 个既有 warnings）；
+- 相邻 jsdom 回归测试 15/16 通过；唯一失败为未修改的 `use-preview-routing.test.tsx` 对 `localStorage` 空值的既有断言，单独运行同样失败，与本增量无关。
 
 ## 未计入范围
 
