@@ -29,6 +29,7 @@ STAGE_OBJECTIVE_READY = "objective_ready"
 STAGE_RULE_EVALUATION = "rule_evaluation"
 STAGE_EVIDENCE_RENDER = "evidence_render"
 STAGE_REPORT_MATERIALIZE = "report_materialize"
+STAGE_REPORT_EDITING = "report_editing"
 STAGE_COMPLETE = "complete"
 
 
@@ -97,6 +98,7 @@ class CapabilityStatus(str, Enum):
 class RunStatus(str, Enum):
     QUEUED = "queued"
     RUNNING = "running"
+    REPORTING = "reporting"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -111,6 +113,13 @@ _RUN_TRANSITIONS = {
         RunStatus.BLOCKED,
     },
     RunStatus.RUNNING: {
+        RunStatus.REPORTING,
+        RunStatus.SUCCEEDED,
+        RunStatus.FAILED,
+        RunStatus.CANCELLED,
+        RunStatus.BLOCKED,
+    },
+    RunStatus.REPORTING: {
         RunStatus.SUCCEEDED,
         RunStatus.FAILED,
         RunStatus.CANCELLED,

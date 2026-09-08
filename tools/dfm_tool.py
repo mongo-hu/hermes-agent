@@ -71,7 +71,7 @@ DFM_PROJECT_SCHEMA = {
 
 DFM_ANALYSIS_SCHEMA = {
     "name": "dfm_analysis",
-    "description": "Run the DFM workflow. Drawing OCR is deterministic; use drawing_context and the current Hermes model once to organize every explicit drawing fact into validated drawing observations. Use fusion_context and submit_fusion_links for Agent semantic proposals that the service checks against geometry IDs. After a successful STEP+PDF run, the current Hermes model must organize the persisted drawing observations and deterministic report runtime into dfm-html-llm/v1 and call render_html; do not reinterpret OCR during reporting. The external OCCT C++ analyzer is integrated as experimental; PythonOCC remains the reference STEP backend and NX/Parasolid remains optional. Unavailable analyzers fail explicitly; never infer engineering findings from that status.",
+    "description": "Run the DFM workflow. Drawing OCR is deterministic; use drawing_context and the current Hermes model once to organize every explicit drawing fact into validated drawing observations. Use fusion_context and submit_fusion_links for Agent semantic proposals that the service checks against geometry IDs. A STEP+PDF run remains reporting (not succeeded) after deterministic analysis; call report_context to obtain the complete Runtime, then author dfm-html-llm/v1 and call render_html. Only a validated report.html completes the run. Do not reinterpret OCR during reporting. The external OCCT C++ analyzer is integrated as experimental; PythonOCC remains the reference STEP backend and NX/Parasolid remains optional. Unavailable analyzers fail explicitly; never infer engineering findings from that status.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -86,6 +86,7 @@ DFM_ANALYSIS_SCHEMA = {
                     "plan",
                     "start",
                     "status",
+                    "report_context",
                     "result",
                     "render_html",
                     "context",
@@ -96,6 +97,12 @@ DFM_ANALYSIS_SCHEMA = {
             "run_id": {
                 "type": "string",
                 "description": "Run ID returned by start. Always pass it to status or result; if omitted, the service can infer it only when unambiguous.",
+            },
+            "wait_seconds": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 60,
+                "description": "For action=report_context, wait up to this many seconds for deterministic analysis to reach report editing. The returned Runtime is inline; never use terminal/read-file to obtain it.",
             },
             "input_id": {
                 "type": "string",

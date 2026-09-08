@@ -26,6 +26,7 @@ from ..contracts import (
     STAGE_COMPLETE,
     STAGE_EVIDENCE_RENDER,
     STAGE_OBJECTIVE_READY,
+    STAGE_REPORT_EDITING,
     STAGE_REPORT_MATERIALIZE,
     STAGE_RULE_EVALUATION,
     WorkerEvent,
@@ -406,6 +407,12 @@ class JobManager:
         artifacts: list[ArtifactRecord],
     ) -> None:
         now = _utc_now()
+        requires_agent_report = any(
+            item.kind == "report_html_runtime" for item in artifacts
+        )
+        target_status = (
+            RunStatus.REPORTING if requires_agent_report else RunStatus.SUCCEEDED
+        )
 
         def complete(current: ProjectManifest) -> ProjectManifest:
             runs = []
@@ -415,17 +422,21 @@ class JobManager:
                     runs.append(run)
                     continue
                 found = True
-                ensure_run_transition(run.status, RunStatus.SUCCEEDED)
+                ensure_run_transition(run.status, target_status)
                 combined = {item.relative_path: item for item in run.artifacts}
                 combined.update({item.relative_path: item for item in artifacts})
                 runs.append(
                     replace(
                         run,
-                        status=RunStatus.SUCCEEDED,
+                        status=target_status,
                         updated_at=now,
                         heartbeat_at=now,
-                        stage=STAGE_COMPLETE,
-                        progress_percent=100,
+                        stage=(
+                            STAGE_REPORT_EDITING
+                            if requires_agent_report
+                            else STAGE_COMPLETE
+                        ),
+                        progress_percent=98 if requires_agent_report else 100,
                         artifacts=list(combined.values()),
                     )
                 )
@@ -597,9 +608,27 @@ class JobManager:
 
     def cancel(self, project_id: str, run_id: str) -> RunRecord:
         run = self.status(project_id, run_id)
-        if run.status not in {RunStatus.QUEUED, RunStatus.RUNNING}:
+        if run.status not in {
+            RunStatus.QUEUED,
+            RunStatus.RUNNING,
+            RunStatus.REPORTING,
+        }:
             return run
         with self._lock:
+            if run.status is RunStatus.REPORTING:
+                cancelled = self._replace_run(
+                    project_id,
+                    run_id,
+                    lambda item: replace(
+                        item,
+                        status=RunStatus.CANCELLED,
+                        updated_at=_utc_now(),
+                        heartbeat_at=_utc_now(),
+                        stage="cancelled",
+                    ),
+                )
+                self._notify(run_id, cancelled)
+                return cancelled
             token = self._tokens.get(run_id)
             if token:
                 token.cancel()
@@ -628,7 +657,7 @@ class JobManager:
         run_id: str,
         artifacts: list[ArtifactRecord],
     ) -> RunRecord:
-        """Attach validated report artifacts to an already successful run."""
+        """Attach final HTML artifacts and complete a report-pending run."""
 
         project_dir = self.workspace.project_dir(project_id)
         validated = [self._validate_artifact(project_dir, item) for item in artifacts]
@@ -648,19 +677,33 @@ class JobManager:
                     runs.append(run)
                     continue
                 found = True
-                if run.status is not RunStatus.SUCCEEDED:
+                if run.status not in {RunStatus.REPORTING, RunStatus.SUCCEEDED}:
                     raise DFMError(
                         "result_not_ready",
-                        "HTML reports require a successful DFM run.",
+                        "HTML reports require a report-ready DFM run.",
                         {"run_id": run_id, "status": run.status.value},
+                    )
+                if run.status is RunStatus.REPORTING and not any(
+                    item.kind == "report_html" for item in validated
+                ):
+                    raise DFMError(
+                        "report_artifact_missing",
+                        "A report-pending DFM run requires a validated HTML artifact.",
+                        {"run_id": run_id},
                     )
                 combined = {item.relative_path: item for item in run.artifacts}
                 combined.update({item.relative_path: item for item in validated})
+                if run.status is RunStatus.REPORTING:
+                    ensure_run_transition(run.status, RunStatus.SUCCEEDED)
                 runs.append(
                     replace(
                         run,
                         artifacts=list(combined.values()),
+                        status=RunStatus.SUCCEEDED,
                         updated_at=now,
+                        heartbeat_at=now,
+                        stage=STAGE_COMPLETE,
+                        progress_percent=100,
                     )
                 )
             if not found:
