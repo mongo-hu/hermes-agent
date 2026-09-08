@@ -6,6 +6,8 @@
 
 报告编辑纠偏日期：2026-09-08。最后一次 Hermes LLM 被明确为报告编辑器：基于持久化 observations 和确定性 Runtime 进行用户语言本地化、综合总结、风险解释和行动建议，不得机械复制 Runtime 英文。HTML 模板中的英文界面微标题同步改为中文。
 
+成功条件纠偏日期：2026-09-08。HTML-capable run 在确定性 Runtime 完成后进入 `reporting/report_editing/98%`，不再提前标记 `succeeded`。新增既有 `dfm_analysis` 工具内的 `report_context` action，将完整 Runtime 内联交给当前 Hermes Agent；只有 `render_html` 成功生成、校验并登记 `report.html` 后，run 才进入 `succeeded/complete/100%`。
+
 本次纠偏及报告编辑更新涉及 **11 个既有集成范围内文件**，没有增加新的生产模块或改变下文集成总文件数：
 
 1. `tools/dfm/reporting/html/runtime_adapter.py`
@@ -20,16 +22,19 @@
 10. `DFM_HTML_INTEGRATION_CHANGELOG.md`
 11. `tools/dfm/reporting/html/template.py`
 
+成功条件纠偏增量涉及 **12 个文件**：`tools/dfm/contracts.py`、`tools/dfm/runtime/jobs.py`、`tools/dfm/service.py`、`tools/dfm_tool.py`、DFM Skill、5 个对应测试文件，以及 `html.md` 和本追溯文档。没有修改 OCR、OCCT、Evaluation、Evidence 或 HTML renderer 内部实现。
+
 ## 结论
 
-本次任务包含 **21 个实现/配置/测试/使用说明文件**；加上本追溯文档，共 **22 个文件**。
+截至成功条件纠偏，本次任务包含 **24 个实现/配置/测试/使用说明文件**；加上本追溯文档，共 **25 个文件**。
 
-这里的文件数包含 HTML 模板、两份离线 JavaScript 依赖、测试、打包配置和说明文档。HTML 集成及本次单次语义来源纠偏涉及的既有 Python 文件有 **4 个**：
+这里的文件数包含 HTML 模板、两份离线 JavaScript 依赖、测试、打包配置和说明文档。HTML 集成及后续纠偏涉及的既有 Python 文件有 **5 个**：
 
 1. `tools/dfm/reporting/result_assembler.py`
-2. `tools/dfm/runtime/jobs.py`
-3. `tools/dfm/service.py`
-4. `tools/dfm_tool.py`
+2. `tools/dfm/contracts.py`
+3. `tools/dfm/runtime/jobs.py`
+4. `tools/dfm/service.py`
+5. `tools/dfm_tool.py`
 
 `render_html` action 是当前 Hermes Agent 向 HTML generator 交付 LLM 总结的报告阶段接口。Runtime adapter 会把 Discovery 阶段第一次 Hermes 已持久化并验证的 `drawing_observations` JSONL 原样映射进 `runtime_data.jsonl`，再与确定性 2D/3D artifacts 汇合；它不会重新解释 OCR，也不会代替 Agent 生成 `llm_content.jsonl`。
 
@@ -60,19 +65,20 @@ service.py      -> html/generator.py -> html/template.py -> html/vendor/*.js
 
 ## 二、reporting 外部的运行时更改
 
-跨出 reporting 文件夹的运行时代码有 **3 个文件**。主体仍是最终报告接线；其中 `service.py` 额外向原有 `drawing_context` 返回页清单，保证 Discovery 阶段第一次语义整理完整：
+跨出 reporting 文件夹的运行时代码有 **4 个文件**。主体仍是最终报告接线；其中 `service.py` 额外向原有 `drawing_context` 返回页清单，保证 Discovery 阶段第一次语义整理完整：
 
 | 文件 | 改动 | 必要性 |
 |---|---|---|
-| `tools/dfm/runtime/jobs.py` | JSON/Markdown 和 evidence 完成后，将本次 plan 固定的 Observation IDs 与语义 artifact 交给 runtime adapter，并提供成功 run 的 artifact 追加能力。 | worker 负责汇合既有结构化语义和确定性 runtime；Agent 渲染完成后需把新报告登记回同一个 run。 |
-| `tools/dfm/service.py` | 增加 `render_html` 报告动作；`drawing_context` 返回 `available_pages`，指定页时返回该页完整 fragments。 | 确保第一次 Hermes 能覆盖全部页面；报告阶段接收 `llm_content`、调用 generator 并登记 HTML。 |
-| `tools/dfm_tool.py` | 扩展既有 `dfm_analysis` schema，并明确报告阶段不得重新解释 OCR。 | 让当前 Agent 能提交 `dfm-html-llm/v1`，没有新增 model tool。 |
+| `tools/dfm/contracts.py` | 增加 `reporting` Run 状态和 `report_editing` stage。 | 将“确定性计算完成”和“完整报告成功”区分为不同状态。 |
+| `tools/dfm/runtime/jobs.py` | JSON/Markdown 和 evidence 完成后，将本次 plan 固定的 Observation IDs 与语义 artifact 交给 runtime adapter；存在 HTML Runtime 时保持 `reporting/98%`，HTML 登记后才转为成功。 | 防止 run 在最终报告缺失时提前显示成功。 |
+| `tools/dfm/service.py` | 增加 `report_context` 与 `render_html` 报告动作；`drawing_context` 返回 `available_pages`，指定页时返回该页完整 fragments。 | 确保第一次 Hermes 覆盖全部页面，并让报告阶段无需 terminal/read-file 即可获得完整 Runtime、调用 generator 并登记 HTML。 |
+| `tools/dfm_tool.py` | 扩展既有 `dfm_analysis` schema，暴露 `report_context`/`wait_seconds`，并明确 HTML 是成功门槛。 | 让当前 Agent 能在同一工具边界内等待 Runtime、提交 `dfm-html-llm/v1`，没有新增 model tool。 |
 
 调用关系为单向依赖：
 
 ```text
 worker/jobs.py -> reporting/html/runtime_adapter.py -> runtime_data.jsonl
-current Hermes Agent -> dfm_analysis(render_html)
+current Hermes Agent -> dfm_analysis(report_context -> render_html)
   -> service.py -> reporting/html/generator.py -> report.html
 ```
 
@@ -83,7 +89,7 @@ current Hermes Agent -> dfm_analysis(render_html)
 - OCR 提取器与 `tools/dfm/drawing_pipeline/` 实现
 - OCCT、STEP、Parasolid analyzer
 - Evaluation、Evidence 和评分逻辑
-- contracts、manifest schema 和 artifact 查询接口
+- manifest schema 和 artifact 查询接口（Run 状态契约新增 `reporting`）
 
 ## 三、reporting 外部的非运行时更改
 
@@ -96,10 +102,12 @@ current Hermes Agent -> dfm_analysis(render_html)
 | `MANIFEST.in` | 确保源码包包含 HTML vendor 资源。 |
 | `pyproject.toml` | 确保 wheel 包含 HTML 子包和 vendor 资源。 |
 
-### 测试：7 个文件
+### 测试：9 个文件
 
 | 文件 | 用途 |
 |---|---|
+| `tests/tools/dfm/test_contracts.py` | 验证 `running -> reporting -> succeeded` 状态转换契约。 |
+| `tests/tools/dfm/test_jobs.py` | 验证 HTML Runtime 只进入 `reporting/98%`，HTML artifact 登记后才成功。 |
 | `tests/tools/dfm/test_reporting_html.py` | 新增 HTML adapter、drawing semantics 接线、renderer 和离线资源专项测试；使用临时最小契约夹具，不依赖未跟踪的 `DFM-HTML/example`。 |
 | `tests/tools/dfm/test_drawing_pipeline.py` | 验证 drawing context 暴露全部页码并支持按页读取。 |
 | `tests/tools/dfm/test_result_assembler.py` | 验证 JSON/Markdown 继续生成且不再走 PPT。 |
@@ -121,13 +129,13 @@ current Hermes Agent -> dfm_analysis(render_html)
 | 分组 | 文件数 | 是否形成运行时耦合 |
 |---|---:|---|
 | reporting 内部 | 7 | 仅 reporting 包内部 |
-| reporting 外部报告阶段接线 | 3 | 是，但仅限 runtime 生成和 Agent 内容交付 |
+| reporting 外部报告阶段接线 | 4 | 是，但仅限状态契约、runtime 生成和 Agent 内容交付 |
 | 打包声明 | 2 | 否 |
-| 测试 | 7 | 否 |
+| 测试 | 9 | 否 |
 | 文档 | 3 | 否 |
-| **总计** | **22** | OCR/几何/评估层无改动 |
+| **总计** | **25** | OCR/几何/评估层无改动 |
 
-另一个统计口径：既有已跟踪文件有 13 个实际内容差异；新增实现/测试/资源文件 7 个；编辑既有未跟踪任务文档 1 个；新增本追溯文档 1 个。
+另一个统计口径：相对任务开始时，既有已跟踪文件有 16 个实际内容差异；新增实现/测试/资源文件 7 个；任务说明文档和本追溯文档 2 个。
 
 解耦性结论：HTML renderer 的实现和资源全部位于 reporting 内；外部接线用于完成“worker 产 Runtime、当前 Agent 产文案、service 登记报告”的两阶段交付。它扩展了既有 DFM tool/service 的报告接口，但没有向分析计算层扩散。
 
@@ -138,10 +146,12 @@ current Hermes Agent -> dfm_analysis(render_html)
   -> Discovery 阶段当前 Hermes Agent 一次性生成 drawing_observations JSONL
   -> result_assembler 继续生成 dfm_report.json、dfm_report.md
   -> runtime adapter 合并 drawing_observations 与 2D/3D artifacts，生成 runtime_data.jsonl
-  -> 当前 Hermes Agent 读取结构化 observations + Runtime
+  -> run 进入 reporting/report_editing/98%（尚未成功）
+  -> 当前 Hermes Agent 通过 dfm_analysis(report_context) 获取内联 observations + Runtime
   -> Agent 生成 llm_content 并调用 dfm_analysis(render_html)
   -> service 调用既有 HTML generator
   -> llm_content.jsonl、report.html 登记到同一个 run
+  -> run 进入 succeeded/complete/100%
 ```
 
 没有新增 OCR、几何、规则、证据或评分计算，也没有第二个模型客户端。OCR 原文只在 Discovery 阶段由当前 Hermes 会话模型解释一次；报告文案由同一会话模型基于已持久化的 observations 和 Runtime 生成。
@@ -173,6 +183,13 @@ current Hermes Agent -> dfm_analysis(render_html)
 - 修改涉及的 Python 文件全部通过 `py_compile`；
 - `.venv` 未安装 `pytest`，因此以上测试通过直接调用测试函数执行，尚未运行完整 pytest suite。
 
+2026-09-08 成功条件纠偏后的增量验证：
+
+- Python 语法编译检查通过；
+- worker 报告门禁冒烟测试通过：HTML Runtime 完成后为 `reporting/report_editing/98%`；
+- service 报告闭环冒烟测试通过：`reporting` 时 `result` 被拒绝，`report_context` 返回完整内联 Runtime，HTML 写入后转为 `succeeded/complete/100%`；
+- 当前环境仍未安装 `pytest`，尚未执行完整 pytest suite。
+
 ## 未计入范围
 
 仓库原先存在的日志、临时脚本、数据集、`tools/dfm/reporting/pptx_baseline.py` 和其他未跟踪文件均未修改，也未计入上述数量。
@@ -182,6 +199,8 @@ current Hermes Agent -> dfm_analysis(render_html)
 运行日期：2026-09-08
 
 这次由 Hermes CLI oneshot 自行调用 `dfm_project` / `dfm_analysis`，模型为阿里云 DashScope `qwen3.5-plus`。输入只有 Molex PDF/STEP 与用户已确认的 E2E 测试覆盖值；中间 observation、Runtime、`llm_content` 和 HTML 均由 Hermes 工具链生成，没有人工写入或补齐 artifact。
+
+后续轨迹复核限定：该 oneshot 的用户提示明确要求“禁止在 `report.html` 生成前结束”，因此 Agent 连续轮询后台 run，而不是走普通非阻塞交互。它尝试通过不可用的 terminal 工具读取 Runtime 两次，第一次 `render_html` 又因 issue ID 不匹配失败，随后从服务端校验错误取得正确 ID 并重试成功。因此这次运行证明真实 Agent 可以驱动整条技术链路，但不能证明旧状态机能够稳定自动收尾；成功条件纠偏正是为消除这个缺口。
 
 ```text
 PDF + STEP -> OCR -> Hermes observations -> Plan -> OCCT C++ Run

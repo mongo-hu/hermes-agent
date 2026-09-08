@@ -40,6 +40,7 @@ def test_contract_state_values_are_stable():
     assert {item.value for item in RunStatus} == {
         "queued",
         "running",
+        "reporting",
         "succeeded",
         "failed",
         "cancelled",
@@ -99,8 +100,12 @@ def test_manifest_contract_serializes_to_json_compatible_dict():
         (RunStatus.QUEUED, RunStatus.CANCELLED),
         (RunStatus.QUEUED, RunStatus.BLOCKED),
         (RunStatus.RUNNING, RunStatus.SUCCEEDED),
+        (RunStatus.RUNNING, RunStatus.REPORTING),
         (RunStatus.RUNNING, RunStatus.FAILED),
         (RunStatus.RUNNING, RunStatus.CANCELLED),
+        (RunStatus.REPORTING, RunStatus.SUCCEEDED),
+        (RunStatus.REPORTING, RunStatus.FAILED),
+        (RunStatus.REPORTING, RunStatus.CANCELLED),
     ],
 )
 def test_valid_run_transitions_are_accepted(current, target):

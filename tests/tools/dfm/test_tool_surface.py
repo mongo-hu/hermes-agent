@@ -30,6 +30,7 @@ def test_dfm_tools_are_discovered_with_stable_schemas_and_dispatch(tmp_path):
         "plan",
         "start",
         "status",
+        "report_context",
         "result",
         "render_html",
         "context",
@@ -37,6 +38,9 @@ def test_dfm_tools_are_discovered_with_stable_schemas_and_dispatch(tmp_path):
     assert "observations" in analysis_schema["parameters"]["properties"]
     assert "fusion_links" in analysis_schema["parameters"]["properties"]
     assert "llm_content" in analysis_schema["parameters"]["properties"]
+    wait_schema = analysis_schema["parameters"]["properties"]["wait_seconds"]
+    assert wait_schema["minimum"] == 0
+    assert wait_schema["maximum"] >= 30
 
     token = set_hermes_home_override(tmp_path / "home")
     try:

@@ -25,6 +25,7 @@ def test_dfm_skill_prescribes_safe_complete_tool_workflow():
         "start",
         "cancel",
         "result",
+        "report_context",
         "capability",
         "artifact",
         "drawing_context",
@@ -49,6 +50,9 @@ def test_dfm_skill_prescribes_safe_complete_tool_workflow():
     assert "translate/localize the report prose into the user's language" in text
     assert "do not claim that an unevaluated check passed" in text
     assert "mechanically copied Runtime text" in text
+    assert "this is not success" in text
+    assert "Only this successful action moves the run to `succeeded`/100%" in text
+    assert "do not use terminal/read-file" in text
 
 
 def test_dfm_skill_defines_the_m1_injection_plan_boundary():

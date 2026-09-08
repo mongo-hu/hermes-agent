@@ -84,10 +84,12 @@ STEP + PDF
   -> 原有 OCCT / Evaluation / Evidence
   -> 原有 dfm_report.json 和 dfm_report.md
   -> Runtime adapter 合并 drawing_observations 与 2D/3D 产物，生成 runtime_data.jsonl
-  -> 当前 Hermes Agent 读取结构化 observations/runtime 并生成 llm_content.jsonl
+  -> run 进入 reporting / report_editing / 98%（尚未成功）
+  -> 当前 Hermes Agent 通过 report_context 获取内联 observations/runtime 并生成 llm_content.jsonl
   -> 调用现有 HTML generator
   -> report.html
   -> 将 report.html 登记为本次 run 的正式 artifact
+  -> run 进入 succeeded / complete / 100%
 ```
 
 该过程属于完整的 DFM Agent pipeline，不需要用户在流程结束后手动执行仓库外脚本。
@@ -159,7 +161,7 @@ media_type: application/x-ndjson
 
 ## 6. 由当前 Agent 生成 llm_content.jsonl 并渲染 HTML
 
-当前 Hermes Agent 在 run 成功后读取 `runtime_data.jsonl`。其中 `drawing_semantics.observations` 是 Discovery 阶段第一次 Hermes OCR 理解生成并经过服务校验、持久化的唯一图纸语义来源；`runtime.report` 和 `resources` 则来自后续 2D/3D 分析产物。报告阶段不再调用 `drawing_context`，也不重新解释 OCR，而是据此生成 `dfm-html-llm/v1` 对象：
+确定性 worker 完成后，run 进入 `reporting` 而不是 `succeeded`。当前 Hermes Agent 调用 `report_context`，直接读取其返回的完整内联 Runtime；不再依赖 terminal/read-file 打开 `runtime_data.jsonl`。其中 `drawing_semantics.observations` 是 Discovery 阶段第一次 Hermes OCR 理解生成并经过服务校验、持久化的唯一图纸语义来源；`runtime.report` 和 `resources` 则来自后续 2D/3D 分析产物。报告阶段不再调用 `drawing_context`，也不重新解释 OCR，而是据此生成 `dfm-html-llm/v1` 对象：
 
 ```text
 part
@@ -177,7 +179,7 @@ conclusion
 - 没有图纸依据的公差或技术要求填写 `null`；
 - 不新增主 pipeline 中不存在的问题。
 
-Agent 通过现有 `dfm_analysis` 工具的 `render_html` action 提交该对象。服务端校验 run 和 runtime artifact，写入 `llm_content.jsonl`，调用 HTML generator，并把 `llm_content.jsonl` 与 `report.html` 登记到同一个 run。这里没有新增 model tool，只扩展现有 DFM 工具的报告阶段 action。
+Agent 通过现有 `dfm_analysis` 工具的 `render_html` action 提交该对象。服务端校验 run 和 runtime artifact，写入 `llm_content.jsonl`，调用 HTML generator，并把 `llm_content.jsonl` 与 `report.html` 登记到同一个 run；只有这些步骤全部成功后，run 才原子地从 `reporting/98%` 转为 `succeeded/100%`。这里没有新增 model tool，只扩展现有 DFM 工具的报告阶段 action。
 
 ## 7. 具体代码改动
 
@@ -196,15 +198,15 @@ if pptx_available():
 
 ### `tools/dfm/runtime/jobs.py`
 
-在 JSON/Markdown 和 evidence artifacts 完成后生成 `runtime_data.jsonl` 并登记 `report_html_runtime`。worker 到此结束，不调用 LLM。
+在 JSON/Markdown 和 evidence artifacts 完成后生成 `runtime_data.jsonl` 并登记 `report_html_runtime`。HTML-capable run 随后进入 `reporting/report_editing/98%`，worker 到此结束且不调用 LLM；此状态不是 pipeline 成功。
 
 ### `tools/dfm/service.py`
 
-增加报告阶段的 `render_html` action，接收当前 Agent 生成的 `llm_content`，调用 renderer 并登记产物。
+增加报告阶段的 `report_context` 和 `render_html` action：前者等待确定性分析并把完整 Runtime 内联交给当前 Agent，后者接收 Agent 生成的 `llm_content`、调用 renderer、登记产物并将 run 标记成功。
 
 ### `tools/dfm_tool.py`
 
-在既有 `dfm_analysis` action enum 和参数 schema 中加入 `render_html` 与 `llm_content`。
+在既有 `dfm_analysis` action enum 和参数 schema 中加入 `report_context`、`render_html`、`wait_seconds` 与 `llm_content`。
 
 ### `skills/manufacturing/dfm-analysis/SKILL.md`
 
@@ -267,12 +269,16 @@ report_html
 STEP + PDF
 -> discover/OCR
 -> Hermes 完整语义整理并持久化 drawing_observations JSONL
--> plan/start/result（内部完成 HTML 最终报告）
+-> plan/start
+-> reporting/report_context
+-> Hermes 总结/render_html
+-> succeeded/result
 ```
 
 验证：
 
 - `dfm_report.json` 和 `dfm_report.md` 与改造前一致；
+- HTML 生成前 run 保持 `reporting/98%`，`result` 不得成功；
 - 不再生成 `report_presentation`；
 - 生成 `report_html_runtime`、`report_html_llm` 和 `report_html`；
 - HTML issue IDs 与 `dfm_report.json` 完全一致；
@@ -289,3 +295,4 @@ STEP + PDF
 5. `report.html` 成为主 pipeline 的最终人类可读报告。
 6. 默认不再生成 `dfm_report.pptx`。
 7. HTML 的工程事实与 `dfm_report.json` 完全一致。
+8. HTML-capable run 只有在 `report.html` 校验并登记后才能进入 `succeeded/100%`。

@@ -3,6 +3,8 @@ from dataclasses import replace
 from pathlib import Path
 import shutil
 
+import pytest
+
 from tools.dfm.contracts import (
     ArtifactRecord,
     InputRecord,
@@ -10,6 +12,7 @@ from tools.dfm.contracts import (
     RunRecord,
     RunStatus,
 )
+from tools.dfm.errors import DFMError
 from tools.dfm.project.workspace import DFMWorkspace
 from tools.dfm.reporting.html import materialize_html_runtime, render_html_report
 
@@ -533,7 +536,8 @@ def test_render_html_action_attaches_agent_content_and_html(
     output_dir = project_dir / "runs" / run_id / "artifacts"
     output_dir.mkdir(parents=True)
     runtime_path = output_dir / "runtime_data.jsonl"
-    runtime_path.write_text("{}\n", encoding="utf-8")
+    runtime_payload = {"schema_version": "dfm-html-runtime/v1"}
+    runtime_path.write_text(json.dumps(runtime_payload) + "\n", encoding="utf-8")
     runtime_artifact = ArtifactRecord(
         f"artifact_{run_id}_report_html_runtime",
         "report_html_runtime",
@@ -545,12 +549,12 @@ def test_render_html_action_attaches_agent_content_and_html(
         run_id,
         "step",
         "test",
-        RunStatus.SUCCEEDED,
+        RunStatus.REPORTING,
         "now",
         "now",
         artifacts=[runtime_artifact],
-        stage="complete",
-        progress_percent=100,
+        stage="report_editing",
+        progress_percent=98,
     )
     service_module.ManifestStore(project_dir).update(
         lambda current: replace(
@@ -585,6 +589,17 @@ def test_render_html_action_attaches_agent_content_and_html(
     }
     service = DFMService(workspace=workspace, reconcile_jobs=False)
     try:
+        context = service.analysis(
+            "report_context",
+            project_id=manifest.project_id,
+            run_id=run_id,
+        )
+        with pytest.raises(DFMError) as exc_info:
+            service.analysis(
+                "result",
+                project_id=manifest.project_id,
+                run_id=run_id,
+            )
         result = service.analysis(
             "render_html",
             project_id=manifest.project_id,
@@ -595,6 +610,47 @@ def test_render_html_action_attaches_agent_content_and_html(
         service.close()
 
     assert captured == llm_content
+    assert context["ready"] is True
+    assert context["runtime"] == runtime_payload
+    assert exc_info.value.code == "result_not_ready"
+    assert result["run"]["status"] == "succeeded"
+    assert result["run"]["stage"] == "complete"
+    assert result["run"]["progress_percent"] == 100
     assert result["report"]["kind"] == "report_html"
     kinds = {item["kind"] for item in result["run"]["artifacts"]}
     assert {"report_html_runtime", "report_html_llm", "report_html"} <= kinds
+
+
+def test_report_context_returns_pending_without_claiming_success(tmp_path):
+    from tools.dfm import service as service_module
+    from tools.dfm.service import DFMService
+
+    workspace = DFMWorkspace(tmp_path / "workspace")
+    manifest = workspace.create_project("Pending HTML report")
+    run = RunRecord(
+        "run_pending",
+        "step",
+        "test",
+        RunStatus.RUNNING,
+        "now",
+        "now",
+        stage="rule_evaluation",
+        progress_percent=75,
+    )
+    service_module.ManifestStore(workspace.project_dir(manifest.project_id)).update(
+        lambda current: replace(current, runs=[run])
+    )
+    service = DFMService(workspace=workspace, reconcile_jobs=False)
+    try:
+        context = service.analysis(
+            "report_context",
+            project_id=manifest.project_id,
+            run_id=run.run_id,
+            wait_seconds=0,
+        )
+    finally:
+        service.close()
+
+    assert context["ready"] is False
+    assert context["next_action"] == "report_context"
+    assert context["run"]["status"] == "running"
