@@ -931,6 +931,7 @@ def test_native_protocol_and_artifact_json_schemas_validate_real_adapter_shapes(
     }
     assert set(schemas) == {
         "capabilities.schema",
+        "common.schema",
         "event.schema",
         "features.schema",
         "measurements.schema",
@@ -943,8 +944,16 @@ def test_native_protocol_and_artifact_json_schemas_validate_real_adapter_shapes(
     }
     for schema in schemas.values():
         Draft202012Validator.check_schema(schema)
+    from referencing import Registry, Resource
 
-    Draft202012Validator(schemas["capabilities.schema"]).validate(CAPABILITIES)
+    registry = Registry().with_resources(
+        (schema["$id"], Resource.from_contents(schema))
+        for schema in schemas.values()
+        if "$id" in schema
+    )
+    validator = lambda name: Draft202012Validator(schemas[name], registry=registry)
+
+    validator("capabilities.schema").validate(CAPABILITIES)
     input_path = tmp_path / "inputs" / "part.step"
     input_path.parent.mkdir()
     input_path.write_bytes(b"opaque-step")
@@ -975,7 +984,7 @@ def test_native_protocol_and_artifact_json_schemas_validate_real_adapter_shapes(
         ),
         CancellationToken(),
     )
-    Draft202012Validator(schemas["request.schema"]).validate(runner.request.to_dict())
+    validator("request.schema").validate(runner.request.to_dict())
     output = Path(runner.request.output_dir)
     for stem, filename in (
         ("preflight.schema", "preflight.json"),
@@ -986,7 +995,7 @@ def test_native_protocol_and_artifact_json_schemas_validate_real_adapter_shapes(
         ("scalar_field.schema", "scalar_field_1.json"),
         ("result.schema", "engine_result.json"),
     ):
-        Draft202012Validator(schemas[stem]).validate(
+        validator(stem).validate(
             json.loads((output / filename).read_text(encoding="utf-8"))
         )
     for event in (
@@ -1021,4 +1030,4 @@ def test_native_protocol_and_artifact_json_schemas_validate_real_adapter_shapes(
         native_payload = {
             key: value for key, value in event.to_dict().items() if value is not None
         }
-        Draft202012Validator(schemas["event.schema"]).validate(native_payload)
+        validator("event.schema").validate(native_payload)
