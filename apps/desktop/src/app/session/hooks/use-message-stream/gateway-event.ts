@@ -415,7 +415,12 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         const dfmHtmlReportPath = dfmHtmlReportPathFromToolComplete(payload)
 
         if (sessionId && dfmHtmlReportPath) {
-          void normalizeOrLocalPreviewTarget(dfmHtmlReportPath).then(target => {
+          // The DFM HTML is already a complete local artifact and can be tens
+          // of megabytes. In localhost remote-gateway mode, remote enrichment
+          // would download the whole file before opening it and can hit the
+          // API timeout. Normalize only its path/metadata, then let the webview
+          // load the HTML directly.
+          void normalizeOrLocalPreviewTarget(dfmHtmlReportPath, undefined, { enrichRemote: false }).then(target => {
             if (!target) {
               return
             }

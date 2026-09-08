@@ -28,7 +28,7 @@ Desktop 自动展示增量日期：2026-09-08。Desktop 现在监听既有 `dfm_
 
 ## 结论
 
-截至成功条件纠偏，DFM HTML 主 pipeline 包含 **24 个实现/配置/测试/使用说明文件**；加上本追溯文档，共 **25 个文件**。随后 Desktop 自动展示增量修改 **3 个既有文件**，因此当前 `dfm-html-report` 分支相对任务起点共涉及 **28 个文件**。
+截至成功条件纠偏，DFM HTML 主 pipeline 包含 **24 个实现/配置/测试/使用说明文件**；加上本追溯文档，共 **25 个文件**。随后 Desktop 自动展示增量修改 **4 个既有文件**，因此当前 `dfm-html-report` 分支相对任务起点共涉及 **29 个文件**。
 
 这里的文件数包含 HTML 模板、两份离线 JavaScript 依赖、测试、打包配置和说明文档。HTML 集成及后续纠偏涉及的既有 Python 文件有 **5 个**：
 
@@ -135,10 +135,10 @@ current Hermes Agent -> dfm_analysis(report_context -> render_html)
 | 打包声明 | 2 | 否 |
 | 测试 | 9 | 否 |
 | 文档 | 3 | 否 |
-| Desktop HTML 自动展示 | 3 | 仅 Desktop 事件路由和既有预览状态，不依赖 DFM 内部模块 |
-| **总计** | **28** | OCR/几何/评估层无改动 |
+| Desktop HTML 自动展示 | 4 | 仅 Desktop 事件路由和既有预览状态，不依赖 DFM 内部模块 |
+| **总计** | **29** | OCR/几何/评估层无改动 |
 
-另一个统计口径：相对任务开始时，既有已跟踪文件有 19 个实际内容差异；新增实现/测试/资源文件 7 个；任务说明文档和本追溯文档 2 个。
+另一个统计口径：相对任务开始时，既有已跟踪文件有 20 个实际内容差异；新增实现/测试/资源文件 7 个；任务说明文档和本追溯文档 2 个。
 
 解耦性结论：HTML renderer 的实现和资源全部位于 reporting 内；外部接线用于完成“worker 产 Runtime、当前 Agent 产文案、service 登记报告”的两阶段交付。它扩展了既有 DFM tool/service 的报告接口，但没有向分析计算层扩散。
 
@@ -166,6 +166,7 @@ current Hermes Agent -> dfm_analysis(report_context -> render_html)
 | `apps/desktop/src/lib/dfm-viewer-events.ts` | 修改 | 从成功的 `dfm_analysis` tool-complete 结果中严格提取 `report_html` 路径；忽略失败、未完成和其他 HTML 结果。 |
 | `apps/desktop/src/app/session/hooks/use-message-stream/gateway-event.ts` | 修改 | 当前会话成功生成报告时调用既有预览状态，自动打开 HTML 右侧预览；后台会话只登记目标，不抢占当前界面。 |
 | `apps/desktop/src/lib/dfm-viewer-events.test.ts` | 修改 | 覆盖成功路径、失败 run、非 HTML artifact、空路径及无关工具事件。 |
+| `apps/desktop/src/lib/local-preview.ts` | 修改 | DFM 自动展示只归一化路径/元数据，不在 localhost remote-gateway 模式下先下载数十 MB 的 HTML 正文。 |
 
 该增量复用 Desktop 现有 `setSessionPreviewTarget` 和 HTML webview，没有新增 RPC、model tool、DFM action 或报告格式。数据边界是 `dfm_analysis` 已返回的最终报告描述，不读取 observations、Runtime 或 HTML 内容，因此不使 Desktop 与 DFM 分析内部实现耦合。
 
@@ -210,6 +211,12 @@ current Hermes Agent -> dfm_analysis(report_context -> render_html)
 - 相关文件 Prettier 检查通过；
 - Desktop ESLint 通过（0 errors；113 个既有 warnings）；
 - 相邻 jsdom 回归测试 15/16 通过；唯一失败为未修改的 `use-preview-routing.test.tsx` 对 `localStorage` 空值的既有断言，单独运行同样失败，与本增量无关。
+
+2026-09-08 Desktop 真实 E2E 自动展示纠偏：
+
+- 真实 `render_html` 返回已核验为 `run.status=succeeded`、`report.kind=report_html`，且 31.96 MB `report.html` 存在；
+- Desktop 在 `HERMES_DESKTOP_REMOTE_URL=http://127.0.0.1:9120` 模式下出现文件 API 15 秒 timeout，确认原预览 enrichment 会在打开前读取完整 HTML；
+- DFM 自动展示改为跳过正文 enrichment，仅通过 Electron 本地 IPC 归一化路径和文件元数据，再由既有 HTML webview 直接加载。
 
 ## 未计入范围
 
