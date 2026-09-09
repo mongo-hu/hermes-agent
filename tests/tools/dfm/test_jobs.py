@@ -240,6 +240,34 @@ def test_run_can_be_cancelled_cooperatively(job_env):
     assert _wait_status(manager, project_id, run.run_id, RunStatus.CANCELLED)
 
 
+@pytest.mark.parametrize("replace_runtime", [False, True])
+def test_cache_uses_runtime_identity_and_rejects_replacement(job_env, monkeypatch, replace_runtime):
+    workspace, project_id, registry, analyzer, managers = job_env
+    analyzer.cache_identity = "1:runtime-a"
+    manager = JobManager(workspace, registry, DFMConfig())
+    managers.append(manager)
+    lookups, publications = [], []
+    monkeypatch.setattr(manager, "_plan_input_sha256", lambda *args: "a" * 64)
+    monkeypatch.setattr(manager.objective_cache, "restore",
+                        lambda *args, **kwargs: lookups.append(kwargs["analyzer_version"]))
+    monkeypatch.setattr(manager.objective_cache, "publish",
+                        lambda *args, **kwargs: publications.append(kwargs["analyzer_version"]))
+    plan = PlanRecord("plan_identity", "step", ["test"], "ready", "now",
+                      process="injection", scope_id="injection.wall-draft", scope_version="1.0.0")
+    run = manager.start(project_id, "test", plan=plan)
+    assert analyzer.started.wait(1)
+    if replace_runtime:
+        analyzer.cache_identity = "1:runtime-b"
+    analyzer.release.set()
+    expected = RunStatus.FAILED if replace_runtime else RunStatus.SUCCEEDED
+    finished = _wait_status(manager, project_id, run.run_id, expected)
+    assert lookups == ["1:runtime-a"]
+    assert publications == ([] if replace_runtime else ["1:runtime-a"])
+    if replace_runtime:
+        assert finished.error["code"] == "geometry_engine_changed"
+        assert finished.artifacts == []
+
+
 def test_analyzer_exception_becomes_sanitized_failed_run(job_env):
     workspace, project_id, registry, _, managers = job_env
     failing = ControlledAnalyzer(fail=True)

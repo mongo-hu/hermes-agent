@@ -12,10 +12,9 @@ from typing import Any, Mapping
 
 from .base import FeatureRecognitionResult
 from ..analyzers.occt import (
-    ENGINE_VERSION,
+    OcctAnalyzer,
     GEOMETRY_REQUEST_CONTRACT,
     discover_geometry_executable,
-    probe_geometry_executable,
 )
 from ..contracts import (
     DISCOVERY_SCHEMA_VERSION,
@@ -59,7 +58,7 @@ def _content_hash(payload: dict[str, Any]) -> str:
 
 class OCCTCppFeatureRecognitionProvider:
     key = "occt_cpp_feature_recognition"
-    version = "occt-main-wall-adapter-1.0.0"
+    adapter_version = "occt-main-wall-adapter-1.1.0"
 
     def __init__(
         self,
@@ -69,6 +68,11 @@ class OCCTCppFeatureRecognitionProvider:
     ) -> None:
         self.executable = executable
         self.timeout_seconds = timeout_seconds
+        self._engine = OcctAnalyzer(executable, timeout_seconds=timeout_seconds)
+
+    @property
+    def version(self) -> str:
+        return self.adapter_version + "@" + self._engine.cache_identity
 
     def capability(self) -> dict[str, Any]:
         base: dict[str, Any] = {
@@ -90,24 +94,13 @@ class OCCTCppFeatureRecognitionProvider:
         if self.executable is None:
             return {**base, "status": "dependency_missing"}
         try:
-            payload = probe_geometry_executable(self.executable)
+            payload = self._engine.require_operations(self._operations())
+            if self.timeout_seconds < payload["runtime_limits"]["maximum_operation_timeout_seconds"] + 30:
+                raise DFMError("geometry_protocol_invalid", "Discovery timeout is shorter than the native operation budget.")
         except DFMError as exc:
             return {**base, "status": "unhealthy", "error_code": exc.code}
-        operations = {
-            item.get("operation_id")
-            for item in payload.get("operations", [])
-            if isinstance(item, dict)
-        }
-        compatible = (
-            payload.get("engine_version") == ENGINE_VERSION
-            and payload.get("status") == "available"
-            and "recognize_main_wall" in operations
-        )
-        return {
-            **base,
-            "status": "available" if compatible else "unhealthy",
-            "engine_version": payload.get("engine_version"),
-        }
+        return {**base, "status": "available", "engine_version": payload["engine_version"],
+                "version": self.version}
 
     @staticmethod
     def _operation(
@@ -122,6 +115,31 @@ class OCCTCppFeatureRecognitionProvider:
             depends_on=dependencies,
             required_artifacts=[artifact],
         )
+
+    def _operations(self) -> list[PlanOperation]:
+        return [
+                self._operation(
+                    "geometry.preflight", "geometry_preflight", [], "preflight"
+                ),
+                self._operation(
+                    "topology.index",
+                    "index_topology",
+                    ["geometry.preflight"],
+                    "topology_map",
+                ),
+                self._operation(
+                    "topology.aag",
+                    "build_aag",
+                    ["topology.index"],
+                    "topology_map",
+                ),
+                self._operation(
+                    "recognize_main_wall",
+                    "recognize_main_wall",
+                    ["topology.index"],
+                    "features",
+                ),
+            ]
 
     def recognize(
         self,
@@ -153,7 +171,9 @@ class OCCTCppFeatureRecognitionProvider:
         if not input_path.is_relative_to(project_dir) or not input_path.is_file():
             raise DFMError("input_missing", "The discovery STEP input is unavailable.")
 
-        suffix = input_record.sha256[:16]
+        provider_version = capability["version"]
+        engine_version = capability["engine_version"]
+        suffix = _content_hash({"input": input_record.sha256, "provider": provider_version})[:16]
         run_id = f"discovery_{suffix}"
         run_dir = project_dir / "runs" / run_id
         output_dir = project_dir / "artifacts" / "geometry_discovery" / suffix
@@ -167,34 +187,12 @@ class OCCTCppFeatureRecognitionProvider:
             process=process,
             scope_id="injection.geometry-core",
             scope_version="4.0.0",
-            operations=[
-                self._operation(
-                    "geometry.preflight", "geometry_preflight", [], "preflight"
-                ),
-                self._operation(
-                    "topology.index",
-                    "index_topology",
-                    ["geometry.preflight"],
-                    "topology_map",
-                ),
-                self._operation(
-                    "topology.aag",
-                    "build_aag",
-                    ["topology.index"],
-                    "topology_map",
-                ),
-                self._operation(
-                    "recognize_main_wall",
-                    "recognize_main_wall",
-                    ["topology.index"],
-                    "features",
-                ),
-            ],
+            operations=self._operations(),
         )
         request = LocalObjectiveWorkerRequest(
             schema_version=WORKER_SCHEMA_VERSION,
             contract_version=GEOMETRY_REQUEST_CONTRACT,
-            backend_version=ENGINE_VERSION,
+            backend_version=engine_version,
             input_path=str(input_path),
             output_dir=str(output_dir),
             task=task,
@@ -268,6 +266,10 @@ class OCCTCppFeatureRecognitionProvider:
                 "OCCT main-wall discovery must return exactly one main-wall feature.",
             )
         native = main_walls[0]
+        if (native.get("algorithm_version") != engine_version
+                or native.get("input_sha256") != input_record.sha256
+                or self.version != provider_version):
+            raise DFMError("geometry_engine_changed", "Discovery results do not match the selected engine identity.")
         topology_snapshot_id = topology["topology_snapshot"]["topology_snapshot_id"]
         render_mesh_snapshot_id = scene["render_mesh_snapshot"][
             "render_mesh_snapshot_id"
@@ -289,7 +291,7 @@ class OCCTCppFeatureRecognitionProvider:
         feature_id = native["feature_id"].replace("feature-", "feature.", 1)
         region_id = f"region.main_wall.{suffix}.wall"
         source_refs = [
-            f"recognizer:{self.key}@{self.version}",
+            f"recognizer:{self.key}@{provider_version}",
             f"input:{input_record.input_id}",
             f"native_feature:{native['feature_id']}",
         ]
@@ -308,7 +310,7 @@ class OCCTCppFeatureRecognitionProvider:
             mode="topology_refs",
             semantic_label="main_wall",
             source_refs=source_refs,
-            version=self.version,
+            version=provider_version,
             content_sha256=_content_hash(region_identity),
             role="wall",
             feature_refs=[feature_id],
@@ -328,7 +330,7 @@ class OCCTCppFeatureRecognitionProvider:
                 "diagnostics": native.get("diagnostics", {}),
             },
             recognizer=self.key,
-            recognizer_version=self.version,
+            recognizer_version=provider_version,
             status="detected",
         )
 
@@ -376,7 +378,7 @@ class OCCTCppFeatureRecognitionProvider:
         )
         result = GeometryDiscoveryResultManifest(
             schema_version=DISCOVERY_SCHEMA_VERSION,
-            producer_version=f"{self.version}+{ENGINE_VERSION}",
+            producer_version=provider_version,
             request_id=discovery_task.request_id,
             input_id=input_record.input_id,
             input_sha256=input_record.sha256,
@@ -390,7 +392,7 @@ class OCCTCppFeatureRecognitionProvider:
                 RecognizerExecutionResult(
                     recognizer_id="injection-main-wall",
                     status="completed",
-                    implementation_version=f"{self.version}+{ENGINE_VERSION}",
+                    implementation_version=provider_version,
                     feature_refs=[feature_id],
                     region_refs=[region_id],
                     diagnostics={"native_method": native.get("method")},

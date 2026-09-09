@@ -8,7 +8,6 @@ from uuid import uuid4
 
 from tools.dfm.analyzers.base import AnalyzerContext
 from tools.dfm.analyzers.registry import build_default_registry
-from tools.dfm.analyzers.occt import ENGINE_VERSION
 from tools.dfm.analyzers.step import dependency_statuses
 from tools.dfm.config import load_dfm_config
 from tools.dfm.contracts import (
@@ -86,7 +85,7 @@ def collect_diagnostics() -> dict:
             "dependencies": dependencies,
             "step_available": capabilities["step"]["status"] == "available",
             "occt_executable": occt_cpp.executable,
-            "occt_engine_version": ENGINE_VERSION,
+            "occt_engine_version": occt_cpp.version,
             "occt_available": capabilities["occt_cpp"]["status"] == "available",
         },
         "production_backend": {

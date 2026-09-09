@@ -245,6 +245,8 @@ class JobManager:
                 lambda event: self._record_event(project_id, run_id, event),
             )
             input_sha256 = self._plan_input_sha256(manifest, plan)
+            # Pin the actual executable identity for cache lookup and publication.
+            cache_identity = str(getattr(analyzer, "cache_identity", analyzer.version))
             artifacts = (
                 self.objective_cache.restore(
                     context.project_dir,
@@ -252,7 +254,7 @@ class JobManager:
                     plan,
                     input_sha256=input_sha256,
                     analyzer_key=analyzer.key,
-                    analyzer_version=analyzer.version,
+                    analyzer_version=cache_identity,
                 )
                 if plan is not None and input_sha256
                 else None
@@ -261,6 +263,8 @@ class JobManager:
                 artifacts = analyzer.run(context, token)
             else:
                 self._advance_stage(project_id, run_id, STAGE_OBJECTIVE_READY, 70)
+            if str(getattr(analyzer, "cache_identity", analyzer.version)) != cache_identity:
+                raise DFMError("geometry_engine_changed", "The analyzer changed during execution; cached results were not published.")
             checked = [self._validate_artifact(context.project_dir, item) for item in artifacts]
             if plan is not None and input_sha256:
                 self.objective_cache.publish(
@@ -270,7 +274,7 @@ class JobManager:
                     checked,
                     input_sha256=input_sha256,
                     analyzer_key=analyzer.key,
-                    analyzer_version=analyzer.version,
+                    analyzer_version=cache_identity,
                 )
             if plan is not None and any(item.kind == "measurements" for item in checked):
                 self._advance_stage(project_id, run_id, STAGE_RULE_EVALUATION, 75)

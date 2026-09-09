@@ -1,9 +1,25 @@
 import argparse
 import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+import pytest
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.dfm import build_parser, collect_diagnostics, dfm_command
+from tools.dfm.analyzers.occt import OcctAnalyzer
 from tools.dfm.workers.step_worker import WORKER_VERSION
+
+
+@pytest.fixture(autouse=True)
+def isolated_cli_profile(tmp_path, monkeypatch):
+    # CLI startup also resolves the default profile root, including in subprocesses.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "AppData" / "Local"))
 
 
 def test_dfm_doctor_reports_workspace_config_and_capabilities(tmp_path, capsys):
@@ -85,3 +101,33 @@ def test_dfm_is_a_builtin_cli_subcommand():
     from hermes_cli.main import _BUILTIN_SUBCOMMANDS
 
     assert "dfm" in _BUILTIN_SUBCOMMANDS
+
+
+@pytest.mark.parametrize("engine_version", ["occt-dfm-geometry-9.8.7", "unavailable"])
+def test_dfm_doctor_reports_analyzer_runtime_version(tmp_path, monkeypatch, engine_version):
+    monkeypatch.setattr(OcctAnalyzer, "version", property(lambda self: engine_version))
+    token = set_hermes_home_override(tmp_path / "home")
+    try:
+        report = collect_diagnostics()
+    finally:
+        reset_hermes_home_override(token)
+
+    assert report["runtime"]["occt_engine_version"] == engine_version
+
+
+@pytest.mark.parametrize("command", [["serve", "--help"], ["dfm", "doctor", "--help"]])
+def test_cli_entry_point_loads_dfm_parser(tmp_path, monkeypatch, command):
+    # Exercise the real startup imports used by the desktop backend.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    result = subprocess.run(
+        [sys.executable, "-B", "-m", "hermes_cli.main", *command],
+        cwd=Path(__file__).resolve().parents[2],
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "usage:" in result.stdout.lower()

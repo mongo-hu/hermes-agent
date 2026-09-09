@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
@@ -28,60 +29,13 @@ from ..contracts import (
 from ..errors import DFMError
 from ..runtime.process import ProcessRunner
 from .base import AnalyzerContext, CancellationToken
+from .occt_capabilities import validate_capabilities, validate_operations
 from .objective_result import validate_objective_result
 
 
-ENGINE_VERSION = "occt-dfm-geometry-1.5.0"
 GEOMETRY_SCOPE_ID = "injection.geometry-core"
 GEOMETRY_SCOPE_VERSION = "4.0.0"
 CAPABILITY_CONTRACT = "dfm.geometry.capabilities/v1"
-GEOMETRY_OPERATION_PAIRS = (
-    ("geometry.preflight", "geometry_preflight"),
-    ("topology.index", "index_topology"),
-    ("topology.aag", "build_aag"),
-    ("measure_draft", "measure_draft"),
-    ("measure_wall_thickness", "measure_wall_thickness"),
-    ("measure_undercut", "measure_undercut"),
-    ("measure_sharp_corner", "measure_sharp_corner"),
-    ("recognize_drilled_hole", "recognize_drilled_hole"),
-    ("recognize_blend", "recognize_blend"),
-    ("recognize_shaft", "recognize_shaft"),
-    ("recognize_cavity", "recognize_cavity"),
-    ("recognize_convex_hull", "recognize_convex_hull"),
-    ("recognize_isolated", "recognize_isolated"),
-    ("recognize_canonical_surface", "recognize_canonical_surface"),
-    ("recognize_surface_probe", "recognize_surface_probe"),
-    ("recognize_chamfer", "recognize_chamfer"),
-    ("recognize_rib", "recognize_rib"),
-    ("recognize_boss", "recognize_boss"),
-    ("recognize_main_wall", "recognize_main_wall"),
-)
-
-
-def _valid_capability_operations(payload: object) -> bool:
-    if not isinstance(payload, list) or len(payload) != len(GEOMETRY_OPERATION_PAIRS):
-        return False
-    try:
-        observed = {
-            (item["operation_id"], item["calculator_id"])
-            for item in payload
-            if isinstance(item, dict)
-            and item.get("maturity") == "experimental"
-            and item.get("algorithm_version") == ENGINE_VERSION
-            and isinstance(item.get("limits"), dict)
-            and isinstance(item.get("algorithm_options"), list)
-        }
-    except (KeyError, TypeError):
-        return False
-    return observed == set(GEOMETRY_OPERATION_PAIRS)
-
-
-def _valid_runtime_limits(payload: object) -> bool:
-    return isinstance(payload, dict) and payload == {
-        "recommended_process_timeout_seconds": 900,
-        "maximum_operation_timeout_seconds": 420,
-        "progress_heartbeat_interval_seconds": 5,
-    }
 
 
 def _utc_now() -> str:
@@ -116,6 +70,7 @@ def discover_geometry_executable(configured: str = "") -> str | None:
     names = ("dfm-geometry.exe", "dfm-geometry")
     directories = (
         root / "dfm-geometry-exe" / "windows-x64",
+        root / "dfm-geometry" / "out" / "install" / "hermes-subprocess" / "bin",
         root / "dfm-geometry" / "out" / "install" / "windows-vcpkg-vs2026-sln" / "bin",
         root / "dfm-geometry" / "out" / "install" / "windows-vcpkg-release" / "bin",
         root
@@ -192,7 +147,6 @@ def probe_geometry_executable(executable: str) -> dict[str, Any]:
 
 class OcctAnalyzer:
     key = "occt_cpp"
-    version = ENGINE_VERSION
     supported_inputs = ("step",)
 
     def __init__(
@@ -209,55 +163,69 @@ class OcctAnalyzer:
         self.timeout_seconds = timeout_seconds
         self._capability_payload: dict[str, Any] | None = None
         self._capability_error: DFMError | None = None
-        self._capability_lock = threading.Lock()
+        self._capability_lock = threading.RLock()
+        self._executable_signature: tuple | None = None
+        self._runtime_sha256 = "unavailable"
+
+    def _file_signature(self) -> tuple | None:
+        if self.executable is None:
+            return None
+        try:
+            executable = Path(self.executable).resolve()
+            files = [executable, *sorted(executable.parent.glob("*.dll"))]
+            return tuple((str(path), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+                         for path in files for stat in [path.stat()])
+        except OSError:
+            return None
 
     def _probe(self) -> dict[str, Any] | None:
         if self.executable is None:
             return None
-        if self._capability_payload is None and self._capability_error is None:
-            with self._capability_lock:
-                if self._capability_payload is None and self._capability_error is None:
-                    try:
-                        payload = self.capability_probe(self.executable)
-                        if (
-                            payload.get("contract_version") != CAPABILITY_CONTRACT
-                            or payload.get("engine_version") != self.version
-                            or payload.get("backend") != "analysis_situs+occt"
-                            or payload.get("analysis_situs_version") != "v2025.2"
-                            or payload.get("analysis_situs_commit")
-                            != "aa5958932c8c85c068566ab685f2b99c0436b926"
-                            or payload.get("status") != "available"
-                            or payload.get("maturity") != "experimental"
-                            or payload.get("objective_schema_version")
-                            != OBJECTIVE_SCHEMA_VERSION
-                            or payload.get("supported_processes") != ["injection"]
-                            or payload.get("supported_formats") != ["step"]
-                            or payload.get("supported_extensions") != [".step", ".stp"]
-                            or payload.get("output_artifact_kinds")
-                            != [
-                                "preflight",
-                                "topology_map",
-                                "render_scene",
-                                "features",
-                                "measurements",
-                                "scalar_field",
-                            ]
-                            or not _valid_capability_operations(
-                                payload.get("operations")
-                            )
-                            or not _valid_runtime_limits(payload.get("runtime_limits"))
-                            or self.timeout_seconds
-                            < payload["runtime_limits"]["maximum_operation_timeout_seconds"]
-                            + 30
-                        ):
-                            raise DFMError(
-                                "geometry_protocol_invalid",
-                                "The DFM geometry capability contract is incompatible.",
-                            )
-                        self._capability_payload = payload
-                    except DFMError as exc:
-                        self._capability_error = exc
-        return self._capability_payload
+        with self._capability_lock:
+            signature = self._file_signature()
+            if (signature != self._executable_signature
+                    or (self._capability_payload is None and self._capability_error is None)):
+                self._capability_payload = None
+                self._capability_error = None
+                self._executable_signature = signature
+                try:
+                    payload = deepcopy(self.capability_probe(self.executable))
+                    validate_capabilities(payload)
+                    digest = "injected-probe"
+                    if signature is not None:
+                        identity = [(Path(item[0]).name, self._sha256(Path(item[0]))) for item in signature]
+                        digest = hashlib.sha256(json.dumps(identity).encode("utf-8")).hexdigest()
+                    if signature != self._file_signature():
+                        raise DFMError("geometry_engine_changed", "The executable changed during capability discovery.")
+                    self._runtime_sha256 = digest
+                    self._capability_payload = payload
+                except DFMError as exc:
+                    self._capability_error = exc
+                except OSError as exc:
+                    self._capability_error = DFMError("geometry_engine_unhealthy", str(exc))
+            return self._capability_payload
+
+    @property
+    def version(self) -> str:
+        payload = self._probe()
+        return payload["engine_version"] if payload is not None else "unavailable"
+
+    @property
+    def cache_identity(self) -> str:
+        with self._capability_lock:
+            payload = self._probe()
+            if payload is None:
+                return "unavailable"
+            return payload["engine_version"] + ":" + self._runtime_sha256
+
+    def require_operations(self, operations) -> dict[str, Any]:
+        payload = self._probe()
+        if payload is None:
+            raise self._capability_error or DFMError("geometry_engine_missing", "Geometry executable is unavailable.")
+        if "injection" not in payload["supported_processes"] or "step" not in payload["supported_formats"]:
+            raise DFMError("unsupported_capability", "The executable does not support injection STEP analysis.")
+        validate_operations(payload, operations)
+        return payload
 
     def capability(self, context: AnalyzerContext) -> Capability:
         if self.executable is None:
@@ -268,7 +236,7 @@ class OcctAnalyzer:
                 "geometry_engine_missing",
                 {
                     "config": "dfm.geometry.executable",
-                    "expected_engine_version": self.version,
+                    "required_contract": CAPABILITY_CONTRACT,
                     "supported_formats": ["step"],
                 },
             )
@@ -312,6 +280,17 @@ class OcctAnalyzer:
                     "available": ["experimental"],
                 },
             )
+        try:
+            if ("injection" not in payload["supported_processes"]
+                    or "step" not in payload["supported_formats"]
+                    or not {".step", ".stp"}.issubset(payload["supported_extensions"])
+                    or not {"preflight", "features", "measurements", "topology_map", "render_scene", "scalar_field"}.issubset(payload["output_artifact_kinds"])
+                    or self.timeout_seconds < payload["runtime_limits"]["maximum_operation_timeout_seconds"] + 30):
+                raise DFMError("geometry_protocol_invalid", "The executable does not meet this adapter's input/output or timeout requirements.")
+            if context.plan is not None:
+                validate_operations(payload, context.plan.operations)
+        except DFMError as exc:
+            return Capability(self.key, CapabilityStatus.UNHEALTHY, exc.message, exc.code, exc.details)
         return Capability(
             self.key,
             CapabilityStatus.AVAILABLE,
@@ -365,6 +344,8 @@ class OcctAnalyzer:
                 "input_required", "The OCCT plan does not reference a STEP input."
             )
 
+        engine_version = self.version
+        executable_signature = self._file_signature()
         run_dir = context.project_dir / "runs" / context.run_id
         output_dir = run_dir / "artifacts"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -384,7 +365,7 @@ class OcctAnalyzer:
         )
         request = LocalObjectiveWorkerRequest(
             schema_version=WORKER_SCHEMA_VERSION,
-            backend_version=self.version,
+            backend_version=engine_version,
             input_path=str(
                 (context.project_dir / input_record.relative_path).resolve()
             ),
@@ -420,6 +401,8 @@ class OcctAnalyzer:
             run_dir / "worker.stdout.log",
             run_dir / "worker.stderr.log",
         )
+        if self._file_signature() != executable_signature:
+            raise DFMError("geometry_engine_changed", "The executable changed during this analysis; rerun with the selected engine.")
         self._validate_jsonl_stdout(process_result.stdout, events)
         error_events = [event for event in events if event.type == "error"]
         if process_result.returncode != 0:
@@ -476,7 +459,7 @@ class OcctAnalyzer:
         if (
             result.schema_version != OBJECTIVE_SCHEMA_VERSION
             or result.contract_version != GEOMETRY_RESULT_CONTRACT
-            or result.producer_version != self.version
+            or result.producer_version != engine_version
             or result.run_id != context.run_id
             or result.input_sha256 != input_record.sha256
             or result.process != context.plan.process
@@ -562,6 +545,7 @@ class OcctAnalyzer:
             artifacts.append(record)
         self._validate_artifact_contracts(
             documents,
+            engine_version=engine_version,
             run_id=context.run_id,
             input_sha256=input_record.sha256,
             process=context.plan.process,
@@ -594,6 +578,7 @@ class OcctAnalyzer:
         cls,
         documents: dict[str, tuple[ArtifactRecord, dict[str, Any]]],
         *,
+        engine_version: str,
         run_id: str,
         input_sha256: str,
         process: str,
@@ -641,7 +626,7 @@ class OcctAnalyzer:
 
         healed = preflight.get("healed")
         if (
-            preflight.get("engine_version") != ENGINE_VERSION
+            preflight.get("engine_version") != engine_version
             or preflight.get("format") != "step"
             or preflight.get("unit") != "mm"
             or not isinstance(healed, bool)
@@ -741,7 +726,7 @@ class OcctAnalyzer:
                 "OCCT native artifact diagnostics are invalid.",
             )
         if any(
-            record.get("algorithm_version") != ENGINE_VERSION
+            record.get("algorithm_version") != engine_version
             or record.get("input_sha256") != input_sha256
             or not isinstance(record.get("method"), str)
             or not record["method"]

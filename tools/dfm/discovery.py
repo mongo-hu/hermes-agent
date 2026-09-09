@@ -136,7 +136,11 @@ class DiscoveryEngine:
                     facts=resolved_facts,
                     project_dir=project_dir,
                 )
-                replaced_feature_ids = {item.feature_id for item in result.features}
+                replaced_feature_ids = {item.feature_id for item in result.features} | {
+                    item.feature_id for item in features
+                    if item.input_sha256 == input_record.sha256
+                    and item.recognizer == self.geometry_provider.key
+                }
                 replaced_region_ids = {item.region_id for item in result.regions}
                 features = [
                     item for item in features

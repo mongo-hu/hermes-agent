@@ -1,14 +1,17 @@
+from copy import deepcopy
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
 from jsonschema import Draft202012Validator
 
+ENGINE_VERSION = "occt-dfm-geometry-0.1.0"
+
 from tools.dfm.analyzers import occt as occt_module
 from tools.dfm.analyzers.base import AnalyzerContext, CancellationToken
 from tools.dfm.analyzers.occt import (
-    ENGINE_VERSION,
     OcctAnalyzer,
     discover_geometry_executable,
 )
@@ -156,6 +159,16 @@ CAPABILITIES = {
 }
 
 
+# Describe the actual public operation contracts, then mutate them in behavior tests.
+_scope = json.loads((Path(occt_module.__file__).parents[1] / "scopes/injection/geometry_core_v4.json").read_text(encoding="utf-8"))
+_scope_operations = {item["operation_id"]: item for item in _scope["operations"]}
+from tools.dfm.feature_recognition.occt_cpp import OCCTCppFeatureRecognitionProvider
+_scope_operations.update({item.operation_id: item.to_dict() for item in OCCTCppFeatureRecognitionProvider()._operations()})
+for _descriptor in CAPABILITIES["operations"]:
+    for _field in ("depends_on", "metric_ids", "required_quantities", "required_artifacts"):
+        _descriptor[_field] = _scope_operations[_descriptor["operation_id"]][_field]
+
+
 def _artifact(path: Path, artifact_id: str, kind: str) -> ObjectiveArtifactManifest:
     content = path.read_bytes()
     return ObjectiveArtifactManifest(
@@ -169,10 +182,11 @@ def _artifact(path: Path, artifact_id: str, kind: str) -> ObjectiveArtifactManif
 
 
 class SuccessfulRunner:
-    def __init__(self, *, healed=False):
+    def __init__(self, *, healed=False, engine_version=ENGINE_VERSION):
         self.request = None
         self.argv = None
         self.healed = healed
+        self.engine_version = engine_version
 
     def run(
         self,
@@ -202,7 +216,7 @@ class SuccessfulRunner:
             json.dumps({
                 **identity,
                 "contract_version": "dfm.geometry.artifact/preflight/v1",
-                "engine_version": ENGINE_VERSION,
+                "engine_version": self.engine_version,
                 "format": "step",
                 "unit": "mm",
                 "status": "passed",
@@ -290,9 +304,9 @@ class SuccessfulRunner:
                     "topology_snapshot_id": topology_snapshot_id,
                     "input_sha256": self.request.task.input_sha256,
                     "backend": "analysis_situs+occt",
-                    "backend_version": ENGINE_VERSION,
+                    "backend_version": self.engine_version,
                     "loader_id": "occt-step-loader",
-                    "loader_version": ENGINE_VERSION,
+                    "loader_version": self.engine_version,
                     "indexer_id": "occt-topexp-face-indexer",
                     "indexer_version": "1",
                     "entity_count": {"body": 1, "face": 1},
@@ -325,7 +339,7 @@ class SuccessfulRunner:
                     "topology_snapshot_id": topology_snapshot_id,
                     "input_sha256": self.request.task.input_sha256,
                     "producer": "occt",
-                    "producer_version": ENGINE_VERSION,
+                    "producer_version": self.engine_version,
                     "tessellation": {"linear_deflection_mm": 0.1},
                     "triangle_count": 1,
                     "render_mesh_sha256": mesh_sha256,
@@ -354,7 +368,7 @@ class SuccessfulRunner:
                         ],
                         "parameters": {"diameter_mm": 4.0},
                         "method": "analysis_situs_recognize_drill_holes",
-                        "algorithm_version": ENGINE_VERSION,
+                        "algorithm_version": self.engine_version,
                         "input_sha256": self.request.task.input_sha256,
                         "quality": {
                             "backend": "analysis_situs+occt",
@@ -395,7 +409,7 @@ class SuccessfulRunner:
                             geometry_ref
                         ],
                         "method": "freecad_dfm_uv_grid_draft",
-                        "algorithm_version": ENGINE_VERSION,
+                        "algorithm_version": self.engine_version,
                         "input_sha256": self.request.task.input_sha256,
                         "quality": {
                             "backend": "occt",
@@ -459,7 +473,7 @@ class SuccessfulRunner:
         )
         result = ObjectiveResultManifest(
             schema_version=OBJECTIVE_SCHEMA_VERSION,
-            producer_version=ENGINE_VERSION,
+            producer_version=self.engine_version,
             run_id=self.request.task.run_id,
             input_sha256=self.request.task.input_sha256,
             process="injection",
@@ -693,7 +707,7 @@ def _plan():
             PlanOperation(
                 "measure_draft",
                 "measure_draft",
-                depends_on=["topology.aag"],
+                depends_on=["topology.index"],
                 metric_ids=["injection.geometry.draft"],
                 required_quantities=["draft_angle_deg"],
                 required_artifacts=["topology_map", "scalar_field"],
@@ -740,6 +754,136 @@ def test_capability_probe_is_cached_for_the_explicit_occt_analyzer(tmp_path):
     assert analyzer.capability(context).status is CapabilityStatus.AVAILABLE
     assert analyzer.capability(context).status is CapabilityStatus.AVAILABLE
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("change,expected", [
+    ("extra", CapabilityStatus.AVAILABLE),
+    ("missing", CapabilityStatus.UNHEALTHY),
+    ("disabled", CapabilityStatus.UNHEALTHY),
+    ("duplicate", CapabilityStatus.UNHEALTHY),
+    ("changed_quantity", CapabilityStatus.UNHEALTHY),
+    ("bad_protocol", CapabilityStatus.UNHEALTHY),
+    ("changed_limits", CapabilityStatus.AVAILABLE),
+])
+def test_capability_negotiates_the_requested_plan(tmp_path, change, expected):
+    payload = deepcopy(CAPABILITIES)
+    draft = next(item for item in payload["operations"] if item["operation_id"] == "measure_draft")
+    if change == "extra":
+        extra = deepcopy(draft)
+        extra.update(operation_id="measure_extra", calculator_id="measure_extra")
+        payload["operations"].append(extra)
+        payload["supported_processes"].append("other_process")
+    elif change == "missing":
+        payload["operations"].remove(draft)
+    elif change == "disabled":
+        draft["status"] = "disabled"
+    elif change == "duplicate":
+        payload["operations"].append(deepcopy(draft))
+    elif change == "changed_quantity":
+        draft["required_quantities"] = ["different_quantity"]
+    elif change == "bad_protocol":
+        payload["contract_version"] = "incompatible/v99"
+    elif change == "changed_limits":
+        payload["runtime_limits"]["recommended_process_timeout_seconds"] = 1000
+        payload["runtime_limits"]["progress_heartbeat_interval_seconds"] = 6
+    analyzer = OcctAnalyzer("fixture.exe", capability_probe=lambda _: payload)
+    context = AnalyzerContext("dfm_1", tmp_path, "step", [], plan=_plan())
+    assert analyzer.capability(context).status is expected
+
+
+def test_engine_upgrade_flows_through_request_result_and_discovery_identity(tmp_path):
+    from tools.dfm.feature_recognition.occt_cpp import OCCTCppFeatureRecognitionProvider
+
+    executable = tmp_path / "engine.exe"
+    executable.write_bytes(b"first-engine")
+    payload = deepcopy(CAPABILITIES)
+    runner = SuccessfulRunner(engine_version="occt-dfm-geometry-0.2.0")
+    analyzer = OcctAnalyzer(str(executable), runner=runner, capability_probe=lambda _: payload)
+    provider = OCCTCppFeatureRecognitionProvider(str(executable))
+    provider._engine = analyzer
+    before_version, before_cache, before_discovery = analyzer.version, analyzer.cache_identity, provider.version
+    payload["engine_version"] = "occt-dfm-geometry-0.2.0"
+    for operation in payload["operations"]:
+        operation["algorithm_version"] = payload["engine_version"]
+    executable.write_bytes(b"second-engine-with-different-content")
+    assert analyzer.version != before_version
+    assert analyzer.cache_identity != before_cache
+    assert provider.version != before_discovery
+    input_path = tmp_path / "inputs/part.step"
+    input_path.parent.mkdir()
+    input_path.write_bytes(b"opaque-step")
+    record = InputRecord("input_1", "step", "part.step", "inputs/part.step", 11, "a" * 64, "now")
+    artifacts = analyzer.run(AnalyzerContext("dfm_1", tmp_path, "step", [record], "run_new", _plan()), CancellationToken())
+    assert runner.request.backend_version == payload["engine_version"]
+    assert any(item.kind == "features" for item in artifacts)
+    # Replacing an EXE without changing its advertised version also invalidates reuse.
+    cache = analyzer.cache_identity
+    executable.write_bytes(b"another-build-of-the-same-version")
+    assert analyzer.cache_identity != cache
+    cache = analyzer.cache_identity
+    (tmp_path / "asiAlgo.dll").write_bytes(b"updated-native-dependency")
+    assert analyzer.cache_identity != cache
+
+
+def test_plan_rejects_invalid_algorithm_option_before_starting_worker(tmp_path):
+    from tools.dfm.contracts import ResolvedArgument
+    plan = _plan()
+    plan.operations[-1].algorithm_options["nonexistent_option"] = ResolvedArgument(1, "test")
+    analyzer = OcctAnalyzer("fixture.exe", capability_probe=lambda _: CAPABILITIES)
+    capability = analyzer.capability(AnalyzerContext("dfm_1", tmp_path, "step", [], plan=plan))
+    assert capability.status is CapabilityStatus.UNHEALTHY
+    assert capability.error_code == "objective_task_invalid"
+
+
+@pytest.mark.parametrize("value", [0, -1, True, float("nan"), float("inf"), 10 ** 400])
+def test_wall_option_type_and_range_are_checked_before_execution(tmp_path, value):
+    plan = _plan()
+    wall = PlanOperation.from_dict(_scope_operations["measure_wall_thickness"])
+    wall.algorithm_options["sample_spacing_mm"] = ResolvedArgument(value, "test")
+    plan.operations.append(wall)
+    analyzer = OcctAnalyzer("fixture.exe", capability_probe=lambda _: CAPABILITIES)
+    capability = analyzer.capability(AnalyzerContext("dfm_1", tmp_path, "step", [], plan=plan))
+    assert capability.status is CapabilityStatus.UNHEALTHY
+    assert capability.error_code == "objective_task_invalid"
+
+
+def test_discovery_upgrade_replaces_regions_even_when_feature_ids_change(tmp_path):
+    from types import SimpleNamespace
+    from tools.dfm.contracts import FeatureRecord, GeometryRef, ProjectManifest, RegionRecord
+    from tools.dfm.discovery import DiscoveryEngine
+    from tools.dfm.feature_recognition.base import FeatureRecognitionResult
+
+    record = InputRecord("input_1", "step", "part.step", "inputs/part.step", 11, "a" * 64, "now")
+    provider = SimpleNamespace(key="upgrade-test", version="v1")
+    calls = []
+
+    def recognize(*args, **kwargs):
+        calls.append(provider.version)
+        feature_id, region_id = "feature." + provider.version, "region." + provider.version
+        return FeatureRecognitionResult(
+            features=[FeatureRecord(feature_id=feature_id, kind="main_wall", source_refs=["test"],
+                                    confidence=1.0, input_sha256=record.sha256, region_refs=[region_id],
+                                    recognizer=provider.key, recognizer_version=provider.version)],
+            regions=[RegionRecord(region_id=region_id, input_sha256=record.sha256, coordinate_system="model",
+                                  mode="topology_refs", semantic_label="main_wall", source_refs=["test"],
+                                  version=provider.version, content_sha256="b" * 64, role="wall",
+                                  feature_refs=[feature_id], geometry_refs=[GeometryRef("face", 1, record.sha256,
+                                      topology_snapshot_id="topology." + provider.version, entity_id="face-1")])],
+            diagnostics={})
+
+    provider.capability = lambda: {"status": "available"}
+    provider.recognize = recognize
+    engine = DiscoveryEngine(geometry_provider=provider)
+    manifest = ProjectManifest(project_id="dfm_aaaaaaaaaaaa", name="upgrade", created_at="now",
+                               updated_at="now", inputs=[record])
+    first = engine.refresh_candidates(manifest, project_dir=tmp_path)
+    engine.refresh_candidates(first, project_dir=tmp_path)
+    assert calls == ["v1"]
+    provider.version = "v2"
+    second = engine.refresh_candidates(first, project_dir=tmp_path)
+    assert calls == ["v1", "v2"]
+    assert "region.v1" not in {region.region_id for region in second.regions}
+    assert "region.v2" in {region.region_id for region in second.regions}
 
 
 def test_geometry_executable_discovery_prefers_explicit_config_then_path(
@@ -791,7 +935,7 @@ def test_geometry_executable_relative_config_is_anchored_to_repo_root(
     assert discover_geometry_executable(configured) == str(executable.resolve())
 
 
-def test_capability_probe_rejects_incomplete_operation_registry(tmp_path):
+def test_capability_probe_allows_absent_unrequested_operation(tmp_path):
     incompatible = {**CAPABILITIES, "operations": CAPABILITIES["operations"][:-1]}
     analyzer = OcctAnalyzer(
         "C:/dfm/dfm-geometry.exe",
@@ -800,8 +944,7 @@ def test_capability_probe_rejects_incomplete_operation_registry(tmp_path):
 
     capability = analyzer.capability(AnalyzerContext("dfm_1", tmp_path, "step", []))
 
-    assert capability.status is CapabilityStatus.UNHEALTHY
-    assert capability.error_code == "geometry_protocol_invalid"
+    assert capability.status is CapabilityStatus.AVAILABLE
 
 
 def test_occt_analyzer_runs_versioned_request_and_returns_validated_artifacts(tmp_path):
@@ -922,14 +1065,14 @@ def test_occt_analyzer_rejects_untrusted_worker_outputs(tmp_path, mode, expected
 def test_native_protocol_and_artifact_json_schemas_validate_real_adapter_shapes(
     tmp_path,
 ):
-    schema_dir = Path("dfm-geometry/schemas")
+    schema_dir = Path(os.environ.get("DFM_GEOMETRY_SCHEMA_ROOT", "dfm-geometry/schemas"))
     if not schema_dir.is_dir():
         pytest.skip("external DFMAnalysis_OCCT checkout is not available")
     schemas = {
         path.stem: json.loads(path.read_text(encoding="utf-8"))
         for path in schema_dir.glob("*.schema.json")
     }
-    assert set(schemas) == {
+    assert set(schemas) >= {
         "capabilities.schema",
         "common.schema",
         "event.schema",
