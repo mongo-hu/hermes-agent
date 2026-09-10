@@ -1,6 +1,5 @@
 'use client'
 
-import { useStore } from '@nanostores/react'
 import { type FC, useEffect, useState } from 'react'
 
 import { DiffusionCanvas } from '@/components/chat/image-generation-placeholder'
@@ -8,9 +7,8 @@ import { ImageActionButton, ImageLightbox } from '@/components/chat/zoomable-ima
 import { useImageDownload } from '@/hooks/use-image-download'
 import { useI18n } from '@/i18n'
 import { generatedImageFromResult } from '@/lib/generated-images'
-import { filePathFromMediaPath, gatewayMediaDataUrl, mediaExternalUrl, mediaName } from '@/lib/media'
+import { filePathFromMediaPath, gatewayMediaDataUrl, isRemoteGateway, mediaExternalUrl, mediaName } from '@/lib/media'
 import { cn } from '@/lib/utils'
-import { $connection } from '@/store/session'
 
 // Aspect hint from the tool args sizes the frame *before* the image loads, so
 // the placeholder and the resolved image occupy the same box — no layout shift.
@@ -34,12 +32,12 @@ function isInlineSrc(path: string): boolean {
   return /^(?:https?|data):/i.test(path)
 }
 
-async function resolveImageSrc(path: string, remote: boolean): Promise<string> {
+async function resolveImageSrc(path: string): Promise<string> {
   if (isInlineSrc(path)) {
     return path
   }
 
-  if (window.hermesDesktop && remote) {
+  if (window.hermesDesktop && isRemoteGateway()) {
     return gatewayMediaDataUrl(path)
   }
 
@@ -51,7 +49,6 @@ async function resolveImageSrc(path: string, remote: boolean): Promise<string> {
 }
 
 export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({ aspectRatio, result }) => {
-  const connectionMode = useStore($connection)?.mode
   const { t } = useI18n()
   const copy = t.desktop
   const image = result === undefined ? null : generatedImageFromResult(result)
@@ -77,18 +74,18 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
     setCanvasGone(false)
     setSrc(image && isInlineSrc(image) ? image : '')
 
-    if (!image || isInlineSrc(image) || !connectionMode) {
+    if (!image || isInlineSrc(image)) {
       return
     }
 
-    void resolveImageSrc(image, connectionMode === 'remote')
+    void resolveImageSrc(image)
       .then(resolved => !cancelled && setSrc(resolved))
       .catch(() => !cancelled && setFailed(true))
 
     return () => {
       cancelled = true
     }
-  }, [connectionMode, image])
+  }, [image])
 
   // Completed but no usable image (generation failed): the agent's prose carries
   // the explanation, so render nothing here.

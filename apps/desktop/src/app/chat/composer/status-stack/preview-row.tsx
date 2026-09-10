@@ -73,22 +73,6 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
     }
   }
 
-  const saveCopy = async () => {
-    try {
-      const bridge = window.hermesDesktop?.savePreviewFile
-
-      if (!bridge) {
-        throw new Error('Desktop preview save bridge is unavailable')
-      }
-
-      const target = await resolveTarget()
-
-      await bridge(target.path || target.url)
-    } catch (error) {
-      notifyError(error, t.common.failed)
-    }
-  }
-
   return (
     <StatusRow
       leading={
@@ -99,61 +83,31 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
           size="0.8rem"
         />
       }
+      // Plain click opens the link in the browser; ⌘/Ctrl-click opens it in the
+      // in-app preview pane instead. (isOpen still toggles the pane closed.)
       onActivate={event => {
         if (event.metaKey || event.ctrlKey) {
-          void openInBrowser()
-        } else {
           void togglePreview()
+        } else {
+          void openInBrowser()
         }
       }}
       trailing={
-        <span className="flex items-center gap-0.5">
-          <Tip label={t.preview.openInBrowser}>
-            <Button
-              aria-label={t.preview.openInBrowser}
-              className="-my-1 size-4 rounded-md text-muted-foreground/60 hover:text-foreground/90"
-              onClick={event => {
-                event.stopPropagation()
-                void openInBrowser()
-              }}
-              size="icon-xs"
-              type="button"
-              variant="ghost"
-            >
-              <Codicon name="link-external" size="0.75rem" />
-            </Button>
-          </Tip>
-          <Tip label={t.common.save}>
-            <Button
-              aria-label={t.common.save}
-              className="-my-1 size-4 rounded-md text-muted-foreground/60 hover:text-foreground/90"
-              onClick={event => {
-                event.stopPropagation()
-                void saveCopy()
-              }}
-              size="icon-xs"
-              type="button"
-              variant="ghost"
-            >
-              <Codicon name="cloud-download" size="0.75rem" />
-            </Button>
-          </Tip>
-          <Tip label={t.statusStack.dismiss}>
-            <Button
-              aria-label={t.statusStack.dismiss}
-              className="-my-1 size-4 rounded-md text-muted-foreground/60 hover:text-foreground/90"
-              onClick={event => {
-                event.stopPropagation()
-                onDismiss(item.id)
-              }}
-              size="icon-xs"
-              type="button"
-              variant="ghost"
-            >
-              <Codicon name="close" size="0.75rem" />
-            </Button>
-          </Tip>
-        </span>
+        <Tip label={t.statusStack.dismiss}>
+          <Button
+            aria-label={t.statusStack.dismiss}
+            className="-my-1 size-4 rounded-md text-muted-foreground/60 hover:text-foreground/90"
+            onClick={event => {
+              event.stopPropagation()
+              onDismiss(item.id)
+            }}
+            size="icon-xs"
+            type="button"
+            variant="ghost"
+          >
+            <Codicon name="close" size="0.75rem" />
+          </Button>
+        </Tip>
       }
       trailingVisible
     >
@@ -161,7 +115,7 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
         label={
           <span className="flex flex-col gap-0.5">
             <span>{item.target}</span>
-            <span className="opacity-70">{isOpen ? t.preview.hide : t.preview.openPreview}</span>
+            <span className="opacity-70">{t.preview.linkHint}</span>
           </span>
         }
       >

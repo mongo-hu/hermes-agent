@@ -67,60 +67,6 @@ describe('collectArtifactsForSession', () => {
     })
   })
 
-  it('indexes Windows DFM artifact paths from tool JSON payloads', () => {
-    const path = 'C:\\Users\\lenovo\\.hermes\\workspace\\dfm\\projects\\dfm_1\\artifacts\\run.json'
-
-    const artifacts = collectArtifactsForSession(makeSession({ id: 'dfm-session' }), [
-      {
-        content: JSON.stringify({ run: { artifacts: [{ path, relative_path: 'artifacts/run.json' }] } }),
-        role: 'tool',
-        timestamp: 4000
-      }
-    ])
-
-    expect(artifacts).toHaveLength(1)
-    expect(artifacts[0]).toMatchObject({
-      href: 'file:///C:/Users/lenovo/.hermes/workspace/dfm/projects/dfm_1/artifacts/run.json',
-      kind: 'file',
-      label: 'run.json',
-      value: path
-    })
-  })
-
-  it('indexes generated DFM PowerPoint reports as files', () => {
-    const path = 'C:\\Users\\lenovo\\.hermes\\workspace\\dfm\\projects\\dfm_1\\artifacts\\dfm_report.pptx'
-
-    const artifacts = collectArtifactsForSession(makeSession({ id: 'dfm-pptx' }), [
-      {
-        content: JSON.stringify({ artifact: { kind: 'report_presentation', path } }),
-        role: 'tool',
-        timestamp: 4500
-      }
-    ])
-
-    expect(artifacts).toHaveLength(1)
-    expect(artifacts[0]).toMatchObject({
-      kind: 'file',
-      label: 'dfm_report.pptx',
-      value: path
-    })
-  })
-
-  it('indexes UNC artifact paths from tool JSON payloads', () => {
-    const path = '\\\\analysis-server\\dfm-results\\mold\\report.json'
-
-    const artifacts = collectArtifactsForSession(makeSession(), [
-      { content: JSON.stringify({ artifact: { path } }), role: 'tool', timestamp: 5000 }
-    ])
-
-    expect(artifacts).toHaveLength(1)
-    expect(artifacts[0]).toMatchObject({
-      href: 'file://analysis-server/dfm-results/mold/report.json',
-      kind: 'file',
-      value: path
-    })
-  })
-
   it('resolves remote image artifact thumbnails through the desktop fs bridge', async () => {
     const api = vi.fn(async ({ path }: { path: string }) => {
       if (path.startsWith('/api/fs/read-data-url?')) {
