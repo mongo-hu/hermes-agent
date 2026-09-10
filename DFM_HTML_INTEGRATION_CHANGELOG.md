@@ -10,6 +10,20 @@
 
 Desktop 自动展示增量日期：2026-09-08。Desktop 现在监听既有 `dfm_analysis` 工具完成事件；当且仅当 run 成功且返回的 artifact 为 `report_html` 时，将 `report.html` 路径交给 Desktop 已有的 HTML 预览面板自动展示。该增量没有修改 DFM 后端、报告生成器或成功条件。
 
+## 2026-09-10 证据图视觉升级与 Desktop HTML 预览交互修复
+
+本次修改 **7 个既有生产代码文件**，没有新增生产模块或回归测试文件。用于视觉方案比选的本地 `experiments/dfm-evidence-lab/` 目录已在提交前删除，不进入 Git。
+
+1. `tools/dfm/evidence/field_engine.py`：将主 DFM pipeline 的证据图 renderer 升级为浅色工业审查卡片样式；输出提升至 1440×810，并采用 2 倍超采样、渐变背景、圆角主视图、全件上下文缩略图、实体明暗、轮廓线、半透明问题区域、焦点标记和工程标注。增加 presentation view 选择，在正交视图退化为近似线段时自动选择可读的斜视角。证据数据、三角形引用和确定性渲染边界保持不变，也没有引入 PDF 依赖。
+2. `apps/desktop/src/app/session/hooks/use-message-stream/gateway-event.ts`：收到成功的 DFM `report_html` artifact 后，使用 gateway 事件携带的运行时 session ID 登记预览条目。修复此前用持久化历史 session ID 写入、而 Composer 按运行时 ID 读取造成的键不一致；关闭右侧 HTML Preview 后，Composer 状态区仍保留可重新打开的入口。
+3. `apps/desktop/src/app/chat/composer/status-stack/preview-row.tsx`：报告条目普通点击改为打开/关闭内置 Preview，并增加“浏览器打开”和“保存副本”按钮；Ctrl/Cmd 点击保留浏览器打开快捷行为。
+4. `apps/desktop/src/app/chat/right-rail/preview-pane.tsx`：在 HTML Preview 标题栏增加浏览器打开和保存按钮，关闭预览不删除 Composer 中的报告条目。
+5. `apps/desktop/electron/main.ts`：增加受既有本地文件解析与可读性校验保护的保存对话框，通过复制生成 HTML 副本，不移动或改写原始报告 artifact。
+6. `apps/desktop/electron/preload.ts`：通过 context bridge 暴露最小的 `savePreviewFile` IPC 方法。
+7. `apps/desktop/src/global.d.ts`：补充 `savePreviewFile` bridge 类型定义。
+
+验证结果：`tests/tools/dfm/test_field_evidence.py` 现有 6 项测试通过；Desktop `preview-status` 和 DFM viewer event 现有 8 项测试通过；Desktop TypeScript typecheck、相关文件 Prettier、Python Ruff 和 `git diff --check` 均通过。生产 renderer 另使用真实 DFM scene/evidence geometry 完成三视图渲染验证。
+
 ## 2026-09-10 DFM 中断提示与无 PDF HTML 修复
 
 本次按最小范围修改 **7 个既有实现/说明文件**，没有新增生产模块，也没有提交新的回归测试文件或测试代码：

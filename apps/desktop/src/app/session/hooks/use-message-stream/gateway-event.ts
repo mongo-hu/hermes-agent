@@ -23,6 +23,7 @@ import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { registerSessionPreview, setCurrentSessionPreviewTarget } from '@/store/preview'
+import { recordPreviewArtifact } from '@/store/preview-status'
 import { followActiveSessionCwd } from '@/store/projects'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
@@ -415,6 +416,13 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         const dfmHtmlReportPath = dfmHtmlReportPathFromToolComplete(payload)
 
         if (sessionId && dfmHtmlReportPath) {
+          // Keep an explicit artifact row in the composer after the preview is
+          // closed. This gives reports a durable reopen/save affordance instead
+          // of making the one-shot auto-open event the only way back in.
+          // Composer status is keyed by the runtime session id (the same id
+          // carried by gateway events), not the persisted history id.
+          recordPreviewArtifact(sessionId, dfmHtmlReportPath, $currentCwd.get() || '')
+
           // The DFM HTML is already a complete local artifact and can be tens
           // of megabytes. In localhost remote-gateway mode, remote enrichment
           // would download the whole file before opening it and can hit the

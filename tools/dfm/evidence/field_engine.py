@@ -47,7 +47,7 @@ def _utc_now() -> str:
 class FieldEvidenceEngine:
     """Render precise evidence from any backend's objective scalar fields."""
 
-    version = "hermes-field-evidence-v4"
+    version = "hermes-field-evidence-v5"
 
     def materialize(
         self,
@@ -187,7 +187,8 @@ class FieldEvidenceEngine:
                 image_index += 1
                 image_id = f"artifact_{run_id}_evidence_{image_index}"
                 image_path = output_dir / f"evidence_{image_index:03d}.png"
-                self._render(scene, patch, image_path, view)
+                render_view = _presentation_view(scene, patch, view)
+                self._render(scene, patch, image_path, render_view)
                 image_artifact = ArtifactRecord(
                     image_id,
                     "evidence_image",
@@ -215,16 +216,17 @@ class FieldEvidenceEngine:
                             "mode": "local_patch",
                             "producer": "hermes-evidence-renderer",
                             "version": self.version,
-                            "viewport": [1280, 720],
+                            "viewport": [1440, 810],
                             "patch_id": patch["patch_id"],
                             "scene_ref": patch["scene_ref"],
                             "topology_snapshot_ref": patch["topology_snapshot_ref"],
                             "render_mesh_snapshot_ref": patch["render_mesh_snapshot_ref"],
-                            "view_id": view["id"],
-                            "view_label": view["label"],
-                            "camera_direction": list(view["basis_d"]),
-                            "camera_up": list(view["basis_v"]),
-                            "camera_source": view["source"],
+                            "view_id": render_view["id"],
+                            "view_label": render_view["label"],
+                            "camera_direction": list(render_view["basis_d"]),
+                            "camera_up": list(render_view["basis_v"]),
+                            "camera_source": render_view["source"],
+                            "presentation_mode": render_view.get("presentation_mode", "canonical"),
                         },
                         feature_refs=[str(item) for item in patch["feature_refs"]],
                     )
@@ -530,16 +532,91 @@ class FieldEvidenceEngine:
         view: dict[str, Any],
     ) -> None:
         try:
-            from PIL import Image, ImageDraw
+            from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
         except ImportError as exc:
             raise DFMError(
                 "evidence_renderer_unavailable",
                 "Pillow is required for Hermes field evidence rendering.",
             ) from exc
 
-        width, height = 1280, 720
-        image = Image.new("RGB", (width, height), (247, 248, 250))
-        draw = ImageDraw.Draw(image)
+        final_size = (1440, 810)
+        supersample = 2
+        width, height = (value * supersample for value in final_size)
+        background_top = (249, 250, 252)
+        background_bottom = (234, 239, 246)
+        panel_top = (247, 250, 253)
+        panel_bottom = (226, 233, 242)
+        ink = (26, 36, 51)
+        muted = (101, 115, 136)
+        hairline = (210, 218, 229)
+        accent = (229, 72, 66)
+        accent_dark = (164, 38, 39)
+        accent_pale = (255, 235, 232)
+
+        def font(size: int, *, bold: bool = False) -> Any:
+            names = (
+                ("seguisb.ttf", "arialbd.ttf", "DejaVuSans-Bold.ttf")
+                if bold
+                else ("segoeui.ttf", "arial.ttf", "DejaVuSans.ttf")
+            )
+            for name in names:
+                try:
+                    return ImageFont.truetype(name, size)
+                except OSError:
+                    continue
+            return ImageFont.load_default()
+
+        def vertical_gradient(
+            size: tuple[int, int],
+            top: tuple[int, int, int],
+            bottom: tuple[int, int, int],
+        ) -> Any:
+            gradient = Image.new("RGB", size, top)
+            gradient_draw = ImageDraw.Draw(gradient)
+            divisor = max(size[1] - 1, 1)
+            for y in range(size[1]):
+                amount = y / divisor
+                color = tuple(
+                    round(start + (end - start) * amount)
+                    for start, end in zip(top, bottom)
+                )
+                gradient_draw.line((0, y, size[0], y), fill=color)
+            return gradient
+
+        def paste_rounded(
+            canvas: Any,
+            layer: Any,
+            box: tuple[int, int, int, int],
+            *,
+            radius: int,
+            shadow: bool = True,
+        ) -> None:
+            left, top, right, bottom = box
+            layer_width, layer_height = right - left, bottom - top
+            mask = Image.new("L", (layer_width, layer_height), 0)
+            ImageDraw.Draw(mask).rounded_rectangle(
+                (0, 0, layer_width, layer_height), radius=radius, fill=255
+            )
+            if shadow:
+                shadow_mask = Image.new("L", canvas.size, 0)
+                ImageDraw.Draw(shadow_mask).rounded_rectangle(
+                    (
+                        left,
+                        top + 8 * supersample,
+                        right,
+                        bottom + 8 * supersample,
+                    ),
+                    radius=radius,
+                    fill=70,
+                )
+                shadow_mask = shadow_mask.filter(
+                    ImageFilter.GaussianBlur(18 * supersample)
+                )
+                shadow_layer = Image.new("RGBA", canvas.size, (31, 45, 66, 0))
+                shadow_layer.putalpha(shadow_mask)
+                canvas.paste(shadow_layer, (0, 0), shadow_layer)
+            canvas.paste(layer.resize((layer_width, layer_height)), (left, top), mask)
+
         highlighted = {
             (
                 str(item["render_mesh_snapshot_id"]),
@@ -548,12 +625,8 @@ class FieldEvidenceEngine:
             )
             for item in patch["triangle_refs"]
         }
-        basis_u = view["basis_u"]
-        basis_v = view["basis_v"]
-        basis_d = view["basis_d"]
 
-        projected: list[tuple[float, str, int, list[tuple[float, float]]]] = []
-        all_xy: list[tuple[float, float]] = []
+        rows: list[dict[str, Any]] = []
         for primitive in scene.get("primitives", []):
             primitive_id = str(primitive.get("primitive_id") or "")
             mesh_snapshot_id = str(primitive.get("render_mesh_snapshot_id") or "")
@@ -566,94 +639,453 @@ class FieldEvidenceEngine:
                         "render_scene_invalid",
                         "A render triangle references a missing vertex.",
                     ) from exc
-                xy = [(_dot(point, basis_u), _dot(point, basis_v)) for point in points]
-                depth = sum(_dot(point, basis_d) for point in points) / 3.0
-                projected.append((depth, primitive_id, triangle_id, xy))
-                all_xy.extend(xy)
+                edge_a = [points[1][axis] - points[0][axis] for axis in range(3)]
+                edge_b = [points[2][axis] - points[0][axis] for axis in range(3)]
+                normal = _unit_or_none(_cross(edge_a, edge_b)) or [0.0, 0.0, 1.0]
+                rows.append(
+                    {
+                        "depth": sum(_dot(point, view["basis_d"]) for point in points)
+                        / 3.0,
+                        "key": (mesh_snapshot_id, primitive_id, triangle_id),
+                        "normal": normal,
+                        "projected": [
+                            (
+                                _dot(point, view["basis_u"]),
+                                _dot(point, view["basis_v"]),
+                            )
+                            for point in points
+                        ],
+                    }
+                )
+        rows.sort(key=lambda item: item["depth"], reverse=True)
+        all_xy = [point for row in rows for point in row["projected"]]
         if not all_xy:
             raise DFMError("render_scene_invalid", "The render scene is empty.")
 
         focus = patch["focus_point"]
-        focus_xy = (_dot(focus, basis_u), _dot(focus, basis_v))
+        focus_xy = (
+            _dot(focus, view["basis_u"]),
+            _dot(focus, view["basis_v"]),
+        )
         patch_points = _bounds_corners(patch["bounds"])
-        patch_xy = [(_dot(point, basis_u), _dot(point, basis_v)) for point in patch_points]
+        patch_xy = [
+            (_dot(point, view["basis_u"]), _dot(point, view["basis_v"]))
+            for point in patch_points
+        ]
         scene_span = max(
             max(value[0] for value in all_xy) - min(value[0] for value in all_xy),
             max(value[1] for value in all_xy) - min(value[1] for value in all_xy),
             1.0,
         )
-        patch_span = max(
-            max(value[0] for value in patch_xy) - min(value[0] for value in patch_xy),
-            max(value[1] for value in patch_xy) - min(value[1] for value in patch_xy),
-            scene_span * 0.06,
+
+        def fit_transform(
+            framing: list[tuple[float, float]],
+            panel_width: int,
+            panel_height: int,
+            padding: int,
+        ) -> tuple[float, float, float]:
+            minimum_x = min(point[0] for point in framing)
+            maximum_x = max(point[0] for point in framing)
+            minimum_y = min(point[1] for point in framing)
+            maximum_y = max(point[1] for point in framing)
+            span_x = max(maximum_x - minimum_x, 1e-6)
+            span_y = max(maximum_y - minimum_y, 1e-6)
+            scale = min(
+                (panel_width - 2 * padding) / span_x,
+                (panel_height - 2 * padding) / span_y,
+            )
+            return scale, (minimum_x + maximum_x) / 2, (minimum_y + maximum_y) / 2
+
+        def draw_mesh(
+            panel_size: tuple[int, int],
+            framing: list[tuple[float, float]],
+            *,
+            detail: bool,
+            callout: str = "",
+        ) -> Any:
+            panel_width, panel_height = panel_size
+            rendered = vertical_gradient(panel_size, panel_top, panel_bottom)
+            rendered_draw = ImageDraw.Draw(rendered, "RGBA")
+            scale, center_x, center_y = fit_transform(
+                framing,
+                panel_width,
+                panel_height,
+                (80 if detail else 30) * supersample,
+            )
+
+            def screen(point: tuple[float, float]) -> tuple[int, int]:
+                return (
+                    round(panel_width / 2 + (point[0] - center_x) * scale),
+                    round(panel_height / 2 - (point[1] - center_y) * scale),
+                )
+
+            projected_rows = [
+                (row, [screen(point) for point in row["projected"]])
+                for row in rows
+            ]
+            model_mask = Image.new("L", panel_size, 0)
+            model_mask_draw = ImageDraw.Draw(model_mask)
+            shadow_mask = Image.new("L", panel_size, 0)
+            shadow_draw = ImageDraw.Draw(shadow_mask)
+            for _row, polygon in projected_rows:
+                model_mask_draw.polygon(polygon, fill=255)
+                shadow_draw.polygon(
+                    [
+                        (x + 8 * supersample, y + 12 * supersample)
+                        for x, y in polygon
+                    ],
+                    fill=92,
+                )
+            shadow_mask = shadow_mask.filter(
+                ImageFilter.GaussianBlur(16 * supersample)
+            )
+            shadow_layer = Image.new("RGBA", panel_size, (45, 58, 76, 0))
+            shadow_layer.putalpha(shadow_mask)
+            rendered = Image.alpha_composite(
+                rendered.convert("RGBA"), shadow_layer
+            ).convert("RGB")
+            rendered_draw = ImageDraw.Draw(rendered, "RGBA")
+
+            light = _unit_or_none([-0.28, -0.48, 0.83])
+            assert light is not None
+            highlight_polygons = []
+            for row, polygon in projected_rows:
+                if not _visible(polygon, panel_width, panel_height):
+                    continue
+                intensity = 0.91 + 0.11 * abs(_dot(row["normal"], light))
+                shade = tuple(
+                    min(255, round(channel * intensity))
+                    for channel in (199, 208, 220)
+                )
+                rendered_draw.polygon(polygon, fill=(*shade, 255))
+                if row["key"] in highlighted:
+                    highlight_polygons.append(polygon)
+
+            highlight_mask = Image.new("L", panel_size, 0)
+            highlight_mask_draw = ImageDraw.Draw(highlight_mask)
+            for polygon in highlight_polygons:
+                rendered_draw.polygon(
+                    polygon, fill=(*accent, 112 if detail else 72)
+                )
+                highlight_mask_draw.polygon(polygon, fill=255)
+
+            kernel = 2 * supersample + 1
+            silhouette = ImageChops.subtract(
+                model_mask.filter(ImageFilter.MaxFilter(kernel)), model_mask
+            ).point(lambda value: round(value * (0.58 if detail else 0.44)))
+            rendered.paste((67, 82, 103), (0, 0), silhouette)
+            highlight_edge = ImageChops.subtract(
+                highlight_mask.filter(ImageFilter.MaxFilter(kernel)),
+                highlight_mask.filter(ImageFilter.MinFilter(kernel)),
+            ).point(lambda value: round(value * 0.68))
+            rendered.paste(accent_dark, (0, 0), highlight_edge)
+            rendered_draw = ImageDraw.Draw(rendered, "RGBA")
+
+            marker = screen(focus_xy)
+            radius = (6 if detail else 5) * supersample
+            halo = (13 if detail else 10) * supersample
+            rendered_draw.ellipse(
+                (
+                    marker[0] - halo,
+                    marker[1] - halo,
+                    marker[0] + halo,
+                    marker[1] + halo,
+                ),
+                fill=(255, 255, 255, 235),
+            )
+            rendered_draw.ellipse(
+                (
+                    marker[0] - radius,
+                    marker[1] - radius,
+                    marker[0] + radius,
+                    marker[1] + radius,
+                ),
+                fill=(*accent, 255),
+                outline=(255, 255, 255, 255),
+                width=2 * supersample,
+            )
+
+            if detail and callout:
+                callout_font = font(11 * supersample, bold=True)
+                text_box = rendered_draw.textbbox(
+                    (0, 0), callout, font=callout_font
+                )
+                callout_width = text_box[2] - text_box[0] + 28 * supersample
+                callout_height = 34 * supersample
+                to_right = marker[0] < panel_width * 0.68
+                label_left = (
+                    marker[0] + 44 * supersample
+                    if to_right
+                    else marker[0] - callout_width - 44 * supersample
+                )
+                label_left = max(
+                    22 * supersample,
+                    min(label_left, panel_width - callout_width - 22 * supersample),
+                )
+                label_top = max(
+                    54 * supersample,
+                    min(
+                        marker[1] - 48 * supersample,
+                        panel_height - callout_height - 36 * supersample,
+                    ),
+                )
+                line_end = (
+                    label_left if to_right else label_left + callout_width,
+                    label_top + callout_height // 2,
+                )
+                elbow = (
+                    marker[0] + (24 if to_right else -24) * supersample,
+                    line_end[1],
+                )
+                rendered_draw.line(
+                    (marker, elbow, line_end),
+                    fill=(*accent_dark, 210),
+                    width=supersample,
+                )
+                rendered_draw.rounded_rectangle(
+                    (
+                        label_left,
+                        label_top,
+                        label_left + callout_width,
+                        label_top + callout_height,
+                    ),
+                    radius=17 * supersample,
+                    fill=(255, 255, 255, 242),
+                    outline=(*accent, 100),
+                    width=supersample,
+                )
+                rendered_draw.ellipse(
+                    (
+                        label_left + 11 * supersample,
+                        label_top + 14 * supersample,
+                        label_left + 17 * supersample,
+                        label_top + 20 * supersample,
+                    ),
+                    fill=(*accent, 255),
+                )
+                rendered_draw.text(
+                    (
+                        label_left + 23 * supersample,
+                        label_top + 9 * supersample,
+                    ),
+                    callout,
+                    font=callout_font,
+                    fill=ink,
+                )
+            return rendered
+
+        field_ref = str(patch.get("field_ref") or "").lower()
+        if "draft" in field_ref:
+            title, callout = "DRAFT ANGLE", "CRITICAL DRAFT REGION"
+        elif "thickness" in field_ref:
+            title, callout = "WALL THICKNESS", "CRITICAL THICKNESS REGION"
+        elif "radius" in field_ref:
+            title, callout = "RADIUS CHECK", "CRITICAL RADIUS REGION"
+        else:
+            title, callout = "GEOMETRY CHECK", "EVALUATED REGION"
+
+        detail_framing = list(patch_xy)
+        patch_span_x = max(item[0] for item in patch_xy) - min(
+            item[0] for item in patch_xy
         )
-        scale = min(width, height) * 0.62 / (patch_span * 2.5)
-
-        def screen(point: tuple[float, float]) -> tuple[int, int]:
-            return (
-                round(width / 2 + (point[0] - focus_xy[0]) * scale),
-                round(height / 2 - (point[1] - focus_xy[1]) * scale),
+        patch_span_y = max(item[1] for item in patch_xy) - min(
+            item[1] for item in patch_xy
+        )
+        minimum_span = scene_span * 0.12
+        if view.get("presentation_mode") == "oblique":
+            half = scene_span * 0.10
+            detail_framing = [
+                (focus_xy[0] - half, focus_xy[1] - half),
+                (focus_xy[0] + half, focus_xy[1] + half),
+            ]
+        elif patch_span_x < minimum_span or patch_span_y < minimum_span:
+            half = minimum_span / 2
+            detail_framing.extend(
+                [
+                    (focus_xy[0] - half, focus_xy[1] - half),
+                    (focus_xy[0] + half, focus_xy[1] + half),
+                ]
             )
 
-        visible_highlights: list[list[tuple[int, int]]] = []
-        for _depth, primitive_id, triangle_id, xy in sorted(projected, reverse=True):
-            polygon = [screen(point) for point in xy]
-            if not _visible(polygon, width, height):
-                continue
-            is_failed = (mesh_snapshot_id, primitive_id, triangle_id) in highlighted
-            draw.polygon(
-                polygon,
-                fill=(210, 214, 220),
-                outline=(151, 158, 168),
-            )
-            if is_failed:
-                visible_highlights.append(polygon)
+        canvas = vertical_gradient(
+            (width, height), background_top, background_bottom
+        )
+        context = draw_mesh(
+            (330 * supersample, 205 * supersample), all_xy, detail=False
+        )
+        margin = 32 * supersample
+        header_height = 108 * supersample
+        hero_width = width - margin * 2
+        hero_height = height - header_height - margin
+        detail = draw_mesh(
+            (hero_width, hero_height),
+            detail_framing,
+            detail=True,
+            callout=callout,
+        )
+        hero_box = (margin, header_height, width - margin, height - margin)
+        paste_rounded(
+            canvas,
+            detail,
+            hero_box,
+            radius=22 * supersample,
+        )
+        draw = ImageDraw.Draw(canvas, "RGBA")
+        draw.rounded_rectangle(
+            hero_box,
+            radius=22 * supersample,
+            outline=(*hairline, 210),
+            width=supersample,
+        )
 
-        # Draw the evaluated patch last so an internal or rear-facing problem is
-        # still locatable. This is an evidence overlay, not a hidden-line claim.
-        for polygon in visible_highlights:
-            draw.polygon(polygon, fill=(225, 48, 48), outline=(125, 12, 12))
-            draw.line([*polygon, polygon[0]], fill=(125, 12, 12), width=4)
+        inset_left = margin + 22 * supersample
+        inset_bottom = height - margin - 22 * supersample
+        inset_box = (
+            inset_left,
+            inset_bottom - 205 * supersample,
+            inset_left + 330 * supersample,
+            inset_bottom,
+        )
+        paste_rounded(
+            canvas,
+            context,
+            inset_box,
+            radius=16 * supersample,
+        )
+        draw = ImageDraw.Draw(canvas, "RGBA")
+        draw.rounded_rectangle(
+            inset_box,
+            radius=16 * supersample,
+            outline=(255, 255, 255, 210),
+            width=2 * supersample,
+        )
 
-        marker = screen(focus_xy)
-        halo_radius = 24
-        radius = 17
-        draw.ellipse(
-            (
-                marker[0] - halo_radius,
-                marker[1] - halo_radius,
-                marker[0] + halo_radius,
-                marker[1] + halo_radius,
-            ),
+        eyebrow_font = font(10 * supersample, bold=True)
+        title_font = font(26 * supersample, bold=True)
+        small_font = font(11 * supersample)
+        badge_font = font(11 * supersample, bold=True)
+        draw.rounded_rectangle(
+            (margin, 25 * supersample, margin + 4 * supersample, 80 * supersample),
+            radius=2 * supersample,
+            fill=accent,
+        )
+        draw.text(
+            (margin + 18 * supersample, 21 * supersample),
+            "HERMES  /  DESIGN FOR MANUFACTURING",
+            font=eyebrow_font,
+            fill=muted,
+        )
+        draw.text(
+            (margin + 18 * supersample, 41 * supersample),
+            title,
+            font=title_font,
+            fill=ink,
+        )
+        draw.text(
+            (margin + 18 * supersample, 77 * supersample),
+            f"Evidence {str(patch['patch_id'])[-8:]}  ·  deterministic geometry trace",
+            font=small_font,
+            fill=muted,
+        )
+
+        label = str(view["label"]).upper()
+        if view.get("presentation_mode") == "oblique":
+            label = f"{label} · OBLIQUE"
+        label_box = draw.textbbox((0, 0), label, font=badge_font)
+        label_width = label_box[2] - label_box[0] + 28 * supersample
+        badge_left = width - margin - label_width
+        draw.rounded_rectangle(
+            (badge_left, 31 * supersample, width - margin, 65 * supersample),
+            radius=17 * supersample,
+            fill=ink,
+        )
+        draw.text(
+            (badge_left + 14 * supersample, 40 * supersample),
+            label,
+            font=badge_font,
             fill=(255, 255, 255),
-            outline=(255, 255, 255),
-            width=4,
+        )
+
+        status = "ACTION REQUIRED"
+        status_box = draw.textbbox((0, 0), status, font=badge_font)
+        status_width = status_box[2] - status_box[0] + 42 * supersample
+        status_left = badge_left - status_width - 10 * supersample
+        draw.rounded_rectangle(
+            (
+                status_left,
+                31 * supersample,
+                status_left + status_width,
+                65 * supersample,
+            ),
+            radius=17 * supersample,
+            fill=accent_pale,
         )
         draw.ellipse(
             (
-                marker[0] - radius,
-                marker[1] - radius,
-                marker[0] + radius,
-                marker[1] + radius,
+                status_left + 13 * supersample,
+                45 * supersample,
+                status_left + 19 * supersample,
+                51 * supersample,
             ),
-            fill=(220, 25, 25),
-            outline=(120, 8, 8),
-            width=4,
+            fill=accent,
         )
-        draw.line(
-            (marker[0] - 30, marker[1], marker[0] + 30, marker[1]),
-            fill=(120, 8, 8),
-            width=3,
+        draw.text(
+            (status_left + 26 * supersample, 40 * supersample),
+            status,
+            font=badge_font,
+            fill=accent_dark,
         )
-        draw.line(
-            (marker[0], marker[1] - 30, marker[0], marker[1] + 30),
-            fill=(120, 8, 8),
-            width=3,
+
+        inset_label_left = inset_left + 13 * supersample
+        inset_label_top = inset_box[1] + 13 * supersample
+        draw.rounded_rectangle(
+            (
+                inset_label_left,
+                inset_label_top,
+                inset_label_left + 98 * supersample,
+                inset_label_top + 28 * supersample,
+            ),
+            radius=14 * supersample,
+            fill=(255, 255, 255, 225),
         )
-        label = str(view["label"])
-        draw.rounded_rectangle((24, 22, 154, 62), radius=8, fill=(31, 41, 55))
-        draw.text((42, 34), label, fill=(255, 255, 255))
-        image.save(target, format="PNG")
+        draw.text(
+            (inset_label_left + 13 * supersample, inset_label_top + 7 * supersample),
+            "PART CONTEXT",
+            font=eyebrow_font,
+            fill=muted,
+        )
+
+        legend_y = height - margin - 38 * supersample
+        cursor = width - margin - 22 * supersample
+        legend_font = font(10 * supersample, bold=True)
+        for legend_label, color in (
+            ("FOCUS", accent),
+            ("EVALUATED SURFACE", (224, 118, 111)),
+            ("MODEL", (157, 170, 188)),
+        ):
+            box = draw.textbbox((0, 0), legend_label, font=legend_font)
+            item_width = box[2] - box[0] + 24 * supersample
+            cursor -= item_width
+            draw.ellipse(
+                (
+                    cursor,
+                    legend_y + 5 * supersample,
+                    cursor + 8 * supersample,
+                    legend_y + 13 * supersample,
+                ),
+                fill=color,
+            )
+            draw.text(
+                (cursor + 14 * supersample, legend_y),
+                legend_label,
+                font=legend_font,
+                fill=(69, 84, 105),
+            )
+            cursor -= 16 * supersample
+
+        canvas.resize(final_size, Image.Resampling.LANCZOS).save(
+            target, format="PNG"
+        )
 
 
 def _select_representative_patches(
@@ -749,6 +1181,109 @@ def _adaptive_views(
         ),
         _camera_frame("side", "Side", side, process, "derived_orthogonal"),
     ]
+
+
+def _presentation_view(
+    scene: dict[str, Any], patch: dict[str, Any], source: dict[str, Any]
+) -> dict[str, Any]:
+    """Tilt collapsed orthographic views into readable engineering views."""
+    vertices = [
+        vertex
+        for primitive in scene.get("primitives", [])
+        for vertex in primitive.get("vertices", [])
+        if isinstance(vertex, list) and len(vertex) == 3
+    ]
+    if not vertices:
+        raise DFMError("render_scene_invalid", "The render scene is empty.")
+
+    patch_points = _bounds_corners(patch["bounds"])
+    base_d = source["basis_d"]
+    base_u = source["basis_u"]
+    base_v = source["basis_v"]
+
+    def candidate_view(horizontal: float, vertical: float) -> dict[str, Any]:
+        direction = [
+            float(base_d[axis])
+            + float(base_u[axis]) * horizontal
+            + float(base_v[axis]) * vertical
+            for axis in range(3)
+        ]
+        return _camera_frame(
+            str(source["id"]),
+            str(source["label"]),
+            direction,
+            list(base_v),
+            str(source["source"]),
+        )
+
+    def projected_aspect(
+        points: list[list[float]], candidate: dict[str, Any]
+    ) -> float:
+        projected = [
+            (_dot(point, candidate["basis_u"]), _dot(point, candidate["basis_v"]))
+            for point in points
+        ]
+        span_x = max(item[0] for item in projected) - min(item[0] for item in projected)
+        span_y = max(item[1] for item in projected) - min(item[1] for item in projected)
+        return min(span_x, span_y) / max(span_x, span_y, 1e-9)
+
+    best: tuple[float, float, dict[str, Any]] | None = None
+    for horizontal, vertical in (
+        (0.0, 0.0),
+        (0.22, 0.16),
+        (-0.22, 0.16),
+        (0.42, 0.24),
+        (-0.42, 0.24),
+        (0.32, -0.30),
+        (-0.32, -0.30),
+        (0.82, 0.38),
+        (-0.82, 0.38),
+        (0.72, -0.62),
+        (-0.72, -0.62),
+        (1.35, 0.85),
+        (-1.35, 0.85),
+        (1.50, -1.15),
+        (-1.50, -1.15),
+    ):
+        candidate = candidate_view(horizontal, vertical)
+        scene_aspect = projected_aspect(vertices, candidate)
+        patch_aspect = projected_aspect(patch_points, candidate)
+        deviation = abs(horizontal) + abs(vertical)
+        score = scene_aspect * 0.68 + patch_aspect * 0.32 - deviation * 0.012
+        if best is None or score > best[0]:
+            best = score, scene_aspect, candidate
+
+    assert best is not None
+    if best[1] >= 0.24:
+        return best[2]
+
+    directions = (
+        (
+            (-1.0, 1.0, 0.82),
+            (-1.0, -1.0, 0.82),
+            (-0.72, 1.0, -0.68),
+        )
+        if str(source.get("label") or "").lower() == "side"
+        else (
+            (1.0, 1.0, 0.82),
+            (1.0, -1.0, 0.82),
+            (0.72, 1.0, -0.68),
+        )
+    )
+    for direction in directions:
+        candidate = _camera_frame(
+            str(source["id"]),
+            str(source["label"]),
+            list(direction),
+            [0.0, 0.0, 1.0],
+            str(source["source"]),
+        )
+        scene_aspect = projected_aspect(vertices, candidate)
+        patch_aspect = projected_aspect(patch_points, candidate)
+        score = scene_aspect * 0.64 + patch_aspect * 0.36
+        if score > best[0]:
+            best = score, scene_aspect, candidate
+    return {**best[2], "presentation_mode": "oblique"}
 
 
 def _camera_frame(
