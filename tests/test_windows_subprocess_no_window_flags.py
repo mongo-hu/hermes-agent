@@ -109,6 +109,8 @@ def test_coding_context_git_hides_git_windows(monkeypatch):
 
     assert coding_context._git(Path("C:/repo"), "status", "--short") == "clean"
     assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
+    assert captured[0][1]["encoding"] == "utf-8"
+    assert captured[0][1]["errors"] == "replace"
 
 
 def test_context_reference_git_and_rg_hide_windows(monkeypatch):
@@ -151,6 +153,30 @@ def test_context_reference_git_and_rg_hide_windows(monkeypatch):
     assert len(git_calls) == 1 and len(rg_calls) == 1, captured
     assert git_calls[0][1].get("creationflags") == _CREATE_NO_WINDOW
     assert rg_calls[0][1].get("creationflags") == _CREATE_NO_WINDOW
+    assert git_calls[0][1].get("encoding") == "utf-8"
+    assert git_calls[0][1].get("errors") == "replace"
+    assert rg_calls[0][1].get("encoding") == "utf-8"
+    assert rg_calls[0][1].get("errors") == "replace"
+
+
+def test_base_environment_pipe_uses_utf8(monkeypatch):
+    from tools.environments import base
+
+    captured = []
+
+    class _Proc:
+        stdin = None
+
+    def fake_popen(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Proc()
+
+    monkeypatch.setattr(base.subprocess, "Popen", fake_popen)
+
+    base._popen_bash(["bash", "-c", "printf test"])
+
+    assert captured[0][1]["encoding"] == "utf-8"
+    assert captured[0][1]["errors"] == "replace"
 
 
 def test_copilot_gh_cli_probe_hides_gh_windows(monkeypatch):

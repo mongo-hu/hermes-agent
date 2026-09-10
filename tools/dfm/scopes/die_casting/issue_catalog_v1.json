@@ -1,0 +1,14 @@
+{
+  "catalog_id": "die_casting.baseline-issues",
+  "version": "1.0.0",
+  "issues": [
+    {
+      "code": "invalid_brep",
+      "family": "topology",
+      "metric": "valid_brep",
+      "parameter": "valid_brep_required",
+      "title": "Invalid B-Rep geometry",
+      "recommendation": "Repair the solid topology before continuing die-casting DFM checks."
+    }
+  ]
+}

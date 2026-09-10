@@ -77,6 +77,9 @@ export type GatewayEventPayload = {
   // session.title (live auto-title push) — stored session id + generated title
   session_id?: string
   title?: string
+  project_id?: string
+  run_id?: string
+  viewer_manifest?: string
   // moa.reference / moa.aggregating (Mixture of Agents per-model relay)
   label?: string
   index?: number
@@ -445,6 +448,9 @@ function toolResult(
     ...(payload?.message ? { message: payload.message } : {}),
     ...(payload?.preview ? { preview: payload.preview } : {}),
     ...(payload?.duration_s !== undefined ? { duration_s: payload.duration_s } : {}),
+    ...(payload?.project_id ? { project_id: payload.project_id } : {}),
+    ...(payload?.run_id ? { run_id: payload.run_id } : {}),
+    ...(payload?.viewer_manifest ? { viewer_manifest: payload.viewer_manifest } : {}),
     ...carryTodos(payload, prevResult, prevArgs),
     ...(payload?.error ? { error: payload.error } : {})
   }

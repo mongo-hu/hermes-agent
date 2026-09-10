@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo } from 'react'
 
+import { DfmViewerPane } from '@/app/dfm-viewer/dfm-viewer-root'
 import type { SetTitlebarToolGroup } from '@/app/shell/titlebar-controls'
 import { Codicon } from '@/components/ui/codicon'
 import {
@@ -14,9 +15,11 @@ import { Tip } from '@/components/ui/tooltip'
 import { translateNow, useI18n } from '@/i18n'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
+import { $dfmViewerTarget, type DfmViewerTarget } from '@/store/dfm-viewer'
 import {
   $panesFlipped,
   $rightRailActiveTabId,
+  RIGHT_RAIL_DFM_TAB_ID,
   RIGHT_RAIL_PREVIEW_TAB_ID,
   type RightRailTabId,
   selectRightRailTab
@@ -52,9 +55,11 @@ interface ChatPreviewRailProps {
 }
 
 interface RailTab {
+  dfmTarget?: DfmViewerTarget
   id: RightRailTabId
+  kind: 'dfm' | 'preview'
   label: string
-  target: PreviewTarget
+  target?: PreviewTarget
 }
 
 function tabLabelFor(target: PreviewTarget): string {
@@ -72,15 +77,21 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
   const filePreviewTabs = useStore($filePreviewTabs)
   const previewTarget = useStore($previewTarget)
   const dirtyPreviewUrls = useStore($dirtyPreviewUrls)
+  const dfmViewerTarget = useStore($dfmViewerTarget)
 
   const tabs = useMemo<readonly RailTab[]>(
     () => [
       ...(previewTarget
-        ? [{ id: RIGHT_RAIL_PREVIEW_TAB_ID, label: t.preview.tab, target: previewTarget } as RailTab]
+        ? [{ id: RIGHT_RAIL_PREVIEW_TAB_ID, kind: 'preview', label: t.preview.tab, target: previewTarget } as RailTab]
         : []),
-      ...filePreviewTabs.map(({ id, target }) => ({ id, label: tabLabelFor(target), target }) as RailTab)
+      ...(dfmViewerTarget
+        ? [{ dfmTarget: dfmViewerTarget, id: RIGHT_RAIL_DFM_TAB_ID, kind: 'dfm', label: 'DFM 模型' } as RailTab]
+        : []),
+      ...filePreviewTabs.map(
+        ({ id, target }) => ({ id, kind: 'preview', label: tabLabelFor(target), target }) as RailTab
+      )
     ],
-    [filePreviewTabs, previewTarget, t.preview.tab]
+    [dfmViewerTarget, filePreviewTabs, previewTarget, t.preview.tab]
   )
 
   const activeTab = tabs.find(tab => tab.id === activeTabId) ?? tabs[0]
@@ -119,7 +130,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
             const active = tab.id === activeTab.id
             const hasOthers = tabs.length > 1
             const hasTabsToRight = index < tabs.length - 1
-            const dirty = Boolean(dirtyPreviewUrls[tab.target.url])
+            const dirty = Boolean(tab.target && dirtyPreviewUrls[tab.target.url])
 
             return (
               <ContextMenu key={tab.id}>
@@ -151,7 +162,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
                     {active && (
                       <span aria-hidden="true" className="absolute inset-x-0 top-0 h-px bg-(--ui-stroke-primary)" />
                     )}
-                    <Tip label={tab.target.path || tab.target.url || tab.label}>
+                    <Tip label={tab.target?.path || tab.target?.url || tab.label}>
                       <button
                         aria-selected={active}
                         className="flex h-full min-w-0 max-w-full items-center overflow-hidden pl-3 pr-2 text-left outline-none"
@@ -215,13 +226,17 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden">
-        <PreviewPane
-          embedded
-          onRestartServer={isPreview ? onRestartServer : undefined}
-          reloadRequest={previewReloadRequest}
-          setTitlebarToolGroup={setTitlebarToolGroup}
-          target={activeTab.target}
-        />
+        {activeTab.kind === 'dfm' && activeTab.dfmTarget ? (
+          <DfmViewerPane embedded target={activeTab.dfmTarget} />
+        ) : activeTab.target ? (
+          <PreviewPane
+            embedded
+            onRestartServer={isPreview ? onRestartServer : undefined}
+            reloadRequest={previewReloadRequest}
+            setTitlebarToolGroup={setTitlebarToolGroup}
+            target={activeTab.target}
+          />
+        ) : null}
       </div>
     </aside>
   )

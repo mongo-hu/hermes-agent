@@ -41,6 +41,15 @@ describe('filePathFromMediaPath', () => {
   it('decodes a file:// URL with encoded characters', () => {
     expect(filePathFromMediaPath('file:///tmp/a%20b.png')).toBe('/tmp/a b.png')
   })
+
+  it('removes the URL root slash before a Windows drive', () => {
+    expect(filePathFromMediaPath('file:///C:/Users/a%20b/dfm.png')).toBe('C:/Users/a b/dfm.png')
+    expect(filePathFromMediaPath('file://C:\\Users\\a\\dfm.png')).toBe('C:/Users/a/dfm.png')
+  })
+
+  it('preserves UNC file URL hosts', () => {
+    expect(filePathFromMediaPath('file://analysis-server/dfm/run.png')).toBe('//analysis-server/dfm/run.png')
+  })
 })
 
 describe('mediaExternalUrl', () => {
@@ -57,6 +66,8 @@ describe('mediaExternalUrl', () => {
     $connection.set({ mode: 'local' } as never)
     expect(mediaExternalUrl('/tmp/a.png')).toBe('file:///tmp/a.png')
     expect(mediaExternalUrl('file:///tmp/a.png')).toBe('file:///tmp/a.png')
+    expect(mediaExternalUrl('C:\\dfm results\\run.json')).toBe('file:///C:/dfm results/run.json')
+    expect(mediaExternalUrl('\\\\analysis-server\\dfm\\run.json')).toBe('file://analysis-server/dfm/run.json')
   })
 
   it('rewrites gateway-local paths to an authenticated download URL', () => {
@@ -66,6 +77,9 @@ describe('mediaExternalUrl', () => {
     )
     expect(mediaExternalUrl('/tmp/a b.png')).toBe(
       'https://gw/api/files/download?path=%2Ftmp%2Fa%20b.png&token=s%20e%2Fcret'
+    )
+    expect(mediaExternalUrl('C:\\dfm results\\run.json')).toBe(
+      'https://gw/api/files/download?path=C%3A%5Cdfm%20results%5Crun.json&token=s%20e%2Fcret'
     )
   })
 

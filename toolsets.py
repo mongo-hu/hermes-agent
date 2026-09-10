@@ -230,6 +230,12 @@ TOOLSETS = {
         "includes": []
     },
     
+    "dfm": {
+        "description": "Built-in design-for-manufacturability orchestration (opt-in)",
+        "tools": ["dfm_project", "dfm_analysis"],
+        "includes": []
+    },
+
     "clarify": {
         "description": "Ask the user clarifying questions (multiple-choice or open-ended)",
         "tools": ["clarify"],

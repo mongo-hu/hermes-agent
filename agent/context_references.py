@@ -245,6 +245,12 @@ async def _expand_reference(
     return f"{ref.raw}: unsupported reference type", None
 
 
+# CAD exchange files are often ASCII, but their full B-Rep text is not useful
+# to the language model and can consume hundreds of thousands of tokens. DFM
+# reads these files through its deterministic intake/worker pipeline instead.
+_OPAQUE_CAD_EXTENSIONS = frozenset({".step", ".stp"})
+
+
 def _expand_file_reference(
     ref: ContextReference,
     cwd: Path,
@@ -257,6 +263,8 @@ def _expand_file_reference(
         return f"{ref.raw}: file not found", None
     if not path.is_file():
         return f"{ref.raw}: path is not a file", None
+    if path.suffix.lower() in _OPAQUE_CAD_EXTENSIONS:
+        return None, _opaque_reference_block(ref, path)
     if _is_binary_file(path):
         # A binary file can't be inlined as text, but it IS on disk (the agent's
         # tools run where this resolves — the local cwd, or the staged copy in a
@@ -309,6 +317,8 @@ def _expand_git_reference(
             cwd=cwd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
             stdin=subprocess.DEVNULL,
             **_popen_kwargs,
@@ -535,6 +545,8 @@ def _rg_files(path: Path, cwd: Path, limit: int) -> list[Path] | None:
             cwd=cwd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
             stdin=subprocess.DEVNULL,
             **_popen_kwargs,
@@ -568,6 +580,18 @@ def _binary_reference_block(ref: ContextReference, path: Path) -> str:
         f"It is available on disk at `{path}`. Use your tools to work with it "
         f"(read or convert it, extract its text, or view/render it as needed); "
         f"do not tell the user the file type is unsupported."
+    )
+
+
+def _opaque_reference_block(ref: ContextReference, path: Path) -> str:
+    try:
+        size = _human_bytes(path.stat().st_size)
+    except OSError:
+        size = "unknown size"
+    return (
+        f"📐 {ref.raw} (STEP CAD model, {size}) — kept opaque and not inlined as text. "
+        f"The DFM tools can read and analyze it from `{path}`; do not dump the "
+        "STEP contents into the conversation or infer engineering facts from raw coordinates."
     )
 
 

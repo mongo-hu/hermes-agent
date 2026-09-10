@@ -1037,6 +1037,7 @@ def handle_function_call(
     tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
+    tool_progress_callback: Optional[callable] = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -1141,6 +1142,7 @@ def handle_function_call(
                 tool_request_middleware_trace=list(_tool_middleware_trace),
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
+                tool_progress_callback=tool_progress_callback,
             )
 
     _tool_original_args = dict(function_args)
@@ -1267,6 +1269,8 @@ def handle_function_call(
                         task_id=task_id,
                         session_id=session_id,
                         enabled_tools=sandbox_enabled,
+                        tool_call_id=tool_call_id,
+                        tool_progress_callback=tool_progress_callback,
                     )
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
@@ -1275,6 +1279,8 @@ def handle_function_call(
                         task_id=task_id,
                         session_id=session_id,
                         user_task=user_task,
+                        tool_call_id=tool_call_id,
+                        tool_progress_callback=tool_progress_callback,
                     )
             from hermes_cli.middleware import run_tool_execution_middleware
 

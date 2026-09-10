@@ -1,0 +1,36 @@
+{
+  "status": "available",
+  "backend_version": "NX2406",
+  "plugin_version": "plugin-2.0",
+  "formats": {"parasolid_xt": "available"},
+  "calculators": {
+    "inspect_topology": {
+      "status": "certified",
+      "contract_version": 4,
+      "implementation_version": "nx-topology-1",
+      "required_arguments": [],
+      "optional_arguments": [],
+      "supported_algorithm_options": [],
+      "output_quantities": ["valid_brep"],
+      "output_artifact_kinds": [],
+      "supported_formats": ["parasolid_xt"],
+      "supported_region_modes": [],
+      "supported_nx_versions": ["NX2406"],
+      "certification_report_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "measure_draft": {
+      "status": "certified",
+      "contract_version": 4,
+      "implementation_version": "nx-draft-1",
+      "required_arguments": ["pull_direction"],
+      "optional_arguments": [],
+      "supported_algorithm_options": [],
+      "output_quantities": ["draft_angle_deg"],
+      "output_artifact_kinds": ["scalar_field", "render_scene", "topology_map"],
+      "supported_formats": ["parasolid_xt"],
+      "supported_region_modes": ["bbox"],
+      "supported_nx_versions": ["NX2406"],
+      "certification_report_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  }
+}

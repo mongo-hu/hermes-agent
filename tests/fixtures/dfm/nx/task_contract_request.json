@@ -1,0 +1,19 @@
+{
+  "operation_id": "draft.fixed_half",
+  "calculator_id": "measure_draft",
+  "depends_on": ["geometry.topology"],
+  "metric_ids": ["dc.geometry.draft.fixed_half"],
+  "required_quantities": ["draft_angle_deg"],
+  "required_artifacts": ["scalar_field", "render_scene", "topology_map"],
+  "required_fact_names": ["pull_dir"],
+  "feature_refs": ["feature.screw_boss.003"],
+  "region_refs": ["region.fixed_half"],
+  "arguments": {
+    "pull_direction": {
+      "value": [0, 0, 1],
+      "source_ref": "fact:pull_direction.fixed_half",
+      "unit": null
+    }
+  },
+  "algorithm_options": {}
+}

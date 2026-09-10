@@ -1,0 +1,63 @@
+{
+  "capability_id": "injection.geometry.wall-draft",
+  "version": "1.0.0",
+  "process": "injection",
+  "parameters": {
+    "model_units": {
+      "value": "mm",
+      "unit": null,
+      "kind": "engineering_context"
+    },
+    "pull_dir": {
+      "value": [0, 0, 1],
+      "unit": null,
+      "kind": "engineering_context"
+    }
+  },
+  "operations": [
+    {
+      "operation_id": "geometry.load",
+      "calculator_id": "load_geometry",
+      "depends_on": [],
+      "metric_ids": [],
+      "required_quantities": [],
+      "required_artifacts": [],
+      "required_fact_names": ["model_units"],
+      "arguments": {},
+      "algorithm_options": {}
+    },
+    {
+      "operation_id": "geometry.topology",
+      "calculator_id": "inspect_topology",
+      "depends_on": ["geometry.load"],
+      "metric_ids": [],
+      "required_quantities": [],
+      "required_artifacts": [],
+      "required_fact_names": [],
+      "arguments": {},
+      "algorithm_options": {}
+    },
+    {
+      "operation_id": "geometry.wall_thickness",
+      "calculator_id": "measure_wall_thickness",
+      "depends_on": ["geometry.topology"],
+      "metric_ids": ["injection.geometry.wall_thickness"],
+      "required_quantities": ["thickness_mm"],
+      "required_artifacts": ["scalar_field", "render_scene", "topology_map"],
+      "required_fact_names": ["model_units"],
+      "arguments": {},
+      "algorithm_options": {}
+    },
+    {
+      "operation_id": "geometry.draft",
+      "calculator_id": "measure_draft",
+      "depends_on": ["geometry.topology"],
+      "metric_ids": ["injection.geometry.draft"],
+      "required_quantities": ["draft_angle_deg"],
+      "required_artifacts": ["scalar_field", "render_scene", "topology_map"],
+      "required_fact_names": ["pull_dir", "model_units"],
+      "arguments": {},
+      "algorithm_options": {}
+    }
+  ]
+}

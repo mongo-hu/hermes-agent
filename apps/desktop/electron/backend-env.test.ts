@@ -98,6 +98,23 @@ test('Windows PATH casing and delimiter are preserved without POSIX sane entries
   assert.ok(env.Path.includes('\\venv\\Scripts;'))
   assert.ok(env.Path.includes(';C:\\Windows\\System32;C:\\Windows'))
   assert.equal(env.Path.includes('/opt/homebrew/bin'), false)
+  assert.equal(env.PYTHONUTF8, '1')
+  assert.equal(env.PYTHONIOENCODING, 'utf-8')
+})
+
+test('Windows backend preserves explicit Python encoding overrides', () => {
+  const env = buildDesktopBackendEnv({
+    currentEnv: {
+      Path: 'C:\\Windows\\System32',
+      PYTHONUTF8: '0',
+      PYTHONIOENCODING: 'gb18030'
+    },
+    platform: 'win32',
+    pathModule: path.win32
+  })
+
+  assert.equal(env.PYTHONUTF8, '0')
+  assert.equal(env.PYTHONIOENCODING, 'gb18030')
 })
 
 test('appendUniquePathEntries drops empty entries and keeps first occurrence', () => {

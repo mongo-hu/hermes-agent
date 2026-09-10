@@ -229,8 +229,13 @@ def load_hermes_dotenv(
     - project `.env` acts as a dev fallback and only fills missing values when
       the user env exists.
     - if no user env exists, the project `.env` also overrides stale shell vars.
+    - a desktop-spawned backend keeps the ephemeral dashboard session token
+      injected by Electron, rather than replacing it with a persisted token.
     """
     loaded: list[Path] = []
+    desktop_session_token = None
+    if os.getenv("HERMES_DESKTOP") == "1":
+        desktop_session_token = os.getenv("HERMES_DASHBOARD_SESSION_TOKEN") or None
 
     home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
     user_env = home_path / ".env"
@@ -266,6 +271,15 @@ def load_hermes_dotenv(
 
     _apply_external_secret_sources(home_path)
     _apply_managed_env()
+
+    # The Electron main process owns this credential for a local `hermes
+    # serve` child and uses the same value for REST/WS authentication. Dotenv
+    # intentionally overrides stale shell values in normal Hermes processes,
+    # but overriding this process-owned token leaves Electron holding a token
+    # the headless backend no longer accepts, so every protected API returns
+    # 401. Restore it after every configured environment source has loaded.
+    if desktop_session_token is not None:
+        os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] = desktop_session_token
 
     return loaded
 
