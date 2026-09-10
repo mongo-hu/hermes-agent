@@ -3,11 +3,9 @@ import { atom, computed } from 'nanostores'
 import { persistentAtom } from '@/lib/persisted'
 import { normalize } from '@/lib/text'
 
-import { $dfmViewerTarget, clearDfmViewers, dismissDfmViewer } from './dfm-viewer'
 import {
   $rightRailActiveTabId,
   PREVIEW_PANE_ID,
-  RIGHT_RAIL_DFM_TAB_ID,
   RIGHT_RAIL_PREVIEW_TAB_ID,
   type RightRailTabId,
   selectRightRailTab
@@ -422,7 +420,7 @@ export function dismissPreviewTarget() {
     selectRightRailTab($filePreviewTabs.get()[0]?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID)
   }
 
-  setPaneOpen(PREVIEW_PANE_ID, $filePreviewTabs.get().length > 0 || Boolean($dfmViewerTarget.get()))
+  setPaneOpen(PREVIEW_PANE_ID, $filePreviewTabs.get().length > 0)
 }
 
 function closeFilePreviewTab(tabId: RightRailTabId) {
@@ -445,7 +443,7 @@ function closeFilePreviewTab(tabId: RightRailTabId) {
     selectRightRailTab(next[Math.min(index, next.length - 1)]?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID)
   }
 
-  if (next.length === 0 && !$previewTarget.get() && !$dfmViewerTarget.get()) {
+  if (next.length === 0 && !$previewTarget.get()) {
     setPaneOpen(PREVIEW_PANE_ID, false)
   }
 }
@@ -455,16 +453,6 @@ export function closeRightRailTab(tabId: RightRailTabId) {
     if ($previewTarget.get()) {
       dismissPreviewTarget()
     }
-
-    return
-  }
-
-  if (tabId === RIGHT_RAIL_DFM_TAB_ID) {
-    dismissDfmViewer()
-    selectRightRailTab(
-      $previewTarget.get() ? RIGHT_RAIL_PREVIEW_TAB_ID : ($filePreviewTabs.get()[0]?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID)
-    )
-    setPaneOpen(PREVIEW_PANE_ID, Boolean($previewTarget.get()) || $filePreviewTabs.get().length > 0)
 
     return
   }
@@ -482,10 +470,6 @@ function rightRailTabOrder(): RightRailTabId[] {
 
   if ($previewTarget.get()) {
     ids.push(RIGHT_RAIL_PREVIEW_TAB_ID)
-  }
-
-  if ($dfmViewerTarget.get()) {
-    ids.push(RIGHT_RAIL_DFM_TAB_ID)
   }
 
   for (const tab of $filePreviewTabs.get()) {
@@ -526,7 +510,6 @@ export function closeRightRail() {
     dismissPreviewTarget()
   }
 
-  dismissDfmViewer()
   $filePreviewTabs.set([])
   setPaneOpen(PREVIEW_PANE_ID, false)
 }
@@ -534,7 +517,6 @@ export function closeRightRail() {
 export function clearSessionPreviewRegistry() {
   $sessionPreviewRegistry.set({})
   setPreviewTarget(null)
-  clearDfmViewers()
   $filePreviewTabs.set([])
   setPaneOpen(PREVIEW_PANE_ID, false)
   selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)

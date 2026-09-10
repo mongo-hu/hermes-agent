@@ -76,21 +76,7 @@ export function mediaExternalUrl(path: string): string {
     }
   }
 
-  if (/^file:/i.test(path)) {
-    return path
-  }
-
-  const normalized = path.replace(/\\/g, '/')
-
-  if (/^[a-z]:\//i.test(normalized)) {
-    return `file:///${normalized}`
-  }
-
-  if (normalized.startsWith('//')) {
-    return `file://${normalized.slice(2)}`
-  }
-
-  return `file://${normalized}`
+  return /^file:/i.test(path) ? path : `file://${path}`
 }
 
 // Custom Electron scheme (registered in electron/main.ts) that streams a local
@@ -118,23 +104,7 @@ export function filePathFromMediaPath(path: string): string {
   }
 
   try {
-    const url = new URL(path)
-    const pathname = decodeURIComponent(url.pathname).replace(/\\/g, '/')
-
-    // WHATWG file URLs keep the leading slash before a Windows drive
-    // (file:///C:/x -> /C:/x). Passing that value to path.resolve() on
-    // Windows incorrectly turns it into <cwd-drive>:\\C:\\x.
-    if (/^\/[a-z]:\//i.test(pathname)) {
-      return pathname.slice(1).replace(/^([a-z]:)\/+/, '$1/')
-    }
-
-    // Preserve UNC hosts instead of dropping them when converting
-    // file://server/share/x to a filesystem path.
-    if (url.hostname && url.hostname.toLowerCase() !== 'localhost') {
-      return `//${url.hostname}${pathname}`
-    }
-
-    return pathname
+    return decodeURIComponent(new URL(path).pathname)
   } catch {
     return path.replace(/^file:\/\//, '')
   }

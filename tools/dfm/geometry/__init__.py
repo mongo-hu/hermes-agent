@@ -1,1 +1,0 @@
-"""Deterministic DFM geometry implementations."""
