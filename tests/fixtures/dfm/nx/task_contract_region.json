@@ -1,0 +1,15 @@
+{
+  "region_id": "region.fixed_half",
+  "input_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "coordinate_system": "model",
+  "mode": "bbox",
+  "semantic_label": "fixed half",
+  "role": "main_wall",
+  "feature_refs": ["feature.screw_boss.003"],
+  "source_refs": ["fact:parting.fixed_half"],
+  "version": "1",
+  "content_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "bbox": {"minimum": [0, 0, 0], "maximum": [10, 20, 30]},
+  "geometry_refs": [],
+  "excluded_geometry_refs": []
+}

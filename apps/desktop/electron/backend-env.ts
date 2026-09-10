@@ -98,9 +98,22 @@ function buildDesktopBackendEnv({
   const delimiter = delimiterForPlatform(platform)
   const currentPythonPath = currentEnv?.PYTHONPATH || ''
   const key = pathEnvKey(currentEnv, platform)
+  const windowsPythonUtf8 =
+    platform === 'win32'
+      ? {
+          // These must be present before Python starts. hermes_bootstrap sets
+          // the same defaults in-process, but Python has already frozen its
+          // locale codec by then; subprocess.run(text=True) would still use
+          // cp936/GBK and its _readerthread can crash on UTF-8 child output.
+          // Preserve an explicit user override, matching hermes_bootstrap.
+          PYTHONUTF8: currentEnv?.PYTHONUTF8 || '1',
+          PYTHONIOENCODING: currentEnv?.PYTHONIOENCODING || 'utf-8'
+        }
+      : {}
 
   return {
     PYTHONPATH: appendUniquePathEntries([...pythonPathEntries, currentPythonPath], { delimiter }),
+    ...windowsPythonUtf8,
     [key]: buildDesktopBackendPath({
       hermesHome,
       venvRoot,

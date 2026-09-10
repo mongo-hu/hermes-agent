@@ -2,12 +2,14 @@
 
 import type { Unstable_DirectiveFormatter, Unstable_DirectiveSegment, Unstable_TriggerItem } from '@assistant-ui/core'
 import type { TextMessagePartComponent, TextMessagePartProps } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import type { FC } from 'react'
 import { Fragment, useEffect, useMemo, useState } from 'react'
 
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { extractEmbeddedImages } from '@/lib/embedded-images'
-import { gatewayMediaDataUrl, isRemoteGateway } from '@/lib/media'
+import { gatewayMediaDataUrl } from '@/lib/media'
+import { $connection } from '@/store/session'
 
 const HERMES_REF_TYPES = ['file', 'folder', 'url', 'image', 'tool', 'line', 'terminal', 'session'] as const
 type HermesRefType = (typeof HERMES_REF_TYPES)[number]
@@ -389,21 +391,25 @@ export const DirectiveText: TextMessagePartComponent = ({ text }: TextMessagePar
  * messages render after the backend embeds the data URL, so the UX is stable
  * across initial send and refresh. */
 const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
+  const connectionMode = useStore($connection)?.mode
   const isUrl = /^(?:https?|data):/i.test(id)
   const [src, setSrc] = useState<string | null>(isUrl ? id : null)
   const [failed, setFailed] = useState(false)
 
   useEffect(() => {
-    if (isUrl || !id) {
+    if (isUrl || !id || !connectionMode) {
       return
     }
 
     let alive = true
+    setFailed(false)
 
     // Remote gateway: the image lives on the gateway's disk, not ours — fetch
     // it over the authenticated API. Local: read it straight off this disk.
     const load =
-      window.hermesDesktop && isRemoteGateway() ? gatewayMediaDataUrl(id) : window.hermesDesktop?.readFileDataUrl(id)
+      window.hermesDesktop && connectionMode === 'remote'
+        ? gatewayMediaDataUrl(id)
+        : window.hermesDesktop?.readFileDataUrl(id)
 
     void Promise.resolve(load)
       .then(url => alive && url && setSrc(url))
@@ -412,7 +418,7 @@ const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
     return () => {
       alive = false
     }
-  }, [id, isUrl])
+  }, [connectionMode, id, isUrl])
 
   if (failed) {
     return <DirectiveChip id={id} label={label} type="image" />

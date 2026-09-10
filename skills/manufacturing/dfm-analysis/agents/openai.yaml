@@ -1,0 +1,4 @@
+interface:
+  display_name: "DFM Analysis"
+  short_description: "Run safe DFM project intake and analysis workflows"
+  default_prompt: "Analyze the attached manufacturing design using the DFM project workflow."

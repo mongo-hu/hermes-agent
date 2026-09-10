@@ -226,6 +226,25 @@ def test_binary_file_yields_actionable_block_not_a_dead_warning(sample_repo: Pat
     assert str(sample_repo / "blob.bin") in result.message
 
 
+def test_step_cad_reference_stays_opaque_to_protect_context_budget(tmp_path: Path):
+    from agent.context_references import preprocess_context_references
+
+    step = tmp_path / "large-part.step"
+    step.write_text(
+        "ISO-10303-21;\nDATA;\n" + ("#1=MANIFOLD_SOLID_BREP();\n" * 100_000) + "ENDSEC;\nEND-ISO-10303-21;",
+        encoding="ascii",
+    )
+
+    result = preprocess_context_references(
+        "Analyze @file:large-part.step", cwd=tmp_path, context_length=100_000
+    )
+
+    assert result.expanded
+    assert result.injected_tokens < 100
+    assert "kept opaque" in result.message
+    assert "MANIFOLD_SOLID_BREP" not in result.message
+
+
 def test_soft_budget_warns_and_hard_budget_refuses(sample_repo: Path):
     from agent.context_references import preprocess_context_references
 

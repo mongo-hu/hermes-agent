@@ -1,0 +1,266 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080" role="img" aria-labelledby="title desc">
+  <title id="title">DFM 智能分析系统总体架构</title>
+  <desc id="desc">面向注塑产品的五层 DFM 系统架构，包括用户管理、产品应用、核心业务治理、工程分析计算和数据基础设施。</desc>
+  <defs>
+    <style>
+      .font { font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Arial, sans-serif; }
+      .title { font-size: 38px; font-weight: 700; fill: #123b6d; letter-spacing: 1px; }
+      .subtitle { font-size: 17px; font-weight: 400; fill: #64748b; }
+      .layer-no { font-size: 25px; font-weight: 700; fill: #ffffff; }
+      .layer-name { font-size: 21px; font-weight: 700; fill: #123b6d; }
+      .layer-desc { font-size: 13px; font-weight: 400; fill: #64748b; }
+      .layer-title { font-size: 23px; font-weight: 700; fill: #164b80; }
+      .box-title { font-size: 17px; font-weight: 700; fill: #1f2937; }
+      .box-sub { font-size: 12.5px; font-weight: 400; fill: #64748b; }
+      .small-title { font-size: 15px; font-weight: 700; fill: #1f2937; }
+      .small-sub { font-size: 11.5px; font-weight: 400; fill: #64748b; }
+      .panel-title { font-size: 18px; font-weight: 700; fill: #164b80; }
+      .core-banner { font-size: 18px; font-weight: 600; fill: #244b75; }
+      .note { font-size: 12px; font-weight: 400; fill: #64748b; }
+      .arrow-label { font-size: 12px; font-weight: 600; fill: #355978; }
+    </style>
+    <filter id="shadow" x="-10%" y="-20%" width="120%" height="150%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#123b6d" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#2f6fa5"/>
+    </marker>
+    <marker id="arrow-blue-start" markerWidth="10" markerHeight="10" refX="2" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M10,0 L0,5 L10,10 Z" fill="#2f6fa5"/>
+    </marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#d8892b"/>
+    </marker>
+  </defs>
+
+  <rect width="1920" height="1080" fill="#ffffff"/>
+
+  <!-- Title -->
+  <text class="font title" x="960" y="50" text-anchor="middle">DFM 智能分析系统总体架构</text>
+  <text class="font subtitle" x="960" y="76" text-anchor="middle">知识驱动 · 规则可治理 · 几何可验证 · 结果可追溯</text>
+  <line x1="42" y1="91" x2="1878" y2="91" stroke="#123b6d" stroke-width="2"/>
+
+  <!-- Layer 01 label -->
+  <circle cx="68" cy="164" r="25" fill="#164b80"/>
+  <text class="font layer-no" x="68" y="173" text-anchor="middle">01</text>
+  <text class="font layer-name" x="108" y="153">用户与管理层</text>
+  <text class="font layer-desc" x="108" y="177">业务使用 · 专家治理</text>
+  <text class="font layer-desc" x="108" y="197">企业规则 · 权限管理</text>
+
+  <!-- Layer 01 -->
+  <rect x="300" y="105" width="1580" height="120" rx="5" fill="#fbfdff" stroke="#164b80" stroke-width="2" filter="url(#shadow)"/>
+  <text class="font layer-title" x="1090" y="136" text-anchor="middle">DFM 业务参与者</text>
+
+  <g>
+    <rect x="330" y="153" width="470" height="50" rx="3" fill="#ffffff" stroke="#456a8e" stroke-width="1.4"/>
+    <text class="font box-title" x="565" y="175" text-anchor="middle">产品 / 模具工程师</text>
+    <text class="font box-sub" x="565" y="193" text-anchor="middle">发起分析 · 补充条件 · 审阅结论</text>
+  </g>
+  <g>
+    <rect x="850" y="153" width="470" height="50" rx="3" fill="#ffffff" stroke="#456a8e" stroke-width="1.4"/>
+    <text class="font box-title" x="1085" y="175" text-anchor="middle">DFM 专家</text>
+    <text class="font box-sub" x="1085" y="193" text-anchor="middle">维护知识 · 审核规则 · 工程复核</text>
+  </g>
+  <g>
+    <rect x="1370" y="153" width="470" height="50" rx="3" fill="#ffffff" stroke="#456a8e" stroke-width="1.4"/>
+    <text class="font box-title" x="1605" y="175" text-anchor="middle">企业管理员</text>
+    <text class="font box-sub" x="1605" y="193" text-anchor="middle">企业规则 · 组织权限 · 发布管理</text>
+  </g>
+
+  <!-- Connector 01-02 -->
+  <line x1="1090" y1="225" x2="1090" y2="245" stroke="#2f6fa5" stroke-width="2.2" marker-start="url(#arrow-blue-start)" marker-end="url(#arrow-blue)"/>
+
+  <!-- Layer 02 label -->
+  <circle cx="68" cy="316" r="25" fill="#164b80"/>
+  <text class="font layer-no" x="68" y="325" text-anchor="middle">02</text>
+  <text class="font layer-name" x="108" y="305">产品与智能体层</text>
+  <text class="font layer-desc" x="108" y="329">多端交互 · Agent 编排</text>
+  <text class="font layer-desc" x="108" y="349">管理后台 · 系统集成</text>
+
+  <!-- Layer 02 -->
+  <rect x="300" y="245" width="1580" height="140" rx="5" fill="#f7fbff" stroke="#164b80" stroke-width="2" filter="url(#shadow)"/>
+  <text class="font layer-title" x="1090" y="278" text-anchor="middle">DFM 产品与智能体应用层</text>
+
+  <g>
+    <rect x="330" y="300" width="350" height="60" rx="4" fill="#eaf8f3" stroke="#2b8a78" stroke-width="1.7"/>
+    <text class="font box-title" x="505" y="324" text-anchor="middle">DFM Desktop / Web</text>
+    <text class="font box-sub" x="505" y="346" text-anchor="middle">模型上传 · 3D 定位 · 证据 · 报告</text>
+  </g>
+  <g>
+    <rect x="710" y="294" width="350" height="72" rx="5" fill="#eaf8f3" stroke="#2b8a78" stroke-width="2.2"/>
+    <text class="font box-title" x="885" y="320" text-anchor="middle" fill="#176553">Hermes DFM Agent</text>
+    <text class="font box-sub" x="885" y="341" text-anchor="middle">意图理解 · 事实澄清 · 分析编排</text>
+    <text class="font box-sub" x="885" y="358" text-anchor="middle">确定性判定 · 证据与报告生成</text>
+  </g>
+  <g>
+    <rect x="1090" y="300" width="350" height="60" rx="4" fill="#fff8eb" stroke="#d8892b" stroke-width="1.7"/>
+    <text class="font box-title" x="1265" y="324" text-anchor="middle">规则 / 知识管理 Web</text>
+    <text class="font box-sub" x="1265" y="346" text-anchor="middle">独立管理端 · 字典维护 · AI 起草 · 审核发布</text>
+  </g>
+  <g>
+    <rect x="1470" y="300" width="370" height="60" rx="4" fill="#eaf8f3" stroke="#2b8a78" stroke-width="1.7"/>
+    <text class="font box-title" x="1655" y="324" text-anchor="middle">Hermes Gateway / REST API</text>
+    <text class="font box-sub" x="1655" y="346" text-anchor="middle">第三方调用 · 任务订阅 · 结果回传</text>
+  </g>
+
+  <!-- Connector 02-03 -->
+  <line x1="1090" y1="385" x2="1090" y2="410" stroke="#2f6fa5" stroke-width="2.2" marker-start="url(#arrow-blue-start)" marker-end="url(#arrow-blue)"/>
+
+  <!-- Layer 03 label -->
+  <circle cx="68" cy="555" r="25" fill="#164b80"/>
+  <text class="font layer-no" x="68" y="564" text-anchor="middle">03</text>
+  <text class="font layer-name" x="108" y="532">DFM 核心业务层</text>
+  <text class="font layer-desc" x="108" y="556">统一业务语义</text>
+  <text class="font layer-desc" x="108" y="576">规则治理 · 运行编译</text>
+  <text class="font layer-desc" x="108" y="596">确定性评价 · 可追溯</text>
+
+  <!-- Layer 03 -->
+  <rect x="300" y="410" width="1580" height="300" rx="5" fill="#f7f9fe" stroke="#164b80" stroke-width="2" stroke-dasharray="10 7" filter="url(#shadow)"/>
+  <text class="font layer-title" x="1090" y="445" text-anchor="middle">DFM 核心业务与治理平台</text>
+  <rect x="430" y="459" width="1320" height="38" rx="3" fill="#eef4fb" stroke="#7394b2" stroke-width="1.2" stroke-dasharray="6 4"/>
+  <text class="font core-banner" x="1090" y="484" text-anchor="middle">统一语义：Process · Feature · Region · Metric · Check · Factor · Stable ID</text>
+
+  <!-- Hermes runtime panel -->
+  <rect x="330" y="515" width="740" height="165" rx="4" fill="#ffffff" stroke="#2b8a78" stroke-width="1.7"/>
+  <text class="font panel-title" x="700" y="543" text-anchor="middle">Hermes DFM 运行核心</text>
+  <g>
+    <rect x="355" y="558" width="210" height="78" rx="4" fill="#edf9f5" stroke="#55a493" stroke-width="1.2"/>
+    <text class="font small-title" x="460" y="583" text-anchor="middle">项目与事实</text>
+    <text class="font small-sub" x="460" y="605" text-anchor="middle">Manifest · Fact · Clarification</text>
+    <text class="font small-sub" x="460" y="622" text-anchor="middle">source_policy · 版本追溯</text>
+  </g>
+  <g>
+    <rect x="585" y="558" width="210" height="78" rx="4" fill="#edf9f5" stroke="#55a493" stroke-width="1.2"/>
+    <text class="font small-title" x="690" y="583" text-anchor="middle">发现与融合</text>
+    <text class="font small-sub" x="690" y="605" text-anchor="middle">Observation · Feature · Region</text>
+    <text class="font small-sub" x="690" y="622" text-anchor="middle">DiscoverySnapshot · FusionLink</text>
+  </g>
+  <g>
+    <rect x="815" y="558" width="230" height="78" rx="4" fill="#edf9f5" stroke="#55a493" stroke-width="1.2"/>
+    <text class="font small-title" x="930" y="583" text-anchor="middle">计划、评价与报告</text>
+    <text class="font small-sub" x="930" y="605" text-anchor="middle">AnalysisPlan · RuleBinding</text>
+    <text class="font small-sub" x="930" y="622" text-anchor="middle">Evaluation · Evidence · Finding</text>
+  </g>
+  <line x1="565" y1="597" x2="585" y2="597" stroke="#2b8a78" stroke-width="1.8" marker-end="url(#arrow-blue)"/>
+  <line x1="795" y1="597" x2="815" y2="597" stroke="#2b8a78" stroke-width="1.8" marker-end="url(#arrow-blue)"/>
+  <text class="font note" x="700" y="661" text-anchor="middle">本次 Run 固定输入、Discovery、Capability 与 OntologyRuleSnapshot</text>
+
+  <!-- Management core panel -->
+  <rect x="1100" y="515" width="750" height="165" rx="4" fill="#ffffff" stroke="#d8892b" stroke-width="1.7"/>
+  <text class="font panel-title" x="1475" y="543" text-anchor="middle">DFM 管理控制核心</text>
+  <g>
+    <rect x="1125" y="558" width="155" height="55" rx="3" fill="#fff8eb" stroke="#d89a47" stroke-width="1.2"/>
+    <text class="font small-title" x="1202" y="581" text-anchor="middle">知识库</text>
+    <text class="font small-sub" x="1202" y="601" text-anchor="middle">文档 · Chunk · Citation</text>
+  </g>
+  <g>
+    <rect x="1300" y="558" width="155" height="55" rx="3" fill="#fff8eb" stroke="#d89a47" stroke-width="1.2"/>
+    <text class="font small-title" x="1377" y="581" text-anchor="middle">本体库</text>
+    <text class="font small-sub" x="1377" y="601" text-anchor="middle">Concept · Relation</text>
+  </g>
+  <g>
+    <rect x="1475" y="558" width="155" height="55" rx="3" fill="#fff8eb" stroke="#d89a47" stroke-width="1.2"/>
+    <text class="font small-title" x="1552" y="581" text-anchor="middle">规则库</text>
+    <text class="font small-sub" x="1552" y="601" text-anchor="middle">Check · Rule Set</text>
+  </g>
+  <g>
+    <rect x="1650" y="558" width="175" height="55" rx="3" fill="#fff8eb" stroke="#d89a47" stroke-width="1.2"/>
+    <text class="font small-title" x="1737" y="581" text-anchor="middle">审核与发布</text>
+    <text class="font small-sub" x="1737" y="601" text-anchor="middle">默认/企业 · 审计 · 签名</text>
+  </g>
+  <line x1="1280" y1="585" x2="1300" y2="585" stroke="#d8892b" stroke-width="1.7" marker-end="url(#arrow-orange)"/>
+  <line x1="1455" y1="585" x2="1475" y2="585" stroke="#d8892b" stroke-width="1.7" marker-end="url(#arrow-orange)"/>
+  <line x1="1630" y1="585" x2="1650" y2="585" stroke="#d8892b" stroke-width="1.7" marker-end="url(#arrow-orange)"/>
+  <rect x="1285" y="629" width="380" height="32" rx="16" fill="#f3f0ff" stroke="#7662a7" stroke-width="1.3"/>
+  <text class="font small-title" x="1475" y="651" text-anchor="middle" fill="#59458b">已发布 OntologyRuleSnapshot</text>
+  <line x1="1737" y1="613" x2="1665" y2="638" stroke="#d8892b" stroke-width="1.5" marker-end="url(#arrow-orange)"/>
+  <path d="M1285 645 H1090 V650 H1045" fill="none" stroke="#7662a7" stroke-width="1.8" stroke-dasharray="5 4" marker-end="url(#arrow-blue)"/>
+  <text class="font arrow-label" x="1160" y="637" text-anchor="middle">同步到 Agent 本地只读快照</text>
+
+  <!-- Connector 03-04 -->
+  <line x1="1090" y1="710" x2="1090" y2="735" stroke="#2f6fa5" stroke-width="2.2" marker-start="url(#arrow-blue-start)" marker-end="url(#arrow-blue)"/>
+
+  <!-- Layer 04 label -->
+  <circle cx="68" cy="807" r="25" fill="#164b80"/>
+  <text class="font layer-no" x="68" y="816" text-anchor="middle">04</text>
+  <text class="font layer-name" x="108" y="795">工程分析与计算层</text>
+  <text class="font layer-desc" x="108" y="819">二维识别 · 三维几何</text>
+  <text class="font layer-desc" x="108" y="839">客观测量 · AI 辅助</text>
+
+  <!-- Layer 04 -->
+  <rect x="300" y="735" width="1580" height="145" rx="5" fill="#fbfaff" stroke="#164b80" stroke-width="2" filter="url(#shadow)"/>
+  <text class="font layer-title" x="1090" y="769" text-anchor="middle">DFM 工程分析与计算能力</text>
+  <g>
+    <rect x="325" y="790" width="275" height="64" rx="4" fill="#eaf8f3" stroke="#2b8a78" stroke-width="1.6"/>
+    <text class="font small-title" x="462" y="814" text-anchor="middle">二维图纸识别分析</text>
+    <text class="font small-sub" x="462" y="835" text-anchor="middle">OCR · 尺寸/公差 · GD&amp;T · 材料/皮纹</text>
+  </g>
+  <g>
+    <rect x="620" y="790" width="275" height="64" rx="4" fill="#eaf8f3" stroke="#2b8a78" stroke-width="1.6"/>
+    <text class="font small-title" x="757" y="814" text-anchor="middle">2D / 3D 特征融合</text>
+    <text class="font small-sub" x="757" y="835" text-anchor="middle">Observation ↔ Feature/Region · FusionLink</text>
+  </g>
+  <g>
+    <rect x="915" y="790" width="275" height="64" rx="4" fill="#f4f0ff" stroke="#7662a7" stroke-width="1.5"/>
+    <text class="font small-title" x="1052" y="814" text-anchor="middle">OCCT C++ 特征识别</text>
+    <text class="font small-sub" x="1052" y="835" text-anchor="middle">主壁 · 螺钉柱 · 筋 · 凸台 · 孔 · 倒扣</text>
+  </g>
+  <g>
+    <rect x="1210" y="790" width="275" height="64" rx="4" fill="#f4f0ff" stroke="#7662a7" stroke-width="1.5"/>
+    <text class="font small-title" x="1347" y="814" text-anchor="middle">OCCT C++ 指标计算</text>
+    <text class="font small-sub" x="1347" y="835" text-anchor="middle">壁厚 · 拔模 · 圆角 · 孔深 · 距离/比例</text>
+  </g>
+  <g>
+    <rect x="1505" y="790" width="335" height="64" rx="4" fill="#fff1f6" stroke="#b36183" stroke-width="1.5"/>
+    <text class="font small-title" x="1672" y="814" text-anchor="middle">知识检索 / LLM / ML 辅助</text>
+    <text class="font small-sub" x="1672" y="835" text-anchor="middle">候选增强 · 依据检索 · 原因解释 · 整改建议</text>
+  </g>
+
+  <!-- Connector 04-05 -->
+  <line x1="1090" y1="880" x2="1090" y2="905" stroke="#2f6fa5" stroke-width="2.2" marker-start="url(#arrow-blue-start)" marker-end="url(#arrow-blue)"/>
+
+  <!-- Layer 05 label -->
+  <circle cx="68" cy="965" r="25" fill="#164b80"/>
+  <text class="font layer-no" x="68" y="974" text-anchor="middle">05</text>
+  <text class="font layer-name" x="108" y="954">数据与基础设施层</text>
+  <text class="font layer-desc" x="108" y="978">版本契约 · 资产存储</text>
+  <text class="font layer-desc" x="108" y="998">任务调度 · 安全运维</text>
+
+  <!-- Layer 05 -->
+  <rect x="300" y="905" width="1580" height="125" rx="5" fill="#f8fafc" stroke="#596979" stroke-width="1.8" filter="url(#shadow)"/>
+  <text class="font layer-title" x="1090" y="935" text-anchor="middle">数据、契约与 IT 基础设施</text>
+  <g>
+    <rect x="325" y="950" width="235" height="55" rx="3" fill="#ffffff" stroke="#758494" stroke-width="1.2"/>
+    <text class="font small-title" x="442" y="974" text-anchor="middle">管理 MySQL</text>
+    <text class="font small-sub" x="442" y="993" text-anchor="middle">本体 · 规则 · 审核 · 发布审计</text>
+  </g>
+  <g>
+    <rect x="580" y="950" width="235" height="55" rx="3" fill="#ffffff" stroke="#758494" stroke-width="1.2"/>
+    <text class="font small-title" x="697" y="974" text-anchor="middle">Agent Local SQLite</text>
+    <text class="font small-sub" x="697" y="993" text-anchor="middle">只读本体规则快照</text>
+  </g>
+  <g>
+    <rect x="835" y="950" width="235" height="55" rx="3" fill="#ffffff" stroke="#758494" stroke-width="1.2"/>
+    <text class="font small-title" x="952" y="974" text-anchor="middle">Project / Run Workspace</text>
+    <text class="font small-sub" x="952" y="993" text-anchor="middle">Manifest · Plan · Evaluation</text>
+  </g>
+  <g>
+    <rect x="1090" y="950" width="235" height="55" rx="3" fill="#ffffff" stroke="#758494" stroke-width="1.2"/>
+    <text class="font small-title" x="1207" y="974" text-anchor="middle">对象存储 / 检索索引</text>
+    <text class="font small-sub" x="1207" y="993" text-anchor="middle">STEP · 图纸 · Evidence · Chunk</text>
+  </g>
+  <g>
+    <rect x="1345" y="950" width="235" height="55" rx="3" fill="#ffffff" stroke="#758494" stroke-width="1.2"/>
+    <text class="font small-title" x="1462" y="974" text-anchor="middle">版本化数据契约</text>
+    <text class="font small-sub" x="1462" y="993" text-anchor="middle">Schema · Stable ID · Hash · Signature</text>
+  </g>
+  <g>
+    <rect x="1600" y="950" width="240" height="55" rx="3" fill="#ffffff" stroke="#758494" stroke-width="1.2"/>
+    <text class="font small-title" x="1720" y="974" text-anchor="middle">任务、安全与可观测性</text>
+    <text class="font small-sub" x="1720" y="993" text-anchor="middle">Job/API · 权限 · 日志 · Trace</text>
+  </g>
+
+  <!-- Footer -->
+  <text class="font note" x="300" y="1058">目标生产架构：Hermes 负责流程与判定；OCCT 负责客观几何；知识与 AI 负责辅助，不替代确定性计算和工程审核。</text>
+  <text class="font note" x="1880" y="1058" text-anchor="end">DFM Architecture · 2026-08-26</text>
+</svg>

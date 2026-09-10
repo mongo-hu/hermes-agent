@@ -8,3 +8,6 @@ web/package-lock.json linguist-generated=true
 Dockerfile  text eol=lf
 *.dockerfile text eol=lf
 docker/entrypoint.sh text eol=lf
+
+# DFM acceptance fixtures are hash-addressed CAD assets; never rewrite EOLs.
+tests/fixtures/dfm/step/*.step binary

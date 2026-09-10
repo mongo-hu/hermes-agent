@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes.local/dfm/nx-request.schema.json",
+  "title": "Hermes DFM NX Job Envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "input", "task"],
+  "properties": {
+  "schema_version": {"const": 4},
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input_id", "sha256", "format_id"],
+      "properties": {
+        "input_id": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "format_id": {"const": "parasolid_xt"}
+      }
+    },
+    "task": {"$ref": "#/$defs/objectiveTask"}
+  },
+  "$defs": {
+    "objectiveTask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "run_id", "input_sha256", "input_format", "process", "scope_id", "scope_version", "operations", "regions"],
+      "properties": {
+        "schema_version": {"const": 4},
+        "run_id": {"type": "string", "minLength": 1},
+        "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "input_format": {"const": "parasolid_xt"},
+        "process": {"type": "string", "minLength": 1},
+        "scope_id": {"type": "string", "minLength": 1},
+        "scope_version": {"type": "string", "minLength": 1},
+        "operations": {"type": "array", "items": {"$ref": "#/$defs/operation"}},
+        "regions": {"type": "array", "items": {"$ref": "#/$defs/region"}}
+      }
+    },
+    "resolvedArgument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "source_ref", "unit"],
+      "properties": {
+        "value": {},
+        "source_ref": {"type": "string", "minLength": 1},
+        "unit": {"type": ["string", "null"]}
+      }
+    },
+    "geometryRef": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "index", "input_sha256", "topology_snapshot_id", "entity_id"],
+      "properties": {"kind": {"const": "face"}, "index": {"type": "integer", "minimum": 1}, "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "topology_snapshot_id": {"type": "string", "minLength": 1}, "entity_id": {"type": "string", "minLength": 1}}
+    },
+    "region": {
+      "type": "object", "additionalProperties": false,
+      "required": ["region_id", "input_sha256", "coordinate_system", "mode", "semantic_label", "role", "feature_refs", "source_refs", "version", "content_sha256", "bbox", "geometry_refs", "excluded_geometry_refs"],
+      "properties": {
+        "region_id": {"type": "string", "minLength": 1}, "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "coordinate_system": {"type": "string"}, "mode": {"enum": ["bbox", "topology_refs", "topology_complement", "whole_model"]},
+        "semantic_label": {"type": "string"}, "role": {"type": "string"}, "feature_refs": {"type": "array", "items": {"type": "string"}}, "source_refs": {"type": "array", "items": {"type": "string"}}, "version": {"type": "string"}, "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "bbox": {"type": ["object", "null"]}, "geometry_refs": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/geometryRef"}}, "excluded_geometry_refs": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/geometryRef"}}
+      }
+    },
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation_id", "calculator_id", "depends_on", "metric_ids", "required_quantities", "required_artifacts", "required_fact_names", "feature_refs", "region_refs", "arguments", "algorithm_options"],
+      "properties": {
+        "operation_id": {"type": "string", "minLength": 1},
+        "calculator_id": {"type": "string", "minLength": 1},
+        "depends_on": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "metric_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "required_quantities": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "required_artifacts": {"type": "array", "uniqueItems": true, "items": {"enum": ["scalar_field", "render_scene", "topology_map"]}},
+        "required_fact_names": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "feature_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "region_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "arguments": {"type": "object", "additionalProperties": {"$ref": "#/$defs/resolvedArgument"}},
+        "algorithm_options": {"type": "object", "additionalProperties": {"$ref": "#/$defs/resolvedArgument"}}
+      }
+    }
+  }
+}

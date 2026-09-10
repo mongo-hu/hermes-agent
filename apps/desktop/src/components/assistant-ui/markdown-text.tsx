@@ -7,6 +7,7 @@ import {
   StreamdownTextPrimitive,
   type SyntaxHighlighterProps
 } from '@assistant-ui/react-streamdown'
+import { useStore } from '@nanostores/react'
 import { code } from '@streamdown/code'
 import {
   type ComponentProps,
@@ -40,6 +41,7 @@ import {
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { tailBoundedRemend } from '@/lib/remend-tail'
 import { cn } from '@/lib/utils'
+import { $connection } from '@/store/session'
 
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 
@@ -106,7 +108,7 @@ function parseMarkdownIntoBlocksCached(markdown: string): string[] {
   return blocks
 }
 
-async function mediaSrc(path: string): Promise<string> {
+async function mediaSrc(path: string, remote: boolean): Promise<string> {
   if (/^(?:https?|data):/i.test(path)) {
     return path
   }
@@ -119,7 +121,7 @@ async function mediaSrc(path: string): Promise<string> {
 
   // Remote gateway: the image lives on the gateway machine, so read it over the
   // authenticated API rather than this machine's disk.
-  if (window.hermesDesktop && isRemoteGateway()) {
+  if (window.hermesDesktop && remote) {
     return gatewayMediaDataUrl(path)
   }
 
@@ -171,6 +173,7 @@ function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string
 }
 
 function MediaAttachment({ path }: { path: string }) {
+  const connectionMode = useStore($connection)?.mode
   const [src, setSrc] = useState('')
   const [failed, setFailed] = useState(false)
   const { open, openFailed } = useOpenMediaFile(path)
@@ -184,6 +187,14 @@ function MediaAttachment({ path }: { path: string }) {
     setFailed(false)
     setSrc('')
 
+    // Restored messages can render before Desktop finishes resolving its
+    // connection. Wait for a known mode so gateway files are not read locally.
+    if (!connectionMode) {
+      return () => {
+        cancelled = true
+      }
+    }
+
     if (kind === 'file') {
       setFailed(true)
 
@@ -192,7 +203,7 @@ function MediaAttachment({ path }: { path: string }) {
       }
     }
 
-    void mediaSrc(path)
+    void mediaSrc(path, connectionMode === 'remote')
       .then(value => {
         if (value.startsWith('blob:')) {
           objectUrl = value
@@ -217,7 +228,7 @@ function MediaAttachment({ path }: { path: string }) {
         URL.revokeObjectURL(objectUrl)
       }
     }
-  }, [kind, path])
+  }, [connectionMode, kind, path])
 
   if (kind === 'image' && src) {
     return (

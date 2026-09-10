@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes.local/dfm/geometry-backend-capability.schema.json",
+  "title": "Hermes DFM Geometry Backend Capability",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "status", "backend_id", "backend_version", "formats", "recognizers", "calculators", "details"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "status": {"enum": ["available", "unhealthy"]},
+    "backend_id": {"type": "string", "minLength": 1},
+    "backend_version": {"type": "string", "minLength": 1},
+    "formats": {
+      "type": "object",
+      "propertyNames": {"minLength": 1},
+      "additionalProperties": {"enum": ["certified", "experimental", "not_implemented", "unhealthy"]}
+    },
+    "recognizers": {
+      "type": "object",
+      "propertyNames": {"minLength": 1},
+      "additionalProperties": {"$ref": "#/$defs/recognizer"}
+    },
+    "calculators": {
+      "type": "object",
+      "propertyNames": {"minLength": 1},
+      "additionalProperties": {"$ref": "#/$defs/calculator"}
+    },
+    "details": {"type": "object"}
+  },
+  "$defs": {
+    "status": {"enum": ["certified", "experimental", "not_implemented", "unhealthy"]},
+    "shaOrEmpty": {"type": "string", "pattern": "^(|[0-9a-f]{64})$"},
+    "stringArray": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "recognizer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "contract_version", "implementation_version", "required_fact_names", "output_observation_kinds", "output_feature_kinds", "output_region_roles", "supported_formats", "certification_report_sha256"],
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"enum": ["certified", "experimental"]}}, "required": ["status"]},
+          "then": {"properties": {"implementation_version": {"minLength": 1}}}
+        },
+        {
+          "if": {"properties": {"status": {"const": "certified"}}, "required": ["status"]},
+          "then": {"properties": {"certification_report_sha256": {"pattern": "^[0-9a-f]{64}$"}}}
+        }
+      ],
+      "properties": {
+        "status": {"$ref": "#/$defs/status"},
+        "contract_version": {"const": 1},
+        "implementation_version": {"type": "string"},
+        "required_fact_names": {"$ref": "#/$defs/stringArray"},
+        "output_observation_kinds": {"$ref": "#/$defs/stringArray"},
+        "output_feature_kinds": {"$ref": "#/$defs/stringArray"},
+        "output_region_roles": {"$ref": "#/$defs/stringArray"},
+        "supported_formats": {"$ref": "#/$defs/stringArray"},
+        "certification_report_sha256": {"$ref": "#/$defs/shaOrEmpty"}
+      }
+    },
+    "calculator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "contract_version", "implementation_version", "required_arguments", "optional_arguments", "supported_algorithm_options", "output_quantities", "output_artifact_kinds", "supported_formats", "supported_region_modes", "certification_report_sha256"],
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"enum": ["certified", "experimental"]}}, "required": ["status"]},
+          "then": {"properties": {"implementation_version": {"minLength": 1}}}
+        },
+        {
+          "if": {"properties": {"status": {"const": "certified"}}, "required": ["status"]},
+          "then": {"properties": {"certification_report_sha256": {"pattern": "^[0-9a-f]{64}$"}}}
+        }
+      ],
+      "properties": {
+        "status": {"$ref": "#/$defs/status"},
+        "contract_version": {"const": 4},
+        "implementation_version": {"type": "string"},
+        "required_arguments": {"$ref": "#/$defs/stringArray"},
+        "optional_arguments": {"$ref": "#/$defs/stringArray"},
+        "supported_algorithm_options": {"$ref": "#/$defs/stringArray"},
+        "output_quantities": {"$ref": "#/$defs/stringArray"},
+        "output_artifact_kinds": {"$ref": "#/$defs/stringArray"},
+        "supported_formats": {"$ref": "#/$defs/stringArray"},
+        "supported_region_modes": {"$ref": "#/$defs/stringArray"},
+        "certification_report_sha256": {"$ref": "#/$defs/shaOrEmpty"}
+      }
+    }
+  }
+}

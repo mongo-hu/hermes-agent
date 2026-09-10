@@ -4312,6 +4312,15 @@ def cmd_doctor(args):
     run_doctor(args)
 
 
+def cmd_dfm(args):
+    """Run DFM diagnostics."""
+    from hermes_cli.dfm import dfm_command
+
+    code = dfm_command(args)
+    if code:
+        raise SystemExit(code)
+
+
 def cmd_security(args):
     """Dispatch `hermes security <subcmd>`."""
     sub = getattr(args, "security_command", None)
@@ -12285,7 +12294,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
-        "dump", "fallback", "gateway", "hooks", "import", "insights",
+        "dfm", "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
         "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
@@ -13080,6 +13089,11 @@ def main():
 
     project_parser = _build_project_parser(subparsers)
     project_parser.set_defaults(func=cmd_project)
+
+    from hermes_cli.dfm import build_parser as _build_dfm_parser
+
+    dfm_parser = _build_dfm_parser(subparsers)
+    dfm_parser.set_defaults(func=cmd_dfm)
 
     # =========================================================================
     # hooks command — shell-hook inspection and management

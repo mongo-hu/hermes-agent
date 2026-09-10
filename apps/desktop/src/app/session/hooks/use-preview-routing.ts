@@ -51,10 +51,9 @@ export function usePreviewRouting({
   const previewRegistry = useStore($sessionPreviewRegistry)
   const previewSessionId = activePreviewSessionId(activeSessionIdRef, routedSessionId, selectedStoredSessionId)
 
-  // Restore a *user-opened* preview when its session becomes active. Tool
-  // results no longer auto-register/open a preview — the inline preview card in
-  // the tool row is the only entry point, so HTML artifacts never pop the rail
-  // open on their own.
+  // Restore the latest registered preview when its session becomes active.
+  // Most tool results remain opt-in through their inline preview card; the DFM
+  // completion path deliberately registers its final HTML report for auto-open.
   useEffect(() => {
     if (currentView !== 'chat' || !previewSessionId) {
       setPreviewTarget(null)
@@ -62,10 +61,16 @@ export function usePreviewRouting({
       return
     }
 
-    const record = getSessionPreviewRecord(previewSessionId)
+    // Older Desktop builds registered automatic DFM reports under the
+    // ephemeral runtime id. Fall back to that active alias so an already
+    // generated report becomes visible after upgrading without another run.
+    const runtimeSessionId = activeSessionIdRef.current
+    const record =
+      getSessionPreviewRecord(previewSessionId) ??
+      (runtimeSessionId && runtimeSessionId !== previewSessionId ? getSessionPreviewRecord(runtimeSessionId) : null)
 
     setPreviewTarget(record?.normalized ?? null)
-  }, [currentView, previewRegistry, previewSessionId])
+  }, [activeSessionIdRef, currentView, previewRegistry, previewSessionId])
 
   const restartPreviewServer = useCallback(
     async (url: string, context?: string) => {

@@ -69,6 +69,47 @@ def test_user_env_takes_precedence_over_project_env(tmp_path, monkeypatch):
     assert os.getenv("OPENAI_API_KEY") == "project-key"
 
 
+def test_desktop_session_token_survives_dotenv_reload(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    user_env = home / ".env"
+    project_env = tmp_path / ".env"
+    user_env.write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=user-env-token\n",
+        encoding="utf-8",
+    )
+    project_env.write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=project-env-token\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-spawn-token")
+
+    loaded = load_hermes_dotenv(hermes_home=home, project_env=project_env)
+
+    assert loaded == [user_env, project_env]
+    assert os.getenv("HERMES_DASHBOARD_SESSION_TOKEN") == "desktop-spawn-token"
+
+
+def test_dashboard_session_token_keeps_normal_dotenv_precedence(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=user-env-token\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "stale-shell-token")
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("HERMES_DASHBOARD_SESSION_TOKEN") == "user-env-token"
+
+
 def test_null_bytes_in_user_env_are_stripped(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     home.mkdir()
