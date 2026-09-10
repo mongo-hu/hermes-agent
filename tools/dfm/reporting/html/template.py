@@ -155,17 +155,22 @@ def normalize_contracts(llm_path, runtime_path):
             base_dir,
             "runtime.resources.evidence_geometry_path",
         ),
-        "drawing_pdf_path": resolve_file(
-            require_text(resources, "drawing_pdf_path", "runtime.resources"),
-            base_dir,
-            "runtime.resources.drawing_pdf_path",
-        ),
         "rule_library_path": resolve_file(
             require_text(resources, "rule_library_path", "runtime.resources"),
             base_dir,
             "runtime.resources.rule_library_path",
         ),
     }
+    drawing_pdf_value = resources.get("drawing_pdf_path")
+    resolved["drawing_pdf_path"] = (
+        resolve_file(
+            require_text(resources, "drawing_pdf_path", "runtime.resources"),
+            base_dir,
+            "runtime.resources.drawing_pdf_path",
+        )
+        if drawing_pdf_value is not None
+        else None
+    )
 
     copy_by_id = {}
     for index, item in enumerate(issues_copy):
@@ -1106,12 +1111,14 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
 
     info_html += '</div>\n'
 
-    # Add the buttons OUTSIDE the scrolling div, right below it
-    info_html += f'<div class="element" style="left:{inch2px(9.48)}px; top:{inch2px(6.28)}px; width:{inch2px(2.85)}px; display:flex; gap:8px;">'
-    info_html += '<button class="summary-primary-action" onclick="openEmbeddedPdf()" style="flex:1; padding:8px 0; color:white; border:none; cursor:pointer; font-size:10pt;">2D 图纸</button>'
-    if len(issues_without_evidence) > 0:
-        info_html += f'<button class="summary-secondary-action" onclick="openNoEvidenceModal()" style="flex:1.45; padding:8px 0; color:#14213D; border:1px solid #D0D5DD; cursor:pointer; font-size:8.5pt; white-space:nowrap;">无证据问题 ({len(issues_without_evidence)})</button>'
-    info_html += '</div>\\n'
+    # Add available auxiliary actions below the scrolling div.
+    if resources.get("drawing_pdf_path") or issues_without_evidence:
+        info_html += f'<div class="element" style="left:{inch2px(9.48)}px; top:{inch2px(6.28)}px; width:{inch2px(2.85)}px; display:flex; gap:8px;">'
+        if resources.get("drawing_pdf_path"):
+            info_html += '<button class="summary-primary-action" onclick="openEmbeddedPdf()" style="flex:1; padding:8px 0; color:white; border:none; cursor:pointer; font-size:10pt;">2D 图纸</button>'
+        if issues_without_evidence:
+            info_html += f'<button class="summary-secondary-action" onclick="openNoEvidenceModal()" style="flex:1.45; padding:8px 0; color:#14213D; border:1px solid #D0D5DD; cursor:pointer; font-size:8.5pt; white-space:nowrap;">无证据问题 ({len(issues_without_evidence)})</button>'
+        info_html += '</div>\\n'
 
     html += info_html
 
@@ -1428,9 +1435,9 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
     '''
 
     # Check for PDF to embed
-    pdf_path = resources["drawing_pdf_path"]
+    pdf_path = resources.get("drawing_pdf_path")
     pdf_b64 = ""
-    if os.path.exists(pdf_path):
+    if pdf_path and os.path.exists(pdf_path):
         with open(pdf_path, "rb") as f:
             pdf_b64 = base64.b64encode(f.read()).decode('utf-8')
 

@@ -10,6 +10,22 @@
 
 Desktop 自动展示增量日期：2026-09-08。Desktop 现在监听既有 `dfm_analysis` 工具完成事件；当且仅当 run 成功且返回的 artifact 为 `report_html` 时，将 `report.html` 路径交给 Desktop 已有的 HTML 预览面板自动展示。该增量没有修改 DFM 后端、报告生成器或成功条件。
 
+## 2026-09-10 DFM 中断提示与无 PDF HTML 修复
+
+本次按最小范围修改 **7 个既有实现/说明文件**，没有新增生产模块，也没有提交新的回归测试文件或测试代码：
+
+1. `tools/dfm/service.py`：拒绝将 `discover` 返回的 discovery plan 直接交给 `start`，返回 `plan_not_ready`、当前 phase/status 和明确的 `next_action=plan`；项目尚无 run 时返回 `run_not_found` 和 `next_action=start`，不再使用“多 run 缺少 run_id”的误导信息。
+2. `agent/display.py`：结构化工具结果中的 `error: null` 不再被字符串启发式误判为调用失败。
+3. `agent/tool_guardrails.py`：与显示层保持相同的结构化成功/失败判定，避免成功的 DFM `start` 被计入重复失败保护。
+4. `tools/dfm/reporting/html/runtime_adapter.py`：HTML Runtime 继续要求 STEP 分析产生的 scene、壁厚场、拔模场和 evidence geometry，但 PDF drawing 改为可选；无 PDF 时输出空的 `drawing_semantics.observations`，不写 drawing resource 路径。
+5. `tools/dfm/reporting/html/template.py`：`drawing_pdf_path` 改为可选；无 PDF 时仍生成完整 HTML，并隐藏“2D 图纸”按钮及 PDF 嵌入。
+6. `tools/dfm_tool.py`：明确 HTML-capable STEP run 的 PDF drawing 可选，并说明只有存在 drawing observations 时才将其用于最终编辑。
+7. `skills/manufacturing/dfm-analysis/SKILL.md`：明确 `start` 只能使用 `plan` action 返回的 analysis plan，且 STEP-only run 同样必须继续完成 `report_context -> render_html -> result`。
+
+问题复核结论：截图中的“服务配置问题”并非 OCCT 服务缺失；实际原因是 Agent 先后把 discovery plan 交给 `start`、把已完成的 discovery plan 当成 `base_plan_id`，以及在尚无 run 时调用报告动作。随后正确创建的 analysis plan 已由 `occt_cpp@occt-dfm-geometry-1.4.2` 成功执行。HTML 未生成的直接原因是该次项目 manifest 只登记了 STEP 输入，而旧 Runtime adapter 强制要求恰好一份 PDF，导致没有 `report_html_runtime`，后续 `report_context`/`render_html` 无输入可用。Desktop 原有自动展示逻辑无需修改；当 `render_html` 返回成功的 `report_html` artifact 后会继续自动打开预览。
+
+提交前验证：现有 5 个相关测试文件共 70 项测试通过，0 失败；相关 Python 文件 Ruff 检查和 `git diff --check` 通过。
+
 本次纠偏及报告编辑更新涉及 **11 个既有集成范围内文件**，没有增加新的生产模块或改变下文集成总文件数：
 
 1. `tools/dfm/reporting/html/runtime_adapter.py`

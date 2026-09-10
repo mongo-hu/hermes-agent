@@ -97,10 +97,9 @@ def materialize_html_runtime(
 ) -> ArtifactRecord | None:
     """Write runtime_data.jsonl from existing artifacts without recomputation.
 
-    The current V1 HTML contract represents the STEP + PDF injection flow and
-    requires a scene, thickness field, draft field and evidence geometry. Runs
-    outside that shape retain their JSON/Markdown results and simply do not
-    advertise an HTML-runtime artifact.
+    The V1 HTML contract requires geometry-derived scene, thickness, draft and
+    evidence artifacts. A PDF drawing enriches the report when present, but is
+    not required to generate HTML for a geometry-only run.
     """
 
     by_kind: dict[str, list[ArtifactRecord]] = {}
@@ -124,32 +123,42 @@ def materialize_html_runtime(
         or geometry_artifact is None
     ):
         return None
-    if len(drawings) != 1:
+    if len(drawings) > 1:
         return None
 
-    drawing = drawings[0]
-    observation_artifact = next(
-        (
-            item
-            for item in reversed(semantic_artifacts or [])
-            if item.kind == "drawing_observations"
-            and item.logical_id.startswith(
-                f"drawing-observations:{drawing.input_id}:"
-            )
-        ),
-        None,
-    )
-    if observation_artifact is None:
-        return None
-    drawing_observations = [
-        row
-        for row in _read_objects(project_dir, observation_artifact)
-        if row.get("input_id") == drawing.input_id
-        and (
-            observation_refs is None
-            or row.get("observation_id") in observation_refs
+    drawing = drawings[0] if drawings else None
+    observation_artifact = None
+    drawing_observations: list[dict[str, object]] = []
+    drawing_semantics: dict[str, object] = {"observations": drawing_observations}
+    if drawing is not None:
+        observation_artifact = next(
+            (
+                item
+                for item in reversed(semantic_artifacts or [])
+                if item.kind == "drawing_observations"
+                and item.logical_id.startswith(
+                    f"drawing-observations:{drawing.input_id}:"
+                )
+            ),
+            None,
         )
-    ]
+        if observation_artifact is None:
+            return None
+        drawing_observations = [
+            row
+            for row in _read_objects(project_dir, observation_artifact)
+            if row.get("input_id") == drawing.input_id
+            and (
+                observation_refs is None
+                or row.get("observation_id") in observation_refs
+            )
+        ]
+        drawing_semantics = {
+            "input_id": drawing.input_id,
+            "input_sha256": drawing.sha256,
+            "source_artifact_id": observation_artifact.artifact_id,
+            "observations": drawing_observations,
+        }
 
     fields: dict[str, ArtifactRecord] = {}
     for artifact in by_kind.get("scalar_field", []):
@@ -208,14 +217,39 @@ def materialize_html_runtime(
             )
 
     runtime_path = output_dir / "runtime_data.jsonl"
-    drawing_path = (project_dir / drawing.relative_path).resolve()
-    if (
-        not drawing_path.is_relative_to(project_dir.resolve())
-        or not drawing_path.is_file()
-    ):
-        raise DFMError(
-            "report_input_invalid",
-            "The drawing input required by the HTML report is missing.",
+    drawing_path = None
+    if drawing is not None:
+        drawing_path = (project_dir / drawing.relative_path).resolve()
+        if (
+            not drawing_path.is_relative_to(project_dir.resolve())
+            or not drawing_path.is_file()
+        ):
+            raise DFMError(
+                "report_input_invalid",
+                "The drawing input referenced by the HTML report is missing.",
+            )
+    resources = {
+        "evidence_root": ".",
+        "scene_path": _relative(
+            _artifact_path(project_dir, scene_artifact), output_dir
+        ),
+        "scalar_fields": {
+            key: _relative(_artifact_path(project_dir, artifact), output_dir)
+            for key, artifact in fields.items()
+        },
+        "evidence_geometry_path": _relative(
+            _artifact_path(project_dir, geometry_artifact), output_dir
+        ),
+        "rule_library_path": _relative(rule_snapshot_path, output_dir),
+    }
+    if drawing_path is not None and observation_artifact is not None:
+        resources.update(
+            {
+                "drawing_pdf_path": _relative(drawing_path, output_dir),
+                "drawing_observations_path": _relative(
+                    _artifact_path(project_dir, observation_artifact), output_dir
+                ),
+            }
         )
     runtime = {
         "schema_version": "dfm-html-runtime/v1",
@@ -224,32 +258,10 @@ def materialize_html_runtime(
             "rule_scope": f"{plan.scope_id}@{plan.scope_version}",
         },
         "report": report,
-        "drawing_semantics": {
-            "input_id": drawing.input_id,
-            "input_sha256": drawing.sha256,
-            "source_artifact_id": observation_artifact.artifact_id,
-            "observations": drawing_observations,
-        },
+        "drawing_semantics": drawing_semantics,
         "global_issue_metadata": global_issue_metadata,
         "model_metrics": model_metrics,
-        "resources": {
-            "evidence_root": ".",
-            "scene_path": _relative(
-                _artifact_path(project_dir, scene_artifact), output_dir
-            ),
-            "scalar_fields": {
-                key: _relative(_artifact_path(project_dir, artifact), output_dir)
-                for key, artifact in fields.items()
-            },
-            "evidence_geometry_path": _relative(
-                _artifact_path(project_dir, geometry_artifact), output_dir
-            ),
-            "drawing_pdf_path": _relative(drawing_path, output_dir),
-            "drawing_observations_path": _relative(
-                _artifact_path(project_dir, observation_artifact), output_dir
-            ),
-            "rule_library_path": _relative(rule_snapshot_path, output_dir),
-        },
+        "resources": resources,
     }
     runtime_path.write_text(
         json.dumps(runtime, ensure_ascii=False, separators=(",", ":")) + "\n",

@@ -71,7 +71,7 @@ DFM_PROJECT_SCHEMA = {
 
 DFM_ANALYSIS_SCHEMA = {
     "name": "dfm_analysis",
-    "description": "Run the DFM workflow. Drawing OCR is deterministic; use drawing_context and the current Hermes model once to organize every explicit drawing fact into validated drawing observations. Use fusion_context and submit_fusion_links for Agent semantic proposals that the service checks against geometry IDs. A STEP+PDF run remains reporting (not succeeded) after deterministic analysis; call report_context to obtain the complete Runtime, then author dfm-html-llm/v1 and call render_html. Only a validated report.html completes the run. Do not reinterpret OCR during reporting. The external OCCT C++ analyzer is integrated as experimental; PythonOCC remains the reference STEP backend and NX/Parasolid remains optional. Unavailable analyzers fail explicitly; never infer engineering findings from that status.",
+    "description": "Run the DFM workflow. Drawing OCR is deterministic; use drawing_context and the current Hermes model once to organize every explicit drawing fact into validated drawing observations. Use fusion_context and submit_fusion_links for Agent semantic proposals that the service checks against geometry IDs. An HTML-capable STEP run (PDF drawing optional) remains reporting (not succeeded) after deterministic analysis; call report_context to obtain the complete Runtime, then author dfm-html-llm/v1 and call render_html. Only a validated report.html completes the run. Do not reinterpret OCR during reporting. The external OCCT C++ analyzer is integrated as experimental; PythonOCC remains the reference STEP backend and NX/Parasolid remains optional. Unavailable analyzers fail explicitly; never infer engineering findings from that status.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -201,7 +201,7 @@ DFM_ANALYSIS_SCHEMA = {
             "llm_content": {
                 "type": "object",
                 "additionalProperties": False,
-                "description": "Current-Agent final editorial report for action=render_html. Summarize, organize, and localize persisted drawing observations plus deterministic report facts into the user's language; preserve IDs, codes, numbers, operators, units, and versions exactly. Do not reinterpret OCR, invent engineering facts, claim unevaluated checks passed, or mechanically copy raw Runtime prose as the final report.",
+                "description": "Current-Agent final editorial report for action=render_html. Summarize, organize, and localize persisted drawing observations when present plus deterministic report facts into the user's language; preserve IDs, codes, numbers, operators, units, and versions exactly. Do not reinterpret OCR, invent engineering facts, claim unevaluated checks passed, or mechanically copy raw Runtime prose as the final report.",
                 "properties": {
                     "schema_version": {
                         "type": "string",

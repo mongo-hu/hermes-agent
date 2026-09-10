@@ -1505,6 +1505,12 @@ class DFMService:
         run_id = str(requested or "").strip()
         if run_id:
             return run_id
+        if not manifest.runs:
+            raise DFMError(
+                "run_not_found",
+                "No DFM run exists for this project; start an analysis run first.",
+                {"action": action, "next_action": "start"},
+            )
         if len(manifest.runs) == 1:
             return manifest.runs[0].run_id
         active = [
@@ -2269,6 +2275,17 @@ class DFMService:
                     "plan_not_found",
                     "DFM analysis plan was not found.",
                     {"plan_id": plan_id},
+                )
+            if plan.phase != "analysis":
+                raise DFMError(
+                    "plan_not_ready",
+                    "The selected plan is a discovery plan; create an analysis plan before starting a run.",
+                    {
+                        "plan_id": plan.plan_id,
+                        "phase": plan.phase,
+                        "status": plan.status,
+                        "next_action": "plan",
+                    },
                 )
             # A capability-blocked plan is still useful for surfacing the
             # analyzer's explicit dependency error. Only changed project state
