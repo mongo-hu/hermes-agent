@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { dfmViewerTargetFromToolComplete } from './dfm-viewer-events'
+import { dfmHtmlReportPathFromToolComplete, dfmViewerTargetFromToolComplete } from './dfm-viewer-events'
 
 describe('dfmViewerTargetFromToolComplete', () => {
   it('opens an embedded preview after STEP registration', () => {
@@ -54,6 +54,44 @@ describe('dfmViewerTargetFromToolComplete', () => {
         name: 'dfm_analysis',
         status: 'failed',
         viewer_manifest: 'C:\\unexpected.json'
+      })
+    ).toBeNull()
+  })
+})
+
+describe('dfmHtmlReportPathFromToolComplete', () => {
+  it('returns a completed HTML report path from the render_html result', () => {
+    expect(
+      dfmHtmlReportPathFromToolComplete({
+        name: 'dfm_analysis',
+        result: JSON.stringify({
+          report: {
+            kind: 'report_html',
+            path: 'C:\\hermes\\runs\\run_1\\artifacts\\report.html'
+          },
+          run: { status: 'succeeded' }
+        })
+      })
+    ).toBe('C:\\hermes\\runs\\run_1\\artifacts\\report.html')
+  })
+
+  it('ignores report-pending runs and non-HTML artifacts', () => {
+    expect(
+      dfmHtmlReportPathFromToolComplete({
+        name: 'dfm_analysis',
+        result: {
+          report: { kind: 'report_html', path: 'C:\\pending\\report.html' },
+          run: { status: 'reporting' }
+        }
+      })
+    ).toBeNull()
+    expect(
+      dfmHtmlReportPathFromToolComplete({
+        name: 'dfm_analysis',
+        result: {
+          report: { kind: 'report_markdown', path: 'C:\\done\\dfm_report.md' },
+          run: { status: 'succeeded' }
+        }
       })
     ).toBeNull()
   })

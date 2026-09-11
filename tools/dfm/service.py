@@ -7,6 +7,7 @@ import json
 import os
 import re
 import threading
+import time
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,6 +45,7 @@ from .processes.occt_injection import (
     compile_occt_injection_plan,
     preview_operations,
 )
+from .reporting.html import render_html_report
 from .runtime.jobs import JobManager
 from .viewer import materialize_preview_manifest
 
@@ -412,10 +414,16 @@ class DFMService:
         artifact = self._drawing_fragment_artifact(manifest, input_record.input_id)
         artifact_path = self.workspace.project_dir(project_id) / artifact.relative_path
         fragments = self._read_ndjson(artifact_path)
+        available_pages = sorted({
+            int(item["page"])
+            for item in fragments
+            if isinstance(item.get("page"), int) and item["page"] > 0
+        })
         if page_number is not None:
             fragments = [item for item in fragments if item.get("page") == page_number]
-        truncated = len(fragments) > 200
-        fragments = fragments[:200]
+        truncated = page_number is None and len(fragments) > 200
+        if page_number is None:
+            fragments = fragments[:200]
         return {
             "ok": True,
             "project_id": project_id,
@@ -423,6 +431,7 @@ class DFMService:
             "input": input_record.to_dict(),
             "fragment_artifact": artifact.to_dict(),
             "page": page_number,
+            "available_pages": available_pages,
             "fragments": fragments,
             "truncated": truncated,
             "interpretation_contract": {
@@ -1496,6 +1505,12 @@ class DFMService:
         run_id = str(requested or "").strip()
         if run_id:
             return run_id
+        if not manifest.runs:
+            raise DFMError(
+                "run_not_found",
+                "No DFM run exists for this project; start an analysis run first.",
+                {"action": action, "next_action": "start"},
+            )
         if len(manifest.runs) == 1:
             return manifest.runs[0].run_id
         active = [
@@ -1513,6 +1528,210 @@ class DFMService:
                 "run_ids": [run.run_id for run in manifest.runs[-5:]],
             },
         )
+
+    def _report_context(
+        self,
+        project_id: str,
+        run_id: str,
+        wait_seconds: object = 0,
+    ) -> dict[str, Any]:
+        """Return the complete deterministic Runtime when Agent editing can begin."""
+
+        try:
+            timeout = float(wait_seconds or 0)
+        except (TypeError, ValueError) as exc:
+            raise DFMError(
+                "wait_invalid",
+                "wait_seconds must be a number between 0 and 60.",
+            ) from exc
+        if timeout < 0 or timeout > 60:
+            raise DFMError(
+                "wait_invalid",
+                "wait_seconds must be a number between 0 and 60.",
+            )
+
+        deadline = time.monotonic() + timeout
+        while True:
+            run = self.jobs.status(project_id, run_id)
+            if run.status not in {RunStatus.QUEUED, RunStatus.RUNNING}:
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return {
+                    "ok": True,
+                    "project_id": project_id,
+                    "ready": False,
+                    "next_action": "report_context",
+                    "run": self._run_dict(project_id, run),
+                }
+            time.sleep(min(0.25, remaining))
+
+        if run.status is RunStatus.SUCCEEDED:
+            html_artifact = next(
+                (item for item in reversed(run.artifacts) if item.kind == "report_html"),
+                None,
+            )
+            if html_artifact is not None:
+                return {
+                    "ok": True,
+                    "project_id": project_id,
+                    "ready": False,
+                    "complete": True,
+                    "next_action": "result",
+                    "run": self._run_dict(project_id, run),
+                }
+
+        if run.status is not RunStatus.REPORTING:
+            raise DFMError(
+                "report_not_available",
+                "This DFM run cannot enter Agent report editing.",
+                {"run_id": run_id, "status": run.status.value},
+            )
+
+        runtime_artifact = next(
+            (
+                item
+                for item in reversed(run.artifacts)
+                if item.kind == "report_html_runtime"
+            ),
+            None,
+        )
+        if runtime_artifact is None:
+            raise DFMError(
+                "report_input_missing",
+                "This run does not contain the Runtime required by the HTML report.",
+                {"run_id": run_id},
+            )
+        runtime_path = (
+            self.workspace.project_dir(project_id) / runtime_artifact.relative_path
+        )
+        rows = self._read_ndjson(runtime_path)
+        if len(rows) != 1 or not isinstance(rows[0], dict):
+            raise DFMError(
+                "report_input_invalid",
+                "The HTML report Runtime must contain exactly one JSON object.",
+                {"path": runtime_artifact.relative_path},
+            )
+        return {
+            "ok": True,
+            "project_id": project_id,
+            "ready": True,
+            "complete": False,
+            "next_action": "render_html",
+            "runtime": rows[0],
+            "run": self._run_dict(project_id, run),
+        }
+
+    def _render_html(
+        self,
+        project_id: str,
+        run_id: str,
+        llm_content: object,
+    ) -> dict[str, Any]:
+        """Render HTML after the current Agent supplies the narrative contract."""
+
+        if not isinstance(llm_content, dict):
+            raise DFMError(
+                "report_content_invalid",
+                "render_html requires an llm_content object.",
+            )
+        run = self.jobs.status(project_id, run_id)
+        existing_html = next(
+            (item for item in reversed(run.artifacts) if item.kind == "report_html"),
+            None,
+        )
+        if run.status is RunStatus.SUCCEEDED and existing_html is not None:
+            project_dir = self.workspace.project_dir(project_id)
+            return {
+                "ok": True,
+                "project_id": project_id,
+                "run": self._run_dict(project_id, run),
+                "report": {
+                    **existing_html.to_dict(),
+                    "path": str(project_dir / existing_html.relative_path),
+                },
+            }
+        if run.status not in {RunStatus.REPORTING, RunStatus.SUCCEEDED}:
+            raise DFMError(
+                "result_not_ready",
+                "The deterministic DFM result is not ready for HTML reporting.",
+                {"run_id": run_id, "status": run.status.value},
+            )
+        runtime_artifact = next(
+            (
+                item
+                for item in reversed(run.artifacts)
+                if item.kind == "report_html_runtime"
+            ),
+            None,
+        )
+        if runtime_artifact is None:
+            raise DFMError(
+                "report_input_missing",
+                "This run does not contain the resources required by the HTML report.",
+                {"run_id": run_id},
+            )
+
+        project_dir = self.workspace.project_dir(project_id)
+        output_dir = project_dir / "runs" / run_id / "artifacts"
+        llm_path = output_dir / "llm_content.jsonl"
+        html_path = output_dir / "report.html"
+        suffix = uuid4().hex
+        llm_candidate = llm_path.with_name(f".{llm_path.name}.{suffix}.tmp")
+        html_candidate = html_path.with_name(f".{html_path.name}.{suffix}.candidate")
+        try:
+            llm_candidate.write_text(
+                json.dumps(llm_content, ensure_ascii=False, separators=(",", ":"))
+                + "\n",
+                encoding="utf-8",
+            )
+            render_html_report(
+                llm_candidate,
+                project_dir / runtime_artifact.relative_path,
+                html_candidate,
+            )
+            os.replace(llm_candidate, llm_path)
+            os.replace(html_candidate, html_path)
+        except (OSError, TypeError, ValueError) as exc:
+            raise DFMError(
+                "report_content_invalid",
+                "The Agent-authored HTML report content could not be materialized.",
+                {"error": str(exc)},
+            ) from exc
+        finally:
+            llm_candidate.unlink(missing_ok=True)
+            html_candidate.unlink(missing_ok=True)
+
+        now = _utc_now()
+        attached = self.jobs.attach_artifacts(
+            project_id,
+            run_id,
+            [
+                ArtifactRecord(
+                    f"artifact_{run_id}_report_html_llm",
+                    "report_html_llm",
+                    llm_path.relative_to(project_dir).as_posix(),
+                    "application/x-ndjson",
+                    now,
+                ),
+                ArtifactRecord(
+                    f"artifact_{run_id}_report_html",
+                    "report_html",
+                    html_path.relative_to(project_dir).as_posix(),
+                    "text/html; charset=utf-8",
+                    now,
+                ),
+            ],
+        )
+        report_artifact = next(
+            item for item in attached.artifacts if item.kind == "report_html"
+        )
+        return {
+            "ok": True,
+            "project_id": project_id,
+            "run": self._run_dict(project_id, attached),
+            "report": {**report_artifact.to_dict(), "path": str(html_path)},
+        }
 
     def project(self, action: str, **params: Any) -> dict[str, Any]:
         if action == "create":
@@ -2057,6 +2276,17 @@ class DFMService:
                     "DFM analysis plan was not found.",
                     {"plan_id": plan_id},
                 )
+            if plan.phase != "analysis":
+                raise DFMError(
+                    "plan_not_ready",
+                    "The selected plan is a discovery plan; create an analysis plan before starting a run.",
+                    {
+                        "plan_id": plan.plan_id,
+                        "phase": plan.phase,
+                        "status": plan.status,
+                        "next_action": "plan",
+                    },
+                )
             # A capability-blocked plan is still useful for surfacing the
             # analyzer's explicit dependency error. Only changed project state
             # makes a saved plan stale and unsafe to execute.
@@ -2073,6 +2303,7 @@ class DFMService:
                 if not callable(progress_callback):
                     return
                 terminal = updated.status in {
+                    RunStatus.REPORTING,
                     RunStatus.SUCCEEDED,
                     RunStatus.FAILED,
                     RunStatus.CANCELLED,
@@ -2143,6 +2374,18 @@ class DFMService:
         run_id = self._resolve_run_id(
             self._store(project_id).load(), params.get("run_id"), action
         )
+        if action == "report_context":
+            return self._report_context(
+                project_id,
+                run_id,
+                params.get("wait_seconds", 0),
+            )
+        if action == "render_html":
+            return self._render_html(
+                project_id,
+                run_id,
+                params.get("llm_content"),
+            )
         if action == "status":
             run = self.jobs.status(project_id, run_id)
         elif action == "cancel":

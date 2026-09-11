@@ -9,8 +9,6 @@ from typing import Any
 
 from ..contracts import ArtifactRecord, PlanRecord
 from ..errors import DFMError
-from . import render_default_reports
-from .pptx import pptx_available
 
 
 def _utc_now() -> str:
@@ -176,22 +174,6 @@ def materialize_result_reports(
             _utc_now(),
         ),
     ]
-    if pptx_available():
-        generated.extend(
-            ArtifactRecord(
-                f"artifact_{run_id}_{report.kind}",
-                report.kind,
-                report.path.relative_to(project_dir).as_posix(),
-                report.media_type,
-                _utc_now(),
-            )
-            for report in render_default_reports(
-                artifact_dir=output_dir,
-                result=result,
-                process=plan.process,
-                scope_id=plan.scope_id,
-            )
-        )
     return generated
 
 

@@ -1112,6 +1112,31 @@ async function openPreviewInBrowser(rawUrl) {
   return openExternalUrl(raw)
 }
 
+async function savePreviewFile(rawTarget) {
+  const raw = String(rawTarget || '').trim()
+
+  if (!raw) {
+    throw new Error('Preview file path is empty')
+  }
+
+  const { realPath } = await resolveReadableFileForIpc(raw, { purpose: 'Save preview file' })
+
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: 'Save Preview File',
+    defaultPath: path.basename(realPath)
+  })
+
+  if (result.canceled || !result.filePath) {
+    return false
+  }
+
+  if (path.resolve(result.filePath) !== path.resolve(realPath)) {
+    await fs.promises.copyFile(realPath, result.filePath)
+  }
+
+  return true
+}
+
 function ensureWslWindowsFonts() {
   if (!IS_WSL) {
     return
@@ -7747,6 +7772,8 @@ ipcMain.handle('hermes:openPreviewInBrowser', async (_event, url) => {
     throw new Error('Invalid preview URL')
   }
 })
+
+ipcMain.handle('hermes:savePreviewFile', async (_event, target) => savePreviewFile(target))
 
 // User-configurable default project directory. The renderer reads this on
 // settings mount and seeds the value into the picker; writing back persists

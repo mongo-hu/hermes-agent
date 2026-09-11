@@ -87,6 +87,18 @@ describe('preview store', () => {
     expect(getSessionPreviewRecord('session-1')?.dismissedAt).toBeUndefined()
   })
 
+  it('registers an active runtime preview under its selected persisted session', () => {
+    const target = previewTarget('/work/report.html')
+
+    $activeSessionId.set('runtime-session')
+    $selectedStoredSessionId.set('stored-session')
+    setCurrentSessionPreviewTarget(target, 'tool-result')
+
+    expect(getSessionPreviewRecord('stored-session')?.normalized).toEqual(withRenderMode(target, 'preview'))
+    expect(getSessionPreviewRecord('runtime-session')).toBeNull()
+    expect($previewTarget.get()).toEqual(withRenderMode(target, 'preview'))
+  })
+
   it('replaces the session preview instead of keeping a back stack', () => {
     const first = previewTarget('/work/first.html')
     const second = previewTarget('/work/second.html')

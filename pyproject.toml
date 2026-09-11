@@ -141,8 +141,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Built-in DFM report output. OpenCascade remains environment-specific, while
-# python-pptx is a portable renderer used by the isolated STEP worker.
+# Built-in DFM analysis dependencies. The HTML report is self-contained;
+# python-pptx remains temporarily available for the legacy renderer only.
 dfm = [
   "python-pptx==1.0.2",
   "rapidocr-onnxruntime>=1.4.0",
@@ -345,6 +345,7 @@ locales = ["locales/*.yaml"]
 [tool.setuptools.package-data]
 hermes_cli = ["web_dist/**/*", "tui_dist/**/*", "scripts/install.sh", "scripts/install.ps1"]
 gateway = ["assets/**/*"]
+"tools.dfm.reporting.html" = ["vendor/*.js"]
 plugins = [
   "*/dashboard/manifest.json",
   "*/dashboard/dist/*",

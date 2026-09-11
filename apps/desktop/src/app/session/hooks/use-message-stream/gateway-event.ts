@@ -8,9 +8,10 @@ import { translateNow } from '@/i18n'
 import { type GatewayEventPayload, textPart } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
-import { dfmViewerTargetFromToolComplete } from '@/lib/dfm-viewer-events'
+import { dfmHtmlReportPathFromToolComplete, dfmViewerTargetFromToolComplete } from '@/lib/dfm-viewer-events'
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
+import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
@@ -21,6 +22,8 @@ import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
+import { registerSessionPreview, setCurrentSessionPreviewTarget } from '@/store/preview'
+import { recordPreviewArtifact } from '@/store/preview-status'
 import { followActiveSessionCwd } from '@/store/projects'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
@@ -408,6 +411,38 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (sessionId && dfmViewerTarget) {
           showDfmViewer(sessionId, dfmViewerTarget, { activate: isActiveEvent })
+        }
+
+        const dfmHtmlReportPath = dfmHtmlReportPathFromToolComplete(payload)
+
+        if (sessionId && dfmHtmlReportPath) {
+          // Keep an explicit artifact row in the composer after the preview is
+          // closed. This gives reports a durable reopen/save affordance instead
+          // of making the one-shot auto-open event the only way back in.
+          // Composer status is keyed by the runtime session id (the same id
+          // carried by gateway events), not the persisted history id.
+          recordPreviewArtifact(sessionId, dfmHtmlReportPath, $currentCwd.get() || '')
+
+          // The DFM HTML is already a complete local artifact and can be tens
+          // of megabytes. In localhost remote-gateway mode, remote enrichment
+          // would download the whole file before opening it and can hit the
+          // API timeout. Normalize only its path/metadata, then let the webview
+          // load the HTML directly.
+          void normalizeOrLocalPreviewTarget(dfmHtmlReportPath, undefined, { enrichRemote: false }).then(target => {
+            if (!target) {
+              return
+            }
+
+            if (sessionId === activeSessionIdRef.current) {
+              // Gateway events are keyed by the ephemeral runtime id, while
+              // preview restoration prefers the selected persisted-session
+              // id. Register the active report through the current-session
+              // resolver so the restore effect cannot immediately clear it.
+              setCurrentSessionPreviewTarget(target, 'tool-result', dfmHtmlReportPath)
+            } else {
+              registerSessionPreview(sessionId, target, 'tool-result', dfmHtmlReportPath)
+            }
+          })
         }
       } else if (SUBAGENT_EVENT_TYPES.has(event.type)) {
         if (sessionId && payload && !sessionInterrupted(sessionId)) {
