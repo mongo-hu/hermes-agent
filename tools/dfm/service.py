@@ -600,7 +600,7 @@ class DFMService:
                     provenance={
                         "provider": self._AGENT_OBSERVATION_PROVIDER,
                         "provider_version": self._AGENT_INTERPRETATION_VERSION,
-                        "source_type": "drawing_recognition",
+                        "source_type": "DWG",
                         "input_sha256": input_record.sha256,
                         "fragment_refs": list(source_fragment_refs),
                         "pages": sorted({
@@ -772,7 +772,7 @@ class DFMService:
             for item in manifest.observations
             if item.input_id in drawing_input_ids
             and item.provenance.get("provider") == self._AGENT_OBSERVATION_PROVIDER
-            and item.provenance.get("source_type") == "drawing_recognition"
+            and item.provenance.get("source_type") == "DWG"
             and item.kind not in GLOBAL_OBSERVATION_KINDS
             and item.status not in {"rejected", "conflict"}
         ]
@@ -1097,11 +1097,11 @@ class DFMService:
             observations = []
             changed = False
             for observation in current.observations:
-                if observation.provenance.get("source_type") != "drawing_recognition":
+                if observation.provenance.get("source_type") != "DWG":
                     observations.append(observation)
                     continue
                 policy = policies.get(observation.kind)
-                if not policy or "drawing_recognition" not in set(
+                if not policy or "DWG" not in set(
                     policy.get("allowed_sources", [])
                 ):
                     observations.append(observation)
@@ -1125,7 +1125,7 @@ class DFMService:
                     if (
                         evidence_ok
                         and confidence_ok
-                        and "drawing_recognition"
+                        and "DWG"
                         in set(policy.get("auto_accept_sources", []))
                     ):
                         identity = (
@@ -1137,7 +1137,7 @@ class DFMService:
                             fact_id=f"fact_drawing_{digest[:16]}",
                             name=observation.kind,
                             value=observation.value,
-                            source="drawing_recognition",
+                            source="DWG",
                             status="confirmed",
                             unit=observation.unit,
                             evidence_refs=list(observation.source_refs),
@@ -1148,7 +1148,7 @@ class DFMService:
                     elif (
                         evidence_ok
                         and confidence_ok
-                        and "drawing_recognition"
+                        and "DWG"
                         in set(policy.get("confirmation_required_sources", []))
                     ):
                         status = "needs_confirmation"

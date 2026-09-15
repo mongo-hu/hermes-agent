@@ -1,7 +1,7 @@
 ---
 title: "DFM 本体、规则库与 Agent 运行快照设计"
 status: active
-updated: 2026-08-26
+updated: 2026-09-11
 type: architecture-database-design
 ---
 
@@ -11,7 +11,7 @@ type: architecture-database-design
 
 本设计只解决三类需要跨代码仓库、跨端共享并独立发布的问题：
 
-1. 用稳定 ID 描述 DFM 的 Process、Feature Type、Region Type、Metric、Check 和 Factor；
+1. 用稳定 ID 描述 DFM 的 Process、Feature Type、Geometric、Check 和 Factor；
 2. 生成、审核、发布系统默认规则和企业规则；
 3. 将当前企业可执行的本体与规则编译成 Agent 可离线使用的只读快照。
 
@@ -19,7 +19,8 @@ type: architecture-database-design
 `dfm-occt-worker` 的 C++ 实现和 Capability Manifest 负责。数据库只描述这些能力的业务语义、
 组合关系和规则。
 
-`V1.xlsx` 仍是人工业务整理材料，不是数据库模型，也不直接作为运行时输入。
+`V2.2.xlsx` 是不可修改的人工业务权威来源；导入器只读取其中明确存在的 ID、名称、关系和规则，
+数据库模型与运行快照不反向修改该工作簿。
 
 ## 2. 为什么这些数据需要落库
 
@@ -98,12 +99,12 @@ Web 使用字典/Context API，Agent 下载签名发布物，OCCT 只交换 Capa
 | --- | --- | --- |
 | `id` | char(32) PK | UUID 数据库主键，由 Django `UUIDField` 映射 |
 | `concept_id` | varchar(180) UNIQUE | 稳定 ID，如 `check.main_wall_minimum_thickness` |
-| `concept_type` | varchar(30) | `process/feature_type/region_type/metric/check/factor` |
+| `concept_type` | varchar(30) | `process/feature_type/geometric/check/factor` |
 | `name_zh` | varchar(180) | 中文显示名 |
 | `name_en` | varchar(180) nullable | 英文显示名 |
 | `definition` | text | 无阈值的准确工程定义 |
 | `aliases_json` | json | 同义词和旧名称 |
-| `data_schema_json` | json nullable | Factor 值或 Metric 值的 JSON Schema |
+| `data_schema_json` | json nullable | Factor 值或 Geometric 值的 JSON Schema |
 | `properties_json` | json | 不同 Concept Type 的受控扩展属性 |
 | `owner_organization_id` | char(32) nullable | 空为系统概念，非空为企业扩展 |
 | `status` | varchar(20) | `draft/active/retired` |
@@ -114,11 +115,18 @@ Web 使用字典/Context API，Agent 下载签名发布物，OCCT 只交换 Capa
 
 | Concept Type | 字段 |
 | --- | --- |
+| Process | 无，保存为空对象 `{}` |
 | Feature Type | `worker_kind` |
-| Region Type | `worker_role` |
-| Metric | `worker_metric_id/quantity_id/dimension/canonical_unit` |
+| Geometric | `worker_geometric_id/quantity_id/dimension/canonical_unit` |
 | Factor | `runtime_key/default_value/question/source_policy` |
 | Check | `default_severity/report_group` |
+
+以上是 `properties_json` 的完整字段白名单。字段有可靠来源时填写实际内容，没有来源时保留空字符串、
+`null` 或空对象；除此之外的来源追踪、显示分组、导入版本和关系缓存等字段不写入
+`properties_json`。Excel 来源追踪由 Rule Citation、导入日志和发布物哈希承担。
+白名单内字段均在规则库管理界面完整展示，但只读，包括 Feature Type 的 `worker_kind`、Geometric 的
+`worker_geometric_id/quantity_id/dimension/canonical_unit` 和 Factor 的 `runtime_key`。这些字段仅由
+工作簿导入或能力同步流程维护；普通管理 API 不接受改写，发布时再依据认证 Capability 和规则完整性要求校验这些值。
 
 `concept_id` 发布后不得改名；改显示名称或定义不改变稳定 ID。确实发生语义不兼容时创建新 ID，旧 ID
 进入 `retired`。
@@ -135,16 +143,19 @@ Web 使用字典/Context API，Agent 下载签名发布物，OCCT 只交换 Capa
   "question": "产品表面采用什么皮纹？",
   "source_policy": {
     "allowed_sources": [
-      "user",
-      "project_metadata",
-      "drawing_recognition",
-      "geometry_recognition",
-      "derived_program"
+      "USR",
+      "DWG",
+      "CAD",
+      "GEO",
+      "DOC",
+      "DB",
+      "DER",
+      "DEF"
     ],
-    "auto_accept_sources": ["project_metadata", "derived_program"],
+    "auto_accept_sources": ["CAD", "DOC", "DB", "DER", "DEF"],
     "confirmation_required_sources": [
-      "drawing_recognition",
-      "geometry_recognition"
+      "DWG",
+      "GEO"
     ],
     "min_confidence": 0.9,
     "evidence_required": true,
@@ -166,15 +177,18 @@ Web 使用字典/Context API，Agent 下载签名发布物，OCCT 只交换 Capa
 | `conflict_policy` | string | 多来源值冲突时的策略；第一期固定支持 `ask_user` |
 | `missing_policy` | string | 所有允许来源均无有效值时的策略；第一期固定支持 `ask_user` |
 
-第一期来源码固定为：
+来源码直接沿用 `V2.2.xlsx` 的“取值来源”代码，导入和发布过程中不得改名、合并或派生为其他来源码：
 
 | 来源码 | 含义 |
 | --- | --- |
-| `user` | 用户明确输入或确认 |
-| `project_metadata` | 项目表单、PLM/BOM 等结构化项目属性 |
-| `drawing_recognition` | 程序化 OCR 证据经 Hermes Agent 语义提议、程序校验后形成的二维图纸识别结果 |
-| `geometry_recognition` | STEP/OCCT 特征识别推断结果 |
-| `derived_program` | 程序基于已确认事实进行的确定性推导 |
+| `USR` | User Input，用户明确输入或确认 |
+| `DWG` | Drawing，二维图纸及其识别结果 |
+| `CAD` | CAD Model / PMI，CAD 模型或 PMI 数据 |
+| `GEO` | Geometry，STEP/OCCT 几何识别或计算结果 |
+| `DOC` | Document，规范、说明书等文档内容 |
+| `DB` | Database，材料库等结构化数据库数据 |
+| `DER` | Derived / Derivation，程序基于已确认事实进行的确定性推导 |
+| `DEF` | Default，规则库明确给出的默认值 |
 
 `auto_accept_sources` 和 `confirmation_required_sources` 必须都是 `allowed_sources` 的子集，且不能重叠。
 识别结果先保存为带来源、置信度和证据的 Observation；只有通过 `source_policy` 后才能成为参与规则匹配
@@ -204,10 +218,8 @@ Web 使用字典/Context API，Agent 下载签名发布物，OCCT 只交换 Capa
 | Predicate | 示例 | 是否参与执行 |
 | --- | --- | --- |
 | `HAS_CHECK` | Process → Check | 是 |
-| `HAS_REGION` | Feature Type → Region Type | 是 |
 | `APPLIES_TO_FEATURE` | Check → Feature Type | 是 |
-| `APPLIES_TO_REGION` | Check → Region Type | 是；可按 Operand alias 指定目标区域 |
-| `USES_OPERAND` | Check → Metric | 是 |
+| `USES_OPERAND` | Check → Geometric | 是 |
 | `REQUIRES_FACTOR` | Process/Check → Factor | 是 |
 | `AFFECTS` | Factor/Feature → Check | AI解释和检索 |
 | `RELATED_TO` | 任意 Concept → Concept | AI解释和检索 |
@@ -218,27 +230,24 @@ Web 使用字典/Context API，Agent 下载签名发布物，OCCT 只交换 Capa
 {
   "alias": "boss_wall_thickness",
   "aggregation": "minimum",
-  "required": true
+  "required": true,
+  "operand_text": "螺钉柱柱壁实际壁厚 t"
 }
 ```
 
-Metric 的 `worker_metric_id/quantity_id` 来自 Metric Concept；Feature 的 `worker_kind` 和 Region 的
-`worker_role` 来自对应 Concept。Operand 的目标区域通过关系解析：
+Geometric 的 `worker_geometric_id/quantity_id` 来自 Geometric Concept，Feature 的 `worker_kind` 来自
+`APPLIES_TO_FEATURE` 指向的 Feature Concept。`operand_text` 直接保存规则来源中的“比较对象”字符串，
+不再为字符串中出现的区域另建 Region Type Concept。
 
 ```text
-Check ──APPLIES_TO_REGION──> Region <──HAS_REGION── Feature
-  └─────APPLIES_TO_FEATURE───────────────────────────┘
+Check ──APPLIES_TO_FEATURE──> Feature
+  └─────USES_OPERAND────────> Geometric
+               └────────────> qualifiers.operand_text
 ```
 
-同一 Check 只有一个区域时，`APPLIES_TO_REGION.qualifiers_json` 为 `{}`。多 Measurement 分别使用
-不同区域时，在该关系中用 `operand_aliases` 明确映射，例如：
-
-```json
-{"operand_aliases": ["boss_wall_thickness"]}
-```
-
-发布器必须保证每个 Operand alias 最终只解析到一个 Region 和一个 Feature，禁止在
-`USES_OPERAND` 中重复保存 `feature_kind/region_role/worker_metric_id/quantity_id`。
+发布器保证每个 Operand alias 唯一、`operand_text` 非空且关联 Geometric/Feature 有效。Hermes 在编译
+AnalysisPlan 时结合 Operand 原文、Discovery 结果和经过认证的 Capability 完成几何目标解析；Django
+不生成 `REGION_SRC_*`、`worker_role` 或其他无法回溯到规则来源的区域标识。
 
 `REQUIRES_FACTOR.qualifiers_json`：
 
@@ -268,8 +277,8 @@ Check ──APPLIES_TO_REGION──> Region <──HAS_REGION── Feature
 | `sort_order` | integer | 排序 |
 | `status` | varchar(20) | `active/retired` |
 
-唯一约束按系统/企业作用域实现。Excel 的三级分类只用于后台显示，可放在 Concept 的
-`properties_json.display_group`，不参与匹配。
+唯一约束按系统/企业作用域实现。Excel 的三级分类只用于导入解析，不写入 Concept 的
+`properties_json`，也不参与规则匹配。
 
 ### 4.4 `dfm_rule_version`
 
@@ -302,6 +311,16 @@ Check ──APPLIES_TO_REGION──> Region <──HAS_REGION── Feature
 | `reviewed_at` | datetime(6) nullable | UTC 审核时间 |
 
 唯一约束：`UNIQUE(rule_id, version)`。
+
+管理端新建 Rule Version 时，版本号由系统生成且不可手工修改。新的 `rule_id` 从 `V1.0.0`
+开始；输入已有 `rule_id` 时，以该规则族最高版本的内容作为新版本初始值，并将补丁位递增一位。
+所有新建版本统一使用 `Vx.x.x` 三段格式，且必须严格高于该 `rule_id` 的现有最高版本。
+`name` 由 Check 中文名与 Rule ID 组合生成（`{check.name_zh}－{rule_id}`），不作为独立人工输入。
+从已有 Rule ID 复制后，若规则内容与最高版本完全相同，则不得保存仅版本号不同的空版本。
+
+生命周期允许 `draft → review → approved/released → retired`，审核退回使用 `review → draft`。
+为撤销误操作，`retired` 可恢复为 `approved`；恢复操作不得修改规则内容、审核人、审核时间或
+`content_sha256`，也不得直接恢复为可编辑的 `draft`。
 
 示例：
 
@@ -413,7 +432,7 @@ Check ──APPLIES_TO_REGION──> Region <──HAS_REGION── Feature
 发布校验必须证明：
 
 - 所有关系引用存在且 Concept Type 合法；
-- Check 的每个 Operand 能在目标 OCCT Capability 中解析出唯一 Metric/Quantity；
+- Check 的每个 Operand 能通过 Geometric 的运行绑定在目标 OCCT Capability 中解析出唯一 Metric/Quantity；
 - 表达式只使用本 Check 声明的 Alias 和白名单运算；
 - Factor 条件满足其数据 Schema 或枚举选项；
 - Factor 的 `source_policy` 只使用受控来源码，自动采信与强制确认来源均为允许来源且互不重叠；
@@ -437,9 +456,9 @@ Agent 不复制管理库全部表，只安装一次发布后展开的运行投�
 保存 `snapshot_id`、数据库 Schema、Ontology Version、Rule Set Code/Version、Process、企业作用域、
 发布时间和内容哈希。每个分析 Plan 固定记录 `scope_id/scope_version`，历史运行不受后续发布影响。
 
-当前随仓库提供的默认身份是 `ontology.injection.default@1.2.0`。Schema 2 使用
-`APPLIES_TO_REGION` 解析 Operand 目标；运行时仍能读取已经安装的 Schema 1 快照，但新发布物不得
-继续使用 Schema 1 的重复 Selector 格式。
+当前随仓库提供的默认身份是 `ontology.injection.default@1.2.0`。Schema 2 在
+`USES_OPERAND.qualifiers.operand_text` 中保存比较对象原文；Region 是 Discovery/Measurement
+运行数据，不是本体概念。
 
 ### 5.2 `ontology_concept`
 
@@ -452,9 +471,9 @@ Factor Concept 的 `properties_json.source_policy` 随快照发布，供 Agent �
 中心 `dfm_relation` 的已发布投影。Agent 用它完成：
 
 - `Process → Check`：列出需要分析的 Check；
-- `Check → Metric`：编译 Operand 和 Objective Operation；
+- `Check → Geometric`：编译 Operand 和 Objective Operation；
 - `Check → Factor`：澄清缺失信息并选择规则；
-- `Check → Feature/Region`：把规则绑定到 Discovery 结果；
+- `Check → Feature`：限定 Check 的业务特征范围；Operand 原文由 Hermes 绑定到 Discovery 结果；
 - `AFFECTS/RELATED_TO`：给 AI 提供解释关系。
 
 ### 5.4 `factor_option`
@@ -516,11 +535,11 @@ AI 不直接查询任意 SQL，也不靠表名猜测含义。
 
 Agent 代码不变。
 
-### 7.2 新增特征区域和 Check
+### 7.2 新增特征和 Check
 
 ```text
 OCCT 新增 Recognizer/Region/Metric Capability
-＋ 本体新增 Feature/Region/Metric/Check/Relation
+＋ 本体新增 Feature/Geometric/Check/Relation，并在 USES_OPERAND 中保存比较对象原文
 ＋ 规则库新增 Rule Version
 → 发布阶段做 Capability × Ontology 交叉校验
 → Agent 通用编译器生成 Operation + RuleBinding
@@ -531,7 +550,7 @@ OCCT 新增 Recognizer/Region/Metric Capability
 以下情况仍需改 Agent 通用基础设施：
 
 - 新表达式运算符或新的单位维度；
-- 无法用 Feature/Region Selector 表达的新关系解析方式；
+- 无法根据 Operand 原文、Feature 和 Capability 表达的新目标解析方式；
 - 新的 Fact 来源和 Resolver；
 - 需要专用视觉表达的复合证据图；
 - Objective/Discovery 契约发生不兼容变化。
@@ -543,7 +562,7 @@ OCCT 新增 Recognizer/Region/Metric Capability
 → 根据 Process 查询 HAS_CHECK
 → 根据 REQUIRES_FACTOR 发现缺失 Fact 并澄清
 → OCCT Discovery 返回 Feature/Region
-→ 按 APPLIES_TO_FEATURE + APPLIES_TO_REGION + HAS_REGION + USES_OPERAND 编译 AnalysisPlan
+→ 按 APPLIES_TO_FEATURE + USES_OPERAND.operand_text 编译 AnalysisPlan
 → OCCT 执行客观 Measurement
 → Agent 根据 conditions_json 选择唯一规则
 → 执行 expression_json + comparator + threshold_json
@@ -564,12 +583,12 @@ Calculator 或算法版本变化才使客观 Measurement 缓存失效。
 - `LocalOntologyStore`：JSON 发布包校验、SQLite 原子安装、只读查询；
 - Check Context：按 Check 输出概念、关系、选项和规则；
 - Ontology Compiler：把关系和规则编译为现有 `EffectiveRule/RuleBinding`；
-- Discovery Target：优先使用已发布本体的 Feature/Region/Metric 关系；
+- Discovery Target：使用已发布 Feature、Geometric 与 Operand 原文，并由 Hermes 结合 Capability 解析；
 - 注塑阈值不再来自旧静态阈值文件或项目参数。
 
 当前算法 Capability 暂由 `geometry_capability_v1.json` 提供；生产接入 OCCT C++ 后改为读取经过认证的
 `GET /v1/capabilities` 快照。`feature_catalog.json` 只保留未接通 OCCT 前的 Recognizer 占位信息，不再
-作为正式 Check/Metric/Rule 数据源。
+作为正式 Check/Geometric/Rule 数据源。
 
 下一步：
 

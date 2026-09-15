@@ -3,7 +3,7 @@
   "snapshot_id": "ontology.injection.default@1.2.0",
   "ontology_version": "1.2.0",
   "published_at": "2026-08-27T00:00:00Z",
-  "content_sha256": "409df1f29403cf692c526f1c18ca45d105b6853906b05df11e660ae5f4edacdc",
+  "content_sha256": "5bdf4b38e93ff35c6588e1171c829757e5c0a0daf229d2e378fd97081b5c3c75",
   "rule_set": {
     "rule_set_code": "injection.default",
     "version": "1.1.0",
@@ -103,12 +103,12 @@
         "question": "What resin/material grade will be used for this part?",
         "source_policy": {
           "allowed_sources": [
-            "user",
-            "project_metadata",
-            "drawing_recognition"
+            "USR",
+            "DB",
+            "DWG"
           ],
-          "auto_accept_sources": ["project_metadata"],
-          "confirmation_required_sources": ["drawing_recognition"],
+          "auto_accept_sources": ["DB"],
+          "confirmation_required_sources": ["DWG"],
           "min_confidence": 0.75,
           "evidence_required": true,
           "conflict_policy": "ask_user",

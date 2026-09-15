@@ -285,7 +285,7 @@ sequenceDiagram
         D-->>H: OCR Fragment（稳定 ID/页码/bbox/原文/置信度/Provider 版本）
         H->>H: 当前 Hermes 大模型读取 drawing_context 并提议工程语义
         H->>S: submit_observations；程序校验 Fragment/Schema/Revision 后落库
-        H->>O: 按 source_policy 解析 drawing_recognition 候选
+        H->>O: 按 source_policy 解析 DWG 候选
         O-->>H: 自动采信 / 需要确认 / 冲突
     end
 
@@ -306,7 +306,7 @@ sequenceDiagram
         U->>H: 确认、修正或拒绝关联
         H->>S: 保存 candidate/ambiguous FusionLink；Agent 不能直接确认，bbox 不充当 GeometryRef
     end
-    H->>O: 按 source_policy 解析 geometry_recognition 候选 Fact
+    H->>O: 按 source_policy 解析 GEO 候选 Fact
 
     alt 候选允许自动采信
         O-->>H: 生成 confirmed Fact，保留置信度和 Evidence 引用

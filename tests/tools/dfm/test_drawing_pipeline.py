@@ -204,7 +204,7 @@ def test_agent_fusion_proposal_is_program_validated_and_never_confirmed():
         confidence=0.9,
         provenance={
             "provider": "hermes_agent_event_loop",
-            "source_type": "drawing_recognition",
+            "source_type": "DWG",
         },
     )
     feature = FeatureRecord(

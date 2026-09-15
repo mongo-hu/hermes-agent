@@ -234,7 +234,7 @@ class FusionAnalyzer:
                 or observation.status in {"rejected", "conflict"}
                 or observation.input_id not in drawing_input_ids
                 or observation.provenance.get("provider") != "hermes_agent_event_loop"
-                or observation.provenance.get("source_type") != "drawing_recognition"
+                or observation.provenance.get("source_type") != "DWG"
             ):
                 raise DFMError(
                     "fusion_observation_not_local",
