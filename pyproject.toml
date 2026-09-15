@@ -146,7 +146,8 @@ dependencies = [
 dfm = [
   "python-pptx==1.0.2",
   "rapidocr-onnxruntime>=1.4.0",
-  "pymupdf>=1.20.0"
+  "pymupdf>=1.20.0",
+  "playwright>=1.62.0,<2"
 ]
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
@@ -345,7 +346,7 @@ locales = ["locales/*.yaml"]
 [tool.setuptools.package-data]
 hermes_cli = ["web_dist/**/*", "tui_dist/**/*", "scripts/install.sh", "scripts/install.ps1"]
 gateway = ["assets/**/*"]
-"tools.dfm.reporting.html" = ["vendor/*.js"]
+"tools.dfm.reporting.html" = ["vendor/*.js", "editor_runtime/*.html", "editor_runtime/*.js", "editor_runtime/*.json"]
 plugins = [
   "*/dashboard/manifest.json",
   "*/dashboard/dist/*",
