@@ -65,11 +65,14 @@ _LEGACY_OPERAND_SELECTOR_KEYS = {
 }
 _CONDITION_OPERATORS = {"EQ", "IN", "GT", "GTE", "LT", "LTE", "BETWEEN", "EXISTS"}
 _FACT_SOURCE_CODES = {
-    "user",
-    "project_metadata",
-    "drawing_recognition",
-    "geometry_recognition",
-    "derived_program",
+    "USR",
+    "DWG",
+    "CAD",
+    "GEO",
+    "DOC",
+    "DB",
+    "DER",
+    "DEF",
 }
 _COMPARATORS = {
     "GT": ">",

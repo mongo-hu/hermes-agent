@@ -65,7 +65,7 @@ def test_published_package_is_installed_as_a_local_sqlite_snapshot(tmp_path):
     assert identity.snapshot_id == "ontology.injection.default@1.2.0"
     assert store.factor_source_policies("injection")["material"][
         "confirmation_required_sources"
-    ] == ["drawing_recognition"]
+    ] == ["DWG"]
     assert len(identity.content_sha256) == 64
     assert context["check"]["definition"]
     assert {item["predicate"] for item in context["relations"]} >= {
@@ -406,6 +406,60 @@ def test_schema_2_rejects_duplicated_worker_and_region_selectors():
         item for item in payload["relations"] if item["predicate"] == "USES_OPERAND"
     )
     operand["qualifiers"]["feature_kind"] = "ordinary_part"
+    _rehash(payload)
+
+    with pytest.raises(DFMError) as exc_info:
+        LocalOntologyStore.from_package(payload)
+
+    assert exc_info.value.code == "ontology_snapshot_invalid"
+
+
+def test_source_policy_accepts_the_authoritative_workbook_codes():
+    payload = _package()
+    factor = next(
+        item
+        for item in payload["concepts"]
+        if item["concept_type"] == "factor"
+        and item["properties"].get("runtime_key") == "material"
+    )
+    factor["properties"]["source_policy"] = {
+        "allowed_sources": [
+            "USR",
+            "DWG",
+            "CAD",
+            "GEO",
+            "DOC",
+            "DB",
+            "DER",
+            "DEF",
+        ],
+        "auto_accept_sources": ["CAD", "DOC", "DB", "DER", "DEF"],
+        "confirmation_required_sources": ["DWG", "GEO"],
+        "min_confidence": 0.9,
+        "evidence_required": True,
+        "conflict_policy": "ask_user",
+        "missing_policy": "ask_user",
+    }
+    _rehash(payload)
+
+    store = LocalOntologyStore.from_package(payload)
+
+    assert store.factor_source_policies("injection")["material"][
+        "allowed_sources"
+    ] == ["USR", "DWG", "CAD", "GEO", "DOC", "DB", "DER", "DEF"]
+
+
+def test_source_policy_rejects_removed_legacy_codes():
+    payload = _package()
+    factor = next(
+        item
+        for item in payload["concepts"]
+        if item["concept_type"] == "factor"
+        and item["properties"].get("runtime_key") == "material"
+    )
+    factor["properties"]["source_policy"]["allowed_sources"] = ["user"]
+    factor["properties"]["source_policy"]["auto_accept_sources"] = []
+    factor["properties"]["source_policy"]["confirmation_required_sources"] = []
     _rehash(payload)
 
     with pytest.raises(DFMError) as exc_info:
