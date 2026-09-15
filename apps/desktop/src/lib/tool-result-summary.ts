@@ -393,9 +393,10 @@ function valueErrorText(value: unknown): string {
 
   if (isRecord(v)) {
     const direct = firstString(v, ERROR_MSG_KEYS)
+    const code = firstString(v, ['code', 'error_code'])
 
     if (direct) {
-      return clipBlock(direct, 700, 12)
+      return clipBlock(code ? `${code}: ${direct}` : direct, 700, 12)
     }
   }
 
@@ -443,9 +444,10 @@ function findNestedError(value: unknown, depth: number, seen: Set<unknown>): str
 
   if (hasErrorSignal(record)) {
     const direct = firstString(record, ERROR_MSG_KEYS)
+    const code = firstString(record, ['code', 'error_code'])
 
     if (direct) {
-      return clipBlock(direct, 700, 12)
+      return clipBlock(code ? `${code}: ${direct}` : direct, 700, 12)
     }
   }
 

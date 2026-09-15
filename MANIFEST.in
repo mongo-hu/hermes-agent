@@ -9,5 +9,7 @@ graft locales
 recursive-include plugins plugin.yaml plugin.yml
 # Gateway assets include images plus YAML catalogs such as status_phrases.yaml.
 recursive-include gateway/assets *
+recursive-include tools/dfm/reporting/html/vendor *.js
+recursive-include tools/dfm/reporting/html/editor_runtime *.html *.js *.json
 global-exclude __pycache__
 global-exclude *.py[cod]

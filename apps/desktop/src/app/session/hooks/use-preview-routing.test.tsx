@@ -37,8 +37,20 @@ function previewTarget(source: string): PreviewTarget {
 
 let handleEvent: (event: RpcEvent) => void = () => undefined
 
-function PreviewRoutingHarness({ onEvent }: { onEvent: (handler: (event: RpcEvent) => void) => void }) {
-  const activeSessionIdRef = useRef<string | null>('session-1')
+interface PreviewRoutingHarnessProps {
+  activeSessionId?: string
+  onEvent: (handler: (event: RpcEvent) => void) => void
+  routedSessionId?: string
+  selectedStoredSessionId?: string | null
+}
+
+function PreviewRoutingHarness({
+  activeSessionId = 'session-1',
+  onEvent,
+  routedSessionId = 'session-1',
+  selectedStoredSessionId = null
+}: PreviewRoutingHarnessProps) {
+  const activeSessionIdRef = useRef<string | null>(activeSessionId)
 
   const routing = usePreviewRouting({
     activeSessionIdRef,
@@ -46,8 +58,8 @@ function PreviewRoutingHarness({ onEvent }: { onEvent: (handler: (event: RpcEven
     currentCwd: '/work',
     currentView: 'chat',
     requestGateway: vi.fn(),
-    routedSessionId: 'session-1',
-    selectedStoredSessionId: null
+    routedSessionId,
+    selectedStoredSessionId
   })
 
   useEffect(() => {
@@ -92,6 +104,26 @@ describe('usePreviewRouting', () => {
         onEvent={handler => {
           handleEvent = handler
         }}
+      />
+    )
+
+    await waitFor(() => {
+      expect($previewTarget.get()).toEqual({ ...target, renderMode: 'preview' })
+    })
+  })
+
+  it('restores a legacy preview registered under the active runtime session', async () => {
+    const target = previewTarget('/work/report.html')
+
+    registerSessionPreview('runtime-session', target, 'tool-result')
+    render(
+      <PreviewRoutingHarness
+        activeSessionId="runtime-session"
+        onEvent={handler => {
+          handleEvent = handler
+        }}
+        routedSessionId="stored-session"
+        selectedStoredSessionId="stored-session"
       />
     )
 

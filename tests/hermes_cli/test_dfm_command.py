@@ -15,13 +15,15 @@ def test_dfm_doctor_reports_workspace_config_and_capabilities(tmp_path, capsys):
         assert report["config"]["valid"] is True
         assert set(report["capabilities"]) == {
             "step",
+            "occt_cpp",
             "parasolid",
             "drawing",
             "fusion",
         }
         assert report["capabilities"]["parasolid"]["status"] != "available"
-        assert report["capabilities"]["drawing"]["status"] == "not_implemented"
-        assert report["capabilities"]["fusion"]["status"] == "not_implemented"
+        assert report["capabilities"]["drawing"]["status"] == "available"
+        assert report["capabilities"]["drawing"]["details"]["applicable"] is False
+        assert report["capabilities"]["fusion"]["status"] == "available"
         assert report["runtime"]["worker_import_path"] == "tools.dfm.workers.step_worker"
         assert report["runtime"]["worker_version"] == WORKER_VERSION
         assert set(report["runtime"]["dependencies"]) == {
@@ -35,20 +37,24 @@ def test_dfm_doctor_reports_workspace_config_and_capabilities(tmp_path, capsys):
         assert report["runtime"]["step_available"] == (
             report["capabilities"]["step"]["status"] == "available"
         )
-        assert report["production_backend"] == {
-            "backend_id": "external_occt_cpp",
-            "status": "not_implemented",
-            "connected": False,
-            "discovery_contract_version": 1,
-            "objective_contract_version": 4,
-            "note": "PythonOCC is a reference backend; production OCCT C++ is developed separately.",
-        }
+        production_backend = report["production_backend"]
+        assert production_backend["backend_id"] == "external_occt_cpp"
+        assert production_backend["status"] == report["capabilities"]["occt_cpp"]["status"]
+        assert production_backend["connected"] is (
+            report["capabilities"]["occt_cpp"]["status"] == "available"
+        )
+        assert production_backend["discovery_contract_version"] == 1
+        assert production_backend["objective_contract_version"] == 4
+        assert "adapter_task_schema_version" not in production_backend
+        assert "experimental" in production_backend["note"]
+        assert "PythonOCC" in production_backend["note"]
+        assert "NX" in production_backend["note"]
         assert set(report["processes"]["supported"]) == {
             "die_casting",
             "injection",
         }
         assert report["processes"]["injection"]["scope_id"] == (
-            "injection.wall-draft"
+            "injection.default"
         )
         assert report["processes"]["die_casting"]["scope_id"] == (
             "die_casting.topology-baseline"

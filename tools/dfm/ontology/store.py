@@ -64,22 +64,12 @@ _LEGACY_OPERAND_SELECTOR_KEYS = {
     "region_role",
 }
 _CONDITION_OPERATORS = {"EQ", "IN", "GT", "GTE", "LT", "LTE", "BETWEEN", "EXISTS"}
-_FACTOR_SOURCE_CODES = {
+_FACT_SOURCE_CODES = {
     "user",
     "project_metadata",
     "drawing_recognition",
     "geometry_recognition",
     "derived_program",
-}
-_RECOGNITION_SOURCE_CODES = {"drawing_recognition", "geometry_recognition"}
-_SOURCE_POLICY_FIELDS = {
-    "allowed_sources",
-    "auto_accept_sources",
-    "confirmation_required_sources",
-    "min_confidence",
-    "evidence_required",
-    "conflict_policy",
-    "missing_policy",
 }
 _COMPARATORS = {
     "GT": ">",
@@ -201,9 +191,22 @@ class LocalOntologyStore:
             self.install_package(package_path)
             return
         try:
-            self.identity()
+            installed = self.identity()
         except DFMError:
             raise
+        package = self._read_package(package_path)
+        self._validate_package(package)
+        rule_set = package["rule_set"]
+        packaged_hash = _content_hash(package)
+        if (
+            installed.scope_type == "system"
+            and installed.scope_key == "default"
+            and rule_set.get("scope_type") == "system"
+            and rule_set.get("scope_key") == "default"
+            and installed.content_sha256 != packaged_hash
+            and str(package.get("published_at") or "") > installed.published_at
+        ):
+            self.install_package(package)
 
     def install_package(self, package: Path | Mapping[str, Any]) -> None:
         payload = self._read_package(package)
@@ -343,6 +346,30 @@ class LocalOntologyStore:
                 }
             )
         return tuple(result)
+
+    def factor_source_policies(self, process: str) -> dict[str, dict[str, Any]]:
+        """Return published source policies keyed by their runtime fact name."""
+
+        identity = self.identity()
+        if identity.process != process:
+            return {}
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT concept_id, properties_json
+                FROM ontology_concept
+                WHERE concept_type = 'factor' AND status = 'active'
+                ORDER BY concept_id
+                """
+            ).fetchall()
+        policies: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            properties = _load_json(row["properties_json"], {})
+            runtime_key = str(properties.get("runtime_key") or row["concept_id"])
+            policy = properties.get("source_policy")
+            if isinstance(policy, Mapping):
+                policies[runtime_key] = dict(policy)
+        return policies
 
     def check_context(self, check_id: str) -> dict[str, Any]:
         """Return the bounded semantic context supplied to planners or an LLM."""
@@ -723,6 +750,16 @@ class LocalOntologyStore:
                     {"concept_id": concept_id},
                 )
             concepts[concept_id] = item
+            if concept_type == "factor":
+                properties = item.get("properties", {})
+                if not isinstance(properties, Mapping):
+                    cls._invalid(
+                        "A factor concept requires object properties.",
+                        {"concept_id": concept_id},
+                    )
+                source_policy = properties.get("source_policy")
+                if source_policy is not None:
+                    cls._validate_source_policy(concept_id, source_policy)
         process_id = f"process.{rule_set['process']}"
         if concepts.get(process_id, {}).get("concept_type") != "process":
             cls._invalid("The publication does not declare its process concept.")
@@ -739,17 +776,6 @@ class LocalOntologyStore:
             for concept_id, item in concepts.items()
             if item["concept_type"] == "factor"
         }
-        if int(payload["schema_version"]) >= 2:
-            for factor_id in sorted(factor_ids):
-                properties = concepts[factor_id].get("properties", {})
-                if not isinstance(properties, Mapping):
-                    cls._invalid(
-                        "A Factor concept requires runtime properties.",
-                        {"factor_id": factor_id},
-                    )
-                cls._validate_factor_source_policy(
-                    properties.get("source_policy"), factor_id=factor_id
-                )
         for item in payload["relations"]:
             if not isinstance(item, Mapping):
                 cls._invalid("Ontology relations must be objects.")
@@ -816,72 +842,35 @@ class LocalOntologyStore:
             versions.add(version_id)
 
     @classmethod
-    def _validate_factor_source_policy(
-        cls, policy: Any, *, factor_id: str
-    ) -> None:
-        """Enforce the phase-one Factor source-policy contract from the design."""
-
-        if not isinstance(policy, Mapping) or set(policy) != _SOURCE_POLICY_FIELDS:
+    def _validate_source_policy(cls, concept_id: str, raw_policy: Any) -> None:
+        if not isinstance(raw_policy, Mapping):
             cls._invalid(
-                "A Schema 2 Factor requires the complete source_policy object.",
-                {"factor_id": factor_id},
+                "A factor source_policy must be an object.",
+                {"concept_id": concept_id},
             )
-        source_sets: dict[str, set[str]] = {}
-        for field in (
-            "allowed_sources",
-            "auto_accept_sources",
-            "confirmation_required_sources",
-        ):
-            value = policy.get(field)
-            if (
-                not isinstance(value, list)
-                or any(
-                    not isinstance(item, str) or item not in _FACTOR_SOURCE_CODES
-                    for item in value
-                )
-                or len(value) != len(set(value))
-            ):
-                cls._invalid(
-                    "A Factor source_policy contains invalid source codes.",
-                    {"factor_id": factor_id, "field": field},
-                )
-            source_sets[field] = set(value)
-        allowed = source_sets["allowed_sources"]
-        automatic = source_sets["auto_accept_sources"]
-        confirmation = source_sets["confirmation_required_sources"]
+        allowed = set(raw_policy.get("allowed_sources", []))
+        automatic = set(raw_policy.get("auto_accept_sources", []))
+        confirmation = set(raw_policy.get("confirmation_required_sources", []))
+        minimum = raw_policy.get("min_confidence")
         if (
-            not automatic.issubset(allowed)
+            not allowed
+            or not allowed.issubset(_FACT_SOURCE_CODES)
+            or not automatic.issubset(allowed)
             or not confirmation.issubset(allowed)
             or automatic.intersection(confirmation)
+            or minimum is not None
+            and (
+                isinstance(minimum, bool)
+                or not isinstance(minimum, (int, float))
+                or not 0 <= float(minimum) <= 1
+            )
+            or not isinstance(raw_policy.get("evidence_required", False), bool)
+            or raw_policy.get("conflict_policy") != "ask_user"
+            or raw_policy.get("missing_policy") != "ask_user"
         ):
             cls._invalid(
-                "A Factor source_policy has incompatible acceptance sets.",
-                {"factor_id": factor_id},
-            )
-        confidence = policy.get("min_confidence")
-        if confidence is not None and (
-            not isinstance(confidence, (int, float))
-            or isinstance(confidence, bool)
-            or not math.isfinite(float(confidence))
-            or not 0 <= float(confidence) <= 1
-        ):
-            cls._invalid(
-                "A Factor source_policy min_confidence must be null or between 0 and 1.",
-                {"factor_id": factor_id},
-            )
-        if (automatic | confirmation).intersection(_RECOGNITION_SOURCE_CODES) and confidence is None:
-            cls._invalid(
-                "Recognition sources require a Factor min_confidence.",
-                {"factor_id": factor_id},
-            )
-        if (
-            not isinstance(policy.get("evidence_required"), bool)
-            or policy.get("conflict_policy") != "ask_user"
-            or policy.get("missing_policy") != "ask_user"
-        ):
-            cls._invalid(
-                "A Factor source_policy uses unsupported phase-one policies.",
-                {"factor_id": factor_id},
+                "A factor source_policy is invalid.",
+                {"concept_id": concept_id},
             )
 
     @classmethod

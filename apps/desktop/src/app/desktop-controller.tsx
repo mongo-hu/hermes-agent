@@ -21,6 +21,7 @@ import { storedSessionIdForNotification } from '../lib/session-ids'
 import { isMessagingSource } from '../lib/session-source'
 import { latestSessionTodos } from '../lib/todos'
 import { setCronFocusJobId } from '../store/cron'
+import { $dfmViewerTarget } from '../store/dfm-viewer'
 import {
   $fileBrowserOpen,
   $panesFlipped,
@@ -194,6 +195,7 @@ export function DesktopController() {
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
   const filePreviewTarget = useStore($filePreviewTarget)
   const previewTarget = useStore($previewTarget)
+  const dfmViewerTarget = useStore($dfmViewerTarget)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const messagingSessions = useStore($messagingSessions)
   const terminalTakeover = useStore($terminalTakeover)
@@ -257,8 +259,10 @@ export function DesktopController() {
   const { connectionRef, gatewayRef, requestGateway } = useGatewayRequest()
 
   useEffect(() => {
-    window.hermesDesktop?.setPreviewShortcutActive?.(Boolean(chatOpen && (filePreviewTarget || previewTarget)))
-  }, [chatOpen, filePreviewTarget, previewTarget])
+    window.hermesDesktop?.setPreviewShortcutActive?.(
+      Boolean(chatOpen && (dfmViewerTarget || filePreviewTarget || previewTarget))
+    )
+  }, [chatOpen, dfmViewerTarget, filePreviewTarget, previewTarget])
 
   useEffect(() => {
     startUpdatePoller()
@@ -1174,7 +1178,7 @@ export function DesktopController() {
   // Other sidebars docked as real columns on the terminal's rail. Force-collapsed
   // hover-reveal overlays (narrow window) don't take a column, so they don't count.
   const railColumnOpen =
-    (chatOpen && Boolean(previewTarget || filePreviewTarget) && previewPaneOpen) ||
+    (chatOpen && Boolean(dfmViewerTarget || previewTarget || filePreviewTarget) && previewPaneOpen) ||
     (chatOpen && !narrowViewport && fileBrowserOpen) ||
     (chatOpen && Boolean(currentCwd.trim()) && !narrowViewport && reviewOpen)
 
@@ -1184,7 +1188,7 @@ export function DesktopController() {
 
   const previewPane = (
     <Pane
-      disabled={!chatOpen || (!previewTarget && !filePreviewTarget)}
+      disabled={!chatOpen || (!dfmViewerTarget && !previewTarget && !filePreviewTarget)}
       id={PREVIEW_PANE_ID}
       key="preview"
       maxWidth={PREVIEW_RAIL_MAX_WIDTH}
@@ -1289,7 +1293,7 @@ export function DesktopController() {
       mainOverlays={mainOverlays}
       onOpenSettings={openSettings}
       overlays={overlays}
-      previewPaneOpen={chatOpen && Boolean(previewTarget || filePreviewTarget)}
+      previewPaneOpen={chatOpen && Boolean(dfmViewerTarget || previewTarget || filePreviewTarget)}
       statusbarItems={statusbarItems}
       terminalPaneOpen={terminalSidebarOpen}
       titlebarTools={titlebarToolGroups.flat.right}

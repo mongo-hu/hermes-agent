@@ -35,8 +35,9 @@ export const CHAT_SIDEBAR_PANE_ID = 'chat-sidebar'
 export const FILE_BROWSER_PANE_ID = 'file-browser'
 export const PREVIEW_PANE_ID = 'preview'
 export const RIGHT_RAIL_PREVIEW_TAB_ID = 'preview'
+export const RIGHT_RAIL_DFM_TAB_ID = 'dfm'
 
-export type RightRailTabId = typeof RIGHT_RAIL_PREVIEW_TAB_ID | `file:${string}`
+export type RightRailTabId = typeof RIGHT_RAIL_PREVIEW_TAB_ID | typeof RIGHT_RAIL_DFM_TAB_ID | `file:${string}`
 
 ensurePaneRegistered(CHAT_SIDEBAR_PANE_ID, { open: true })
 ensurePaneRegistered(FILE_BROWSER_PANE_ID, { open: false })

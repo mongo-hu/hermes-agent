@@ -3,6 +3,7 @@ import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { SetTitlebarToolGroup, TitlebarTool } from '@/app/shell/titlebar-controls'
+import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
@@ -282,12 +283,60 @@ export function PreviewPane({
     setDevtoolsOpen(true)
   }, [])
 
+  const openInBrowser = useCallback(async () => {
+    try {
+      const bridge = window.hermesDesktop?.openPreviewInBrowser
+
+      if (!bridge) {
+        throw new Error('Desktop preview browser bridge is unavailable')
+      }
+
+      await bridge(currentUrl)
+    } catch (error) {
+      notifyError(error, t.preview.unavailable)
+    }
+  }, [currentUrl, t.preview.unavailable])
+
+  const savePreview = useCallback(async () => {
+    try {
+      const bridge = window.hermesDesktop?.savePreviewFile
+
+      if (!bridge) {
+        throw new Error('Desktop preview save bridge is unavailable')
+      }
+
+      await bridge(target.path || target.url)
+    } catch (error) {
+      notifyError(error, t.common.failed)
+    }
+  }, [t.common.failed, target.path, target.url])
+
   useEffect(() => {
     if (!setTitlebarToolGroup) {
       return
     }
 
     const tools: TitlebarTool[] = [
+      ...(isWebPreview
+        ? [
+            {
+              icon: <Codicon name="link-external" />,
+              id: `${TITLEBAR_GROUP_ID}-browser`,
+              label: t.preview.openInBrowser,
+              onSelect: () => void openInBrowser()
+            }
+          ]
+        : []),
+      ...(target.kind === 'file'
+        ? [
+            {
+              icon: <Codicon name="cloud-download" />,
+              id: `${TITLEBAR_GROUP_ID}-save`,
+              label: t.common.save,
+              onSelect: () => void savePreview()
+            }
+          ]
+        : []),
       ...(isWebPreview
         ? [
             {
@@ -311,7 +360,20 @@ export function PreviewPane({
     setTitlebarToolGroup(TITLEBAR_GROUP_ID, tools)
 
     return () => setTitlebarToolGroup(TITLEBAR_GROUP_ID, [])
-  }, [consoleOpen, consoleState, copy, devtoolsOpen, isWebPreview, setTitlebarToolGroup, toggleDevTools])
+  }, [
+    consoleOpen,
+    consoleState,
+    copy,
+    devtoolsOpen,
+    isWebPreview,
+    openInBrowser,
+    savePreview,
+    setTitlebarToolGroup,
+    t.common.save,
+    t.preview.openInBrowser,
+    target.kind,
+    toggleDevTools
+  ])
 
   useEffect(() => {
     if (!consoleOpen) {

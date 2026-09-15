@@ -21,7 +21,7 @@
       "required": ["kind", "index", "input_sha256", "topology_snapshot_id", "entity_id"],
       "properties": {
         "kind": {"enum": ["face", "edge", "solid", "vertex"]},
-        "index": {"type": "integer", "minimum": 0},
+        "index": {"type": "integer", "minimum": 1},
         "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "topology_snapshot_id": {"type": "string", "minLength": 1},
         "entity_id": {"type": "string", "minLength": 1}

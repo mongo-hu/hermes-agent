@@ -3710,6 +3710,8 @@ def _on_tool_progress(
             "latest_artifact",
             "latest_artifact_kind",
             "run_id",
+            "project_id",
+            "viewer_manifest",
             "is_error",
         ):
             value = _kwargs.get(key)

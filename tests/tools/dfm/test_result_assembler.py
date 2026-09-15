@@ -4,7 +4,7 @@ from tools.dfm.contracts import ArtifactRecord, PlanRecord
 from tools.dfm.reporting import result_assembler
 
 
-def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path, monkeypatch):
+def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path):
     run_id = "run_1"
     output = tmp_path / "runs" / run_id / "artifacts"
     output.mkdir(parents=True)
@@ -81,8 +81,6 @@ def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path, monkey
         scope_id="injection.wall-draft",
         scope_version="1.0.0",
     )
-    monkeypatch.setattr(result_assembler, "pptx_available", lambda: False)
-
     generated = result_assembler.materialize_result_reports(
         tmp_path, run_id, plan, artifacts
     )

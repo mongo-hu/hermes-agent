@@ -33,6 +33,33 @@ def _validate(name: str, payload: dict) -> None:
     jsonschema.Draft202012Validator(schema).validate(payload)
 
 
+def test_objective_artifacts_and_topology_indices_match_the_published_contracts():
+    jsonschema = pytest.importorskip("jsonschema")
+    objective = json.loads(
+        (SCHEMA_ROOT / "objective_task.schema.json").read_text(encoding="utf-8")
+    )
+    allowed = objective["properties"]["operations"]["items"]["properties"][
+        "required_artifacts"
+    ]["items"]["enum"]
+    assert "feature_set" not in allowed
+    assert "region_set" not in allowed
+
+    for schema_name in (
+        "measurement.schema.json",
+        "topology_map.schema.json",
+        "scalar_field.schema.json",
+        "evidence_geometry.schema.json",
+        "evidence_record.schema.json",
+    ):
+        schema = json.loads((SCHEMA_ROOT / schema_name).read_text(encoding="utf-8"))
+        encoded = json.dumps(schema)
+        assert not any(
+            match in encoded
+            for match in ('"index": {"type": "integer", "minimum": 0}',)
+        ), schema_name
+        jsonschema.Draft202012Validator.check_schema(schema)
+
+
 def _artifact(artifact_id: str, kind: str, filename: str) -> ObjectiveArtifactManifest:
     return ObjectiveArtifactManifest(
         artifact_id=artifact_id,

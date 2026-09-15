@@ -11,6 +11,7 @@ from typing import Any
 
 from ...contracts import GeometryRef, MeasurementRecord, PlanOperation, RegionRecord
 from ...errors import DFMError
+from ..snapshot_hash import render_mesh_content_sha256
 from . import legacy_analyzer as legacy
 
 
@@ -73,7 +74,7 @@ def export_objective_fields(
     for item in mesh:
         item["geometry_ref"]["topology_snapshot_id"] = topology_snapshot_id
     scene_primitives = [item["primitive"] for item in mesh]
-    render_mesh_sha256 = _content_sha256(scene_primitives)
+    render_mesh_sha256 = render_mesh_content_sha256(scene_primitives)
     render_mesh_snapshot_id = f"mesh_{render_mesh_sha256[:16]}"
     for primitive in scene_primitives:
         primitive["render_mesh_snapshot_id"] = render_mesh_snapshot_id

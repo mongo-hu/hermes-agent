@@ -58,10 +58,10 @@ flowchart LR
 独立 C++ 项目可以部署为本地 Worker 或远程服务，但必须消费和产生同一份契约。Hermes 不应
 链接 C++ 项目的内部库，也不应依赖 OCCT 对象、内存地址或进程内 Shape Handle。
 
-当前 Hermes 实际运行链路是“随仓库 Snapshot Schema 2 → 本地 SQLite → ordinary 全模型
-Discovery fallback → PythonOCC 参考 Objective → Hermes Evaluation/Evidence/Report”。图中的 Django
-发布和外部 OCCT C++ Engine 是目标生产链路。两者必须分开描述，不能把已冻结契约等同于外部
-服务已经接通。
+当前 Hermes 保留“随仓库 Snapshot Schema 2 → 本地 SQLite → ordinary 全模型 Discovery fallback
+→ PythonOCC 参考 Objective → Hermes Evaluation/Evidence/Report”链路；同时新增显式选择的
+`dfm-geometry` experimental Objective Analyzer 和 Desktop 3D Viewer。外部程序已经接通不代表生产
+认证完成：Django 发布、C++ Geometry Discovery 闭环和 certified Calculator 仍是目标生产链路。
 
 本体只描述稳定业务语义和关系，不保存算法实现。发布器必须验证本体中的 `worker_kind`、
 `worker_role`、`worker_metric_id` 和 `quantity_id` 能在目标 OCCT Capability 中解析；验证失败的
@@ -138,20 +138,28 @@ Metric 下漏算或由两个 Region 重复认领。低置信度或未实现 Reco
 
 ### 3.4 二维图纸与 2D/3D Fusion 边界
 
-当前 `drawing` 和 `fusion` Analyzer 只是显式占位，不能产生生产结论。后续二维输入先输出带
-页码、bbox、原文、单位、置信度和 Provider 版本的 Observation；材料、公差、皮纹等高置信度信息
-经过冲突检查后成为 Fact，歧义项进入 Clarification。2D Observation 与 3D Feature/Region 之间
-通过可审核 `FusionLink` 关联，不把像素位置直接当成 CAD GeometryRef，也不允许图纸文本替代
-三维客观测量。二维实现可后置，但 Observation/FusionLink 必须沿用现有 Manifest 数据链。
+当前 `drawing` Analyzer 只执行 PDF/图片程序化 OCR，将带稳定 Fragment ID、页码、bbox、原文、
+置信度及 Provider 版本的结果和诊断保存为 Artifact，不单独调用模型，也不直接创建 Observation。
+当前 Hermes Agent event loop 通过 `drawing_context` 取得有界 OCR 证据并提议语义；
+`submit_observations` 由程序校验 Fragment ID、Schema、置信度和 Revision 后落库。
+
+存在三维 Feature/Region 时，Agent 通过 `fusion_context` 提议 2D/3D 关联；
+`submit_fusion_links` 校验所有稳定 ID 和 Feature/Region 双向关系，几何算法进一步验证拓扑，最终只
+保存 candidate/ambiguous `FusionLink`，Agent 不能直接确认。`source_policy` 再决定 Observation 候选
+能否自动采信、必须确认或进入冲突。像素位置不直接当成 CAD GeometryRef，图纸文本也不替代三维
+客观测量。尺寸线、GD&T、视图投影和空间匹配仍需后续工程化与 Golden Drawing 验收。
 
 ## 4. 核心数据链
 
 ```text
 InputRecord
 → OntologyRuleSnapshot
+→ DrawingOcrFragment Artifact
+→ Agent-proposed / Program-validated Observation
 → GeometryDiscoveryTaskRequest
 → GeometryDiscoveryResultManifest
-→ Observation / FeatureRecord / RegionRecord
+→ FeatureRecord / RegionRecord
+→ Agent-proposed / Geometry-validated FusionLink
 → DiscoverySnapshotRecord
 → RuleBinding + PlanOperation
 → ObjectiveTaskRequest
@@ -270,8 +278,16 @@ Feature 的 provenance/properties 必须记录模型 ID、模型版本、输入�
 声明的 ScalarField、RenderScene、TopologyMap 等客观 Artifact。Backend 不返回 Evaluation、
 FailedPatch、Evidence、severity、rule 或 recommendation。
 
-当前 Objective Schema 保持版本 4，不因为生产实现从 PythonOCC 切换到 OCCT C++ 而修改。
-只有数据语义本身发生不兼容变化才升级版本。
+Hermes 与 OCCT C++ 共同消费 Objective Schema 4，不因为生产实现从 PythonOCC 切换到 OCCT C++
+而分叉任务语义。本地进程仍使用 `dfm.geometry.request/v1` 信封传递绝对输入路径、输出目录和
+Backend 版本，但信封中的 `task` 是未经降级的 `ObjectiveTaskRequest`：完整保留 Region、
+Feature/Region 引用、Required Fact 和带 `source_ref` 的解析参数。C++ 结果同样以 Schema 4 的
+`ObjectiveResultManifest` 返回；只有数据语义本身发生不兼容变化才升级共享版本。
+
+OCCT C++ 必须直接生成共享 `render_scene`、`topology_map` 和逐测量 `scalar_field`（均为
+Geometry Artifact Schema 2），并在 Manifest 中用这些工件的真实 ID、文件哈希和大小登记。
+Hermes 只校验和消费共享工件；禁止恢复 `Adapter → 旧 Objective Schema → C++`，也禁止输出
+`render_mesh` / `metric_fields` 后再由 Python 转换或双写兼容。
 
 ## 7. Snapshot 与拓扑身份
 
@@ -294,6 +310,11 @@ Discovery 必须持久化 GeometrySnapshot，并由后续 Objective 任务复用
 `TopologyMap` 必须来自生成 `RenderScene` 的同一次离散化，并将 GeometryRef 映射到
 `primitive_id + triangle_id + render_mesh_snapshot_id`。Hermes 只绘制 Backend 返回的 Scene，
 不重新打开 CAD。
+
+`render_mesh_sha256` 不得对 JSON 文本直接取哈希，因为不同语言对浮点数的最短十进制表示并不
+构成跨语言规范。Schema 2 的网格内容哈希采用 `dfm.render-mesh-snapshot/v2` 域分隔的二进制
+canonical stream：所有长度和三角形索引为 uint64 大端，`primitive_id` 为带长度的 UTF-8，
+坐标为 IEEE-754 binary64 大端且 `-0.0` 归一为 `0.0`；快照 ID 字段自身不参与哈希。
 
 ## 8. Capability 契约
 
@@ -383,10 +404,14 @@ Result 原子发布；Artifact 下载后由 Hermes 再次校验大小和 SHA256�
 - 本体/规则发布契约：`tools/dfm/schemas/ontology_snapshot.schema.json`（当前 Schema 2）
 - Agent 本地本体运行时：`tools/dfm/ontology/store.py`
 - 当前注塑发布快照：`tools/dfm/scopes/injection/ontology_snapshot_v2.json`
-  （`ontology.injection.default@1.1.0`）
+  （`ontology.injection.default@1.2.0`）
 - 当前几何能力声明：`tools/dfm/scopes/injection/geometry_capability_v1.json`
 - 特征目录：`tools/dfm/scopes/injection/feature_catalog.json`
 - OCCT C++ Provider 边界：`tools/dfm/feature_recognition/occt_cpp.py`
+- OCCT C++ Objective Analyzer 与共享结果校验入口：`tools/dfm/analyzers/occt.py`
+- OCCT C++ 操作图：`tools/dfm/scopes/injection/geometry_core_v4.json`
+- Viewer Manifest 物化：`tools/dfm/viewer.py`
+- Desktop 3D Viewer：`apps/desktop/src/app/dfm-viewer/`
 - PythonOCC 参考实现：`tools/dfm/geometry/step/field_export.py`
 
 开发阶段和优先级见 [DFM 开发路径](2026-07-13-dfm-hermes-agent-development-roadmap.md)。

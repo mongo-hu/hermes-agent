@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
-  "snapshot_id": "ontology.injection.default@1.1.0",
-  "ontology_version": "1.1.0",
-  "published_at": "2026-08-25T00:00:00Z",
-  "content_sha256": "358da383bcfd36b02600b8849dc8e789df5707b8f8fcc28954e0b626b6567858",
+  "snapshot_id": "ontology.injection.default@1.2.0",
+  "ontology_version": "1.2.0",
+  "published_at": "2026-08-27T00:00:00Z",
+  "content_sha256": "409df1f29403cf692c526f1c18ca45d105b6853906b05df11e660ae5f4edacdc",
   "rule_set": {
     "rule_set_code": "injection.default",
     "version": "1.1.0",
@@ -85,16 +85,7 @@
       "properties": {
         "runtime_key": "model_units",
         "default_value": "mm",
-        "question": "What length unit was used to author the STEP model?",
-        "source_policy": {
-          "allowed_sources": ["user", "project_metadata", "drawing_recognition"],
-          "auto_accept_sources": ["project_metadata"],
-          "confirmation_required_sources": ["drawing_recognition"],
-          "min_confidence": 0.9,
-          "evidence_required": true,
-          "conflict_policy": "ask_user",
-          "missing_policy": "ask_user"
-        }
+        "question": "What length unit was used to author the STEP model?"
       },
       "status": "active"
     },
@@ -111,10 +102,14 @@
         "default_value": "ABS",
         "question": "What resin/material grade will be used for this part?",
         "source_policy": {
-          "allowed_sources": ["user", "project_metadata", "drawing_recognition", "derived_program"],
-          "auto_accept_sources": ["project_metadata", "derived_program"],
+          "allowed_sources": [
+            "user",
+            "project_metadata",
+            "drawing_recognition"
+          ],
+          "auto_accept_sources": ["project_metadata"],
           "confirmation_required_sources": ["drawing_recognition"],
-          "min_confidence": 0.9,
+          "min_confidence": 0.75,
           "evidence_required": true,
           "conflict_policy": "ask_user",
           "missing_policy": "ask_user"
@@ -138,16 +133,7 @@
       "properties": {
         "runtime_key": "pull_dir",
         "default_value": [0, 0, 1],
-        "question": "What is the confirmed mold pull direction as [x, y, z]?",
-        "source_policy": {
-          "allowed_sources": ["user", "drawing_recognition", "geometry_recognition", "derived_program"],
-          "auto_accept_sources": ["derived_program"],
-          "confirmation_required_sources": ["drawing_recognition", "geometry_recognition"],
-          "min_confidence": 0.9,
-          "evidence_required": true,
-          "conflict_policy": "ask_user",
-          "missing_policy": "ask_user"
-        }
+        "question": "What is the confirmed mold pull direction as [x, y, z]?"
       },
       "status": "active"
     },

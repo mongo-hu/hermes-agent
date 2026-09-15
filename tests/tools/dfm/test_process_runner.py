@@ -35,6 +35,24 @@ def test_process_runner_streams_events_and_keeps_stderr_separate(tmp_path):
     assert "fixture diagnostic" in stderr_log.read_text(encoding="utf-8")
 
 
+def test_process_runner_streams_raw_geometry_jsonl_events(tmp_path):
+    events = []
+
+    result = ProcessRunner().run(
+        [sys.executable, str(FIXTURE), "raw_geometry"],
+        tmp_path,
+        5,
+        CancellationToken(),
+        events.append,
+    )
+
+    assert result.returncode == 0
+    assert [event.type for event in events] == ["progress", "completed"]
+    assert all(
+        event.contract_version == "dfm.geometry.event/v1" for event in events
+    )
+
+
 def test_process_runner_times_out_and_terminates_worker(tmp_path):
     with pytest.raises(DFMError) as exc_info:
         ProcessRunner().run(

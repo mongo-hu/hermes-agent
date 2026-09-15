@@ -1,0 +1,8 @@
+{
+  "schema": "dfm-editor-runtime/v1",
+  "upstreamVersion": "1.0.19",
+  "files": {
+    "shell.html": "fef6e64637d1c3dbdfa634216e2eba64d45ceec92d24f399aca31c5ee3a7f065",
+    "extract.js": "a2327eb8d516eba65a539142682dd4b1e5be136c2578bc93b929279a8d7a5893"
+  }
+}

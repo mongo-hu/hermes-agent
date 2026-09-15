@@ -165,7 +165,7 @@ class EvaluationEngine:
             )
 
         resolved = {
-            operand.alias: self._resolve_operand(measurements, binding, operand)
+            operand.alias: self._resolve_operand(measurements, plan, binding, operand)
             for operand in binding.measurement_operands()
         }
         linked = [
@@ -281,9 +281,13 @@ class EvaluationEngine:
     def _resolve_operand(
         self,
         measurements: list[MeasurementRecord],
+        plan: PlanRecord,
         binding: RuleBinding,
         operand: RuleOperand,
     ) -> _ResolvedOperand:
+        allow_unscoped_whole_model = self._allows_unscoped_whole_model(
+            plan, operand
+        )
         matches = sorted(
             (
                 measurement
@@ -292,8 +296,17 @@ class EvaluationEngine:
                 and measurement.operation_id == operand.operation_id
                 and measurement.metric_id == operand.metric_id
                 and measurement.quantity_id == operand.quantity_id
-                and set(operand.feature_refs).issubset(measurement.feature_refs)
-                and set(operand.region_refs).issubset(measurement.region_refs)
+                and (
+                    (
+                        set(operand.feature_refs).issubset(measurement.feature_refs)
+                        and set(operand.region_refs).issubset(measurement.region_refs)
+                    )
+                    or (
+                        allow_unscoped_whole_model
+                        and not measurement.feature_refs
+                        and not measurement.region_refs
+                    )
+                )
             ),
             key=lambda item: item.measurement_id,
         )
@@ -356,6 +369,26 @@ class EvaluationEngine:
             aggregation=operand.aggregation,
             measurements=tuple(matches),
         )
+
+    @staticmethod
+    def _allows_unscoped_whole_model(
+        plan: PlanRecord, operand: RuleOperand
+    ) -> bool:
+        """Allow the OCCT v2 bridge only for the explicit whole-model region."""
+
+        if not operand.region_refs:
+            return False
+        regions = {region.region_id: region for region in plan.regions}
+        selected = [regions.get(region_id) for region_id in operand.region_refs]
+        if any(region is None or region.mode != "whole_model" for region in selected):
+            return False
+        selected_feature_refs = {
+            feature_ref
+            for region in selected
+            if region is not None
+            for feature_ref in region.feature_refs
+        }
+        return set(operand.feature_refs).issubset(selected_feature_refs)
 
     def _evaluate_expression(
         self,

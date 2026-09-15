@@ -62,7 +62,10 @@ def test_published_package_is_installed_as_a_local_sqlite_snapshot(tmp_path):
     context = store.check_context("check.main_wall_minimum_thickness")
 
     assert database.is_file()
-    assert identity.snapshot_id == "ontology.injection.default@1.1.0"
+    assert identity.snapshot_id == "ontology.injection.default@1.2.0"
+    assert store.factor_source_policies("injection")["material"][
+        "confirmation_required_sources"
+    ] == ["drawing_recognition"]
     assert len(identity.content_sha256) == 64
     assert context["check"]["definition"]
     assert {item["predicate"] for item in context["relations"]} >= {

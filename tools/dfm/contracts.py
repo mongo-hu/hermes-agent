@@ -16,6 +16,9 @@ MANIFEST_SCHEMA_VERSION = 1
 WORKER_SCHEMA_VERSION = 1
 DISCOVERY_SCHEMA_VERSION = 1
 OBJECTIVE_SCHEMA_VERSION = 4
+GEOMETRY_REQUEST_CONTRACT = "dfm.geometry.request/v1"
+GEOMETRY_EVENT_CONTRACT = "dfm.geometry.event/v1"
+GEOMETRY_RESULT_CONTRACT = "dfm.geometry.result/v1"
 
 STAGE_QUEUED = "queued"
 STAGE_STARTING = "starting"
@@ -26,6 +29,7 @@ STAGE_OBJECTIVE_READY = "objective_ready"
 STAGE_RULE_EVALUATION = "rule_evaluation"
 STAGE_EVIDENCE_RENDER = "evidence_render"
 STAGE_REPORT_MATERIALIZE = "report_materialize"
+STAGE_REPORT_EDITING = "report_editing"
 STAGE_COMPLETE = "complete"
 
 
@@ -86,6 +90,7 @@ class CapabilityStatus(str, Enum):
     AVAILABLE = "available"
     DEPENDENCY_MISSING = "dependency_missing"
     NOT_IMPLEMENTED = "not_implemented"
+    BLOCKED = "blocked"
     DISABLED = "disabled"
     UNHEALTHY = "unhealthy"
 
@@ -93,6 +98,7 @@ class CapabilityStatus(str, Enum):
 class RunStatus(str, Enum):
     QUEUED = "queued"
     RUNNING = "running"
+    REPORTING = "reporting"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -107,6 +113,13 @@ _RUN_TRANSITIONS = {
         RunStatus.BLOCKED,
     },
     RunStatus.RUNNING: {
+        RunStatus.REPORTING,
+        RunStatus.SUCCEEDED,
+        RunStatus.FAILED,
+        RunStatus.CANCELLED,
+        RunStatus.BLOCKED,
+    },
+    RunStatus.REPORTING: {
         RunStatus.SUCCEEDED,
         RunStatus.FAILED,
         RunStatus.CANCELLED,
@@ -1110,6 +1123,7 @@ class LocalObjectiveWorkerRequest:
     input_path: str
     output_dir: str
     task: ObjectiveTaskRequest
+    contract_version: str = ""
 
     def __post_init__(self) -> None:
         if (
@@ -1117,17 +1131,21 @@ class LocalObjectiveWorkerRequest:
             or not self.backend_version
             or not self.input_path
             or not self.output_dir
+            or self.contract_version not in {"", GEOMETRY_REQUEST_CONTRACT}
         ):
             raise ValueError("Local objective worker envelope is invalid.")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "schema_version": self.schema_version,
             "backend_version": self.backend_version,
             "input_path": self.input_path,
             "output_dir": self.output_dir,
             "task": self.task.to_dict(),
         }
+        if self.contract_version:
+            payload["contract_version"] = self.contract_version
+        return payload
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "LocalObjectiveWorkerRequest":
@@ -1142,14 +1160,21 @@ class WorkerEvent:
     type: str
     stage: str | None = None
     percent: int | None = None
+    processed_faces: int | None = None
+    total_faces: int | None = None
+    elapsed_seconds: float | None = None
     kind: str | None = None
     path: str | None = None
     code: str | None = None
     message: str | None = None
     external_job_id: str | None = None
+    contract_version: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        if not self.contract_version:
+            payload.pop("contract_version")
+        return payload
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "WorkerEvent":
@@ -1165,6 +1190,12 @@ class WorkerEvent:
                 "DFM worker event schema version is unsupported.",
                 {"schema_version": event.schema_version},
             )
+        if event.contract_version not in {"", GEOMETRY_EVENT_CONTRACT}:
+            raise DFMError(
+                "worker_event_invalid",
+                "DFM worker event contract version is unsupported.",
+                {"contract_version": event.contract_version},
+            )
         if event.type not in {"progress", "artifact", "completed", "error"}:
             raise DFMError(
                 "worker_event_invalid",
@@ -1177,6 +1208,21 @@ class WorkerEvent:
             raise DFMError(
                 "worker_event_invalid",
                 "DFM worker progress percent must be between 0 and 100.",
+            )
+        if event.type == "progress" and (
+            (event.processed_faces is None) != (event.total_faces is None)
+            or event.processed_faces is not None
+            and (
+                event.processed_faces < 0
+                or event.total_faces is None
+                or event.total_faces < event.processed_faces
+            )
+            or event.elapsed_seconds is not None
+            and event.elapsed_seconds < 0
+        ):
+            raise DFMError(
+                "worker_event_invalid",
+                "DFM worker progress details are invalid.",
             )
         return event
 
@@ -1465,6 +1511,7 @@ class ObjectiveResultManifest:
     scope_version: str
     result_path: str
     artifacts: list[ObjectiveArtifactManifest] = field(default_factory=list)
+    contract_version: str = ""
 
     def __post_init__(self) -> None:
         if (
@@ -1477,6 +1524,7 @@ class ObjectiveResultManifest:
             or not self.scope_version
             or not self.result_path
             or not self.artifacts
+            or self.contract_version not in {"", GEOMETRY_RESULT_CONTRACT}
         ):
             raise ValueError("Objective result manifest identity is invalid.")
         artifact_ids = [item.artifact_id for item in self.artifacts]
@@ -1488,10 +1536,13 @@ class ObjectiveResultManifest:
             raise ValueError("Objective result artifacts must be unique.")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             **asdict(self),
             "artifacts": [item.to_dict() for item in self.artifacts],
         }
+        if not self.contract_version:
+            payload.pop("contract_version")
+        return payload
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ObjectiveResultManifest":
@@ -1608,6 +1659,9 @@ class RunRecord:
     plan_snapshot: dict[str, Any] | None = None
     stage: str | None = None
     progress_percent: int = 0
+    processed_faces: int | None = None
+    total_faces: int | None = None
+    elapsed_seconds: float | None = None
     heartbeat_at: str | None = None
     event_log_path: str | None = None
     worker_stdout_path: str | None = None
@@ -1631,6 +1685,9 @@ class RunRecord:
             "plan_snapshot": self.plan_snapshot,
             "stage": self.stage,
             "progress_percent": self.progress_percent,
+            "processed_faces": self.processed_faces,
+            "total_faces": self.total_faces,
+            "elapsed_seconds": self.elapsed_seconds,
             "heartbeat_at": self.heartbeat_at,
             "event_log_path": self.event_log_path,
             "worker_stdout_path": self.worker_stdout_path,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from ..contracts import WorkerEvent
+from ..contracts import GEOMETRY_EVENT_CONTRACT, WorkerEvent
 from ..errors import DFMError
 
 
@@ -21,18 +21,28 @@ def encode_worker_event(event: WorkerEvent) -> str:
 
 def parse_worker_event(line: str) -> WorkerEvent | None:
     stripped = line.strip()
-    if not stripped.startswith(EVENT_PREFIX):
-        return None
+    if stripped.startswith(EVENT_PREFIX):
+        serialized = stripped[len(EVENT_PREFIX) :]
+        claimed_event = True
+    else:
+        serialized = stripped
+        claimed_event = False
     try:
-        payload = json.loads(stripped[len(EVENT_PREFIX) :])
+        payload = json.loads(serialized)
     except json.JSONDecodeError as exc:
+        if not claimed_event:
+            return None
         raise DFMError(
             "worker_event_invalid",
             "DFM worker emitted invalid event JSON.",
         ) from exc
     if not isinstance(payload, dict):
+        if not claimed_event:
+            return None
         raise DFMError(
             "worker_event_invalid",
             "DFM worker event payload must be an object.",
         )
+    if not claimed_event and payload.get("contract_version") != GEOMETRY_EVENT_CONTRACT:
+        return None
     return WorkerEvent.from_dict(payload)

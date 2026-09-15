@@ -92,6 +92,21 @@ describe('extractToolErrorMessage', () => {
     expect(error).toBe('')
   })
 
+  it('surfaces a structured DFM geometry timeout code without model interpretation', () => {
+    const error = extractToolErrorMessage({
+      ok: false,
+      error: {
+        code: 'geometry_operation_timeout',
+        message: 'measure_wall_thickness exceeded its 420 second native execution budget',
+        details: {}
+      }
+    })
+
+    expect(error).toBe(
+      'geometry_operation_timeout: measure_wall_thickness exceeded its 420 second native execution budget'
+    )
+  })
+
   it('ignores placeholder error fields in successful payloads', () => {
     const error = extractToolErrorMessage({
       success: true,

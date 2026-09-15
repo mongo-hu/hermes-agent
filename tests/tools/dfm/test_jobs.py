@@ -69,7 +69,17 @@ class ProgressAnalyzer(ControlledAnalyzer):
         partial = output / "partial.png"
         partial.write_bytes(b"partial-image")
         assert context.event_sink is not None
-        context.event_sink(WorkerEvent(1, "progress", stage="render_evidence", percent=42))
+        context.event_sink(
+            WorkerEvent(
+                1,
+                "progress",
+                stage="measure_wall_thickness_faces",
+                percent=42,
+                processed_faces=21,
+                total_faces=50,
+                elapsed_seconds=5.5,
+            )
+        )
         context.event_sink(
             WorkerEvent(1, "artifact", kind="evidence_image", path="partial.png")
         )
@@ -157,6 +167,73 @@ def test_run_succeeds_and_registers_safe_artifact(job_env):
     assert (workspace.project_dir(project_id) / finished.artifacts[0].relative_path).exists()
 
 
+def test_html_capable_run_succeeds_only_after_html_is_attached(job_env):
+    workspace, project_id, registry, _, managers = job_env
+    manager = JobManager(workspace, registry, DFMConfig(), reconcile=False)
+    managers.append(manager)
+    run_id = "run_report_pending"
+    project_dir = workspace.project_dir(project_id)
+    output_dir = project_dir / "runs" / run_id / "artifacts"
+    output_dir.mkdir(parents=True)
+    runtime_path = output_dir / "runtime_data.jsonl"
+    runtime_path.write_text('{"schema_version":"dfm-html-runtime/v1"}\n', encoding="utf-8")
+    runtime = ArtifactRecord(
+        f"artifact_{run_id}_report_html_runtime",
+        "report_html_runtime",
+        runtime_path.relative_to(project_dir).as_posix(),
+        "application/x-ndjson",
+        "2026-07-14T00:00:00Z",
+    )
+    store = ManifestStore(project_dir)
+    store.update(
+        lambda current: replace(
+            current,
+            runs=[
+                RunRecord(
+                    run_id,
+                    "test",
+                    "1",
+                    RunStatus.RUNNING,
+                    "2026-07-14T00:00:00Z",
+                    "2026-07-14T00:00:00Z",
+                    stage="report_materialize",
+                    progress_percent=94,
+                )
+            ],
+        )
+    )
+
+    manager._complete_success(project_id, run_id, [runtime])
+
+    pending = manager.status(project_id, run_id)
+    assert pending.status is RunStatus.REPORTING
+    assert pending.stage == "report_editing"
+    assert pending.progress_percent == 98
+    with pytest.raises(DFMError) as exc_info:
+        manager.result(project_id, run_id)
+    assert exc_info.value.code == "result_not_ready"
+
+    html_path = output_dir / "report.html"
+    html_path.write_text("<html>report</html>", encoding="utf-8")
+    completed = manager.attach_artifacts(
+        project_id,
+        run_id,
+        [
+            ArtifactRecord(
+                f"artifact_{run_id}_report_html",
+                "report_html",
+                html_path.relative_to(project_dir).as_posix(),
+                "text/html; charset=utf-8",
+                "2026-07-14T00:00:00Z",
+            )
+        ],
+    )
+
+    assert completed.status is RunStatus.SUCCEEDED
+    assert completed.stage == "complete"
+    assert completed.progress_percent == 100
+
+
 def test_run_persists_incremental_progress_artifacts_and_event_log(job_env):
     workspace, project_id, _, _, managers = job_env
     analyzer = ProgressAnalyzer()
@@ -171,14 +248,17 @@ def test_run_persists_incremental_progress_artifacts_and_event_log(job_env):
     running = manager.status(project_id, run.run_id)
 
     assert running.status is RunStatus.RUNNING
-    assert running.stage == "render_evidence"
+    assert running.stage == "measure_wall_thickness_faces"
     assert running.progress_percent == 42
+    assert running.processed_faces == 21
+    assert running.total_faces == 50
+    assert running.elapsed_seconds == 5.5
     assert running.heartbeat_at is not None
     assert [item.kind for item in running.artifacts] == ["evidence_image"]
     assert running.event_log_path is not None
     assert updates[-1].progress_percent == 42
     event_log = workspace.project_dir(project_id) / running.event_log_path
-    assert '"render_evidence"' in event_log.read_text(encoding="utf-8")
+    assert '"measure_wall_thickness_faces"' in event_log.read_text(encoding="utf-8")
 
     analyzer.release.set()
     finished = _wait_status(manager, project_id, run.run_id, RunStatus.SUCCEEDED)

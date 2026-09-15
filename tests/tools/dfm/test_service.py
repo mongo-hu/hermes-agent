@@ -10,6 +10,7 @@ from tools.dfm.analyzers.fusion import FusionAnalyzer
 from tools.dfm.analyzers.parasolid import ParasolidAnalyzer
 from tools.dfm.analyzers.registry import AnalyzerRegistry
 from tools.dfm.analyzers.step import StepAnalyzer
+from tools.dfm.config import DFMConfig
 from tools.dfm.errors import DFMError
 from tools.dfm.service import DFMService
 from tools.dfm.contracts import (
@@ -22,7 +23,12 @@ from tools.dfm.contracts import (
 
 
 STEP_PAYLOAD = (
-    Path(__file__).parents[3] / "tests" / "fixtures" / "dfm" / "step" / "injection_plate_with_hole.step"
+    Path(__file__).parents[3]
+    / "tests"
+    / "fixtures"
+    / "dfm"
+    / "step"
+    / "injection_plate_with_hole.step"
 ).read_bytes()
 
 
@@ -46,7 +52,14 @@ def service(tmp_path):
     registry.register(DrawingAnalyzer())
     registry.register(FusionAnalyzer())
     registry.register(ParasolidAnalyzer())
-    instance = DFMService(registry=registry, reconcile_jobs=False)
+    instance = DFMService(
+        config=DFMConfig(
+            geometry_backend="step",
+            geometry_executable=str(tmp_path / "missing-dfm-geometry.exe"),
+        ),
+        registry=registry,
+        reconcile_jobs=False,
+    )
     try:
         yield instance, tmp_path
     finally:
@@ -77,10 +90,15 @@ def test_project_actions_create_add_input_status_confirm_and_list(service):
     }
     assert confirmed["fact"]["status"] == "confirmed"
     assert status["project"]["input_mode"] == "step"
-    assert next(
-        item for item in status["project"]["facts"] if item["name"] == "material"
-    )["value"] == "ABS"
-    assert {item["clarification_id"] for item in status["project"]["open_clarifications"]} == {
+    assert (
+        next(item for item in status["project"]["facts"] if item["name"] == "material")[
+            "value"
+        ]
+        == "ABS"
+    )
+    assert {
+        item["clarification_id"] for item in status["project"]["open_clarifications"]
+    } == {
         "clarification_process",
         "clarification_model_units",
     }
@@ -333,21 +351,24 @@ def test_plan_is_persisted_but_unavailable_production_start_fails_explicitly(ser
     assert discovery["features"][0]["kind"] == "ordinary_part"
     assert discovery["regions"][0]["mode"] == "whole_model"
     assert discovery["capability"]["providers"]["occt_cpp_feature_recognition"] == (
-        "external-contract-1:not_implemented"
+        "occt-main-wall-adapter-1.0.0:dependency_missing"
     )
     assert plan["plan"]["analyzer_keys"] == ["step"]
     assert plan["plan"]["discovery_snapshot_refs"] == [
         discovery["snapshot"]["snapshot_id"]
     ]
     measured = [item for item in plan["plan"]["operations"] if item["metric_ids"]]
-    assert all(item["feature_refs"] == discovery["snapshot"]["feature_refs"] for item in measured)
-    assert all(item["region_refs"] == discovery["snapshot"]["region_refs"] for item in measured)
+    assert all(
+        item["feature_refs"] == discovery["snapshot"]["feature_refs"]
+        for item in measured
+    )
+    assert all(
+        item["region_refs"] == discovery["snapshot"]["region_refs"] for item in measured
+    )
     assert plan["plan"]["process"] == "injection"
     assert plan["plan"]["scope_id"] == "injection.default"
     assert plan["plan"]["scope_version"] == "1.1.0"
-    assert plan["plan"]["ontology_snapshot_id"] == (
-        "ontology.injection.default@1.1.0"
-    )
+    assert plan["plan"]["ontology_snapshot_id"] == ("ontology.injection.default@1.2.0")
     assert len(plan["plan"]["ontology_snapshot_sha256"]) == 64
     assert plan["plan"]["input_ids"] == [plan["plan"]["input_ids"][0]]
     assert set(plan["plan"]["input_hashes"].values()) == {added["input"]["sha256"]}
@@ -355,9 +376,7 @@ def test_plan_is_persisted_but_unavailable_production_start_fails_explicitly(ser
     assert draft_rule["value"] == 1.0
     assert draft_rule["unit"] == "degree"
     assert draft_rule["version"] == "1.0.0"
-    assert draft_rule["source"].startswith(
-        "ontology:ontology.injection.default@1.1.0/"
-    )
+    assert draft_rule["source"].startswith("ontology:ontology.injection.default@1.2.0/")
     assert plan["capability"]["status"] == "dependency_missing"
     with pytest.raises(DFMError) as exc_info:
         dfm.analysis("start", project_id=project_id, plan_id=plan["plan"]["plan_id"])
@@ -411,9 +430,9 @@ def test_new_input_version_supersedes_prior_input_and_replans_full_scope(service
     source.write_bytes(STEP_PAYLOAD + b"\n/* revised */\n")
     second = dfm.project("add_input", project_id=project_id, path=str(source))["input"]
     dfm.analysis("discover", project_id=project_id)
-    rebuilt = dfm.analysis(
-        "plan", project_id=project_id, base_plan_id=plan["plan_id"]
-    )["plan"]
+    rebuilt = dfm.analysis("plan", project_id=project_id, base_plan_id=plan["plan_id"])[
+        "plan"
+    ]
 
     assert second["supersedes_input_id"] == first["input_id"]
     assert rebuilt["parent_plan_id"] == plan["plan_id"]
@@ -421,9 +440,9 @@ def test_new_input_version_supersedes_prior_input_and_replans_full_scope(service
     assert [item["calculator_id"] for item in rebuilt["operations"]] == [
         item["calculator_id"] for item in plan["operations"]
     ]
-    assert rebuilt["operations"][2]["region_refs"] != plan["operations"][2][
-        "region_refs"
-    ]
+    assert (
+        rebuilt["operations"][2]["region_refs"] != plan["operations"][2]["region_refs"]
+    )
 
 
 def test_pull_direction_rebuild_only_includes_affected_operation_closure(service):
@@ -437,11 +456,14 @@ def test_pull_direction_rebuild_only_includes_affected_operation_closure(service
     plan = dfm.analysis("plan", project_id=project_id)["plan"]
 
     dfm.project(
-        "confirm_fact", project_id=project_id, fact_name="pull_dir", fact_value=[1, 0, 0]
+        "confirm_fact",
+        project_id=project_id,
+        fact_name="pull_dir",
+        fact_value=[1, 0, 0],
     )
-    rebuilt = dfm.analysis(
-        "plan", project_id=project_id, base_plan_id=plan["plan_id"]
-    )["plan"]
+    rebuilt = dfm.analysis("plan", project_id=project_id, base_plan_id=plan["plan_id"])[
+        "plan"
+    ]
 
     assert [item["calculator_id"] for item in rebuilt["operations"]] == [
         "load_geometry",
@@ -454,7 +476,9 @@ def test_pull_direction_rebuild_only_includes_affected_operation_closure(service
     ]
 
 
-def test_material_rebuild_uses_wall_rule_dependency_without_draft_recalculation(service):
+def test_material_rebuild_uses_wall_rule_dependency_without_draft_recalculation(
+    service,
+):
     dfm, temp = service
     project_id = dfm.project("create", name="Bracket")["project_id"]
     source = temp / "part.step"
@@ -467,9 +491,9 @@ def test_material_rebuild_uses_wall_rule_dependency_without_draft_recalculation(
     dfm.project(
         "confirm_fact", project_id=project_id, fact_name="material", fact_value="ABS"
     )
-    rebuilt = dfm.analysis(
-        "plan", project_id=project_id, base_plan_id=plan["plan_id"]
-    )["plan"]
+    rebuilt = dfm.analysis("plan", project_id=project_id, base_plan_id=plan["plan_id"])[
+        "plan"
+    ]
 
     assert [item["calculator_id"] for item in rebuilt["operations"]] == [
         "load_geometry",
@@ -501,9 +525,7 @@ def test_analysis_only_fact_change_reuses_discovery_snapshot(service):
     assert second["snapshot_id"] == first["snapshot_id"]
     facts = dfm.project("status", project_id=project_id)["project"]["facts"]
     assert set(second["confirmed_fact_refs"]) == {
-        item["fact_id"]
-        for item in facts
-        if item["name"] in {"process", "model_units"}
+        item["fact_id"] for item in facts if item["name"] in {"process", "model_units"}
     }
 
 

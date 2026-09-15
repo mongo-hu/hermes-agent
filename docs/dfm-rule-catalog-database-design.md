@@ -172,7 +172,7 @@ Web 使用字典/Context API，Agent 下载签名发布物，OCCT 只交换 Capa
 | --- | --- |
 | `user` | 用户明确输入或确认 |
 | `project_metadata` | 项目表单、PLM/BOM 等结构化项目属性 |
-| `drawing_recognition` | 二维图纸 OCR、标注或符号识别结果 |
+| `drawing_recognition` | 程序化 OCR 证据经 Hermes Agent 语义提议、程序校验后形成的二维图纸识别结果 |
 | `geometry_recognition` | STEP/OCCT 特征识别推断结果 |
 | `derived_program` | 程序基于已确认事实进行的确定性推导 |
 
@@ -437,7 +437,7 @@ Agent 不复制管理库全部表，只安装一次发布后展开的运行投�
 保存 `snapshot_id`、数据库 Schema、Ontology Version、Rule Set Code/Version、Process、企业作用域、
 发布时间和内容哈希。每个分析 Plan 固定记录 `scope_id/scope_version`，历史运行不受后续发布影响。
 
-当前随仓库提供的默认身份是 `ontology.injection.default@1.1.0`。Schema 2 使用
+当前随仓库提供的默认身份是 `ontology.injection.default@1.2.0`。Schema 2 使用
 `APPLIES_TO_REGION` 解析 Operand 目标；运行时仍能读取已经安装的 Schema 1 快照，但新发布物不得
 继续使用 Schema 1 的重复 Selector 格式。
 

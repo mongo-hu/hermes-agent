@@ -16,30 +16,34 @@ def test_dfm_config_defaults_match_m0_contract():
         max_pages=50,
         keep_failed_runs=True,
         max_evidence_findings=12,
+        drawing_enabled=True,
+        geometry_backend="occt_cpp",
     )
 
 
 def test_dfm_config_reads_nested_values():
-    config = load_dfm_config(
-        {
-            "dfm": {
-                "runtime": {
-                    "python": "C:/dfm/python.exe",
-                    "max_concurrent_runs": 2,
-                    "timeout_seconds": 120,
-                },
-                "intake": {"max_file_size_mb": 12, "max_pages": 8},
-                "defaults": {"process": "injection"},
-                "retention": {"keep_failed_runs": False},
-                "evidence": {"max_rendered_findings": 7},
-                "nx": {
-                    "endpoint": "https://nx.example.internal/",
-                    "request_timeout_seconds": 15,
-                    "poll_interval_seconds": 1,
-                },
-            }
+    config = load_dfm_config({
+        "dfm": {
+            "runtime": {
+                "python": "C:/dfm/python.exe",
+                "max_concurrent_runs": 2,
+                "timeout_seconds": 120,
+            },
+            "intake": {"max_file_size_mb": 12, "max_pages": 8},
+            "defaults": {"process": "injection"},
+            "retention": {"keep_failed_runs": False},
+            "evidence": {"max_rendered_findings": 7},
+            "nx": {
+                "endpoint": "https://nx.example.internal/",
+                "request_timeout_seconds": 15,
+                "poll_interval_seconds": 1,
+            },
+            "drawing": {
+                "enabled": True,
+            },
+            "geometry": {"backend": "occt_cpp"},
         }
-    )
+    })
 
     assert config.runtime_python == "C:/dfm/python.exe"
     assert config.default_process == "injection"
@@ -52,6 +56,7 @@ def test_dfm_config_reads_nested_values():
     assert config.nx_endpoint == "https://nx.example.internal"
     assert config.nx_request_timeout_seconds == 15
     assert config.nx_poll_interval_seconds == 1
+    assert config.geometry_backend == "occt_cpp"
 
 
 def test_dfm_config_reads_ontology_sync_contract():
@@ -98,6 +103,8 @@ def test_dfm_config_normalizes_the_m0_process_name():
         {"dfm": {"intake": {"max_file_size_mb": -1}}},
         {"dfm": {"retention": {"keep_failed_runs": "yes"}}},
         {"dfm": {"evidence": {"max_rendered_findings": 0}}},
+        {"dfm": {"drawing": {"enabled": "yes"}}},
+        {"dfm": {"geometry": {"backend": ""}}},
     ],
 )
 def test_dfm_config_rejects_invalid_values(mapping):
