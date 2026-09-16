@@ -258,7 +258,7 @@ AnalysisPlan 时结合 Operand 原文、Discovery 结果和经过认证的 Capab
   "missing_policy": "ask_user",
   "phase": "analysis",
   "question": "使用什么材料牌号？",
-  "required_by": ["check.screw_boss.wall_ratio"]
+  "required_by": ["C_SCREW_BOSS_DRAFT"]
 }
 ```
 
