@@ -293,7 +293,7 @@ AnalysisPlan 时结合 Operand 原文、Discovery 结果和经过认证的 Capab
 | `check_concept_id` | char(32) FK | 对应 Check |
 | `owner_organization_id` | char(32) nullable | 空为系统规则，非空为企业创建规则；实际生效范围仍由 Rule Set 决定 |
 | `name` | varchar(180) | 规则名称 |
-| `conditions_json` | json | 多个 Factor 原子条件，全部 AND |
+| `conditions_json` | json | Factor 条件与 Geometric 条件组成的数组，全部 AND |
 | `expression_json` | json | 引用 Operand Alias 的受控表达式 |
 | `comparator` | varchar(20) | `GT/GTE/LT/LTE/EQ/NE/BETWEEN` |
 | `threshold_json` | json | 常量、上下限或发布前已编译的查表结果 |
@@ -307,8 +307,14 @@ AnalysisPlan 时结合 Operand 原文、Discovery 结果和经过认证的 Capab
 | `generated_by_ai` | boolean | 是否由 AI 起草 |
 | `content_sha256` | char(64) | 不可变内容哈希 |
 | `created_by_id` | char(32) | 创建人 |
+
 | `reviewed_by_id` | char(32) nullable | 审核人 |
 | `reviewed_at` | datetime(6) nullable | UTC 审核时间 |
+
+`conditions_json` 的 Factor 条件沿用 `{ "factor_id": "F_PROC_BASE", "operator": "EQ", "value": "热塑性注塑" }`。
+几何条件使用 `{ "geometric_id": "G_SCREW_BOSS_HOLE_DIA", "operator": "LT", "value": 5, "unit": "mm" }`：
+`geometric_id` 必须是同一 Check 的 `USES_OPERAND.qualifiers.alias`，运算符限 `GT/GTE/LT/LTE`，
+数值必须有限，单位须与 Geometric 的标准单位一致。两类条件可并列使用；几何条件需要在 Measurement 后判定。
 
 唯一约束：`UNIQUE(rule_id, version)`。
 
