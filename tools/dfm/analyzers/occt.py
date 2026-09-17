@@ -31,7 +31,7 @@ from .base import AnalyzerContext, CancellationToken
 from .objective_result import validate_objective_result
 
 
-ENGINE_VERSION = "occt-dfm-geometry-1.5.0"
+ENGINE_VERSION = "occt-dfm-geometry-1.7.0"
 GEOMETRY_SCOPE_ID = "injection.geometry-core"
 GEOMETRY_SCOPE_VERSION = "4.0.0"
 CAPABILITY_CONTRACT = "dfm.geometry.capabilities/v1"
@@ -670,7 +670,7 @@ class OcctAnalyzer:
                 or preflight_diagnostics.get("shape_process_attempted") is not True
                 or preflight_diagnostics.get("geometry_healing_applied") is not True
                 or preflight_diagnostics.get("geometry_healing_succeeded") is not True
-                or preflight_diagnostics.get("selected_transfer") != "shape_processed"
+                or preflight_diagnostics.get("selected_transfer") != "normalized"
                 or not isinstance(operations, list)
                 or "FixShape" not in operations
                 or not isinstance(strict_validation, dict)
@@ -688,7 +688,7 @@ class OcctAnalyzer:
             preflight_diagnostics.get("shape_process_attempted") is True
             or preflight_diagnostics.get("geometry_healing_applied") is True
             or preflight_diagnostics.get("geometry_healing_succeeded") is True
-            or preflight_diagnostics.get("selected_transfer") == "shape_processed"
+            or preflight_diagnostics.get("selected_transfer") == "normalized"
         ):
             raise DFMError(
                 "objective_result_invalid",
