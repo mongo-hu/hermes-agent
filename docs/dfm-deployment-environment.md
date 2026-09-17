@@ -111,17 +111,26 @@ Hermes 不链接或 vendoring C++ 内部库，只发现已构建的可执行程�
 
 ## 4. 当前 Python 依赖
 
-报告等纯 Python 依赖由 `pyproject.toml` 与 `uv.lock` 管理：
+DFM 的 Python 依赖在 `pyproject.toml` 的 `[project.optional-dependencies].dfm` 中声明，
+并由 `uv.lock` 锁定。其中 HTML 报告编辑器需要 Python 包 `playwright`，还需要与该包匹配的
+Playwright Chromium 浏览器。请在 Hermes Agent 仓库根目录、使用**启动 Agent 的同一个 Python 环境**执行：
 
 ```powershell
+python -c "import sys; print(sys.executable)"
 python -m pip install -e ".[dfm]"
+python -m playwright install chromium
 ```
 
-或：
+使用 uv 安装 Python 依赖时，对应命令是：
 
 ```powershell
 uv sync --active --extra dfm --locked
+python -m playwright install chromium
 ```
+
+`pip install -e ".[dfm]"` 和 `uv sync --active --extra dfm --locked` 安装的是 Python 包；
+二者都**不会**自动下载 Chromium。浏览器安装命令应在同一已激活环境中运行，
+不能以系统 Chrome 或 Electron 自带浏览器代替。若只升级了 Playwright，也应重新检查浏览器。
 
 当前 PythonOCC 参考 Worker 仍通过 conda-forge 安装原生库：
 
@@ -140,7 +149,26 @@ conda install -n hermes-dev -c conda-forge pythonocc-core vtk
 conda create -n hermes-dev -c conda-forge python=3.11 pythonocc-core vtk pip
 conda activate hermes-dev
 python -m pip install -e ".[dfm]"
+python -m playwright install chromium
 ```
+
+按路径创建的环境（例如 `D:\python-envs\hermes-agent`）应使用
+`conda activate D:\python-envs\hermes-agent`，并确认 `python` 指向
+`.vscode/launch.json` 中启动后端的解释器。独立终端还应使用与后端相同的
+`HERMES_HOME`，否则 doctor 会读取另一份配置；例如本地调试配置使用
+`$env:USERPROFILE\.hermes` 时，安装完成后在仓库根目录运行：
+
+```powershell
+$env:HERMES_HOME = Join-Path $env:USERPROFILE '.hermes'
+python .\hermes dfm doctor
+python .\hermes dfm doctor --json
+```
+
+检查文本输出中的 `HTML report Playwright installed`、`HTML report Chromium usable`
+是否均为 `True`；JSON 输出检查 `html_report.ready` 是否为 `true`，并查看
+`html_report.python_executable` 是否是启动 Agent 的环境。这个检查会短暂启动并关闭
+Chromium，不会创建报告。`dfm doctor` 的顶层 `ok` 仅反映配置与工作区基础状态，
+不能代替对 `html_report.ready` 的检查。
 
 ### 5.2 OCCT C++ 项目
 
@@ -236,7 +264,9 @@ python .\hermes dfm doctor --json
 ```
 
 `dfm doctor` 当前检查 Hermes 配置、工作区、PythonOCC 参考 Worker、`dfm-geometry` 可执行程序
-及 Capability、ProcessAdapter 和随仓库默认 Snapshot。OCCT 状态为 available 只证明 experimental
+及 Capability、ProcessAdapter 和随仓库默认 Snapshot；同时在 Agent Python 中检查 Playwright
+是否已安装、Chromium 能否实际启动，并以 `html_report.ready` 报告 HTML 生成环境状态。
+OCCT 状态为 available 只证明 experimental
 Adapter 可执行，不代表 Django 发布、签名同步、生产认证或模具工程验收已经完成。
 
 ### 8.2 OCCT C++ 生产验收
