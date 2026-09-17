@@ -304,6 +304,7 @@ def test_new_feature_check_compiles_from_ontology_and_worker_capability_only():
 
     assert binding.metric_id == "injection.geometry.wall_thickness"
     assert compiled.rules[binding.rule_id].value == 1.0
+    assert compiled.rules[binding.rule_id].severity == "warning"
     assert (
         compiled.binding_selectors[binding.binding_id]["actual"]["feature_kind"]
         == "screw_boss"

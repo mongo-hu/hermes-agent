@@ -427,6 +427,7 @@ class EffectiveRule:
     unit: str | None
     source: str
     version: str = "1"
+    severity: str = "unclassified"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -1050,6 +1051,7 @@ class EvaluationRecord:
     actual_unit: str | None = None
     expression: dict[str, Any] | None = None
     operand_values: dict[str, Any] = field(default_factory=dict)
+    severity: str = "unclassified"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

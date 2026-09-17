@@ -89,6 +89,7 @@ def _ratio_plan() -> PlanRecord:
                 unit="ratio",
                 source="rule-set:system@1.0.0",
                 version="1",
+                severity="warning",
             )
         },
         rule_bindings=[binding],
@@ -138,6 +139,7 @@ def test_multi_measurement_ratio_evaluates_one_check_once():
     assert evaluation.actual == pytest.approx(0.5)
     assert evaluation.actual_unit == "ratio"
     assert evaluation.outcome == "pass"
+    assert evaluation.severity == "warning"
     assert set(evaluation.operand_values) == {
         "boss_wall_thickness",
         "adjacent_main_wall_thickness",

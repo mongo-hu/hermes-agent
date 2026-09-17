@@ -64,7 +64,7 @@ def materialize_evaluated_findings(
             FindingRecord(
                 finding_id=f"finding_{stable}",
                 title=rule_id.replace(".", " ").replace("_", " ").title(),
-                severity="unclassified",
+                severity=str(evaluation.get("severity") or "unclassified"),
                 status="open",
                 evaluation_ids=[evaluation_id],
                 measurement_ids=measurement_ids,

@@ -30,6 +30,7 @@ def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path):
                     "actual": 0.5,
                     "expected": 1.0,
                     "outcome": "fail",
+                    "severity": "warning",
                 },
                 {
                     "evaluation_id": "evaluation-wall",
@@ -91,3 +92,4 @@ def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path):
     assert report["issues"][0]["images"] == ["evidence_001.png"]
     assert report["issues"][0]["metric"]["backend"] == "pythonocc_demo"
     assert report["issues"][0]["metric"]["certified"] is False
+    assert report["issues"][0]["severity"] == "warning"

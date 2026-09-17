@@ -669,7 +669,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         }}
         .summary-stat-strip {{
             position: absolute; left: 15px; right: 15px; bottom: 15px; z-index: 12;
-            display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+            display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px;
             padding: 8px; border-radius: 12px;
             background: rgba(9,15,23,.72); border: 1px solid rgba(255,255,255,.12);
             backdrop-filter: blur(14px); box-shadow: 0 12px 26px rgba(0,0,0,.22);
@@ -1035,9 +1035,18 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
 
     # Model-centric summary: live 3D is the primary visual, facts sit around it.
     from collections import Counter
-    severities = [str(i.get("severity", "info")).lower() for i in issues]
+    severities = [str(i.get("severity") or "unclassified").strip().lower() for i in issues]
     counts = Counter(severities)
-    risk_cards = [("问题总数", len(issues), "14213D", "F2F4F7"), ("高风险", counts["critical"] + counts["high"], "D92D20", "FEF3F2"), ("中风险", counts["medium"], "DC6803", "FFF8EB"), ("低风险", counts["low"], "1570A6", "EFF8FF")]
+    # Catalog `warning`/`info` values are not defined as high/medium/low risk.
+    # Show them explicitly rather than silently promoting or hiding them.
+    classified = counts["critical"] + counts["high"] + counts["medium"] + counts["low"]
+    risk_cards = [
+        ("问题总数", len(issues), "14213D", "F2F4F7"),
+        ("高风险", counts["critical"] + counts["high"], "D92D20", "FEF3F2"),
+        ("中风险", counts["medium"], "DC6803", "FFF8EB"),
+        ("低风险", counts["low"], "1570A6", "EFF8FF"),
+        ("需关注/未分级", len(issues) - classified, "667085", "F2F4F7"),
+    ]
 
     html += f'<div class="webgl-wrapper" style="left:{inch2px(0.65)}px; top:{inch2px(1.48)}px; width:{inch2px(8.35)}px; height:{inch2px(5.38)}px;">'
     html += f'<div class="glass-panel"><button class="glass-btn active" onclick="activateSummary3D(\'thickness\')">壁厚场</button><button class="glass-btn" onclick="activateSummary3D(\'draft\')">拔模场</button></div>'
@@ -1136,7 +1145,15 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         "info": ("344054", "F2F4F7", "D0D5DD"),
     }
 
-    severity_labels = {"critical": "严重", "high": "高风险", "medium": "中风险", "low": "低风险", "info": "需关注", "unclassified": "需关注"}
+    severity_labels = {
+        "critical": "严重",
+        "high": "高风险",
+        "medium": "中风险",
+        "low": "低风险",
+        "warning": "需关注",
+        "info": "需关注",
+        "unclassified": "未分级",
+    }
     evidence_issue_ids = [str(item.get("id") or "DFM") for item in issues_with_evidence]
     for issue_index, issue in enumerate(issues_with_evidence):
         severity = str(issue.get("severity") or "info").lower()

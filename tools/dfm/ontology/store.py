@@ -641,6 +641,7 @@ class LocalOntologyStore:
                             f"@{selected['version']}#{selected['content_sha256']}"
                         ),
                         version=str(selected["version"]),
+                        severity=str(selected["severity"] or "unclassified"),
                     )
                     bindings.append(binding)
                     selectors[binding.binding_id] = binding_selectors

@@ -2575,7 +2575,6 @@ class DFMService:
                 if not callable(progress_callback):
                     return
                 terminal = updated.status in {
-                    RunStatus.REPORTING,
                     RunStatus.SUCCEEDED,
                     RunStatus.FAILED,
                     RunStatus.CANCELLED,

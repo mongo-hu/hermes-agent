@@ -286,6 +286,7 @@ class EvaluationEngine:
             expected=parameter.value,
             actual=actual.value,
             outcome="pass" if passed else "fail",
+            severity=parameter.severity,
             feature_refs=sorted(
                 set(binding.feature_refs)
                 | {

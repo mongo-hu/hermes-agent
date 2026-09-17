@@ -88,7 +88,7 @@ def materialize_result_reports(
                 "title": str(evaluation.get("rule_id") or "DFM rule").replace(
                     "_", " "
                 ).title(),
-                "severity": "unclassified",
+                "severity": str(evaluation.get("severity") or "unclassified"),
                 "message": (
                     f"Actual {evaluation.get('actual')} does not satisfy "
                     f"{evaluation.get('operator')} {evaluation.get('expected')}."
