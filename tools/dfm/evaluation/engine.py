@@ -126,7 +126,7 @@ class EvaluationEngine:
         results: list[EvaluationRecord] = []
         provenance: dict[str, dict[str, Any]] = {}
         if plan.rule_bindings:
-            for binding in plan.rule_bindings:
+            for binding in self._select_measured_rules(measurements, plan):
                 evaluation, source = self._evaluate_binding(measurements, plan, binding)
                 results.append(evaluation)
                 provenance[evaluation.evaluation_id] = source
@@ -142,6 +142,49 @@ class EvaluationEngine:
             results.append(evaluation)
             provenance[evaluation.evaluation_id] = source
         return results, provenance
+
+    def _select_measured_rules(self, measurements, plan):
+        """Choose one candidate per Check instance after objective measurement.
+
+        Missing/invalid measurements are errors, never a reason to fall back to
+        a less-specific threshold. Selection reads only the pinned Plan.
+        """
+        direct = []
+        groups = {}
+        for binding in plan.rule_bindings:
+            binding.validate()
+            if binding.rule_selection is None:
+                direct.append(binding)
+                continue
+            key = (binding.check_id, tuple(sorted(binding.feature_refs)), tuple(sorted(binding.region_refs)))
+            groups.setdefault(key, []).append(binding)
+        comparisons = {"GT": operator.gt, "GTE": operator.ge, "LT": operator.lt, "LTE": operator.le}
+        for candidates in groups.values():
+            matched = []
+            for binding in candidates:
+                conditions = binding.rule_selection["conditions"]
+                operands = {item.alias: item for item in binding.measurement_operands()}
+                applicable = True
+                for condition in conditions:
+                    alias = condition["geometric_id"]
+                    resolved = self._resolve_operand(measurements, plan, binding, operands[alias])
+                    if resolved.unit != condition["unit"]:
+                        raise DFMError("evaluation_unit_invalid", "A Geometric condition must use the measured canonical unit.", {"binding_id": binding.binding_id, "operand_alias": alias})
+                    value = self._finite_number(resolved.value, binding_id=binding.binding_id, operand_alias=alias)
+                    applicable = comparisons[condition["operator"]](value, condition["value"]) and applicable
+                if applicable:
+                    matched.append(binding)
+            preferred = [item for item in matched if not item.rule_selection["is_default"]] or matched
+            if not preferred:
+                continue
+            preferred.sort(key=lambda item: (-item.rule_selection["priority"], -item.rule_selection["specificity"], item.rule_id))
+            winner = preferred[0]
+            rank = lambda item: (item.rule_selection["priority"], item.rule_selection["specificity"])
+            signature = lambda item: (plan.rules[item.rule_id].value, plan.rules[item.rule_id].unit, item.operator, item.expression)
+            if any(rank(item) == rank(winner) and signature(item) != signature(winner) for item in preferred[1:]):
+                raise DFMError("ontology_rule_conflict", "Measured conditions select conflicting equally specific rules.", {"check_id": winner.check_id, "rule_ids": [item.rule_id for item in preferred if rank(item) == rank(winner)]})
+            direct.append(winner)
+        return direct
 
     def _evaluate_binding(
         self,
@@ -275,6 +318,7 @@ class EvaluationEngine:
             "unit": parameter.unit,
             "expression": expression,
             "operands": operand_values,
+            "rule_selection": binding.rule_selection,
         }
         return evaluation, source
 

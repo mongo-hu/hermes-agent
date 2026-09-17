@@ -23,6 +23,7 @@ from .feature_recognition import (
     OCCTCppFeatureRecognitionProvider,
 )
 from .ontology import LocalOntologyStore
+from .ontology.targets import resolve_catalog_targets, resolve_catalog_scopes
 
 
 FALLBACK_RECOGNIZER = "ordinary-region-fallback"
@@ -252,6 +253,10 @@ class DiscoveryEngine:
         """Turn whole-model fallback into the complement of concrete feature faces."""
 
         feature_by_id = {item.feature_id: item for item in features}
+        specs = self.ontology_store.analysis_target_specs(process) if self.ontology_store else ()
+        catalog_region_ids = None
+        if specs and "operand_text" in specs[0]:
+            catalog_region_ids = {item["region"].region_id for item in resolve_catalog_scopes(specs, features, regions)}
         metric_bindings = {
             (item["feature_kind"], item["region_role"])
             for item in self._metric_bindings(process)
@@ -270,7 +275,10 @@ class DiscoveryEngine:
             ]
             if not concrete_features:
                 continue
-            if not any(
+            if catalog_region_ids is not None:
+                if region.region_id not in catalog_region_ids:
+                    continue
+            elif not any(
                 (feature.kind, region.role) in metric_bindings
                 for feature in concrete_features
             ):
@@ -323,6 +331,10 @@ class DiscoveryEngine:
     ) -> list[dict[str, Any]]:
         """Resolve one non-overlapping region target for each supported metric."""
 
+        if self.ontology_store is not None:
+            specs = self.ontology_store.analysis_target_specs(manifest.process or "injection")
+            if specs and "operand_text" in specs[0]:
+                return resolve_catalog_targets(specs, manifest, snapshot)
         features = {
             item.feature_id: item
             for item in manifest.features
@@ -394,6 +406,10 @@ class DiscoveryEngine:
         ]
         if self.ontology_store is not None:
             published = self.ontology_store.analysis_target_specs(process)
+            if published and "operand_text" in published[0]:
+                # Current catalog scopes are resolved from actual Discovery data,
+                # never projected back into ontology Region selectors.
+                return []
             if published:
                 combined = [dict(item) for item in published]
                 keys = {

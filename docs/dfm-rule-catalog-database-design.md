@@ -67,9 +67,9 @@ flowchart LR
 管理库和 Agent 本地库不是同一个数据库。管理库支持编辑和继承；本地库是一次发布后展开、校验、
 不可变的运行投影。
 
-当前代码只实现了 Agent 运行层：随仓库提供的 Snapshot Schema 2 发布包会被安装为本地 SQLite。
-Django/MySQL 管理控制层、签名发布 API、企业继承和后台同步仍是待交付目标，不能因为存在
-本地表结构就宣称规则管理平台已经完成。
+管理控制层现已在独立的 Mold 仓库实现；Agent 将 Snapshot Schema 2 发布包安装为本地 SQLite。
+两端按本文的 Geometric/Operand 契约对接；数据库迁移、工作簿导入、认证 Capability 和签名校验
+是否已启用，仍须按实际部署环境逐项验证，不能由本地测试代替上线验收。
 
 多端不直接连接 MySQL，通过管理服务共享字典：
 
@@ -462,7 +462,7 @@ Agent 不复制管理库全部表，只安装一次发布后展开的运行投�
 保存 `snapshot_id`、数据库 Schema、Ontology Version、Rule Set Code/Version、Process、企业作用域、
 发布时间和内容哈希。每个分析 Plan 固定记录 `scope_id/scope_version`，历史运行不受后续发布影响。
 
-当前随仓库提供的默认身份是 `ontology.injection.default@1.2.0`。Schema 2 在
+当前随仓库提供的默认身份是 `ontology.injection.default@1.3.0`。Schema 2 在
 `USES_OPERAND.qualifiers.operand_text` 中保存比较对象原文；Region 是 Discovery/Measurement
 运行数据，不是本体概念。
 
@@ -488,8 +488,9 @@ Factor Concept 的 `properties_json.source_policy` 随快照发布，供 Agent �
 
 ### 5.5 `rule_version`
 
-当前 Rule Set 展开后的候选规则版本。Agent 根据 Check 和确认 Factor 选择规则，编译为现有
-`EffectiveRule + RuleBinding`，再由通用 Evaluation Engine 执行。
+当前 Rule Set 展开后的候选规则版本。Agent 先按 Check 和确认 Factor 筛选候选，编译为
+`EffectiveRule + RuleBinding`。候选包含几何条件时，Plan 固定保存候选阈值及 `rule_selection`，
+待 Measurement 返回后，Evaluation Engine 按每个 Check 实例选择规则；不能把未计算的几何条件当作 false。
 
 本地库不需要 `rule_set_item`、审批、用户或知识文档表；这些只属于管理控制层。
 
@@ -585,7 +586,7 @@ Calculator 或算法版本变化才使客观 Measurement 缓存失效。
 已落地：
 
 - `ontology_snapshot.schema.json`：Snapshot Schema 2 发布契约；
-- `ontology_snapshot_v2.json`：注塑 `injection.default@1.1.0` 当前默认发布快照；
+- `ontology_snapshot_v2.json`：本体 `ontology.injection.default@1.3.0`、规则集 `injection.default@1.2.0` 的示例快照；
 - `LocalOntologyStore`：JSON 发布包校验、SQLite 原子安装、只读查询；
 - Check Context：按 Check 输出概念、关系、选项和规则；
 - Ontology Compiler：把关系和规则编译为现有 `EffectiveRule/RuleBinding`；
@@ -598,8 +599,11 @@ Calculator 或算法版本变化才使客观 Measurement 缓存失效。
 
 下一步：
 
-1. Django 工程按第 4 节建立管理表、AI生成审计和发布器；
-2. 发布器输出与 `ontology_snapshot.schema.json` 一致的签名 Artifact；
-3. Agent 增加签名后台同步、版本选择、回滚和撤销列表；当前 Plan 固定 ID/哈希已经实现；
+1. 在目标部署环境验收 Mold 管理表、V2.2 导入及发布器；
+2. 联调发布物下载、认证 Capability 与部署配置中的签名校验；
+3. 验收已实现的后台同步、版本固定、回滚和撤销流程；
 4. OCCT Capability 与本体发布做 CI 交叉校验；
 5. 增加螺钉柱壁厚比例等多 Operand Golden Check 和专用复合证据 Renderer。
+
+本次跨仓对齐及运行边界见 `dfm-catalog-contract-alignment.md`。历史 Metric/Region 快照只保留兼容读取；
+新发布使用 Geometric，运行时仍保留真实 Region 和几何证据引用。

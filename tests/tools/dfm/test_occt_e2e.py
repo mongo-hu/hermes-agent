@@ -83,7 +83,7 @@ def test_real_occt_injection_vertical_slice(tmp_path):
             analyzer_key="occt_cpp",
         )["plan"]
         assert plan["scope_id"] == "injection.default"
-        assert plan["ontology_snapshot_id"] == "ontology.injection.default@1.2.0"
+        assert plan["ontology_snapshot_id"] == service.ontology_store.identity().snapshot_id
         wall_operations = [
             item
             for item in plan["operations"]
@@ -101,12 +101,15 @@ def test_real_occt_injection_vertical_slice(tmp_path):
             run = service.analysis("status", project_id=project_id, run_id=run_id)[
                 "run"
             ]
-            if run["status"] in {"succeeded", "failed", "cancelled", "blocked"}:
+            if run["status"] in {"reporting", "succeeded", "failed", "cancelled", "blocked"}:
                 break
             time.sleep(0.1)
         else:
-            pytest.fail("real OCCT run did not reach a terminal state")
-        assert run["status"] == "succeeded", run.get("error")
+            pytest.fail("real OCCT run did not finish deterministic processing")
+        # Geometry/evaluation finish before the Agent-authored report step.
+        # A queued report is not a hung worker or a completed HTML report.
+        assert run["status"] == "reporting", run.get("error")
+        assert run["stage"] == "report_editing"
         assert {item["kind"] for item in run["artifacts"]} >= {
             "preflight",
             "topology_map",
@@ -116,6 +119,7 @@ def test_real_occt_injection_vertical_slice(tmp_path):
             "scalar_field",
             "evaluations",
             "dfm_viewer",
+            "report_html_runtime",
         }
         jsonschema = pytest.importorskip("jsonschema")
         configured_schema_root = os.environ.get("DFM_GEOMETRY_SCHEMA_ROOT")

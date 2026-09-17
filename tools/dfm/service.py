@@ -1619,7 +1619,10 @@ class DFMService:
             operations.append(operation)
             operation_by_target[(metric_id, target["region"].region_id)] = operation
 
-        def matches(target, selector):
+        def matches(target, selector, check_id, alias, anchor=None):
+            if "operand_text" in selector:
+                anchors = target.get("operand_anchors", {}).get((check_id, alias), [])
+                return bool(anchors) and (anchor is None or anchor in anchors)
             return (
                 not selector.get("feature_kind")
                 or selector["feature_kind"] == target["feature"].kind
@@ -1636,7 +1639,7 @@ class DFMService:
                 target
                 for target in targets
                 if target["metric_id"] == binding.metric_id
-                and matches(target, primary_selector)
+                and matches(target, primary_selector, binding.check_id, binding.operand_alias)
             ]
             for primary_target in primary_targets:
                 primary_operation = operation_by_target[
@@ -1649,7 +1652,8 @@ class DFMService:
                         target
                         for target in targets
                         if target["metric_id"] == operand.metric_id
-                        and matches(target, selector)
+                        and target["region"].input_sha256 == primary_target["region"].input_sha256
+                        and matches(target, selector, binding.check_id, operand.alias, primary_target["feature"].feature_id)
                     ]
                     same_feature = [
                         target

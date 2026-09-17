@@ -23,22 +23,10 @@
     "published_at": {"type": "string", "format": "date-time"},
     "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "rule_set": {"$ref": "#/$defs/ruleSet"},
-    "concepts": {
-      "type": "array",
-      "items": {"$ref": "#/$defs/concept"}
-    },
-    "relations": {
-      "type": "array",
-      "items": {"$ref": "#/$defs/relation"}
-    },
-    "factor_options": {
-      "type": "array",
-      "items": {"$ref": "#/$defs/factorOption"}
-    },
-    "rules": {
-      "type": "array",
-      "items": {"$ref": "#/$defs/ruleVersion"}
-    }
+    "concepts": {"type": "array", "items": {"$ref": "#/$defs/concept"}},
+    "relations": {"type": "array", "items": {"$ref": "#/$defs/relation"}},
+    "factor_options": {"type": "array", "items": {"$ref": "#/$defs/factorOption"}},
+    "rules": {"type": "array", "items": {"$ref": "#/$defs/ruleVersion"}}
   },
   "$defs": {
     "ruleSet": {
@@ -59,9 +47,7 @@
       "required": ["concept_id", "concept_type", "name_zh", "definition", "status"],
       "properties": {
         "concept_id": {"type": "string", "minLength": 1},
-        "concept_type": {
-          "enum": ["process", "feature_type", "region_type", "metric", "check", "factor"]
-        },
+        "concept_type": {"enum": ["process", "feature_type", "geometric", "check", "factor"]},
         "name_zh": {"type": "string", "minLength": 1},
         "name_en": {"type": "string"},
         "definition": {"type": "string", "minLength": 1},
@@ -69,6 +55,63 @@
         "data_schema": {"type": ["object", "null"]},
         "properties": {"type": "object"},
         "status": {"enum": ["draft", "active", "retired"]}
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["concept_type"],
+            "properties": {"concept_type": {"const": "factor"}}
+          },
+          "then": {
+            "required": ["properties"],
+            "properties": {
+              "properties": {
+                "required": ["source_policy"],
+                "properties": {
+                  "source_policy": {"$ref": "#/$defs/sourcePolicy"}
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "sourcePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowed_sources",
+        "auto_accept_sources",
+        "confirmation_required_sources",
+        "min_confidence",
+        "evidence_required",
+        "conflict_policy",
+        "missing_policy"
+      ],
+      "properties": {
+        "allowed_sources": {"$ref": "#/$defs/factorSources"},
+        "auto_accept_sources": {"$ref": "#/$defs/factorSources"},
+        "confirmation_required_sources": {"$ref": "#/$defs/factorSources"},
+        "min_confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "evidence_required": {"type": "boolean"},
+        "conflict_policy": {"const": "ask_user"},
+        "missing_policy": {"const": "ask_user"}
+      }
+    },
+    "factorSources": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "USR",
+          "DWG",
+          "CAD",
+          "GEO",
+          "DOC",
+          "DB",
+          "DER",
+          "DEF"
+        ]
       }
     },
     "relation": {
@@ -78,18 +121,7 @@
       "properties": {
         "relation_id": {"type": "string", "minLength": 1},
         "subject_id": {"type": "string", "minLength": 1},
-        "predicate": {
-          "enum": [
-            "HAS_CHECK",
-            "HAS_REGION",
-            "APPLIES_TO_FEATURE",
-            "APPLIES_TO_REGION",
-            "USES_OPERAND",
-            "REQUIRES_FACTOR",
-            "AFFECTS",
-            "RELATED_TO"
-          ]
-        },
+        "predicate": {"enum": ["HAS_CHECK", "APPLIES_TO_FEATURE", "USES_OPERAND", "REQUIRES_FACTOR", "AFFECTS", "RELATED_TO"]},
         "object_id": {"type": "string", "minLength": 1},
         "qualifiers": {"type": "object"},
         "sort_order": {"type": "integer"}
@@ -97,39 +129,17 @@
       "allOf": [
         {
           "if": {"properties": {"predicate": {"const": "USES_OPERAND"}}},
-          "then": {
+          "then": {"properties": {"qualifiers": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["alias", "aggregation", "required", "operand_text"],
             "properties": {
-              "qualifiers": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["alias", "aggregation", "required"],
-                "properties": {
-                  "alias": {"type": "string", "minLength": 1},
-                  "aggregation": {"type": "string", "minLength": 1},
-                  "required": {"type": "boolean"}
-                }
-              }
+              "alias": {"type": "string", "minLength": 1},
+              "aggregation": {"type": "string", "minLength": 1},
+              "required": {"type": "boolean"},
+              "operand_text": {"type": "string", "minLength": 1}
             }
-          }
-        },
-        {
-          "if": {"properties": {"predicate": {"const": "APPLIES_TO_REGION"}}},
-          "then": {
-            "properties": {
-              "qualifiers": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "operand_aliases": {
-                    "type": "array",
-                    "minItems": 1,
-                    "uniqueItems": true,
-                    "items": {"type": "string", "minLength": 1}
-                  }
-                }
-              }
-            }
-          }
+          }}}
         }
       ]
     },
@@ -147,6 +157,12 @@
       }
     },
     "condition": {
+      "oneOf": [
+        {"$ref": "#/$defs/factorCondition"},
+        {"$ref": "#/$defs/geometricCondition"}
+      ]
+    },
+    "factorCondition": {
       "type": "object",
       "additionalProperties": false,
       "required": ["factor_id", "operator"],
@@ -156,25 +172,21 @@
         "value": {}
       }
     },
+    "geometricCondition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["geometric_id", "operator", "value", "unit"],
+      "properties": {
+        "geometric_id": {"type": "string", "minLength": 1},
+        "operator": {"enum": ["GT", "GTE", "LT", "LTE"]},
+        "value": {"type": "number"},
+        "unit": {"type": "string", "minLength": 1}
+      }
+    },
     "ruleVersion": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "rule_version_id",
-        "rule_id",
-        "version",
-        "check_id",
-        "name",
-        "conditions",
-        "expression",
-        "comparator",
-        "threshold",
-        "severity",
-        "priority",
-        "is_default",
-        "status",
-        "citation_refs"
-      ],
+      "required": ["rule_version_id", "rule_id", "version", "check_id", "name", "conditions", "expression", "comparator", "threshold", "severity", "priority", "is_default", "status", "citation_refs"],
       "properties": {
         "rule_version_id": {"type": "string", "minLength": 1},
         "rule_id": {"type": "string", "minLength": 1},

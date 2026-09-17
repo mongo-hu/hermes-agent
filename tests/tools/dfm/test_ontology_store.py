@@ -11,7 +11,7 @@ from tools.dfm.errors import DFMError
 from tools.dfm.ontology import LocalOntologyStore
 
 
-PACKAGE_PATH = (
+CURRENT_PACKAGE_PATH = (
     Path(__file__).parents[3]
     / "tools"
     / "dfm"
@@ -19,6 +19,7 @@ PACKAGE_PATH = (
     / "injection"
     / "ontology_snapshot_v2.json"
 )
+PACKAGE_PATH = Path(__file__).parent / "fixtures" / "ontology_legacy_v2.json"
 
 
 def _package():
@@ -125,7 +126,7 @@ def test_bundled_ontology_publication_matches_its_json_schema():
         / "ontology_snapshot.schema.json"
     )
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    payload = json.loads(PACKAGE_PATH.read_text(encoding="utf-8"))
+    payload = json.loads(CURRENT_PACKAGE_PATH.read_text(encoding="utf-8"))
 
     Draft202012Validator(schema).validate(payload)
 

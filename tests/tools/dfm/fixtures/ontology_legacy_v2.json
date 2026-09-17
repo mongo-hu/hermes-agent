@@ -1,11 +1,12 @@
 {
   "schema_version": 2,
-  "snapshot_id": "ontology.injection.default@1.3.0",
-  "ontology_version": "1.3.0",
-  "published_at": "2026-09-17T00:00:00Z",
+  "snapshot_id": "ontology.injection.default@1.2.0",
+  "ontology_version": "1.2.0",
+  "published_at": "2026-08-27T00:00:00Z",
+  "content_sha256": "5bdf4b38e93ff35c6588e1171c829757e5c0a0daf229d2e378fd97081b5c3c75",
   "rule_set": {
     "rule_set_code": "injection.default",
-    "version": "1.2.0",
+    "version": "1.1.0",
     "process": "injection",
     "scope_type": "system",
     "scope_key": "default"
@@ -17,11 +18,8 @@
       "name_zh": "注塑成型",
       "name_en": "Injection molding",
       "definition": "使用注塑模具将熔融聚合物成型为塑料零件的制造过程。",
-      "aliases": [
-        "injection",
-        "injection_molding"
-      ],
-      "properties": {},
+      "aliases": ["injection", "injection_molding"],
+      "properties": {"runtime_key": "injection"},
       "status": "active"
     },
     {
@@ -30,52 +28,49 @@
       "name_zh": "普通主体",
       "name_en": "Ordinary part",
       "definition": "尚未被专用工艺特征认领的零件主体区域。",
-      "aliases": [
-        "main body"
-      ],
-      "properties": {
-        "worker_kind": "ordinary_part"
-      },
+      "aliases": ["main body"],
+      "properties": {"worker_kind": "ordinary_part"},
+      "status": "active"
+    },
+    {
+      "concept_id": "region.ordinary",
+      "concept_type": "region_type",
+      "name_zh": "普通主体区域",
+      "name_en": "Ordinary region",
+      "definition": "普通主体特征中用于客观几何计算的区域。",
+      "aliases": [],
+      "properties": {"worker_role": "ordinary"},
       "status": "active"
     },
     {
       "concept_id": "metric.injection.wall_thickness",
-      "concept_type": "geometric",
+      "concept_type": "metric",
       "name_zh": "壁厚",
       "name_en": "Wall thickness",
       "definition": "由几何计算器得到的局部壁厚客观测量。",
-      "aliases": [
-        "thickness"
-      ],
-      "data_schema": {
-        "type": "number",
-        "exclusiveMinimum": 0
-      },
+      "aliases": ["thickness"],
+      "data_schema": {"type": "number", "exclusiveMinimum": 0},
       "properties": {
+        "worker_metric_id": "injection.geometry.wall_thickness",
         "quantity_id": "thickness_mm",
         "dimension": "length",
-        "canonical_unit": "mm",
-        "worker_geometric_id": "injection.geometry.wall_thickness"
+        "canonical_unit": "mm"
       },
       "status": "active"
     },
     {
       "concept_id": "metric.injection.draft_angle",
-      "concept_type": "geometric",
+      "concept_type": "metric",
       "name_zh": "拔模角",
       "name_en": "Draft angle",
       "definition": "表面法向与确认出模方向之间形成的客观拔模角测量。",
-      "aliases": [
-        "draft"
-      ],
-      "data_schema": {
-        "type": "number"
-      },
+      "aliases": ["draft"],
+      "data_schema": {"type": "number"},
       "properties": {
+        "worker_metric_id": "injection.geometry.draft",
         "quantity_id": "draft_angle_deg",
         "dimension": "angle",
-        "canonical_unit": "degree",
-        "worker_geometric_id": "injection.geometry.draft"
+        "canonical_unit": "degree"
       },
       "status": "active"
     },
@@ -85,36 +80,12 @@
       "name_zh": "模型长度单位",
       "name_en": "Model length unit",
       "definition": "STEP模型创建时采用的长度单位。",
-      "aliases": [
-        "units",
-        "model_unit"
-      ],
-      "data_schema": {
-        "type": "string",
-        "enum": [
-          "mm"
-        ]
-      },
+      "aliases": ["units", "model_unit"],
+      "data_schema": {"type": "string", "enum": ["mm"]},
       "properties": {
         "runtime_key": "model_units",
         "default_value": "mm",
-        "question": "What length unit was used to author the STEP model?",
-        "source_policy": {
-          "allowed_sources": [
-            "USR",
-            "CAD",
-            "DEF"
-          ],
-          "auto_accept_sources": [
-            "CAD",
-            "DEF"
-          ],
-          "confirmation_required_sources": [],
-          "min_confidence": null,
-          "evidence_required": true,
-          "conflict_policy": "ask_user",
-          "missing_policy": "ask_user"
-        }
+        "question": "What length unit was used to author the STEP model?"
       },
       "status": "active"
     },
@@ -124,12 +95,8 @@
       "name_zh": "材料牌号",
       "name_en": "Material grade",
       "definition": "用于选择注塑工程规则的已确认材料牌号。",
-      "aliases": [
-        "resin"
-      ],
-      "data_schema": {
-        "type": "string"
-      },
+      "aliases": ["resin"],
+      "data_schema": {"type": "string"},
       "properties": {
         "runtime_key": "material",
         "default_value": "ABS",
@@ -140,12 +107,8 @@
             "DB",
             "DWG"
           ],
-          "auto_accept_sources": [
-            "DB"
-          ],
-          "confirmation_required_sources": [
-            "DWG"
-          ],
+          "auto_accept_sources": ["DB"],
+          "confirmation_required_sources": ["DWG"],
           "min_confidence": 0.75,
           "evidence_required": true,
           "conflict_policy": "ask_user",
@@ -160,42 +123,17 @@
       "name_zh": "确认出模方向",
       "name_en": "Confirmed pull direction",
       "definition": "由用户确认并供方向相关识别和计算使用的三维向量。",
-      "aliases": [
-        "pull_dir",
-        "mold_pull_direction"
-      ],
+      "aliases": ["pull_dir", "mold_pull_direction"],
       "data_schema": {
         "type": "array",
         "minItems": 3,
         "maxItems": 3,
-        "items": {
-          "type": "number"
-        }
+        "items": {"type": "number"}
       },
       "properties": {
         "runtime_key": "pull_dir",
-        "default_value": [
-          0,
-          0,
-          1
-        ],
-        "question": "What is the confirmed mold pull direction as [x, y, z]?",
-        "source_policy": {
-          "allowed_sources": [
-            "USR",
-            "CAD",
-            "DEF"
-          ],
-          "auto_accept_sources": [
-            "CAD",
-            "DEF"
-          ],
-          "confirmation_required_sources": [],
-          "min_confidence": null,
-          "evidence_required": true,
-          "conflict_policy": "ask_user",
-          "missing_policy": "ask_user"
-        }
+        "default_value": [0, 0, 1],
+        "question": "What is the confirmed mold pull direction as [x, y, z]?"
       },
       "status": "active"
     },
@@ -206,20 +144,7 @@
       "name_en": "Main-wall minimum thickness",
       "definition": "判断普通主体区域的最小客观壁厚是否满足当前材料规则。",
       "aliases": [],
-      "properties": {
-        "default_severity": "warning",
-        "report_group": "ordinary.wall_draft"
-      },
-      "status": "active"
-    },
-    {
-      "concept_id": "feature.main_wall",
-      "concept_type": "feature_type",
-      "name_zh": "主体壁",
-      "definition": "由现有 OCCT 主体壁识别器返回的实际壁面。",
-      "properties": {
-        "worker_kind": "main_wall"
-      },
+      "properties": {"default_severity": "warning"},
       "status": "active"
     },
     {
@@ -229,10 +154,7 @@
       "name_en": "Main-wall minimum draft",
       "definition": "判断普通主体区域的最小客观拔模角是否满足当前发布规则。",
       "aliases": [],
-      "properties": {
-        "default_severity": "warning",
-        "report_group": "ordinary.wall_draft"
-      },
+      "properties": {"default_severity": "warning"},
       "status": "active"
     }
   ],
@@ -254,12 +176,28 @@
       "sort_order": 20
     },
     {
+      "relation_id": "rel.feature.ordinary.region.ordinary",
+      "subject_id": "feature.ordinary_part",
+      "predicate": "HAS_REGION",
+      "object_id": "region.ordinary",
+      "qualifiers": {},
+      "sort_order": 10
+    },
+    {
       "relation_id": "rel.check.wall.feature.ordinary",
       "subject_id": "check.main_wall_minimum_thickness",
       "predicate": "APPLIES_TO_FEATURE",
       "object_id": "feature.ordinary_part",
       "qualifiers": {},
       "sort_order": 10
+    },
+    {
+      "relation_id": "rel.check.wall.region.ordinary",
+      "subject_id": "check.main_wall_minimum_thickness",
+      "predicate": "APPLIES_TO_REGION",
+      "object_id": "region.ordinary",
+      "qualifiers": {},
+      "sort_order": 15
     },
     {
       "relation_id": "rel.check.wall.operand.actual",
@@ -269,8 +207,7 @@
       "qualifiers": {
         "alias": "actual",
         "aggregation": "minimum",
-        "required": true,
-        "operand_text": "普通主体区域的最小客观壁厚"
+        "required": true
       },
       "sort_order": 20
     },
@@ -285,9 +222,7 @@
         "missing_policy": "ask_user",
         "phase": "analysis",
         "question": "What resin/material grade will be used for this part?",
-        "required_by": [
-          "check.main_wall_minimum_thickness"
-        ]
+        "required_by": ["check.main_wall_minimum_thickness"]
       },
       "sort_order": 30
     },
@@ -300,6 +235,14 @@
       "sort_order": 10
     },
     {
+      "relation_id": "rel.check.draft.region.ordinary",
+      "subject_id": "check.main_wall_minimum_draft",
+      "predicate": "APPLIES_TO_REGION",
+      "object_id": "region.ordinary",
+      "qualifiers": {},
+      "sort_order": 15
+    },
+    {
       "relation_id": "rel.check.draft.operand.actual",
       "subject_id": "check.main_wall_minimum_draft",
       "predicate": "USES_OPERAND",
@@ -307,8 +250,7 @@
       "qualifiers": {
         "alias": "actual",
         "aggregation": "minimum",
-        "required": true,
-        "operand_text": "普通主体区域相对确认出模方向的最小拔模角"
+        "required": true
       },
       "sort_order": 20
     },
@@ -323,9 +265,7 @@
         "missing_policy": "ask_user",
         "phase": "analysis",
         "question": "What is the confirmed mold pull direction as [x, y, z]?",
-        "required_by": [
-          "geometry.draft"
-        ]
+        "required_by": ["geometry.draft"]
       },
       "sort_order": 30
     },
@@ -340,20 +280,9 @@
         "missing_policy": "ask_user",
         "phase": "discovery",
         "question": "What length unit was used to author the STEP model?",
-        "required_by": [
-          "geometry.load",
-          "feature.dimension_classification"
-        ]
+        "required_by": ["geometry.load", "feature.dimension_classification"]
       },
       "sort_order": 10
-    },
-    {
-      "relation_id": "rel.check.wall.feature.main_wall",
-      "subject_id": "check.main_wall_minimum_thickness",
-      "predicate": "APPLIES_TO_FEATURE",
-      "object_id": "feature.main_wall",
-      "qualifiers": {},
-      "sort_order": 11
     }
   ],
   "factor_options": [
@@ -382,15 +311,9 @@
       "check_id": "check.main_wall_minimum_thickness",
       "name": "ABS主体壁最小厚度",
       "conditions": [
-        {
-          "factor_id": "factor.material",
-          "operator": "EQ",
-          "value": "ABS"
-        }
+        {"factor_id": "factor.material", "operator": "EQ", "value": "ABS"}
       ],
-      "expression": {
-        "operand": "actual"
-      },
+      "expression": {"operand": "actual"},
       "comparator": "GTE",
       "threshold": 1.2,
       "result_unit": "mm",
@@ -409,9 +332,7 @@
       "check_id": "check.main_wall_minimum_draft",
       "name": "主体壁默认最小拔模角",
       "conditions": [],
-      "expression": {
-        "operand": "actual"
-      },
+      "expression": {"operand": "actual"},
       "comparator": "GTE",
       "threshold": 1.0,
       "result_unit": "degree",
@@ -423,6 +344,5 @@
       "status": "released",
       "citation_refs": []
     }
-  ],
-  "content_sha256": "2c5108fe931be9ea635ee9f7b2b2810c99c851399eb248670320e6066501364c"
+  ]
 }

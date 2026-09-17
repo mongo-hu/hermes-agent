@@ -18,6 +18,33 @@
     "region_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "check_id": {"type": "string"},
     "operand_alias": {"type": "string", "minLength": 1},
+    "rule_selection": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["conditions", "priority", "specificity", "is_default"],
+          "properties": {
+            "priority": {"type": "integer"},
+            "specificity": {"type": "integer", "minimum": 0},
+            "is_default": {"type": "boolean"},
+            "conditions": {
+              "type": "array",
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["geometric_id", "operator", "value", "unit"],
+                "properties": {
+                  "geometric_id": {"type": "string", "minLength": 1},
+                  "operator": {"enum": ["GT", "GTE", "LT", "LTE"]},
+                  "value": {"type": "number"},
+                  "unit": {"type": "string"}
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
     "additional_operands": {
       "type": "array",
       "items": {"$ref": "#/$defs/operand"}

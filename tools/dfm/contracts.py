@@ -588,15 +588,19 @@ class RuleBinding:
     operand_alias: str = "actual"
     additional_operands: list[RuleOperand] = field(default_factory=list)
     expression: dict[str, Any] | None = None
+    rule_selection: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
-        return {
+        values = {
             **asdict(self),
             "additional_operands": [
                 operand.to_dict() for operand in self.additional_operands
             ],
         }
+        if self.rule_selection is None:
+            values.pop("rule_selection")
+        return values
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "RuleBinding":
@@ -685,6 +689,35 @@ class RuleBinding:
                 "Rule operand aliases must be unique within one binding.",
                 {"binding_id": self.binding_id},
             )
+        condition_aliases: set[str] = set()
+        if self.rule_selection is not None:
+            selection = self.rule_selection
+            valid = (
+                isinstance(selection, dict)
+                and set(selection) == {"conditions", "priority", "specificity", "is_default"}
+                and isinstance(selection.get("conditions"), list)
+                and type(selection.get("priority")) is int
+                and type(selection.get("specificity")) is int
+                and selection["specificity"] >= len(selection["conditions"])
+                and isinstance(selection.get("is_default"), bool)
+                and bool(self.check_id)
+            )
+            if not valid:
+                raise DFMError("plan_rule_binding_invalid", "Deferred rule selection metadata is invalid.")
+            for condition in selection["conditions"]:
+                if (
+                    not isinstance(condition, dict)
+                    or set(condition) != {"geometric_id", "operator", "value", "unit"}
+                    or not isinstance(condition.get("geometric_id"), str)
+                    or condition["geometric_id"] not in aliases
+                    or condition.get("operator") not in ("GT", "GTE", "LT", "LTE")
+                    or not isinstance(condition.get("unit"), str)
+                    or not isinstance(condition.get("value"), (int, float))
+                    or isinstance(condition["value"], bool)
+                    or not math.isfinite(condition["value"])
+                ):
+                    raise DFMError("plan_rule_binding_invalid", "Deferred geometric condition is invalid.")
+                condition_aliases.add(condition["geometric_id"])
         if self.additional_operands and (not self.check_id or self.expression is None):
             raise DFMError(
                 "plan_rule_binding_invalid",
@@ -695,7 +728,7 @@ class RuleBinding:
             referenced = _expression_operand_aliases(
                 self.expression, binding_id=self.binding_id
             )
-            if referenced != set(aliases):
+            if referenced | condition_aliases != set(aliases):
                 raise DFMError(
                     "plan_rule_binding_invalid",
                     "Rule expressions must reference every declared operand exactly by alias.",

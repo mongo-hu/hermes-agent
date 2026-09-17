@@ -21,8 +21,9 @@ import sqlite3
 from typing import Any, Iterator, Mapping, Sequence
 from uuid import uuid4
 
-from ..contracts import EffectiveRule, PlanOperation, RuleBinding, RuleOperand
+from ..contracts import EffectiveRule, PlanOperation, RuleBinding, RuleOperand, _expression_operand_aliases
 from ..errors import DFMError
+from .catalog_contract import current_catalog, validate_catalog
 
 
 ONTOLOGY_SNAPSHOT_SCHEMA_VERSION = 2
@@ -155,7 +156,7 @@ class CompiledOntologyPlan:
     identity: OntologySnapshotIdentity
     rules: dict[str, EffectiveRule]
     rule_bindings: list[RuleBinding]
-    binding_selectors: dict[str, dict[str, dict[str, str]]]
+    binding_selectors: dict[str, dict[str, dict[str, Any]]]
     accepted_fact_names: set[str]
 
 
@@ -498,10 +499,14 @@ class LocalOntologyStore:
                 check_ids,
             ).fetchall()
             specs: dict[tuple[str, str, str], dict[str, Any]] = {}
+            catalog_specs = []
             for row in rows:
                 target = self._resolve_operand_target(
                     connection, str(row["subject_id"]), row
                 )
+                if "operand_text" in target:
+                    catalog_specs.append({**target, "check_id": str(row["subject_id"])})
+                    continue
                 key = (
                     target["feature_kind"],
                     target["region_role"],
@@ -521,6 +526,8 @@ class LocalOntologyStore:
                     item["metrics"].append(target["metric_id"])
                 if row["subject_id"] not in item["check_ids"]:
                     item["check_ids"].append(row["subject_id"])
+        if catalog_specs:
+            return tuple(catalog_specs)
         grouped: dict[tuple[str, str], dict[str, Any]] = {}
         for item in specs.values():
             key = (item["feature_kind"], item["region_role"])
@@ -598,15 +605,15 @@ class LocalOntologyStore:
             ).fetchall()
             compiled_rules: dict[str, EffectiveRule] = {}
             bindings: list[RuleBinding] = []
-            selectors: dict[str, dict[str, dict[str, str]]] = {}
+            selectors: dict[str, dict[str, dict[str, Any]]] = {}
             for check in checks:
                 check_id = str(check["concept_id"])
                 rules = connection.execute(
                     "SELECT * FROM rule_version WHERE check_id = ? AND status = 'released'",
                     (check_id,),
                 ).fetchall()
-                selected = self._select_rule(rules, normalized_facts, check_id)
-                if selected is None:
+                candidates, deferred = self._plan_rule_candidates(rules, normalized_facts, check_id)
+                if not candidates:
                     continue
                 operand_rows = connection.execute(
                     """
@@ -618,26 +625,25 @@ class LocalOntologyStore:
                     """,
                     (check_id,),
                 ).fetchall()
-                binding, binding_selectors = self._compile_binding(
-                    connection,
-                    check_id,
-                    selected,
-                    operand_rows,
-                    operations,
-                    factor_runtime_keys,
-                )
-                rule_id = str(selected["rule_id"])
-                compiled_rules[rule_id] = EffectiveRule(
-                    value=_load_json(selected["threshold_json"], None),
-                    unit=selected["result_unit"],
-                    source=(
-                        f"ontology:{identity.snapshot_id}/{rule_id}"
-                        f"@{selected['version']}#{selected['content_sha256']}"
-                    ),
-                    version=str(selected["version"]),
-                )
-                bindings.append(binding)
-                selectors[binding.binding_id] = binding_selectors
+                for selected in candidates:
+                    binding, binding_selectors = self._compile_binding(
+                        connection, check_id, selected, operand_rows,
+                        operations, factor_runtime_keys, deferred=deferred,
+                    )
+                    rule_id = str(selected["rule_id"])
+                    if rule_id in compiled_rules:
+                        self._invalid("A flattened publication contains multiple candidates with the same Rule ID.", {"rule_id": rule_id})
+                    compiled_rules[rule_id] = EffectiveRule(
+                        value=_load_json(selected["threshold_json"], None),
+                        unit=selected["result_unit"],
+                        source=(
+                            f"ontology:{identity.snapshot_id}/{rule_id}"
+                            f"@{selected['version']}#{selected['content_sha256']}"
+                        ),
+                        version=str(selected["version"]),
+                    )
+                    bindings.append(binding)
+                    selectors[binding.binding_id] = binding_selectors
         return CompiledOntologyPlan(
             identity=identity,
             rules=compiled_rules,
@@ -701,6 +707,9 @@ class LocalOntologyStore:
 
     @classmethod
     def _validate_package(cls, payload: Mapping[str, Any]) -> None:
+        if current_catalog(payload):
+            validate_catalog(payload, cls._validate_source_policy)
+            return
         required_strings = (
             "snapshot_id",
             "ontology_version",
@@ -1296,6 +1305,21 @@ class LocalOntologyStore:
         return normalized
 
     @classmethod
+    def _plan_rule_candidates(cls, rows, facts, check_id):
+        candidates = [
+            row for row in rows
+            if all(cls._condition_matches(item, facts) for item in _load_json(row["conditions_json"], []) if "factor_id" in item)
+        ]
+        deferred = any(
+            "geometric_id" in item
+            for row in candidates for item in _load_json(row["conditions_json"], [])
+        )
+        if deferred:
+            return candidates, True
+        selected = cls._select_rule(candidates, facts, check_id)
+        return ([selected] if selected is not None else []), False
+
+    @classmethod
     def _select_rule(
         cls,
         rows: Sequence[sqlite3.Row],
@@ -1349,9 +1373,9 @@ class LocalOntologyStore:
             )
         return winner
 
-    @staticmethod
+    @classmethod
     def _condition_matches(
-        condition: Mapping[str, Any], facts: Mapping[str, Any]
+        cls, condition: Mapping[str, Any], facts: Mapping[str, Any]
     ) -> bool:
         factor_id = str(condition["factor_id"])
         if factor_id not in facts:
@@ -1403,16 +1427,24 @@ class LocalOntologyStore:
         operand_rows: Sequence[sqlite3.Row],
         operations: Sequence[PlanOperation],
         factor_runtime_keys: Mapping[str, str],
-    ) -> tuple[RuleBinding, dict[str, dict[str, str]]]:
+        *,
+        deferred: bool = False,
+    ) -> tuple[RuleBinding, dict[str, dict[str, Any]]]:
         if not operand_rows:
             cls._invalid(
                 "A released Check rule does not declare any Measurement operand.",
                 {"check_id": check_id},
             )
         operands: list[RuleOperand] = []
-        selectors: dict[str, dict[str, str]] = {}
-        for row in operand_rows:
+        selectors: dict[str, dict[str, Any]] = {}
+        conditions = _load_json(rule["conditions_json"], [])
+        referenced = _expression_operand_aliases(_load_json(rule["expression_json"], {}), binding_id=str(rule["rule_id"]))
+        expression_aliases = set(referenced)
+        referenced.update(item["geometric_id"] for item in conditions if "geometric_id" in item)
+        for row in sorted(operand_rows, key=lambda item: _load_json(item["qualifiers_json"], {}).get("alias") not in expression_aliases):
             qualifiers = _load_json(row["qualifiers_json"], {})
+            if qualifiers.get("alias") not in referenced:
+                continue
             target = cls._resolve_operand_target(connection, check_id, row)
             alias = target["alias"]
             metric_id = target["metric_id"]
@@ -1430,13 +1462,10 @@ class LocalOntologyStore:
             operand.validate()
             operands.append(operand)
             selectors[alias] = {
-                "feature_type_id": target["feature_type_id"],
-                "region_type_id": target["region_type_id"],
-                "feature_kind": target["feature_kind"],
-                "region_role": target["region_role"],
+                name: value for name, value in target.items()
+                if name not in {"alias", "metric_id", "quantity_id"}
             }
         primary, *additional = operands
-        conditions = _load_json(rule["conditions_json"], [])
         binding = RuleBinding(
             binding_id=f"binding.{check_id}.{rule['rule_id']}",
             operation_id=primary.operation_id,
@@ -1447,12 +1476,18 @@ class LocalOntologyStore:
             aggregation=primary.aggregation,
             required_fact_names=sorted({
                 factor_runtime_keys.get(str(item["factor_id"]), str(item["factor_id"]))
-                for item in conditions
+                for item in conditions if "factor_id" in item
             }),
             check_id=check_id,
             operand_alias=primary.alias,
             additional_operands=additional,
             expression=_load_json(rule["expression_json"], None),
+            rule_selection={
+                "conditions": [dict(item) for item in conditions if "geometric_id" in item],
+                "priority": int(rule["priority"]),
+                "specificity": len(conditions),
+                "is_default": bool(rule["is_default"]),
+            } if deferred else None,
         )
         binding.validate()
         return binding, selectors
@@ -1463,12 +1498,29 @@ class LocalOntologyStore:
         connection: sqlite3.Connection,
         check_id: str,
         operand_row: sqlite3.Row,
-    ) -> dict[str, str]:
-        """Resolve an Operand through Metric and Check/Region/Feature relations."""
+    ) -> dict[str, Any]:
+        """Resolve current Geometric metadata, or a legacy Metric/Region path."""
 
         qualifiers = _load_json(operand_row["qualifiers_json"], {})
         metric_properties = _load_json(operand_row["metric_properties_json"], {})
         alias = str(qualifiers.get("alias") or "")
+        if "worker_geometric_id" in metric_properties:
+            feature_rows = connection.execute(
+                "SELECT feature.concept_id, feature.properties_json FROM ontology_relation relation "
+                "JOIN ontology_concept feature ON feature.concept_id = relation.object_id "
+                "WHERE relation.subject_id = ? AND relation.predicate = 'APPLIES_TO_FEATURE' "
+                "AND feature.concept_type = 'feature_type' AND feature.status = 'active' "
+                "ORDER BY relation.sort_order, feature.concept_id", (check_id,),
+            ).fetchall()
+            return {
+                "alias": alias,
+                "metric_id": metric_properties["worker_geometric_id"],
+                "quantity_id": metric_properties["quantity_id"],
+                "geometric_id": str(operand_row["object_id"]),
+                "operand_text": qualifiers["operand_text"],
+                "feature_type_ids": [str(item["concept_id"]) for item in feature_rows],
+                "feature_kinds": [_load_json(item["properties_json"], {})["worker_kind"] for item in feature_rows],
+            }
         metric_id = str(
             metric_properties.get("worker_metric_id")
             or qualifiers.get("worker_metric_id")

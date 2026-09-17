@@ -367,8 +367,8 @@ def test_plan_is_persisted_but_unavailable_production_start_fails_explicitly(ser
     )
     assert plan["plan"]["process"] == "injection"
     assert plan["plan"]["scope_id"] == "injection.default"
-    assert plan["plan"]["scope_version"] == "1.1.0"
-    assert plan["plan"]["ontology_snapshot_id"] == ("ontology.injection.default@1.2.0")
+    assert plan["plan"]["scope_version"] == dfm.ontology_store.identity().scope_version
+    assert plan["plan"]["ontology_snapshot_id"] == dfm.ontology_store.identity().snapshot_id
     assert len(plan["plan"]["ontology_snapshot_sha256"]) == 64
     assert plan["plan"]["input_ids"] == [plan["plan"]["input_ids"][0]]
     assert set(plan["plan"]["input_hashes"].values()) == {added["input"]["sha256"]}
@@ -376,7 +376,7 @@ def test_plan_is_persisted_but_unavailable_production_start_fails_explicitly(ser
     assert draft_rule["value"] == 1.0
     assert draft_rule["unit"] == "degree"
     assert draft_rule["version"] == "1.0.0"
-    assert draft_rule["source"].startswith("ontology:ontology.injection.default@1.2.0/")
+    assert draft_rule["source"].startswith(f"ontology:{plan['plan']['ontology_snapshot_id']}/")
     assert plan["capability"]["status"] == "dependency_missing"
     with pytest.raises(DFMError) as exc_info:
         dfm.analysis("start", project_id=project_id, plan_id=plan["plan"]["plan_id"])
