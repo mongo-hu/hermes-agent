@@ -670,7 +670,7 @@ OCCT 新增 Recognizer/Region/Metric Capability
 → 根据 Process 查询 HAS_CHECK
 → 根据 REQUIRES_FACTOR 发现缺失 Fact 并澄清
 → OCCT Discovery 返回 Feature/Region
-→ Agent 根据 conditions_json 中的 Factor 适用条件选择唯一 Rule Version
+→ Agent 根据 conditions_json 中的 Factor 适用条件选择适用的 Rule Version（不要求唯一）
 → 按 APPLIES_TO_FEATURE + USES_OPERAND.operand_text 编译所选规则需要的 AnalysisPlan
 → OCCT 测量所选规则全部判定项引用的 Geometric Operand
 → 逐项执行发布态 acceptance_criteria_json，全部通过才判 Check 通过
