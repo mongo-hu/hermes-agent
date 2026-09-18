@@ -444,6 +444,50 @@ def test_html_summary_accounts_for_warning_issues_without_mislabeling_risk(tmp_p
     }
 
 
+def test_html_summary_embeds_failed_patch_locations_and_cell_based_scalar_fields(tmp_path):
+    fixture = tmp_path / "fixture"
+    llm_path, runtime_path = _html_contract_fixture(fixture)
+    runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+    runtime["report"]["issues"][0]["images"] = []
+    runtime["report"]["issues"][0]["image"] = None
+    runtime["global_issue_metadata"] = [{
+        "issue_id": "evaluation-draft",
+        "source_issue_id": "evaluation-draft",
+        "severity": "unclassified",
+    }]
+    runtime_path.write_text(json.dumps(runtime, ensure_ascii=False) + "\n", encoding="utf-8")
+    (fixture / "evidence_geometry.json").write_text(json.dumps({
+        "failed_patches": [{
+            "evaluation_id": "evaluation-draft",
+            "triangle_refs": [{
+                "primitive_id": "face-9",
+                "triangle_id": 1,
+                "render_mesh_snapshot_id": "mesh-current",
+            }],
+        }],
+    }), encoding="utf-8")
+    (fixture / "scalar_field_draft.json").write_text(json.dumps({
+        "metric_id": "injection.geometry.draft",
+        "samples": [{"sample_id": "scalar-field-sample-1", "value": 0.5}],
+        "cells": [{
+            "triangle_ref": {"primitive_id": "face-9", "triangle_id": 1},
+            "sample_ids": ["scalar-field-sample-1"],
+        }],
+    }), encoding="utf-8")
+
+    output = tmp_path / "report.html"
+    generate_html(llm_path, runtime_path, output)
+
+    html = output.read_text(encoding="utf-8")
+    assert 'data-mode="issues"' in html
+    assert 'data-issue-nav="evaluation-draft"' in html
+    assert '"triangle_refs": [{"primitive_id": "face-9", "triangle_id": 1' in html
+    assert 'const draftMap = fieldValuesByTriangle(draftData);' in html
+    assert 'const failed = failedTriangleKeys(mode);' in html
+    assert 'sample_id.match(/face-' not in html
+    assert "mode === 'thickness' ? 1.2 : 1.0" not in html
+
+
 def test_html_vendor_assets_are_bundled_with_the_reporting_package():
     vendor = (
         Path(__file__).resolve().parents[3]

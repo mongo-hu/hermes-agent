@@ -1,6 +1,23 @@
 import { describe, expect, it } from 'vitest'
 
-import { mergeRenderScene, resolveGeometryRefFaceIndices } from './dfm-viewer-geometry'
+import { mergeRenderScene, resolveGeometryRefFaceIndices, resolveTriangleRefPositions } from './dfm-viewer-geometry'
+
+describe('resolveTriangleRefPositions', () => {
+  it('highlights exact failed triangles on the matching render snapshot', () => {
+    const positions = resolveTriangleRefPositions(
+      [{ primitive_id: 'face-9', triangles: [[0, 1, 2], [0, 2, 3]], vertices: [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]] }],
+      [
+        { primitive_id: 'face-9', triangle_id: 1, render_mesh_snapshot_id: 'mesh-current' },
+        { primitive_id: 'face-9', triangle_id: 1, render_mesh_snapshot_id: 'mesh-current' },
+        { primitive_id: 'face-9', triangle_id: 0, render_mesh_snapshot_id: 'mesh-old' },
+        { primitive_id: 'face-9', triangle_id: 99, render_mesh_snapshot_id: 'mesh-current' }
+      ],
+      'mesh-current'
+    )
+
+    expect(Array.from(positions)).toEqual([0, 0, 0, 1, 1, 0, 0, 1, 0])
+  })
+})
 
 describe('resolveGeometryRefFaceIndices', () => {
   it('keeps exact face references from the shared topology contract', () => {

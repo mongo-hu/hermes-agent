@@ -9,6 +9,12 @@ export interface RenderPrimitive {
   vertices: number[][]
 }
 
+export interface RenderTriangleReference {
+  primitive_id: string
+  render_mesh_snapshot_id?: string
+  triangle_id: number
+}
+
 export interface TopologyFace {
   geometry_ref: GeometryReference
   triangle_refs: { primitive_id: string; triangle_id: number }[]
@@ -33,6 +39,50 @@ const MAX_FLOAT32 = 3.4028234663852886e38
 /** Resolve only topology identities that the shared scene/map contract can render. */
 export function resolveGeometryRefFaceIndices(refs: GeometryReference[] | undefined): Set<number> {
   return new Set(refs?.filter(ref => ref.kind === 'face').map(ref => ref.index) ?? [])
+}
+
+/** Convert exact failed-patch references to an overlay on the same render snapshot. */
+export function resolveTriangleRefPositions(
+  primitives: RenderPrimitive[],
+  refs: RenderTriangleReference[] | undefined,
+  snapshotId?: string
+): Float32Array {
+  const primitiveById = new Map(primitives.map(primitive => [primitive.primitive_id, primitive]))
+  const seen = new Set<string>()
+  const positions: number[] = []
+
+  for (const ref of refs ?? []) {
+    if (snapshotId && ref.render_mesh_snapshot_id && ref.render_mesh_snapshot_id !== snapshotId) {
+      continue
+    }
+
+    const key = `${ref.primitive_id}:${ref.triangle_id}`
+
+    if (seen.has(key)) {
+      continue
+    }
+
+    const primitive = primitiveById.get(ref.primitive_id)
+    const triangle = primitive?.triangles[ref.triangle_id]
+
+    if (!triangle || triangle.length !== 3) {
+      continue
+    }
+
+    const vertices = triangle.map(index => primitive?.vertices[index])
+
+    if (vertices.some(vertex => !vertex || vertex.length !== 3 || vertex.some(value => !Number.isFinite(value)))) {
+      continue
+    }
+
+    seen.add(key)
+
+    for (const vertex of vertices) {
+      positions.push(...vertex!)
+    }
+  }
+
+  return new Float32Array(positions)
 }
 
 function validatePrimitive(primitive: RenderPrimitive, seen: Set<string>): void {
@@ -114,9 +164,11 @@ export function mergeRenderScene(primitives: RenderPrimitive[], topologyFaces: T
       if (!primitive || !mappedFaces) {
         throw new Error(`面 #${faceIndex} 引用了不存在的渲染图元 ${ref.primitive_id || 'unknown'}`)
       }
+
       if (!Number.isInteger(ref.triangle_id) || ref.triangle_id < 0 || ref.triangle_id >= primitive.triangles.length) {
         throw new Error(`面 #${faceIndex} 包含越界的三角形引用`)
       }
+
       if (mappedFaces[ref.triangle_id] !== 0) {
         throw new Error(`渲染图元 ${ref.primitive_id} 的三角形 #${ref.triangle_id} 被重复映射`)
       }

@@ -357,10 +357,15 @@ Artifact 和 Hermes 阶段更新推进。
 | `evidence_geometry.json` | 失败 Evaluation 对应的 FailedPatch 几何 | 证据审计 |
 | `evidence_records.json` | Evaluation、Measurement、Region 与图片的结构化关系 | 报告、Finding |
 | `evidence_*.png` | 当前失败区域证据图 | 问题详情、PPTX |
-| `dfm_viewer.json` | Viewer v2 Manifest，直接引用同一 Run 的 `render_scene` 与 `topology_map` | Desktop 3D 查看器 |
+| `dfm_viewer.json` | Viewer v2 Manifest，引用同一 Run 的 `render_scene`、`topology_map`，并携带失败问题的局部 `triangle_refs` | Desktop 3D 查看器 |
 | `dfm_report.json` | 汇总 Measurement、Evaluation 和 Evidence 的结构化 DFM 结果 | Desktop、系统集成 |
 | `dfm_report.md` | 可读文本报告和兼容交付 | Agent、开发者 |
 | `dfm_report.pptx` | 安装 `python-pptx` 时生成的演示交付报告 | Desktop 用户 |
+
+Desktop 与 HTML 摘要页的红色问题高亮都以 `evidence_geometry.json` 中按 `evaluation_id`
+关联的 FailedPatch 为准，定位到同一渲染网格快照的 `triangle_refs`；不能用写死的壁厚或拔模角阈值
+替代规则判定。Viewer v2 的 `issues[].triangle_refs` 是可选字段：旧工件没有精确三角片时，
+Desktop 回退到 `geometry_refs` 的面级定位。没有 FailedPatch 几何证据的失败项不能声称有精确高亮。
 
 当前只有失败 Evaluation 能关联有效 ScalarField 时才生成局部证据图片。每个入选 FailedPatch
 最多生成三个自适应视角：
