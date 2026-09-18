@@ -31,7 +31,7 @@ from .base import AnalyzerContext, CancellationToken
 from .objective_result import validate_objective_result
 
 
-ENGINE_VERSION = "occt-dfm-geometry-1.7.0"
+ENGINE_VERSION = "occt-dfm-geometry-1.9.0"
 GEOMETRY_SCOPE_ID = "injection.geometry-core"
 GEOMETRY_SCOPE_VERSION = "4.0.0"
 CAPABILITY_CONTRACT = "dfm.geometry.capabilities/v1"
