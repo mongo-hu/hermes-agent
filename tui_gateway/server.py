@@ -3664,6 +3664,34 @@ def _on_tool_progress(
     _args: dict | None = None,
     **_kwargs,
 ):
+    # The deterministic DFM worker can finish after the Agent turn ends.
+    # Queue a same-conversation continuation even when progress UI is hidden.
+    report_ready_event = None
+    if (
+        event_type in {"background.tool.progress", "background.tool.complete"}
+        and name == "dfm_analysis"
+        and _kwargs.get("status") == "reporting"
+        and _kwargs.get("project_id")
+        and _kwargs.get("run_id")
+    ):
+        with _sessions_lock:
+            owner = _sessions.get(sid)
+            if owner is not None and not owner.get("_finalized"):
+                pending = owner.setdefault("_dfm_report_notifications", set())
+                identity = (str(_kwargs["project_id"]), str(_kwargs["run_id"]))
+                if identity not in pending:
+                    pending.add(identity)
+                    report_ready_event = {
+                        "type": "dfm_report_ready",
+                        "project_id": identity[0],
+                        "run_id": identity[1],
+                        "origin_ui_session_id": sid,
+                        "session_key": str(owner.get("session_key") or ""),
+                    }
+    if report_ready_event is not None:
+        from tools.process_registry import process_registry
+
+        process_registry.completion_queue.put(report_ready_event)
     if not _tool_progress_enabled(sid):
         return
     if event_type == "tool.started" and name:
@@ -8529,7 +8557,7 @@ def _notification_event_belongs_elsewhere(sid: str, session: dict, evt: dict) ->
     """True if ``evt`` is owned by a *different* live session.
 
     Background completions carry the ``session_key`` of the session that started
-    the work. Async delegation completions from the desktop also carry
+    the work. Async delegation and DFM report-ready events from the desktop also carry
     ``origin_ui_session_id``: the live TUI tab/window that commissioned them.
     Since all desktop sessions share one process-wide completion queue, each
     poller must skip events it doesn't own so a detached result surfaces in the
@@ -8621,7 +8649,7 @@ def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool
     minus its orphan-adoption fallback. An event owns-matches when its
     ``origin_ui_session_id`` is this live session, or its ``session_key``
     (raw or resolved through the compression chain) matches this session's
-    key/lineage. Used as a fail-closed gate for async-delegation payloads:
+    key/lineage. Used as a fail-closed gate for conversation-owned notifications:
     "not provably elsewhere" is NOT good enough to inject a conversation
     payload into this chat (#55578).
     """
@@ -8682,7 +8710,28 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
         # this the fallthrough keys every one as ("", "async_delegation")
         # and the second completion's status update is suppressed forever.
         return (evt.get("delegation_id", ""), evt_type)
+    if evt_type == "dfm_report_ready":
+        return (evt.get("project_id", ""), evt.get("run_id", ""), evt_type)
     return (evt_sid, evt_type)
+
+
+def _dfm_report_notification_is_current(evt: dict) -> bool:
+    """Do not start a second editor turn for a report already completed elsewhere."""
+    if evt.get("type") != "dfm_report_ready":
+        return True
+    try:
+        from tools.dfm.contracts import RunStatus
+        from tools.dfm.service import get_dfm_service
+
+        run = get_dfm_service().jobs.status(
+            str(evt["project_id"]), str(evt["run_id"])
+        )
+        return run.status is RunStatus.REPORTING and any(
+            artifact.kind == "report_html_runtime" for artifact in run.artifacts
+        )
+    except Exception:
+        logger.exception("Unable to verify DFM report-ready notification")
+        return False
 
 
 def _notification_poller_loop(
@@ -8718,26 +8767,27 @@ def _notification_poller_loop(
             time.sleep(0.1)
             continue
 
-        # Fail closed for async-delegation results (#55578): these carry a
+        # Fail closed for conversation-owned results (#55578): these carry a
         # conversation payload, and injecting one into any chat other than the
         # one that commissioned it is a hard cross-session leak. The
         # belongs-elsewhere check above already re-queued events owned by
         # another LIVE session; what reaches here is either ours or an
         # orphan whose owner is gone. Orphaned delegation payloads are
-        # DROPPED, not adopted — the subagent's summary is already persisted
-        # in the delegation records/output store, so nothing is lost, whereas
-        # a wrong-chat injection is unrecoverable. Non-delegation events
+        # DROPPED, not adopted — the underlying result is already persisted
+        # in its run or delegation records, so nothing is lost, whereas
+        # a wrong-chat injection is unrecoverable. Other events
         # (background process completions etc.) keep the historical
         # adopt-orphans behavior.
-        if evt.get("type") == "async_delegation" and not _session_owns_notification_event(
-            sid, session, evt
+        if (
+            evt.get("type") in {"async_delegation", "dfm_report_ready"}
+            and not _session_owns_notification_event(sid, session, evt)
         ):
             logger.warning(
-                "async-delegation completion %s has no live owner "
+                "conversation notification %s has no live owner "
                 "(origin=%r key=%r); dropping from injection instead of "
                 "delivering to session %s (#55578 fail-closed; result "
-                "remains in the delegation records)",
-                evt.get("delegation_id", "?"),
+                "remains in persisted state)",
+                evt.get("delegation_id") or evt.get("run_id") or "?",
                 str(evt.get("origin_ui_session_id") or ""),
                 str(evt.get("session_key") or ""),
                 sid,
@@ -8746,6 +8796,8 @@ def _notification_poller_loop(
 
         _evt_sid = evt.get("session_id", "")
         if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
+            continue
+        if not _dfm_report_notification_is_current(evt):
             continue
 
         text = format_process_notification(evt)
@@ -8800,17 +8852,20 @@ def _notification_poller_loop(
         if _notification_event_belongs_elsewhere(sid, session, evt):
             deferred.append(evt)
             continue
-        # Same fail-closed rule as the live loop: an orphaned async-delegation
+        # Same fail-closed rule as the live loop: an orphaned conversation
         # payload is never adopted by a foreign session — defer it (a later
         # resume of the owner's lineage can still claim it) rather than
         # injecting another chat's conversation here (#55578).
-        if evt.get("type") == "async_delegation" and not _session_owns_notification_event(
-            sid, session, evt
+        if (
+            evt.get("type") in {"async_delegation", "dfm_report_ready"}
+            and not _session_owns_notification_event(sid, session, evt)
         ):
             deferred.append(evt)
             continue
         _evt_sid = evt.get("session_id", "")
         if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
+            continue
+        if not _dfm_report_notification_is_current(evt):
             continue
         text = format_process_notification(evt)
         if not text:

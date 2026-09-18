@@ -64,7 +64,7 @@ def materialize_evaluated_findings(
             FindingRecord(
                 finding_id=f"finding_{stable}",
                 title=rule_id.replace(".", " ").replace("_", " ").title(),
-                severity="unclassified",
+                severity=str(evaluation.get("severity") or "unclassified"),
                 status="open",
                 evaluation_ids=[evaluation_id],
                 measurement_ids=measurement_ids,
@@ -99,6 +99,8 @@ def materialize_evaluated_findings(
                     if evaluation.get("check_id")
                     else []
                 ),
+                severity_rationale=evaluation.get("severity_rationale"),
+                criterion_results=list(evaluation.get("criterion_results") or []),
             )
         )
     return results

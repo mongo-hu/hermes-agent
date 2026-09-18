@@ -18,6 +18,33 @@
     "region_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "check_id": {"type": "string"},
     "operand_alias": {"type": "string", "minLength": 1},
+    "rule_selection": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["conditions", "priority", "specificity", "is_default"],
+          "properties": {
+            "priority": {"type": "integer"},
+            "specificity": {"type": "integer", "minimum": 0},
+            "is_default": {"type": "boolean"},
+            "conditions": {
+              "type": "array",
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["geometric_id", "operator", "value", "unit"],
+                "properties": {
+                  "geometric_id": {"type": "string", "minLength": 1},
+                  "operator": {"enum": ["GT", "GTE", "LT", "LTE"]},
+                  "value": {"type": "number"},
+                  "unit": {"type": "string"}
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
     "additional_operands": {
       "type": "array",
       "items": {"$ref": "#/$defs/operand"}
@@ -27,6 +54,20 @@
         {"$ref": "#/$defs/expression"},
         {"type": "null"}
       ]
+    },
+    "acceptance_criteria_json": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["criterion_id", "expression", "comparator", "threshold", "result_unit"],
+        "properties": {
+          "criterion_id": {"type": "string", "minLength": 1},
+          "expression": {"$ref": "#/$defs/expression"},
+          "comparator": {"enum": ["GT", "GTE", "LT", "LTE", "EQ", "NE", "BETWEEN"]},
+          "threshold": {},
+          "result_unit": {"type": "string"}
+        }
+      }
     }
   },
   "allOf": [

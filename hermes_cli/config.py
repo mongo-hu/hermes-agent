@@ -3302,6 +3302,12 @@ DEFAULT_CONFIG = {
         "region": "global",
     },
 
+    "dfm": {
+        "ontology": {
+            "endpoint": "",
+        },
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 33,
 }

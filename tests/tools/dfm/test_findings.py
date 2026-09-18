@@ -25,6 +25,9 @@ def test_evaluations_and_evidence_normalize_to_stable_finding(tmp_path):
                 "rule_version": "1.0.0",
                 "rule_hash": "c" * 64,
                 "outcome": "fail",
+                "severity": "warning",
+                "severity_rationale": "A reviewed consequence.",
+                "criterion_results": [{"criterion_id": "draft_min", "outcome": "fail"}],
             }]
         }),
         encoding="utf-8",
@@ -52,3 +55,6 @@ def test_evaluations_and_evidence_normalize_to_stable_finding(tmp_path):
     assert first[0].metric_ids == ["injection.geometry.draft"]
     assert first[0].region_refs == ["region.fixed-half"]
     assert first[0].evidence_refs == ["evidence-draft"]
+    assert first[0].severity == "warning"
+    assert first[0].severity_rationale == "A reviewed consequence."
+    assert first[0].criterion_results[0]["criterion_id"] == "draft_min"

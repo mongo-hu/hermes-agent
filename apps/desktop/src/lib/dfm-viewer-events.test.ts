@@ -42,6 +42,27 @@ describe('dfmViewerTargetFromToolComplete', () => {
     })
   })
 
+  it('opens the completed manifest from a successful run result', () => {
+    const target = dfmViewerTargetFromToolComplete({
+      name: 'dfm_analysis',
+      result: {
+        project_id: 'dfm_1',
+        run: {
+          run_id: 'run_1',
+          status: 'succeeded',
+          artifacts: [{ kind: 'dfm_viewer', path: 'C:\\hermes\\runs\\run_1\\dfm_viewer.json' }]
+        }
+      }
+    })
+
+    expect(target).toEqual({
+      manifestPath: 'C:\\hermes\\runs\\run_1\\dfm_viewer.json',
+      projectId: 'dfm_1',
+      runId: 'run_1',
+      status: 'completed'
+    })
+  })
+
   it('ignores unavailable previews and failed analyses', () => {
     expect(
       dfmViewerTargetFromToolComplete({

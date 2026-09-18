@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,7 +13,13 @@ from tools.dfm.analyzers.step import StepAnalyzer
 from tools.dfm.config import DFMConfig
 from tools.dfm.errors import DFMError
 from tools.dfm.service import DFMService
-from tools.dfm.contracts import FeatureRecord, GeometryRef, RegionRecord
+from tools.dfm.contracts import (
+    ClarificationRecord,
+    FeatureRecord,
+    GeometryRef,
+    ObservationRecord,
+    RegionRecord,
+)
 
 
 STEP_PAYLOAD = (
@@ -123,6 +130,70 @@ def test_analysis_context_exposes_bounded_ontology_to_the_agent(service):
     assert any(item["predicate"] == "USES_OPERAND" for item in context["relations"])
 
 
+def test_factor_source_policy_auto_accepts_project_metadata_observation(service):
+    dfm, _temp = service
+    project_id = dfm.project("create", name="Factor resolver")["project_id"]
+    dfm._store(project_id).update(
+        lambda current: replace(
+            current,
+            observations=[
+                ObservationRecord(
+                    observation_id="observation.material.metadata",
+                    input_id="project-metadata",
+                    kind="material",
+                    value="ABS",
+                    source_refs=["project-metadata:material@1"],
+                    confidence=1.0,
+                    provenance={"source": "project_metadata"},
+                )
+            ],
+        )
+    )
+
+    dfm.analysis("discover", project_id=project_id)
+    project = dfm.project("status", project_id=project_id)["project"]
+
+    fact = next(item for item in project["facts"] if item["name"] == "material")
+    observation = project["observations"][0]
+    assert fact["status"] == "confirmed"
+    assert fact["source"] == "project_metadata"
+    assert fact["evidence_refs"] == ["project-metadata:material@1"]
+    assert observation["status"] == "accepted"
+
+
+def test_factor_source_policy_keeps_recognition_as_pending_observation(service):
+    dfm, _temp = service
+    project_id = dfm.project("create", name="Factor confirmation")["project_id"]
+    dfm._store(project_id).update(
+        lambda current: replace(
+            current,
+            observations=[
+                ObservationRecord(
+                    observation_id="observation.material.drawing",
+                    input_id="drawing-1",
+                    kind="material",
+                    value="ABS",
+                    source_refs=["drawing:drawing-1/annotation/7@1"],
+                    confidence=0.95,
+                    provenance={"source": "drawing_recognition"},
+                )
+            ],
+        )
+    )
+
+    dfm.analysis("discover", project_id=project_id)
+    project = dfm.project("status", project_id=project_id)["project"]
+
+    assert not any(item["name"] == "material" for item in project["facts"])
+    assert project["observations"][0]["status"] == "needs_confirmation"
+    clarification = next(
+        item
+        for item in project["clarifications"]
+        if item["clarification_id"] == "clarification_material"
+    )
+    assert clarification["status"] == "open"
+
+
 def test_analysis_context_requires_one_check_id(service):
     dfm, _temp = service
     project_id = dfm.project("create", name="Bounded ontology context")["project_id"]
@@ -157,6 +228,85 @@ def test_fact_alias_units_closes_model_units_clarification(service):
         if item["clarification_id"] == "clarification_model_units"
     )
     assert row["status"] == "answered"
+
+
+def test_legacy_model_length_unit_clarification_is_reconciled(service):
+    dfm, temp = service
+    project_id = dfm.project("create", name="Legacy unit clarification")["project_id"]
+    source = temp / "part.step"
+    source.write_bytes(STEP_PAYLOAD)
+    dfm.project("add_input", project_id=project_id, path=str(source))
+    dfm._store(project_id).update(
+        lambda current: replace(
+            current,
+            clarifications=[
+                replace(
+                    item,
+                    clarification_id="clarification_model_length_unit",
+                )
+                if item.clarification_id == "clarification_model_units"
+                else item
+                for item in current.clarifications
+            ],
+        )
+    )
+
+    dfm.project(
+        "confirm_fact",
+        project_id=project_id,
+        fact_name="model_units",
+        fact_value="mm",
+    )
+    project = dfm.project("status", project_id=project_id)["project"]
+
+    row = next(
+        item
+        for item in project["clarifications"]
+        if item["clarification_id"] == "clarification_model_length_unit"
+    )
+    assert row["status"] == "answered"
+    assert row["answer"] == "mm"
+    assert "clarification_model_length_unit" not in {
+        item["clarification_id"] for item in project["open_clarifications"]
+    }
+
+
+def test_legacy_tool_main_draw_dir_clarification_uses_pull_dir(service):
+    dfm, temp = service
+    project_id = dfm.project("create", name="Legacy pull direction")["project_id"]
+    source = temp / "part.step"
+    source.write_bytes(STEP_PAYLOAD)
+    dfm.project("add_input", project_id=project_id, path=str(source))
+    dfm._store(project_id).update(
+        lambda current: replace(
+            current,
+            clarifications=[
+                *current.clarifications,
+                ClarificationRecord(
+                    "clarification_tool_main_draw_dir",
+                    "Confirm the main mold draw direction.",
+                    "open",
+                ),
+            ],
+        )
+    )
+
+    confirmed = dfm.project(
+        "confirm_fact",
+        project_id=project_id,
+        fact_name="pull_dir",
+        fact_value=[0, 0, 1],
+    )
+    project = dfm.project("status", project_id=project_id)["project"]
+
+    assert confirmed["fact"]["name"] == "pull_dir"
+    row = next(
+        item
+        for item in project["clarifications"]
+        if item["clarification_id"] == "clarification_tool_main_draw_dir"
+    )
+    assert row["status"] == "answered"
+    assert row["answer"] == [0, 0, 1]
 
 
 def test_missing_run_id_is_recovered_only_when_unambiguous():
@@ -217,8 +367,8 @@ def test_plan_is_persisted_but_unavailable_production_start_fails_explicitly(ser
     )
     assert plan["plan"]["process"] == "injection"
     assert plan["plan"]["scope_id"] == "injection.default"
-    assert plan["plan"]["scope_version"] == "1.1.0"
-    assert plan["plan"]["ontology_snapshot_id"] == ("ontology.injection.default@1.2.0")
+    assert plan["plan"]["scope_version"] == dfm.ontology_store.identity().scope_version
+    assert plan["plan"]["ontology_snapshot_id"] == dfm.ontology_store.identity().snapshot_id
     assert len(plan["plan"]["ontology_snapshot_sha256"]) == 64
     assert plan["plan"]["input_ids"] == [plan["plan"]["input_ids"][0]]
     assert set(plan["plan"]["input_hashes"].values()) == {added["input"]["sha256"]}
@@ -226,7 +376,7 @@ def test_plan_is_persisted_but_unavailable_production_start_fails_explicitly(ser
     assert draft_rule["value"] == 1.0
     assert draft_rule["unit"] == "degree"
     assert draft_rule["version"] == "1.0.0"
-    assert draft_rule["source"].startswith("ontology:ontology.injection.default@1.2.0/")
+    assert draft_rule["source"].startswith(f"ontology:{plan['plan']['ontology_snapshot_id']}/")
     assert plan["capability"]["status"] == "dependency_missing"
     with pytest.raises(DFMError) as exc_info:
         dfm.analysis("start", project_id=project_id, plan_id=plan["plan"]["plan_id"])
@@ -254,6 +404,17 @@ def test_input_or_confirmed_fact_invalidates_prior_plan(service):
         dfm.analysis("start", project_id=project_id, plan_id=plan["plan_id"])
     assert exc_info.value.code == "plan_not_ready"
     assert exc_info.value.details["status"] == "invalidated"
+
+
+def test_start_requires_explicit_plan_id(service):
+    dfm, _temp = service
+    project_id = dfm.project("create", name="Missing plan id")["project_id"]
+
+    with pytest.raises(DFMError) as exc_info:
+        dfm.analysis("start", project_id=project_id)
+
+    assert exc_info.value.code == "plan_id_required"
+    assert exc_info.value.details == {"action": "start"}
 
 
 def test_new_input_version_supersedes_prior_input_and_replans_full_scope(service):

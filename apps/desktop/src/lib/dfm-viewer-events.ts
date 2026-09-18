@@ -37,7 +37,18 @@ export function dfmViewerTargetFromToolComplete(payload?: GatewayEventPayload): 
 
   const result = record(payload.result)
   const preview = record(result.preview)
-  const manifestPath = stringField(payload.viewer_manifest, result.viewer_manifest, preview.viewer_manifest)
+  const run = record(result.run)
+
+  const viewerArtifact = Array.isArray(run.artifacts)
+    ? run.artifacts.map(record).find(artifact => artifact.kind === 'dfm_viewer')
+    : undefined
+
+  const manifestPath = stringField(
+    payload.viewer_manifest,
+    result.viewer_manifest,
+    viewerArtifact?.path,
+    preview.viewer_manifest
+  )
 
   if (!manifestPath) {
     return null
@@ -45,7 +56,7 @@ export function dfmViewerTargetFromToolComplete(payload?: GatewayEventPayload): 
 
   const completed = payload.name === 'dfm_analysis'
 
-  if (completed && payload.status !== 'succeeded' && result.status !== 'succeeded') {
+  if (completed && stringField(run.status, result.status, payload.status) !== 'succeeded') {
     return null
   }
 
@@ -56,7 +67,7 @@ export function dfmViewerTargetFromToolComplete(payload?: GatewayEventPayload): 
   return {
     manifestPath,
     projectId: stringField(payload.project_id, result.project_id) || undefined,
-    runId: stringField(payload.run_id, result.run_id, preview.run_id) || undefined,
+    runId: stringField(payload.run_id, result.run_id, run.run_id, preview.run_id) || undefined,
     status: completed ? 'completed' : 'preview'
   }
 }

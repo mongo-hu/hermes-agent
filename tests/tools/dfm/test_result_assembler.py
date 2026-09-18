@@ -30,11 +30,21 @@ def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path):
                     "actual": 0.5,
                     "expected": 1.0,
                     "outcome": "fail",
+                    "severity": "warning",
+                    "severity_rationale": "Draft angle affects release.",
+                    "criterion_results": [{"criterion_id": "draft_min", "outcome": "fail"}],
                 },
                 {
                     "evaluation_id": "evaluation-wall",
                     "measurement_ids": [],
                     "outcome": "pass",
+                },
+                {
+                    "evaluation_id": "evaluation-unknown",
+                    "check_id": "check.boss_wall",
+                    "rule_id": "R_BOSS_WALL",
+                    "outcome": "indeterminate",
+                    "criterion_results": [{"criterion_id": "wall_ratio", "outcome": "indeterminate"}],
                 },
             ]
         },
@@ -91,3 +101,8 @@ def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path):
     assert report["issues"][0]["images"] == ["evidence_001.png"]
     assert report["issues"][0]["metric"]["backend"] == "pythonocc_demo"
     assert report["issues"][0]["metric"]["certified"] is False
+    assert report["issues"][0]["severity"] == "warning"
+    assert report["issues"][0]["severity_rationale"] == "Draft angle affects release."
+    assert report["issues"][0]["metric"]["criterion_results"][0]["criterion_id"] == "draft_min"
+    assert report["stats"]["indeterminate_count"] == 1
+    assert report["indeterminate_checks"][0]["check_id"] == "check.boss_wall"

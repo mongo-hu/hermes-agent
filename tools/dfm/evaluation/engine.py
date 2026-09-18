@@ -19,6 +19,7 @@ from ..contracts import (
     PlanRecord,
     RuleBinding,
     RuleOperand,
+    _expression_operand_aliases,
 )
 from ..errors import DFMError
 
@@ -33,6 +34,10 @@ _OPERATORS = {
     "!=": operator.ne,
 }
 _DIMENSIONLESS_UNITS = {None, "", "1", "ratio"}
+_CRITERION_OPERATORS = {
+    "GT": ">", "GTE": ">=", "LT": "<", "LTE": "<=",
+    "EQ": "==", "NE": "!=", "BETWEEN": "between",
+}
 
 
 @dataclass(frozen=True)
@@ -57,7 +62,7 @@ def _utc_now() -> str:
 class EvaluationEngine:
     """The sole production owner of Measurement → Evaluation comparison."""
 
-    version = "hermes-evaluation-v2"
+    version = "hermes-evaluation-v3"
 
     def materialize(
         self,
@@ -126,7 +131,7 @@ class EvaluationEngine:
         results: list[EvaluationRecord] = []
         provenance: dict[str, dict[str, Any]] = {}
         if plan.rule_bindings:
-            for binding in plan.rule_bindings:
+            for binding in self._select_measured_rules(measurements, plan):
                 evaluation, source = self._evaluate_binding(measurements, plan, binding)
                 results.append(evaluation)
                 provenance[evaluation.evaluation_id] = source
@@ -142,6 +147,55 @@ class EvaluationEngine:
             results.append(evaluation)
             provenance[evaluation.evaluation_id] = source
         return results, provenance
+
+    def _select_measured_rules(self, measurements, plan):
+        """Choose one candidate per Check instance after objective measurement.
+
+        Missing/invalid measurements are errors, never a reason to fall back to
+        a less-specific threshold. Selection reads only the pinned Plan.
+        """
+        direct = []
+        groups = {}
+        for binding in plan.rule_bindings:
+            binding.validate()
+            if binding.rule_selection is None:
+                direct.append(binding)
+                continue
+            key = (binding.check_id, tuple(sorted(binding.feature_refs)), tuple(sorted(binding.region_refs)))
+            groups.setdefault(key, []).append(binding)
+        comparisons = {"GT": operator.gt, "GTE": operator.ge, "LT": operator.lt, "LTE": operator.le}
+        for candidates in groups.values():
+            matched = []
+            for binding in candidates:
+                conditions = binding.rule_selection["conditions"]
+                operands = {item.alias: item for item in binding.measurement_operands()}
+                applicable = True
+                for condition in conditions:
+                    alias = condition["geometric_id"]
+                    resolved = self._resolve_operand(measurements, plan, binding, operands[alias])
+                    if resolved.unit != condition["unit"]:
+                        raise DFMError("evaluation_unit_invalid", "A Geometric condition must use the measured canonical unit.", {"binding_id": binding.binding_id, "operand_alias": alias})
+                    value = self._finite_number(resolved.value, binding_id=binding.binding_id, operand_alias=alias)
+                    applicable = comparisons[condition["operator"]](value, condition["value"]) and applicable
+                if applicable:
+                    matched.append(binding)
+            preferred = [item for item in matched if not item.rule_selection["is_default"]] or matched
+            if not preferred:
+                continue
+            preferred.sort(key=lambda item: (-item.rule_selection["priority"], -item.rule_selection["specificity"], item.rule_id))
+            winner = preferred[0]
+            rank = lambda item: (item.rule_selection["priority"], item.rule_selection["specificity"])
+            signature = lambda item: (
+                plan.rules[item.rule_id].value,
+                plan.rules[item.rule_id].unit,
+                item.operator,
+                item.expression,
+                item.acceptance_criteria_json,
+            )
+            if any(rank(item) == rank(winner) and signature(item) != signature(winner) for item in preferred[1:]):
+                raise DFMError("ontology_rule_conflict", "Measured conditions select conflicting equally specific rules.", {"check_id": winner.check_id, "rule_ids": [item.rule_id for item in preferred if rank(item) == rank(winner)]})
+            direct.append(winner)
+        return direct
 
     def _evaluate_binding(
         self,
@@ -163,18 +217,34 @@ class EvaluationEngine:
                 "No effective threshold exists for a bound engineering rule.",
                 {"binding_id": binding.binding_id, "rule_id": binding.rule_id},
             )
+        if binding.acceptance_criteria_json:
+            first = binding.acceptance_criteria_json[0]
+            if parameter.value != first["threshold"] or parameter.unit != first["result_unit"]:
+                raise DFMError(
+                    "evaluation_rule_invalid",
+                    "The pinned primary rule parameter does not match its first acceptance criterion.",
+                    {"binding_id": binding.binding_id, "rule_id": binding.rule_id},
+                )
 
-        resolved = {
-            operand.alias: self._resolve_operand(measurements, plan, binding, operand)
-            for operand in binding.measurement_operands()
-        }
+        resolved = {}
+        unavailable = {}
+        for operand in binding.measurement_operands():
+            try:
+                resolved[operand.alias] = self._resolve_operand(measurements, plan, binding, operand)
+            except DFMError as exc:
+                if not binding.acceptance_criteria_json or exc.code not in {
+                    "evaluation_operand_missing", "evaluation_operand_ambiguous",
+                    "evaluation_value_invalid", "evaluation_unit_invalid",
+                }:
+                    raise
+                unavailable[operand.alias] = exc.code
         linked = [
             measurement
             for operand in resolved.values()
             for measurement in operand.measurements
         ]
         input_hashes = {item.input_sha256 for item in linked}
-        if len(input_hashes) != 1:
+        if len(input_hashes) > 1 or (not binding.acceptance_criteria_json and len(input_hashes) != 1):
             raise DFMError(
                 "evaluation_operand_invalid",
                 "A rule expression cannot combine Measurements from different inputs.",
@@ -184,17 +254,68 @@ class EvaluationEngine:
                 },
             )
 
+        criterion_results = []
         expression = binding.expression or {"operand": binding.operand_alias}
-        actual = self._evaluate_expression(expression, resolved, binding.binding_id)
-        self._validate_result_unit(
-            actual.unit, parameter.unit, binding_id=binding.binding_id
-        )
-        passed = self._compare(
-            binding.operator,
-            actual.value,
-            parameter.value,
-            binding_id=binding.binding_id,
-        )
+        if binding.acceptance_criteria_json:
+            for criterion in binding.acceptance_criteria_json:
+                aliases = _expression_operand_aliases(criterion["expression"], binding_id=binding.binding_id)
+                missing = sorted(aliases.intersection(unavailable))
+                criterion_measurements = [
+                    measurement
+                    for alias in sorted(aliases.intersection(resolved))
+                    for measurement in resolved[alias].measurements
+                ]
+                result = {
+                    "criterion_id": criterion["criterion_id"],
+                    "expression": criterion["expression"],
+                    "operator": _CRITERION_OPERATORS[criterion["comparator"]],
+                    "expected": criterion["threshold"],
+                    "unit": criterion["result_unit"],
+                    "actual": None,
+                    "outcome": "indeterminate" if missing else "pass",
+                    "measurement_ids": list(dict.fromkeys(
+                        measurement.measurement_id for measurement in criterion_measurements
+                    )),
+                    "feature_refs": sorted({
+                        ref for measurement in criterion_measurements
+                        for ref in measurement.feature_refs
+                    }),
+                    "region_refs": sorted({
+                        ref for measurement in criterion_measurements
+                        for ref in measurement.region_refs
+                    }),
+                }
+                if missing:
+                    result["unavailable_operands"] = missing
+                else:
+                    try:
+                        value = self._evaluate_expression(criterion["expression"], resolved, binding.binding_id)
+                        self._validate_result_unit(value.unit, criterion["result_unit"], binding_id=binding.binding_id)
+                        number = self._finite_number(value.value, binding_id=binding.binding_id, operand_alias=criterion["criterion_id"])
+                        result["actual"] = value.value
+                        result["outcome"] = "pass" if self._compare(result["operator"], number, criterion["threshold"], binding_id=binding.binding_id) else "fail"
+                    except DFMError as exc:
+                        if exc.code not in {"evaluation_expression_invalid", "evaluation_value_invalid", "evaluation_unit_invalid"}:
+                            raise
+                        result["outcome"] = "indeterminate"
+                        result["error_code"] = exc.code
+                criterion_results.append(result)
+            representative = next((item for item in criterion_results if item["outcome"] == "fail"), None)
+            if representative is None:
+                representative = next((item for item in criterion_results if item["outcome"] == "indeterminate"), criterion_results[0])
+            outcome = ("fail" if any(item["outcome"] == "fail" for item in criterion_results)
+                else "indeterminate" if any(item["outcome"] == "indeterminate" for item in criterion_results)
+                else "pass")
+            expression = representative["expression"]
+            actual = _ExpressionValue(representative["actual"], representative["unit"])
+            expected = representative["expected"]
+            operator_name = representative["operator"]
+        else:
+            actual = self._evaluate_expression(expression, resolved, binding.binding_id)
+            self._validate_result_unit(actual.unit, parameter.unit, binding_id=binding.binding_id)
+            outcome = "pass" if self._compare(binding.operator, actual.value, parameter.value, binding_id=binding.binding_id) else "fail"
+            expected = parameter.value
+            operator_name = binding.operator
         measurement_ids = list(dict.fromkeys(item.measurement_id for item in linked))
         rule_version = parameter.version
         rule_hash = self._rule_hash(
@@ -203,7 +324,7 @@ class EvaluationEngine:
             expected=parameter.value,
             expected_unit=parameter.unit,
         )
-        if binding.expression is None and not binding.additional_operands:
+        if binding.expression is None and not binding.additional_operands and linked:
             primary = linked[0]
             stable_id = str(
                 primary.diagnostics.get("legacy_issue_id") or primary.measurement_id
@@ -239,10 +360,13 @@ class EvaluationEngine:
             rule_id=binding.rule_id,
             rule_version=rule_version,
             rule_hash=rule_hash,
-            operator=binding.operator,
-            expected=parameter.value,
+            operator=operator_name,
+            expected=expected,
             actual=actual.value,
-            outcome="pass" if passed else "fail",
+            outcome=outcome,
+            severity=parameter.severity,
+            severity_rationale=parameter.severity_rationale,
+            criterion_results=criterion_results,
             feature_refs=sorted(
                 set(binding.feature_refs)
                 | {
@@ -263,7 +387,7 @@ class EvaluationEngine:
             ),
             check_id=binding.check_id,
             actual_unit=actual.unit,
-            expression=binding.expression,
+            expression=expression,
             operand_values=operand_values,
         )
         source = {
@@ -275,6 +399,9 @@ class EvaluationEngine:
             "unit": parameter.unit,
             "expression": expression,
             "operands": operand_values,
+            "rule_selection": binding.rule_selection,
+            "criterion_results": criterion_results,
+            "severity_rationale": parameter.severity_rationale,
         }
         return evaluation, source
 
@@ -523,7 +650,8 @@ class EvaluationEngine:
         *,
         binding_id: str,
     ) -> None:
-        if expected_unit is not None and actual_unit != expected_unit:
+        if (expected_unit is not None and actual_unit != expected_unit
+                and not ({actual_unit, expected_unit} <= _DIMENSIONLESS_UNITS)):
             raise DFMError(
                 "evaluation_unit_invalid",
                 "The rule threshold unit does not match the expression result unit.",

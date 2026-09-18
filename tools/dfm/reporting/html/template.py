@@ -369,6 +369,11 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
             geometry_raw = json.load(f)
             geometry_data = geometry_raw.get("failed_patches", []) if isinstance(geometry_raw, dict) else geometry_raw
 
+    patches_by_issue = {}
+    for patch in geometry_data if isinstance(geometry_data, list) else []:
+        if isinstance(patch, dict) and patch.get("evaluation_id"):
+            patches_by_issue.setdefault(str(patch["evaluation_id"]), []).append(patch)
+
     # Build raw trace map
     raw_trace_map = {}
     for issue in issues:
@@ -376,7 +381,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         if eval_id:
             raw_trace_map[eval_id] = {
                 "rule_evaluation": issue,
-                "geometry_patches": [p for p in geometry_data if p.get("evaluation_id") == eval_id]
+                "geometry_patches": patches_by_issue.get(str(eval_id), [])
             }
 
     scene_path = resources["scene_path"]
@@ -430,7 +435,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
 
     # Compact UI index used by issue navigation and the readable trace drawer.
     issue_ui_data = {}
-    for issue in issues_with_evidence:
+    for issue in issues:
         issue_id = str(issue.get("id") or "DFM")
         code = str(issue.get("code") or "")
         metric = issue.get("metric") if isinstance(issue.get("metric"), dict) else {}
@@ -443,11 +448,27 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         if issue.get("image") and issue.get("image") not in image_names:
             image_names.append(issue.get("image"))
         issue_insight = insights.get("issues", {}).get(issue_id, {})
+        triangle_refs = []
+        seen_triangles = set()
+        for patch in patches_by_issue.get(issue_id, []):
+            for ref in patch.get("triangle_refs", []):
+                if not isinstance(ref, dict):
+                    continue
+                primitive_id, triangle_id = ref.get("primitive_id"), ref.get("triangle_id")
+                if not isinstance(primitive_id, str) or not isinstance(triangle_id, int) or triangle_id < 0:
+                    continue
+                key = (primitive_id, triangle_id, ref.get("render_mesh_snapshot_id"))
+                if key in seen_triangles:
+                    continue
+                seen_triangles.add(key)
+                triangle_refs.append(ref)
         issue_ui_data[issue_id] = {
             "id": issue_id,
             "title": issue_insight.get("human_title") or issue.get("title") or code or "DFM 问题",
             "code": code,
-            "mode": "thickness" if "thickness" in code.lower() else "draft",
+            "mode": ("thickness" if "thickness" in code.lower() else
+                     "draft" if "draft" in code.lower() else "issues"),
+            "triangle_refs": triangle_refs,
             "severity": str(issue.get("severity") or "unclassified").lower(),
             "actual": compact_number(metric.get("actual", "N/A")),
             "expected": compact_number(metric.get("expected", "N/A")),
@@ -669,7 +690,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         }}
         .summary-stat-strip {{
             position: absolute; left: 15px; right: 15px; bottom: 15px; z-index: 12;
-            display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+            display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px;
             padding: 8px; border-radius: 12px;
             background: rgba(9,15,23,.72); border: 1px solid rgba(255,255,255,.12);
             backdrop-filter: blur(14px); box-shadow: 0 12px 26px rgba(0,0,0,.22);
@@ -1035,20 +1056,29 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
 
     # Model-centric summary: live 3D is the primary visual, facts sit around it.
     from collections import Counter
-    severities = [str(i.get("severity", "info")).lower() for i in issues]
+    severities = [str(i.get("severity") or "unclassified").strip().lower() for i in issues]
     counts = Counter(severities)
-    risk_cards = [("问题总数", len(issues), "14213D", "F2F4F7"), ("高风险", counts["critical"] + counts["high"], "D92D20", "FEF3F2"), ("中风险", counts["medium"], "DC6803", "FFF8EB"), ("低风险", counts["low"], "1570A6", "EFF8FF")]
+    # Catalog `warning`/`info` values are not defined as high/medium/low risk.
+    # Show them explicitly rather than silently promoting or hiding them.
+    classified = counts["critical"] + counts["high"] + counts["medium"] + counts["low"]
+    risk_cards = [
+        ("问题总数", len(issues), "14213D", "F2F4F7"),
+        ("高风险", counts["critical"] + counts["high"], "D92D20", "FEF3F2"),
+        ("中风险", counts["medium"], "DC6803", "FFF8EB"),
+        ("低风险", counts["low"], "1570A6", "EFF8FF"),
+        ("需关注/未分级", len(issues) - classified, "667085", "F2F4F7"),
+    ]
 
     html += f'<div class="webgl-wrapper" style="left:{inch2px(0.65)}px; top:{inch2px(1.48)}px; width:{inch2px(8.35)}px; height:{inch2px(5.38)}px;">'
-    html += f'<div class="glass-panel"><button class="glass-btn active" onclick="activateSummary3D(\'thickness\')">壁厚场</button><button class="glass-btn" onclick="activateSummary3D(\'draft\')">拔模场</button></div>'
-    html += '<div id="activeModeLabel" class="cover-model-label">WALL THICKNESS · DEFECT ISOLATION</div>'
+    html += f'<div class="glass-panel"><button class="glass-btn active" onclick="activateSummary3D(\'issues\')">问题定位</button><button class="glass-btn" onclick="activateSummary3D(\'thickness\')">壁厚场</button><button class="glass-btn" onclick="activateSummary3D(\'draft\')">拔模场</button></div>'
+    html += '<div id="activeModeLabel" class="cover-model-label">FAILED CHECKS · GEOMETRY EVIDENCE</div>'
     html += '<div id="modelIssueCallout" class="model-issue-callout"><div class="callout-title"></div><div class="callout-metric"></div></div>'
-    html += f'<div class="legend"><div class="legend-item"><div class="legend-color" style="background:#F21F12"></div><span class="legend-text">超限缺陷实体</span></div><div class="legend-item"><div class="legend-color" style="background:#9AA6B2"></div><span class="legend-text">半透明结构外壳</span></div></div>'
+    html += f'<div class="legend"><div class="legend-item"><div class="legend-color" style="background:#F21F12"></div><span class="legend-text">未通过判定区域</span></div><div class="legend-item"><div class="legend-color" style="background:#9AA6B2"></div><span class="legend-text">半透明结构外壳</span></div></div>'
     html += '<div class="summary-stat-strip">'
     for label, value, color, fill in risk_cards:
         html += f'<div class="summary-stat-item"><div style="width:4px; align-self:stretch; border-radius:4px; background:#{color};"></div><div class="stat-value" data-target="{value}">{value}</div><div class="stat-label">{label}</div></div>'
     html += '</div>'
-    html += f'<div class="webgl-container" data-mode="thickness"></div></div>\n'
+    html += f'<div class="webgl-container" data-mode="issues"></div></div>\n'
 
     # Right: compact information rail.
     html += f'<div class="element summary-side-panel" style="left:{inch2px(9.2)}px; top:{inch2px(1.48)}px; width:{inch2px(3.45)}px; height:{inch2px(5.38)}px;"></div>\n'
@@ -1136,7 +1166,15 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         "info": ("344054", "F2F4F7", "D0D5DD"),
     }
 
-    severity_labels = {"critical": "严重", "high": "高风险", "medium": "中风险", "low": "低风险", "info": "需关注", "unclassified": "需关注"}
+    severity_labels = {
+        "critical": "严重",
+        "high": "高风险",
+        "medium": "中风险",
+        "low": "低风险",
+        "warning": "需关注",
+        "info": "需关注",
+        "unclassified": "未分级",
+    }
     evidence_issue_ids = [str(item.get("id") or "DFM") for item in issues_with_evidence]
     for issue_index, issue in enumerate(issues_with_evidence):
         severity = str(issue.get("severity") or "info").lower()
@@ -1547,22 +1585,42 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
             }}
         }}
 
-        const thicknessMap = {{}};
-        const draftMap = {{}};
+        function fieldValuesByTriangle(field) {{
+            const values = {{}};
+            const sampleValues = new Map((field.samples || []).map(sample => [sample.sample_id, sample.value]));
+            for (const cell of field.cells || []) {{
+                const ref = cell.triangle_ref;
+                if (!ref || !ref.primitive_id || !Number.isInteger(ref.triangle_id)) continue;
+                const snapshotId = sceneData.render_mesh_snapshot?.render_mesh_snapshot_id;
+                if (snapshotId && ref.render_mesh_snapshot_id && ref.render_mesh_snapshot_id !== snapshotId) continue;
+                const observed = (cell.sample_ids || []).map(id => sampleValues.get(id)).filter(Number.isFinite);
+                if (!observed.length) continue;
+                const key = `${{ref.primitive_id}}-t${{ref.triangle_id}}`;
+                const cellMinimum = observed.reduce((minimum, value) => Math.min(minimum, value), Infinity);
+                values[key] = values[key] === undefined ? cellMinimum : Math.min(values[key], cellMinimum);
+            }}
+            return values;
+        }}
+
+        const thicknessMap = fieldValuesByTriangle(thicknessData);
+        const draftMap = fieldValuesByTriangle(draftData);
 
         let heatmapMesh = null; // Store reference to the summary mesh for switching
 
-        if (thicknessData.samples) {{
-            for (let s of thicknessData.samples) {{
-                const match = s.sample_id.match(/face-(\\d+)-t(\\d+)/);
-                if (match) thicknessMap[`face-${{match[1]}}-t${{match[2]}}`] = s.value;
+        function failedTriangleKeys(mode, selectedIssueId = window.dfmSelectedIssueId) {{
+            const keys = new Set();
+            for (const issue of Object.values(ISSUE_UI_MAP)) {{
+                if (selectedIssueId && issue.id !== selectedIssueId) continue;
+                if (!selectedIssueId && mode !== 'issues' && issue.mode !== mode) continue;
+                for (const ref of issue.triangle_refs || []) {{
+                    const snapshotId = sceneData.render_mesh_snapshot?.render_mesh_snapshot_id;
+                    if (snapshotId && ref.render_mesh_snapshot_id && ref.render_mesh_snapshot_id !== snapshotId) continue;
+                    if (ref.primitive_id && Number.isInteger(ref.triangle_id) && ref.triangle_id >= 0) {{
+                        keys.add(`${{ref.primitive_id}}-t${{ref.triangle_id}}`);
+                    }}
+                }}
             }}
-        }}
-        if (draftData.samples) {{
-            for (let s of draftData.samples) {{
-                const match = s.sample_id.match(/face-(\\d+)-v(\\d+)/);
-                if (match) draftMap[`face-${{match[1]}}-v${{match[2]}}`] = s.value;
-            }}
+            return keys;
         }}
 
         // Industrial neutral palette: the part stays quiet while risk carries color.
@@ -1604,7 +1662,13 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
 
         function applyColorsToGeometry(geometry, mode, animated = true) {{
             const colors = [];
-            const threshold = mode === 'thickness' ? 1.2 : 1.0;
+            const fieldValues = mode === 'thickness' ? thicknessMap : mode === 'draft' ? draftMap : {{}};
+            let minimum = Infinity;
+            let maximum = -Infinity;
+            for (const value of Object.values(fieldValues)) {{
+                minimum = Math.min(minimum, value);
+                maximum = Math.max(maximum, value);
+            }}
 
             for (let p of sceneData.primitives) {{
                 let pId = p.primitive_id;
@@ -1612,21 +1676,10 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
                 if (!tris) continue;
 
                 for (let t = 0; t < tris.length; t++) {{
-                    let triVal = mode === 'thickness' ? thicknessMap[`${{pId}}-t${{t}}`] : undefined;
-
+                    const val = fieldValues[`${{pId}}-t${{t}}`];
+                    const ratio = maximum > minimum ? (val - minimum) / (maximum - minimum) : 0.5;
+                    const color = val === undefined ? DEFAULT_COLOR : mixColor(WARNING_COLOR, SAFE_COLOR, ratio);
                     for (let vIdx of tris[t]) {{
-                        let val = mode === 'thickness' ? triVal : (mode === 'draft' ? draftMap[`${{pId}}-v${{vIdx}}`] : undefined);
-                        let color = DEFAULT_COLOR;
-
-                        if (mode && val !== undefined) {{
-                            if (val < threshold) {{
-                                const severity = Math.min(1, Math.max(0, 1 - val / Math.max(threshold, 0.0001)));
-                                color = mixColor(WARNING_COLOR, DEFECT_COLOR, Math.min(1, severity * 1.45));
-                            }} else {{
-                                const safeAmount = Math.min(1, (val - threshold) / Math.max(threshold * 2, 1));
-                                color = mixColor(DEFAULT_COLOR, SAFE_COLOR, 0.38 + safeAmount * 0.32);
-                            }}
-                        }}
                         colors.push(color[0], color[1], color[2]);
                     }}
                 }}
@@ -1643,7 +1696,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         let modelCenter = new THREE.Vector3();
         let defectOverlay = null;
         let activeDefectCenter = new THREE.Vector3();
-        let currentDefectMode = 'thickness';
+        let currentDefectMode = 'issues';
         let userActivatedSummary = false;
         let summaryActivatedAt = 0;
 
@@ -1672,28 +1725,30 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
                 return;
             }}
 
-            const threshold = mode === 'thickness' ? 1.2 : 1.0;
+            const failed = failedTriangleKeys(mode);
             const defectPositions = [];
             for (const primitive of sceneData.primitives) {{
                 if (!primitive.vertices || !primitive.triangles) continue;
                 const primitiveId = primitive.primitive_id;
                 primitive.triangles.forEach((triangle, triangleIndex) => {{
-                    let failed = false;
-                    if (mode === 'thickness') {{
-                        const value = thicknessMap[`${{primitiveId}}-t${{triangleIndex}}`];
-                        failed = value !== undefined && value < threshold;
-                    }} else {{
-                        failed = triangle.some((vertexIndex) => {{
-                            const value = draftMap[`${{primitiveId}}-v${{vertexIndex}}`];
-                            return value !== undefined && value < threshold;
-                        }});
-                    }}
-                    if (!failed) return;
+                    if (!failed.has(`${{primitiveId}}-t${{triangleIndex}}`)) return;
                     triangle.forEach((vertexIndex) => {{
                         const vertex = primitive.vertices[vertexIndex];
+                        if (!vertex) return;
                         defectPositions.push(vertex[0] - modelCenter.x, vertex[1] - modelCenter.y, vertex[2] - modelCenter.z);
                     }});
                 }});
+            }}
+
+            if (!defectPositions.length) {{
+                activeDefectCenter.set(0, 0, 0);
+                baseMesh.material.transparent = false;
+                baseMesh.material.opacity = 1;
+                baseMesh.material.depthWrite = true;
+                baseMesh.material.needsUpdate = true;
+                silhouette.material.opacity = 0.075;
+                edgeLines.material.opacity = 0.24;
+                return;
             }}
 
             baseMesh.material.transparent = true;
@@ -1704,7 +1759,6 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
             silhouette.material.opacity = 0.16;
             edgeLines.material.opacity = 0.38;
 
-            if (!defectPositions.length) return;
             const defectGeometry = new THREE.BufferGeometry();
             defectGeometry.setAttribute('position', new THREE.Float32BufferAttribute(defectPositions, 3));
             defectGeometry.computeVertexNormals();
@@ -1719,7 +1773,6 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
             }});
             defectOverlay = new THREE.Mesh(defectGeometry, defectMaterial);
             defectOverlay.renderOrder = 8;
-            defectOverlay.scale.setScalar(1.002);
             globalMeshGroup.add(defectOverlay);
         }}
 
@@ -1883,7 +1936,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
             globalCamera.aspect = reference.clientWidth / reference.clientHeight;
             globalCamera.updateProjectionMatrix();
             containers.forEach((container) => {{
-                const posterMode = container.dataset.mode === 'thickness' ? 'thickness' : null;
+                const posterMode = ['issues', 'thickness', 'draft'].includes(container.dataset.mode) ? container.dataset.mode : null;
                 applyColorsToGeometry(globalMeshGroup.children[0].geometry, posterMode, false);
                 globalRenderer.render(globalScene, globalCamera);
                 try {{ container.style.backgroundImage = `url(${{globalRenderer.domElement.toDataURL('image/png')}})`; }} catch (error) {{}}
@@ -1913,7 +1966,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
                 globalControls.autoRotateSpeed = 0.26;
                 globalControls.enableZoom = true;
                 globalControls.enablePan = true;
-            }} else if (mode === 'thickness' || mode === 'draft') {{
+            }} else if (mode === 'issues' || mode === 'thickness' || mode === 'draft') {{
                 applyColorsToGeometry(globalMeshGroup.children[0].geometry, currentDefectMode || mode);
                 globalControls.autoRotate = true;
                 globalControls.autoRotateSpeed = 0.42;
@@ -1953,11 +2006,14 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
             }}
             document.querySelectorAll('.glass-btn').forEach(btn => btn.classList.remove('active'));
             const modeLabel = document.getElementById('activeModeLabel');
-            if (mode === 'thickness') {{
-                document.querySelectorAll('.glass-btn')[0].classList.add('active');
+            if (mode === 'issues') {{
+                document.querySelectorAll('.glass-btn')[0]?.classList.add('active');
+                if (modeLabel) modeLabel.textContent = 'FAILED CHECKS · GEOMETRY EVIDENCE';
+            }} else if (mode === 'thickness') {{
+                document.querySelectorAll('.glass-btn')[1]?.classList.add('active');
                 if (modeLabel) modeLabel.textContent = 'WALL THICKNESS · DEFECT ISOLATION';
             }} else {{
-                document.querySelectorAll('.glass-btn')[1].classList.add('active');
+                document.querySelectorAll('.glass-btn')[2]?.classList.add('active');
                 if (modeLabel) modeLabel.textContent = 'DRAFT ANGLE · DEFECT ISOLATION';
             }}
             if (!globalMeshGroup) return;
@@ -1969,7 +2025,11 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
             tweenCameraForMode(mode);
         }};
 
-        window.activateSummary3D = function(mode) {{
+        window.activateSummary3D = function(mode, preserveSelection = false) {{
+            if (!preserveSelection) {{
+                window.dfmSelectedIssueId = null;
+                if (typeof window.clearIssueSelection === 'function') window.clearIssueSelection();
+            }}
             userActivatedSummary = true;
             summaryActivatedAt = performance.now();
             const summary = document.getElementById('analysis-summary');
@@ -1993,7 +2053,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
             const GHOST_SAFE = [0.15, 0.15, 0.15];
             const GHOST_DEFECT = [1.0, 0.1, 0.1];
             const colors = [];
-            const threshold = mode === 'thickness' ? 1.2 : 1.0;
+            const failed = failedTriangleKeys(mode, null);
 
             for (let p of sceneData.primitives) {{
                 let pId = p.primitive_id;
@@ -2001,13 +2061,8 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
                 if (!tris) continue;
 
                 for (let t = 0; t < tris.length; t++) {{
-                    let triVal = mode === 'thickness' ? thicknessMap[`${{pId}}-t${{t}}`] : undefined;
+                    const color = failed.has(`${{pId}}-t${{t}}`) ? GHOST_DEFECT : GHOST_SAFE;
                     for (let vIdx of tris[t]) {{
-                        let val = mode === 'thickness' ? triVal : (mode === 'draft' ? draftMap[`${{pId}}-v${{vIdx}}`] : undefined);
-                        let color = GHOST_SAFE;
-                        if (val !== undefined && val < threshold) {{
-                            color = GHOST_DEFECT;
-                        }}
                         colors.push(color[0], color[1], color[2]);
                     }}
                 }}
@@ -2057,7 +2112,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
                 hostSyncFrame = null;
                 const containers = Array.from(document.querySelectorAll('.webgl-container'));
                 const coverContainer = containers[0];
-                const summaryContainer = containers.find((container) => container.dataset.mode === 'thickness');
+                const summaryContainer = containers.find((container) => container.dataset.mode === 'issues');
                 const coverSlideHeight = coverContainer?.closest('.slide')?.getBoundingClientRect().height || 0;
                 const coverPriorityRange = Math.min(120, coverSlideHeight * 0.35);
                 let target = null;
@@ -2128,15 +2183,25 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         let activeIssueId = null;
         let traceReturnFocus = null;
 
+        window.clearIssueSelection = function() {{
+            activeIssueId = null;
+            document.querySelectorAll('[data-issue-nav]').forEach(card => {{
+                card.classList.remove('active');
+                card.querySelector('.issue-nav-select')?.setAttribute('aria-pressed', 'false');
+            }});
+            document.getElementById('modelIssueCallout')?.classList.remove('visible');
+        }};
+
         function selectIssueFromSummary(issueId, bringIntoView = false) {{
             const item = ISSUE_UI_MAP[issueId];
             if (!item) return;
             activeIssueId = issueId;
+            window.dfmSelectedIssueId = issueId;
             document.querySelectorAll('[data-issue-nav]').forEach((card) => {{
                 card.classList.toggle('active', card.dataset.issueNav === issueId);
                 card.querySelector('.issue-nav-select')?.setAttribute('aria-pressed', card.dataset.issueNav === issueId ? 'true' : 'false');
             }});
-            if (bringIntoView && typeof window.activateSummary3D === 'function') window.activateSummary3D(item.mode);
+            if (bringIntoView && typeof window.activateSummary3D === 'function') window.activateSummary3D(item.mode, true);
             else if (typeof window.switchDefectMode === 'function') window.switchDefectMode(item.mode, false);
             const callout = document.getElementById('modelIssueCallout');
             if (callout) {{

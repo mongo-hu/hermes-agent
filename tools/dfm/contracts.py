@@ -427,6 +427,8 @@ class EffectiveRule:
     unit: str | None
     source: str
     version: str = "1"
+    severity: str = "unclassified"
+    severity_rationale: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -521,6 +523,41 @@ def _expression_operand_aliases(
     return aliases
 
 
+def _validate_acceptance_criteria(criteria: Any, *, binding_id: str) -> set[str]:
+    """Validate the bounded Schema 3 conjunction and return its operand aliases."""
+    if not isinstance(criteria, list) or not criteria:
+        raise DFMError("plan_rule_binding_invalid", "Acceptance criteria must be a nonempty array.", {"binding_id": binding_id})
+    identifiers: set[str] = set()
+    aliases: set[str] = set()
+    for item in criteria:
+        if not isinstance(item, dict) or set(item) != {"criterion_id", "expression", "comparator", "threshold", "result_unit"}:
+            raise DFMError("plan_rule_binding_invalid", "An acceptance criterion has invalid fields.", {"binding_id": binding_id})
+        criterion_id = item["criterion_id"]
+        if not isinstance(criterion_id, str) or not criterion_id.strip() or criterion_id in identifiers:
+            raise DFMError("plan_rule_binding_invalid", "Acceptance criterion IDs must be unique and nonempty.", {"binding_id": binding_id})
+        identifiers.add(criterion_id)
+        item_aliases = _expression_operand_aliases(item["expression"], binding_id=binding_id)
+        if not item_aliases:
+            raise DFMError("plan_rule_binding_invalid", "Each acceptance criterion must reference an Operand.", {"binding_id": binding_id, "criterion_id": criterion_id})
+        aliases.update(item_aliases)
+        comparator = item["comparator"]
+        threshold = item["threshold"]
+        if not isinstance(comparator, str) or comparator not in {"GT", "GTE", "LT", "LTE", "EQ", "NE", "BETWEEN"}:
+            raise DFMError("plan_rule_binding_invalid", "An acceptance comparator is unsupported.", {"binding_id": binding_id, "criterion_id": criterion_id})
+        finite = lambda value: type(value) in {int, float} and math.isfinite(value)
+        if comparator == "BETWEEN":
+            valid_threshold = (isinstance(threshold, dict) and set(threshold) == {"lower", "upper"}
+                and finite(threshold["lower"]) and finite(threshold["upper"])
+                and threshold["lower"] <= threshold["upper"])
+        else:
+            valid_threshold = finite(threshold)
+        if not valid_threshold or not isinstance(item["result_unit"], str):
+            raise DFMError("plan_rule_binding_invalid", "An acceptance threshold or unit is invalid.", {"binding_id": binding_id, "criterion_id": criterion_id})
+    if not aliases:
+        raise DFMError("plan_rule_binding_invalid", "Acceptance criteria must reference at least one Operand.", {"binding_id": binding_id})
+    return aliases
+
+
 @dataclass(frozen=True)
 class RuleOperand:
     """Resolve and aggregate one named Measurement input to a rule expression."""
@@ -588,15 +625,20 @@ class RuleBinding:
     operand_alias: str = "actual"
     additional_operands: list[RuleOperand] = field(default_factory=list)
     expression: dict[str, Any] | None = None
+    rule_selection: dict[str, Any] | None = None
+    acceptance_criteria_json: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
-        return {
+        values = {
             **asdict(self),
             "additional_operands": [
                 operand.to_dict() for operand in self.additional_operands
             ],
         }
+        if self.rule_selection is None:
+            values.pop("rule_selection")
+        return values
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "RuleBinding":
@@ -685,17 +727,51 @@ class RuleBinding:
                 "Rule operand aliases must be unique within one binding.",
                 {"binding_id": self.binding_id},
             )
+        condition_aliases: set[str] = set()
+        if self.rule_selection is not None:
+            selection = self.rule_selection
+            valid = (
+                isinstance(selection, dict)
+                and set(selection) == {"conditions", "priority", "specificity", "is_default"}
+                and isinstance(selection.get("conditions"), list)
+                and type(selection.get("priority")) is int
+                and type(selection.get("specificity")) is int
+                and selection["specificity"] >= len(selection["conditions"])
+                and isinstance(selection.get("is_default"), bool)
+                and bool(self.check_id)
+            )
+            if not valid:
+                raise DFMError("plan_rule_binding_invalid", "Deferred rule selection metadata is invalid.")
+            for condition in selection["conditions"]:
+                if (
+                    not isinstance(condition, dict)
+                    or set(condition) != {"geometric_id", "operator", "value", "unit"}
+                    or not isinstance(condition.get("geometric_id"), str)
+                    or condition["geometric_id"] not in aliases
+                    or condition.get("operator") not in ("GT", "GTE", "LT", "LTE")
+                    or not isinstance(condition.get("unit"), str)
+                    or not isinstance(condition.get("value"), (int, float))
+                    or isinstance(condition["value"], bool)
+                    or not math.isfinite(condition["value"])
+                ):
+                    raise DFMError("plan_rule_binding_invalid", "Deferred geometric condition is invalid.")
+                condition_aliases.add(condition["geometric_id"])
         if self.additional_operands and (not self.check_id or self.expression is None):
             raise DFMError(
                 "plan_rule_binding_invalid",
                 "Multi-Measurement bindings require check_id and an explicit expression.",
                 {"binding_id": self.binding_id},
             )
+        if self.acceptance_criteria_json:
+            first = self.acceptance_criteria_json[0]
+            comparators = {"GT": ">", "GTE": ">=", "LT": "<", "LTE": "<=", "EQ": "==", "NE": "!=", "BETWEEN": "between"}
+            if (not isinstance(first, dict) or not self.check_id or self.expression != first.get("expression")
+                    or self.operator != comparators.get(first.get("comparator"))):
+                raise DFMError("plan_rule_binding_invalid", "The primary binding must match the first acceptance criterion.", {"binding_id": self.binding_id})
         if self.expression is not None:
-            referenced = _expression_operand_aliases(
-                self.expression, binding_id=self.binding_id
-            )
-            if referenced != set(aliases):
+            referenced = (_validate_acceptance_criteria(self.acceptance_criteria_json, binding_id=self.binding_id)
+                if self.acceptance_criteria_json else _expression_operand_aliases(self.expression, binding_id=self.binding_id))
+            if referenced | condition_aliases != set(aliases):
                 raise DFMError(
                     "plan_rule_binding_invalid",
                     "Rule expressions must reference every declared operand exactly by alias.",
@@ -1017,6 +1093,9 @@ class EvaluationRecord:
     actual_unit: str | None = None
     expression: dict[str, Any] | None = None
     operand_values: dict[str, Any] = field(default_factory=dict)
+    severity: str = "unclassified"
+    severity_rationale: str | None = None
+    criterion_results: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -1569,6 +1648,8 @@ class FindingRecord:
     recommendation: str
     feature_refs: list[str] = field(default_factory=list)
     check_ids: list[str] = field(default_factory=list)
+    severity_rationale: str | None = None
+    criterion_results: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

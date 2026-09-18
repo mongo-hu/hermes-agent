@@ -55,6 +55,22 @@ def materialize_viewer_manifest(
     measurements_payload = _read(project_dir, by_kind["measurements"])
     features_payload = _read(project_dir, by_kind["features"])
     evaluations_payload = _read(project_dir, by_kind["evaluations"])
+    scene_payload = _read(project_dir, by_kind["render_scene"])
+    mesh_snapshot_id = (
+        scene_payload.get("render_mesh_snapshot", {}).get("render_mesh_snapshot_id")
+        if isinstance(scene_payload.get("render_mesh_snapshot"), dict)
+        else None
+    )
+    patches_by_evaluation: dict[str, list[dict[str, Any]]] = {}
+    if "evidence_geometry" in by_kind:
+        evidence_payload = _read(project_dir, by_kind["evidence_geometry"])
+        for patch in evidence_payload.get("failed_patches", []):
+            if not isinstance(patch, dict) or not patch.get("evaluation_id"):
+                continue
+            patch_snapshot = patch.get("render_mesh_snapshot_ref")
+            if mesh_snapshot_id and patch_snapshot and patch_snapshot != mesh_snapshot_id:
+                continue
+            patches_by_evaluation.setdefault(str(patch["evaluation_id"]), []).append(patch)
     measurements = {
         str(item.get("measurement_id")): item
         for item in measurements_payload.get("measurements", [])
@@ -69,10 +85,11 @@ def materialize_viewer_manifest(
         linked = [
             measurements[item] for item in measurement_ids if item in measurements
         ]
-        refs = []
-        seen = set()
-        for measurement in linked:
-            for ref in measurement.get("geometry_refs", []):
+        patches = patches_by_evaluation.get(str(evaluation.get("evaluation_id") or ""), [])
+        refs: list[dict[str, Any]] = []
+        seen: set[tuple[str, Any]] = set()
+        for source in patches or linked:
+            for ref in source.get("geometry_refs", []):
                 if not isinstance(ref, dict):
                     continue
                 key = (str(ref.get("kind") or ""), ref.get("index"))
@@ -80,6 +97,28 @@ def materialize_viewer_manifest(
                     continue
                 seen.add(key)
                 refs.append(ref)
+        triangle_refs: list[dict[str, Any]] = []
+        seen_triangles: set[tuple[str, int]] = set()
+        for patch in patches:
+            for ref in patch.get("triangle_refs", []):
+                if not isinstance(ref, dict):
+                    continue
+                primitive_id = ref.get("primitive_id")
+                triangle_id = ref.get("triangle_id")
+                ref_snapshot = ref.get("render_mesh_snapshot_id")
+                if (
+                    not isinstance(primitive_id, str)
+                    or not primitive_id
+                    or not isinstance(triangle_id, int)
+                    or triangle_id < 0
+                    or (mesh_snapshot_id and ref_snapshot and ref_snapshot != mesh_snapshot_id)
+                ):
+                    continue
+                key = (primitive_id, triangle_id)
+                if key in seen_triangles:
+                    continue
+                seen_triangles.add(key)
+                triangle_refs.append(ref)
         issues.append({
             "evaluation_id": str(evaluation.get("evaluation_id") or ""),
             "title": str(evaluation.get("rule_id") or "DFM rule")
@@ -91,6 +130,7 @@ def materialize_viewer_manifest(
             "operator": str(evaluation.get("operator") or ""),
             "measurement_ids": measurement_ids,
             "geometry_refs": refs,
+            "triangle_refs": triangle_refs,
         })
 
     features: list[dict[str, Any]] = []

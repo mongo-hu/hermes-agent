@@ -21,6 +21,12 @@ class DFMConfig:
     nx_endpoint: str = ""
     nx_request_timeout_seconds: int = 30
     nx_poll_interval_seconds: int = 2
+    ontology_endpoint: str = ""
+    ontology_process: str = "injection"
+    ontology_organization_id: str = ""
+    ontology_sync_interval_seconds: int = 300
+    ontology_request_timeout_seconds: int = 30
+    ontology_pinned_snapshot_id: str = ""
     geometry_executable: str = ""
     geometry_timeout_seconds: int = 900
     drawing_enabled: bool = True
@@ -75,6 +81,30 @@ def load_dfm_config(config: Mapping[str, Any] | None = None) -> DFMConfig:
     )
     if not isinstance(nx_endpoint, str):
         raise DFMError("config_invalid", "dfm.nx.endpoint must be a string.")
+    string_values = {
+        "ontology_endpoint": _nested(
+            config, "dfm", "ontology", "endpoint", default=defaults.ontology_endpoint
+        ),
+        "ontology_process": _nested(
+            config, "dfm", "ontology", "process", default=defaults.ontology_process
+        ),
+        "ontology_organization_id": _nested(
+            config,
+            "dfm",
+            "ontology",
+            "organization_id",
+            default=defaults.ontology_organization_id,
+        ),
+        "ontology_pinned_snapshot_id": _nested(
+            config,
+            "dfm",
+            "ontology",
+            "pinned_snapshot_id",
+            default=defaults.ontology_pinned_snapshot_id,
+        ),
+    }
+    if any(not isinstance(value, str) for value in string_values.values()):
+        raise DFMError("config_invalid", "dfm.ontology string settings must be strings.")
     if not isinstance(geometry_executable, str):
         raise DFMError("config_invalid", "dfm.geometry.executable must be a string.")
     if not isinstance(drawing_enabled, bool):
@@ -167,6 +197,30 @@ def load_dfm_config(config: Mapping[str, Any] | None = None) -> DFMConfig:
             ),
             "dfm.nx.poll_interval_seconds",
         ),
+        ontology_endpoint=string_values["ontology_endpoint"].strip().rstrip("/"),
+        ontology_process=string_values["ontology_process"].strip(),
+        ontology_organization_id=string_values["ontology_organization_id"].strip(),
+        ontology_sync_interval_seconds=_positive_int(
+            _nested(
+                config,
+                "dfm",
+                "ontology",
+                "sync_interval_seconds",
+                default=defaults.ontology_sync_interval_seconds,
+            ),
+            "dfm.ontology.sync_interval_seconds",
+        ),
+        ontology_request_timeout_seconds=_positive_int(
+            _nested(
+                config,
+                "dfm",
+                "ontology",
+                "request_timeout_seconds",
+                default=defaults.ontology_request_timeout_seconds,
+            ),
+            "dfm.ontology.request_timeout_seconds",
+        ),
+        ontology_pinned_snapshot_id=string_values["ontology_pinned_snapshot_id"].strip(),
         geometry_executable=geometry_executable.strip(),
         geometry_timeout_seconds=_positive_int(
             _nested(

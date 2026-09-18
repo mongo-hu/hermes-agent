@@ -11,7 +11,7 @@ from tools.dfm.errors import DFMError
 from tools.dfm.ontology import LocalOntologyStore
 
 
-PACKAGE_PATH = (
+CURRENT_PACKAGE_PATH = (
     Path(__file__).parents[3]
     / "tools"
     / "dfm"
@@ -19,6 +19,7 @@ PACKAGE_PATH = (
     / "injection"
     / "ontology_snapshot_v2.json"
 )
+PACKAGE_PATH = Path(__file__).parent / "fixtures" / "ontology_legacy_v2.json"
 
 
 def _package():
@@ -77,6 +78,45 @@ def test_published_package_is_installed_as_a_local_sqlite_snapshot(tmp_path):
     assert context["factor_options"][0]["option_code"] == "ABS"
 
 
+def test_check_context_includes_process_factor_and_incoming_explanation():
+    payload = _package()
+    payload["relations"].append({
+        "relation_id": "rel.feature.ordinary.affects-wall-check",
+        "subject_id": "feature.ordinary_part",
+        "predicate": "AFFECTS",
+        "object_id": "check.main_wall_minimum_thickness",
+        "qualifiers": {},
+        "sort_order": 40,
+    })
+    _rehash(payload)
+    store = LocalOntologyStore.from_package(payload)
+
+    context = store.check_context("check.main_wall_minimum_thickness")
+    related = {
+        (item["predicate"], item["object"]["concept_id"])
+        for item in context["relations"]
+    }
+
+    assert ("REQUIRES_FACTOR", "factor.model_units") in related
+    assert ("AFFECTS", "feature.ordinary_part") in related
+
+
+def test_optional_factor_relation_does_not_block_analysis():
+    payload = _package()
+    material_relation = next(
+        item
+        for item in payload["relations"]
+        if item["relation_id"] == "rel.check.wall.factor.material"
+    )
+    material_relation["qualifiers"]["required"] = False
+    _rehash(payload)
+    store = LocalOntologyStore.from_package(payload)
+
+    requirements = store.fact_requirements("injection")
+
+    assert "material" not in {item["name"] for item in requirements}
+
+
 def test_bundled_ontology_publication_matches_its_json_schema():
     schema_path = (
         Path(__file__).parents[3]
@@ -86,9 +126,28 @@ def test_bundled_ontology_publication_matches_its_json_schema():
         / "ontology_snapshot.schema.json"
     )
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    payload = json.loads(PACKAGE_PATH.read_text(encoding="utf-8"))
+    payload = json.loads(CURRENT_PACKAGE_PATH.read_text(encoding="utf-8"))
 
     Draft202012Validator(schema).validate(payload)
+
+
+def test_schema_2_rejects_an_invalid_factor_source_policy():
+    payload = _package()
+    material = next(
+        item for item in payload["concepts"] if item["concept_id"] == "factor.material"
+    )
+    material["properties"]["source_policy"]["auto_accept_sources"] = [
+        "drawing_recognition"
+    ]
+    material["properties"]["source_policy"]["confirmation_required_sources"] = [
+        "drawing_recognition"
+    ]
+    _rehash(payload)
+
+    with pytest.raises(DFMError) as exc_info:
+        LocalOntologyStore.from_package(payload)
+
+    assert exc_info.value.code == "ontology_snapshot_invalid"
 
 
 def test_ontology_compiler_emits_existing_generic_rule_contract():
@@ -245,6 +304,7 @@ def test_new_feature_check_compiles_from_ontology_and_worker_capability_only():
 
     assert binding.metric_id == "injection.geometry.wall_thickness"
     assert compiled.rules[binding.rule_id].value == 1.0
+    assert compiled.rules[binding.rule_id].severity == "warning"
     assert (
         compiled.binding_selectors[binding.binding_id]["actual"]["feature_kind"]
         == "screw_boss"

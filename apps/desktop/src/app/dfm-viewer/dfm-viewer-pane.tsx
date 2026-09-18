@@ -33,7 +33,9 @@ import {
   type GeometryReference,
   mergeRenderScene,
   type RenderPrimitive,
+  type RenderTriangleReference,
   resolveGeometryRefFaceIndices,
+  resolveTriangleRefPositions,
   type TopologyFace
 } from './dfm-viewer-geometry'
 
@@ -42,6 +44,7 @@ interface ViewerIssue {
   evaluation_id: string
   expected: unknown
   geometry_refs: GeometryReference[]
+  triangle_refs?: RenderTriangleReference[]
   metric_id: string
   operator: string
   title: string
@@ -73,7 +76,7 @@ interface ViewerManifest {
 
 interface RenderSceneDocument {
   primitives: RenderPrimitive[]
-  render_mesh_snapshot: { triangle_count: number }
+  render_mesh_snapshot: { render_mesh_snapshot_id?: string; triangle_count: number }
   schema_version: 2
 }
 
@@ -86,6 +89,8 @@ interface SceneResources {
   faceGroups: Map<number, number>
   fit: () => void
   geometry: BufferGeometry
+  issueOverlay: Mesh | null
+  modelGroup: Group
   featureMaterial: MeshStandardMaterial
   normalMaterial: MeshStandardMaterial
   pickedMaterial: MeshStandardMaterial
@@ -137,7 +142,20 @@ function ModelCanvas({
   const resourcesRef = useRef<SceneResources | null>(null)
   const onFacePickRef = useRef(onFacePick)
 
-  const problemFaces = useMemo(() => resolveGeometryRefFaceIndices(activeIssue?.geometry_refs), [activeIssue])
+  const issuePositions = useMemo(
+    () =>
+      resolveTriangleRefPositions(
+        document.primitives,
+        activeIssue?.triangle_refs,
+        document.render_mesh_snapshot.render_mesh_snapshot_id
+      ),
+    [activeIssue, document]
+  )
+
+  const problemFaces = useMemo(
+    () => (issuePositions.length ? new Set<number>() : resolveGeometryRefFaceIndices(activeIssue?.geometry_refs)),
+    [activeIssue, issuePositions]
+  )
 
   const featureFaces = useMemo(() => resolveGeometryRefFaceIndices(activeFeature?.geometry_refs), [activeFeature])
 
@@ -193,7 +211,10 @@ function ModelCanvas({
       emissiveIntensity: 0.9,
       metalness: 0.02,
       roughness: 0.34,
-      side: DoubleSide
+      side: DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2
     })
 
     const pickedMaterial = new MeshStandardMaterial({
@@ -279,6 +300,8 @@ function ModelCanvas({
       featureMaterial,
       fit,
       geometry,
+      issueOverlay: null,
+      modelGroup,
       normalMaterial,
       pickedMaterial,
       problemMaterial
@@ -392,6 +415,33 @@ function ModelCanvas({
             : 0
     }
   }, [featureFaces, pickedFaceIndex, problemFaces])
+
+  useEffect(() => {
+    const resources = resourcesRef.current
+
+    if (!resources) {
+      return
+    }
+
+    if (resources.issueOverlay) {
+      resources.modelGroup.remove(resources.issueOverlay)
+      resources.issueOverlay.geometry.dispose()
+      resources.issueOverlay = null
+    }
+
+    if (!issuePositions.length) {
+      return
+    }
+
+    const geometry = new BufferGeometry()
+    geometry.setAttribute('position', new Float32BufferAttribute(issuePositions, 3))
+    geometry.computeVertexNormals()
+
+    const overlay = new Mesh(geometry, resources.problemMaterial)
+    overlay.renderOrder = 3
+    resources.modelGroup.add(overlay)
+    resources.issueOverlay = overlay
+  }, [issuePositions])
 
   useEffect(() => {
     if (fitRequest > 0) {

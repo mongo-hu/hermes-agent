@@ -1157,18 +1157,18 @@ class ProcessRegistry:
         Skips completion events the agent already consumed via wait/log or
         observed inline via poll() (see ``_drain_should_skip``).
 
-        Async-delegation events carry a conversation payload, so draining one
-        into the wrong session is a cross-chat leak (#58684, #55578). Two
+        Async-delegation and DFM report-ready events belong to one conversation.
+        Draining one into the wrong session is a cross-chat leak (#58684, #55578). Two
         filter modes, strongest wins:
 
         - ``owns_event(evt) -> bool``: positive-proof ownership callback.
-          When provided, an async-delegation event is consumed ONLY if the
+          When provided, a conversation-owned event is consumed ONLY if the
           callback returns True; everything else is re-queued for its owner.
           The TUI passes its compression-chain-aware ownership check here so
           a post-compression session still claims its own pre-compression
           dispatches.
         - ``session_key``: plain key equality (CLI and other single-session
-          callers). Non-matching async-delegation events are re-queued.
+          callers). Non-matching conversation-owned events are re-queued.
 
         With neither set, all events are consumed (legacy single-session
         behavior, backward compatible).
@@ -1183,10 +1183,10 @@ class ProcessRegistry:
             _evt_sid = evt.get("session_id", "")
             if evt.get("type") == "completion" and self._drain_should_skip(_evt_sid):
                 continue
-            # Filter async-delegation events so they are not delivered to the
+            # Filter conversation-owned events so they are not delivered to the
             # wrong session/thread (#58684). Positive-proof callback beats
             # bare key equality when the caller can provide one.
-            if evt.get("type") == "async_delegation":
+            if evt.get("type") in {"async_delegation", "dfm_report_ready"}:
                 if owns_event is not None:
                     try:
                         owned = bool(owns_event(evt))
@@ -2081,7 +2081,8 @@ def format_process_notification(evt: dict) -> "str | None":
     """Format a process notification event into a [IMPORTANT: ...] message.
 
     Handles completion events (notify_on_complete), watch pattern matches,
-    and watch disabled events from the unified completion_queue.
+    watch disabled events, and conversation-owned continuations from the
+    unified completion_queue.
     """
     evt_type = evt.get("type", "completion")
     _sid = evt.get("session_id", "unknown")
@@ -2107,6 +2108,21 @@ def format_process_notification(evt: dict) -> "str | None":
 
     if evt_type == "async_delegation":
         return _format_async_delegation(evt)
+
+    if evt_type == "dfm_report_ready":
+        project_id = str(evt.get("project_id") or "")
+        run_id = str(evt.get("run_id") or "")
+        if not project_id or not run_id:
+            return None
+        return (
+            f"[IMPORTANT: DFM analysis for project {project_id}, run {run_id} "
+            "has reached the reporting stage. Continue this run now: call "
+            "dfm_analysis with action=report_context and these exact IDs, "
+            "use its inline Runtime to author dfm-html-llm/v1, then call "
+            "dfm_analysis with action=render_html. Then call action=result "
+            "and present report.html. Do not wait for another user message "
+            "or declare success before report.html is attached.]"
+        )
 
     _exit = evt.get("exit_code", "?")
     _out = evt.get("output", "")

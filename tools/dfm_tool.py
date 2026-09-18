@@ -93,7 +93,10 @@ DFM_ANALYSIS_SCHEMA = {
                 ],
             },
             "project_id": {"type": "string"},
-            "plan_id": {"type": "string"},
+            "plan_id": {
+                "type": "string",
+                "description": "Plan ID returned by action=plan. Required when action=start; always pass that exact ID and never infer a different plan.",
+            },
             "run_id": {
                 "type": "string",
                 "description": "Run ID returned by start. Always pass it to status or result; if omitted, the service can infer it only when unambiguous.",

@@ -200,6 +200,7 @@ def materialize_html_runtime(
         {"label": "测量特征总数", "value": stats.get("measurement_count", 0)},
         {"label": "评估特征总数", "value": stats.get("evaluation_count", 0)},
         {"label": "未通过项总数", "value": stats.get("failed_count", 0)},
+        {"label": "无法判定项总数", "value": stats.get("indeterminate_count", 0)},
     ]
     issues = report.get("issues") if isinstance(report.get("issues"), list) else []
     global_issue_metadata = []

@@ -128,6 +128,14 @@ def test_dfm_start_receives_internal_progress_context_without_schema_changes(
     assert captured["_tool_call_id"] == "tool_1"
 
 
+def test_dfm_start_schema_requires_explicit_planned_id():
+    from tools.dfm_tool import DFM_ANALYSIS_SCHEMA
+
+    description = DFM_ANALYSIS_SCHEMA["parameters"]["properties"]["plan_id"]["description"]
+    assert "Required when action=start" in description
+    assert "never infer" in description
+
+
 def test_dfm_agent_tool_rejects_cancel_even_if_called_outside_its_schema(monkeypatch):
     from tools import dfm_tool
 

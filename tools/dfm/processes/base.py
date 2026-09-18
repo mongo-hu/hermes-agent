@@ -19,7 +19,7 @@ class ProcessPlan:
     operations: list[PlanOperation]
     accepted_inputs: set[str]
     rule_bindings: list[RuleBinding] = field(default_factory=list)
-    binding_selectors: dict[str, dict[str, dict[str, str]]] = field(
+    binding_selectors: dict[str, dict[str, dict[str, Any]]] = field(
         default_factory=dict
     )
     ontology_snapshot_id: str = ""
