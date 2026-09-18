@@ -1,5 +1,11 @@
 # Mold / Agent DFM 契约对齐
 
+> 本文记录 2026-09-17 的 Schema 2 对齐状态。最新 Schema 3 以
+> [规则库设计](dfm-rule-catalog-database-design.md) 为准：发布快照与管理库的 JSON 字段
+> 同名使用 `_json` 后缀，例如 `properties_json`、`qualifiers_json`、
+> `conditions_json`、`acceptance_criteria_json`；Agent 已适配，Mold 发布器和数据迁移待落地。
+> 下文的 Schema 2 流程与验证记录不代表 Schema 3 的当前发布状态。
+
 本次以 `dfm-rule-catalog-database-design.md` 与已更新的 Mold 代码为依据，重点修改 Agent。
 Mold 已实现 Geometric、比较对象原文、属性只读白名单、来源码及几何条件校验；未重复覆盖其实现。
 
@@ -14,7 +20,8 @@ Mold 已实现 Geometric、比较对象原文、属性只读白名单、来源�
 | OCCT | 继续使用原生 `metric_id/quantity_id`；不传业务阈值，不暴露 C++ 函数名 |
 | Evidence | Feature、运行时 Region、geometry_refs、field_refs、输入及拓扑快照身份继续保留 |
 
-Agent 的 Snapshot Schema 与 Mold 发布 Schema 内容一致；跨仓回归测试在两个仓库同时可用时检查其一致性。
+当时 Agent 的 Snapshot Schema 与 Mold 发布 Schema 内容一致；Schema 3 扩展目前仅在 Agent 侧落地，
+须待 Mold 发布器更新后重新进行跨仓契约验证。
 本地安装再校验白名单、关系端点、Alias、原文、来源策略、有限几何值和标准单位。校验失败不会替换已安装数据库。
 
 ## 执行流程

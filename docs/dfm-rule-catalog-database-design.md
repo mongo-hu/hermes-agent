@@ -67,7 +67,8 @@ flowchart LR
 管理库和 Agent 本地库不是同一个数据库。管理库支持编辑和继承；本地库是一次发布后展开、校验、
 不可变的运行投影。
 
-管理控制层现已在独立的 Mold 仓库实现；Agent 将 Snapshot Schema 2 发布包安装为本地 SQLite。
+管理控制层现已在独立的 Mold 仓库实现；Agent 可将 Snapshot Schema 2/3 发布包安装为本地 SQLite，
+随仓库提供的默认发布包仍为 Schema 2。
 两端按本文的 Geometric/Operand 契约对接；数据库迁移、工作簿导入、认证 Capability 和签名校验
 是否已启用，仍须按实际部署环境逐项验证，不能由本地测试代替上线验收。
 
@@ -540,6 +541,12 @@ Agent 不复制管理库全部表，只安装一次发布后展开的运行投�
 `USES_OPERAND.qualifiers.operand_text` 中保存比较对象原文；Region 是 Discovery/Measurement
 运行数据，不是本体概念。
 
+Schema 3 发布快照与管理库对 JSON 字段采用相同名称，值仍是 JSON 对象、数组或标量，
+不是二次序列化的字符串：Concept 使用 `aliases_json/data_schema_json/properties_json`，
+Relation 使用 `qualifiers_json`，FactorOption 使用 `value_json`，Rule Version 使用
+`conditions_json/acceptance_criteria_json`。Agent 的 Check Context 和 Plan 规则绑定也沿用
+这些名称；Schema 2 历史快照继续按旧字段读取，不作为新发布物的命名范本。
+
 ### 5.2 `ontology_concept`
 
 中心 `dfm_concept` 的已发布投影，只包含当前作用域可见、执行或解释所需的概念。
@@ -563,7 +570,7 @@ Factor Concept 的 `properties_json.source_policy` 随快照发布，供 Agent �
 ### 5.5 `rule_version`
 
 当前 Rule Set 展开后的候选规则版本。Schema 3 目标流程中，Agent 先按 Check 和已确认的 Factor
-选出适用 Rule Version，Plan 固定该版本及完整 `acceptance_criteria_json`，再编译其引用的
+选出适用 Rule Version，Plan 固定该版本及完整的发布态 `acceptance_criteria_json`，再编译其引用的
 Geometric Operand 并执行 Measurement。测量后逐项计算合格判定；不得将判定项当作规则选择条件，
 也不得因第一项不合格而跳过后续判定或选择默认规则。
 
@@ -572,7 +579,9 @@ Geometric Operand 并执行 Measurement。测量后逐项计算合格判定；�
 表达式值、单位、比较符、阈值、单项状态，以及原始 Measurement 和 Feature/Region 证据引用；
 失败 Check 只生成一个业务问题，不按判定项重复计数。
 
-Schema 3 目标投影沿用现有 `rule_version.severity`，增加 `severity_rationale`，
+Schema 3 发布 JSON 直接使用表字段名 `acceptance_criteria_json`、`conditions_json`
+和 `severity_rationale`；不再发布旧的 `expression/comparator/threshold/result_unit` 单项字段。
+Agent 本地投影沿用现有 `rule_version.severity`，增加 `severity_rationale`，
 不新增本地口径表。Plan 固定所选规则及其定级字段；
 失败 Evaluation、Finding 和 Report 继承该规则的严重度与定级理由，
 HTML 只做确定性汇总：`critical/high → 高`、`medium → 中`、`low → 低`。
@@ -631,7 +640,7 @@ AI 不直接查询任意 SQL，也不靠表名猜测含义。
 ```
 
 在 Schema 3 通用编译和复合判定能力落地后，新增遵循该契约的规则无需再改 Agent 业务代码；
-从当前 Schema 2 迁移到该能力本身需要修改 Agent 与 Mold 发布器。
+Agent 已具备 Schema 3 通用编译和复合判定能力；Mold 发布器和实际规则数据仍需迁移。
 
 ### 7.2 新增特征和 Check
 
@@ -664,7 +673,7 @@ OCCT 新增 Recognizer/Region/Metric Capability
 → Agent 根据 conditions_json 中的 Factor 适用条件选择唯一 Rule Version
 → 按 APPLIES_TO_FEATURE + USES_OPERAND.operand_text 编译所选规则需要的 AnalysisPlan
 → OCCT 测量所选规则全部判定项引用的 Geometric Operand
-→ 逐项执行 acceptance_criteria_json，全部通过才判 Check 通过
+→ 逐项执行发布态 acceptance_criteria_json，全部通过才判 Check 通过
 → 保留各判定项结果及 Measurement/Feature/Region 证据，形成一个综合 Evaluation
 → 失败时从选中 Rule Version 复制严重度和定级理由，生成一条业务问题
 → AI读取 Check Context + Evaluation 解释原因和建议
@@ -678,7 +687,7 @@ Calculator 或算法版本变化才使客观 Measurement 缓存失效。
 
 已落地：
 
-- `ontology_snapshot.schema.json`：Snapshot Schema 2 发布契约；
+- `ontology_snapshot.schema.json`：Agent 同时校验 Snapshot Schema 2/3，Schema 3 使用复合判定字段；
 - `ontology_snapshot_v2.json`：本体 `ontology.injection.default@1.3.0`、规则集 `injection.default@1.2.0` 的示例快照；
 - `LocalOntologyStore`：JSON 发布包校验、SQLite 原子安装、只读查询；
 - Check Context：按 Check 输出概念、关系、选项和规则；
@@ -698,8 +707,9 @@ Calculator 或算法版本变化才使客观 Measurement 缓存失效。
 4. OCCT Capability 与本体发布做 CI 交叉校验；
 5. 增加螺钉柱壁厚比例等多 Operand Golden Check 和专用复合证据 Renderer。
 
-分级与复合判定设计落地仍需跨仓迁移，本文变更**仅是目标设计，不代表当前表、导入器、
-Snapshot Schema 2 或 Agent 已实现**。Mold 的 Rule Version 需沿用现有 `severity`，新增
+分级与复合判定设计落地仍需跨仓迁移。**Agent 已实现 Schema 3 读取、Plan 编译、复合 Evaluation、
+逐项结果与严重度理由传递，并保留 Schema 2 兼容；Mold 当前表、导入器和发布器尚未迁移。**
+Mold 的 Rule Version 需沿用现有 `severity`，新增
 `severity_rationale` 和 `acceptance_criteria_json`；现有 `expression_json/comparator/threshold_json/result_unit`
 只作为迁移来源，旧单项规则可转换为一个判定项，全部新发布链路改用复合判定字段。
 旧 `conditions_json` 内的 Geometric 条件必须逐条辨别：合格要求移入判定项，真正用于选择规格的
@@ -710,9 +720,9 @@ Snapshot Schema 2 或 Agent 已实现**。Mold 的 Rule Version 需沿用现有 
 
 同时，工程师须确认分级口径，移除模型及导入器的 `warning` 默认值，并在审批/发布及
 Snapshot Schema 3 中校验等级、理由和复合判定；逐条评审旧规则，创建新的 Rule Version、
-Rule Set 和 Publication。Mold 的模型、序列化器、导入器、发布器和 Snapshot Schema，以及 Agent 的
-本地投影、Plan 编译、Evaluation 与报告证据结构均需相应修改；OCCT 仍只负责返回客观 Measurement。
-Agent 须保留 Schema 2 兼容读取并对 Schema 3 严格校验。已发布 `warning` 行及旧快照不得原地改写，
+Rule Set 和 Publication。Mold 的模型、序列化器、导入器、发布器和 Snapshot Schema 仍需相应修改；
+OCCT 仍只负责返回客观 Measurement。Agent 对 Schema 3 严格校验，已发布 `warning` 行及旧快照
+不得原地改写，
 历史分析继续按原快照复现；全部迁移完成前，报告保留“历史未定级”计数。
 数据库级 `CHECK` 约束须在历史 `warning` 版本退出可发布状态或建立明确的历史豁免后再启用，
 不能用一次批量更新伪造逐条工程评审。

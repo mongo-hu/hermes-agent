@@ -52,6 +52,16 @@ def materialize_result_reports(
             )
 
     issues: list[dict[str, Any]] = []
+    indeterminate_checks = [
+        {
+            "evaluation_id": item.get("evaluation_id"),
+            "check_id": item.get("check_id"),
+            "rule_id": item.get("rule_id"),
+            "criterion_results": item.get("criterion_results", []),
+        }
+        for item in evaluations_payload.get("evaluations", [])
+        if isinstance(item, dict) and item.get("outcome") == "indeterminate"
+    ]
     for evaluation in evaluations_payload.get("evaluations", []):
         if not isinstance(evaluation, dict) or evaluation.get("outcome") != "fail":
             continue
@@ -89,6 +99,7 @@ def materialize_result_reports(
                     "_", " "
                 ).title(),
                 "severity": str(evaluation.get("severity") or "unclassified"),
+                "severity_rationale": evaluation.get("severity_rationale"),
                 "message": (
                     f"Actual {evaluation.get('actual')} does not satisfy "
                     f"{evaluation.get('operator')} {evaluation.get('expected')}."
@@ -101,6 +112,7 @@ def materialize_result_reports(
                     "rule_version": evaluation.get("rule_version"),
                     "rule_hash": evaluation.get("rule_hash"),
                     "measurement_ids": evaluation.get("measurement_ids", []),
+                    "criterion_results": evaluation.get("criterion_results", []),
                     "backend": quality.get("backend"),
                     "certified": quality.get("certified"),
                     "algorithm_version": linked[0].get("algorithm_version")
@@ -129,8 +141,10 @@ def materialize_result_reports(
             "measurement_count": len(measurements),
             "evaluation_count": len(evaluations_payload.get("evaluations", [])),
             "failed_count": len(issues),
+            "indeterminate_count": len(indeterminate_checks),
         },
         "issues": issues,
+        "indeterminate_checks": indeterminate_checks,
     }
     json_path = output_dir / "dfm_report.json"
     json_path.write_text(
@@ -143,6 +157,7 @@ def materialize_result_reports(
         f"- Process: {plan.process}",
         f"- Scope: {plan.scope_id}@{plan.scope_version}",
         f"- Failed checks: {len(issues)}",
+        f"- Indeterminate checks: {len(indeterminate_checks)}",
         "",
     ]
     for issue in issues:

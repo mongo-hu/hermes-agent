@@ -10,7 +10,7 @@ from typing import Any, Mapping
 
 from jsonschema import Draft202012Validator, FormatChecker
 
-from ..contracts import _expression_operand_aliases
+from ..contracts import _expression_operand_aliases, _validate_acceptance_criteria
 from ..errors import DFMError
 
 
@@ -29,6 +29,43 @@ ENDPOINTS = {
     "AFFECTS": ({"factor", "feature_type"}, {"check"}),
     "RELATED_TO": (set(PROPERTY_FIELDS), set(PROPERTY_FIELDS)),
 }
+DIMENSIONLESS_UNITS = {None, "", "1", "ratio"}
+
+
+def catalog_json_field(
+    item: Mapping[str, Any], name: str, version: int, default: Any = None
+) -> Any:
+    """Read current published names while retaining Schema 2 input compatibility."""
+    return item.get(f"{name}_json" if version >= 3 else name, default)
+
+
+def expression_unit(expression: Mapping[str, Any], operand_units: Mapping[str, str | None]) -> str | None:
+    """Check Schema 3 expression units against the evaluation engine's arithmetic."""
+    if "operand" in expression:
+        return operand_units[expression["operand"]]
+    if "constant" in expression:
+        return expression.get("unit")
+    operation = expression["op"]
+    units = [expression_unit(item, operand_units) for item in expression["args"]]
+    if operation in {"abs", "negate"}:
+        return units[0]
+    if operation in {"add", "subtract", "minimum", "maximum"}:
+        if len(set(units)) != 1:
+            raise ValueError("Arithmetic operands have incompatible units.")
+        return units[0]
+    if operation == "multiply":
+        dimensionful = [unit for unit in units if unit not in DIMENSIONLESS_UNITS]
+        if len(dimensionful) > 1:
+            raise ValueError("Multiplication of two dimensionful operands is unsupported.")
+        return dimensionful[0] if dimensionful else None
+    if operation == "divide":
+        left, right = units
+        if left == right and left not in {None, ""}:
+            return "ratio"
+        if right in DIMENSIONLESS_UNITS:
+            return left
+        raise ValueError("Division requires compatible operand units.")
+    raise ValueError("Unsupported arithmetic operation.")
 
 
 def current_catalog(payload: Mapping[str, Any]) -> bool:
@@ -91,6 +128,7 @@ def validate_catalog(payload: Mapping[str, Any], validate_source_policy) -> None
             path=list(error.path),
             reason=error.message,
         )
+    version = int(payload["schema_version"])
     concepts = {item["concept_id"]: item for item in payload["concepts"]}
     if len(concepts) != len(payload["concepts"]):
         invalid("Concept identities must be unique.")
@@ -99,7 +137,7 @@ def validate_catalog(payload: Mapping[str, Any], validate_source_policy) -> None
         invalid("The publication does not declare its process concept.")
     for concept_id, concept in concepts.items():
         kind = concept["concept_type"]
-        properties = concept.get("properties", {})
+        properties = catalog_json_field(concept, "properties", version, {})
         if not isinstance(properties, dict) or set(properties) != PROPERTY_FIELDS[kind]:
             invalid(
                 "Concept properties must match the documented whitelist.",
@@ -148,7 +186,7 @@ def validate_catalog(payload: Mapping[str, Any], validate_source_policy) -> None
                 relation_id=relation["relation_id"],
             )
         if relation["predicate"] == "USES_OPERAND":
-            qualifier = relation["qualifiers"]
+            qualifier = catalog_json_field(relation, "qualifiers", version)
             alias = qualifier["alias"]
             if (
                 not alias.strip()
@@ -190,20 +228,48 @@ def validate_catalog(payload: Mapping[str, Any], validate_source_policy) -> None
                 rule_id=rule["rule_id"],
             )
         versions.add(rule["rule_version_id"])
-        aliases = _expression_operand_aliases(
-            rule["expression"], binding_id=rule["rule_id"]
-        )
-        if not aliases or not aliases.issubset(operands[check]):
-            invalid(
-                "Expression references undeclared Operand aliases.",
-                rule_id=rule["rule_id"],
+        if payload["schema_version"] >= 3:
+            if not rule["severity_rationale"].strip():
+                invalid("A released rule requires a severity rationale.", rule_id=rule["rule_id"])
+            try:
+                aliases = _validate_acceptance_criteria(
+                    catalog_json_field(rule, "acceptance_criteria", version),
+                    binding_id=rule["rule_id"],
+                )
+            except DFMError as exc:
+                invalid("Acceptance criteria are invalid.", rule_id=rule["rule_id"], reason=exc.message)
+            operand_units = {}
+            for relation in relations:
+                if relation["predicate"] != "USES_OPERAND" or relation["subject_id"] != check:
+                    continue
+                qualifier = catalog_json_field(relation, "qualifiers", version)
+                alias = qualifier["alias"]
+                operand_units[alias] = (
+                    None if qualifier["aggregation"] == "count"
+                    else catalog_json_field(concepts[relation["object_id"]], "properties", version)["canonical_unit"]
+                )
+            for criterion in catalog_json_field(rule, "acceptance_criteria", version):
+                try:
+                    unit = expression_unit(criterion["expression"], operand_units)
+                except (KeyError, ValueError) as exc:
+                    invalid("Acceptance expression units are invalid.", rule_id=rule["rule_id"], criterion_id=criterion["criterion_id"], reason=str(exc))
+                declared = criterion["result_unit"]
+                if unit != declared and not ({unit, declared} <= DIMENSIONLESS_UNITS):
+                    invalid("Acceptance threshold unit does not match the expression.", rule_id=rule["rule_id"], criterion_id=criterion["criterion_id"])
+        else:
+            aliases = _expression_operand_aliases(
+                rule["expression"], binding_id=rule["rule_id"]
             )
-        for condition in rule["conditions"]:
+        if not aliases or not aliases.issubset(operands[check]):
+            invalid("Expression references undeclared Operand aliases.", rule_id=rule["rule_id"])
+        for condition in catalog_json_field(rule, "conditions", version):
+            if payload["schema_version"] >= 3 and "geometric_id" in condition:
+                invalid("Schema 3 applicability conditions must reference Factors only.", rule_id=rule["rule_id"])
             if "geometric_id" in condition:
                 geometric = operands[check].get(condition["geometric_id"])
                 if (
                     geometric is None
-                    or condition["unit"] != geometric["properties"]["canonical_unit"]
+                    or condition["unit"] != catalog_json_field(geometric, "properties", version)["canonical_unit"]
                     or not finite(condition["value"])
                 ):
                     invalid(

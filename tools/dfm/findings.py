@@ -99,6 +99,8 @@ def materialize_evaluated_findings(
                     if evaluation.get("check_id")
                     else []
                 ),
+                severity_rationale=evaluation.get("severity_rationale"),
+                criterion_results=list(evaluation.get("criterion_results") or []),
             )
         )
     return results

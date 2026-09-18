@@ -38,6 +38,42 @@ def payload():
     return value
 
 
+def composite_payload():
+    value = payload()
+    value["schema_version"] = 3
+    for concept in value["concepts"]:
+        for field in ("aliases", "data_schema", "properties"):
+            if field in concept:
+                concept[f"{field}_json"] = concept.pop(field)
+    for relation in value["relations"]:
+        relation["qualifiers_json"] = relation.pop("qualifiers")
+    for option in value["factor_options"]:
+        option["value_json"] = option.pop("value")
+    rule = value["rules"][0]
+    rule["conditions_json"] = rule.pop("conditions")
+    for legacy_field in ("expression", "comparator", "threshold", "result_unit"):
+        rule.pop(legacy_field)
+    rule["acceptance_criteria_json"] = [
+        {
+            "criterion_id": "wall_minimum",
+            "expression": {"operand": "actual"},
+            "comparator": "GTE",
+            "threshold": 1.2,
+            "result_unit": "mm",
+        },
+        {
+            "criterion_id": "wall_maximum",
+            "expression": {"operand": "actual"},
+            "comparator": "LTE",
+            "threshold": 2.0,
+            "result_unit": "mm",
+        },
+    ]
+    rule["severity"] = "medium"
+    rule["severity_rationale"] = "Manufacturing stability requires both limits."
+    return rehash(value)
+
+
 def rehash(value):
     value.pop("content_sha256", None)
     value["content_sha256"] = hashlib.sha256(
@@ -116,15 +152,9 @@ def measurement(value, unit="mm"):
     )
 
 
-def test_mold_and_agent_publish_the_same_schema_when_both_checkouts_exist():
-    mold = ROOT.parent / "Mold/backend/aimold_app/schemas/ontology_snapshot.schema.json"
-    if not mold.is_file():
-        pytest.skip("Mold checkout is not available in this environment")
-    assert json.loads(mold.read_text(encoding="utf-8")) == json.loads(
-        (ROOT / "tools/dfm/schemas/ontology_snapshot.schema.json").read_text(
-            encoding="utf-8"
-        )
-    )
+def test_agent_preserves_schema_2_contract_during_rollout():
+    agent = json.loads((ROOT / "tools/dfm/schemas/ontology_snapshot.schema.json").read_text(encoding="utf-8"))
+    Draft202012Validator(agent).validate(payload())
 
 
 def test_current_package_installs_without_ontology_region_and_preserves_raw_text(
@@ -156,6 +186,120 @@ def test_bundled_package_content_hash_is_valid_without_rewriting():
         store.identity().content_sha256
         == json.loads(PACKAGE.read_text(encoding="utf-8"))["content_sha256"]
     )
+
+
+@pytest.mark.parametrize(
+    "actual,outcome,failed",
+    [(1.5, "pass", []), (1.0, "fail", ["wall_minimum"]), (2.5, "fail", ["wall_maximum"])],
+)
+def test_schema_3_conjunction_compiles_and_evaluates_once(actual, outcome, failed):
+    value = composite_payload()
+    store = LocalOntologyStore.from_package(value)
+    context_rule = store.check_context("check.main_wall_minimum_thickness")["rules"][0]
+    assert "acceptance_criteria_json" in context_rule
+    assert "expression" not in context_rule
+    context = store.check_context("check.main_wall_minimum_thickness")
+    assert "properties_json" in context["check"]
+    operand_context = next(row for row in context["relations"] if row["predicate"] == "USES_OPERAND")
+    assert "qualifiers_json" in operand_context
+    assert "properties_json" in operand_context["object"]
+    assert "value_json" in context["factor_options"][0]
+    compiled = store.compile("injection", {"material": "ABS"}, operations())
+    pinned = plan(compiled)
+    binding_payload = pinned.rule_bindings[0].to_dict()
+    assert "acceptance_criteria_json" in binding_payload
+    assert "acceptance_criteria" not in binding_payload
+    assert PlanRecord.from_dict(pinned.to_dict()).rule_bindings == pinned.rule_bindings
+    evaluations, _ = EvaluationEngine().evaluate([measurement(actual)], pinned)
+    assert len(evaluations) == 1
+    evaluation = evaluations[0]
+    assert evaluation.outcome == outcome
+    assert evaluation.severity == "medium"
+    assert evaluation.severity_rationale == value["rules"][0]["severity_rationale"]
+    assert [item["criterion_id"] for item in evaluation.criterion_results if item["outcome"] == "fail"] == failed
+    assert len(evaluation.criterion_results) == 2
+
+
+def test_schema_3_missing_measurement_is_not_a_pass():
+    store = LocalOntologyStore.from_package(composite_payload())
+    compiled = store.compile("injection", {"material": "ABS"}, operations())
+    evaluations, _ = EvaluationEngine().evaluate([], plan(compiled))
+    assert len(evaluations) == 1
+    assert evaluations[0].outcome == "indeterminate"
+    assert all(item["outcome"] == "indeterminate" for item in evaluations[0].criterion_results)
+
+
+def test_schema_3_rule_hash_is_independent_of_the_failed_criterion():
+    store = LocalOntologyStore.from_package(composite_payload())
+    compiled = store.compile("injection", {"material": "ABS"}, operations())
+    pinned = plan(compiled)
+    hashes = {
+        EvaluationEngine().evaluate([measurement(actual)], pinned)[0][0].rule_hash
+        for actual in (1.0, 1.5, 2.5)
+    }
+    assert len(hashes) == 1
+
+
+def test_schema_3_compiler_collects_operands_from_every_criterion():
+    value = composite_payload()
+    original = next(
+        relation for relation in value["relations"]
+        if relation["predicate"] == "USES_OPERAND"
+        and relation["subject_id"] == "check.main_wall_minimum_thickness"
+    )
+    adjacent = deepcopy(original)
+    adjacent["relation_id"] = "rel.check.wall.operand.adjacent"
+    adjacent["sort_order"] = original["sort_order"] + 1
+    adjacent["qualifiers_json"]["alias"] = "adjacent_main_wall_thickness"
+    adjacent["qualifiers_json"]["operand_text"] = "相邻主体壁厚度"
+    value["relations"].append(adjacent)
+    value["rules"][0]["acceptance_criteria_json"][1]["expression"] = {
+        "op": "divide",
+        "args": [
+            {"operand": "actual"},
+            {"operand": "adjacent_main_wall_thickness"},
+        ],
+    }
+    value["rules"][0]["acceptance_criteria_json"][1]["result_unit"] = "ratio"
+    compiled = LocalOntologyStore.from_package(rehash(value)).compile(
+        "injection", {"material": "ABS"}, operations()
+    )
+    assert len(compiled.rule_bindings) == 1
+    binding = compiled.rule_bindings[0]
+    assert {operand.alias for operand in binding.measurement_operands()} == {
+        "actual", "adjacent_main_wall_thickness",
+    }
+    assert binding.acceptance_criteria_json[1]["expression"]["op"] == "divide"
+
+
+@pytest.mark.parametrize("change", ["geometric_condition", "duplicate_criterion", "legacy_expression", "legacy_json_field", "legacy_concept_field", "legacy_relation_field", "legacy_option_field", "warning_severity", "unit_mismatch"])
+def test_schema_3_rejects_invalid_new_rule_contract(change):
+    value = composite_payload()
+    rule = value["rules"][0]
+    if change == "geometric_condition":
+        rule["conditions_json"].append({"geometric_id": "actual", "operator": "LT", "value": 5, "unit": "mm"})
+    elif change == "duplicate_criterion":
+        rule["acceptance_criteria_json"][1]["criterion_id"] = "wall_minimum"
+    elif change == "legacy_expression":
+        rule["expression"] = {"operand": "actual"}
+    elif change == "legacy_json_field":
+        rule["acceptance_criteria"] = rule.pop("acceptance_criteria_json")
+    elif change == "legacy_concept_field":
+        concept = value["concepts"][0]
+        concept["properties"] = concept.pop("properties_json")
+    elif change == "legacy_relation_field":
+        relation = value["relations"][0]
+        relation["qualifiers"] = relation.pop("qualifiers_json")
+    elif change == "legacy_option_field":
+        option = value["factor_options"][0]
+        option["value"] = option.pop("value_json")
+    elif change == "unit_mismatch":
+        rule["acceptance_criteria_json"][0]["result_unit"] = "degree"
+    else:
+        rule["severity"] = "warning"
+    with pytest.raises(DFMError) as exc_info:
+        LocalOntologyStore.from_package(rehash(value))
+    assert exc_info.value.code == "ontology_snapshot_invalid"
 
 
 @pytest.mark.parametrize(

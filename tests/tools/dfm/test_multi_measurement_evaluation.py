@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -145,6 +146,74 @@ def test_multi_measurement_ratio_evaluates_one_check_once():
         "adjacent_main_wall_thickness",
     }
     assert provenance[evaluation.evaluation_id]["check_id"] == evaluation.check_id
+
+
+@pytest.mark.parametrize(
+    "boss,main,outcome,failed",
+    [(1.0, 2.0, "pass", []), (0.7, 2.0, "fail", ["wall_min", "wall_ratio"]), (1.0, 3.0, "fail", ["wall_ratio"])],
+)
+def test_composite_rule_reuses_measurements_and_reports_each_clause(boss, main, outcome, failed):
+    base = _ratio_plan()
+    criteria = [
+        {"criterion_id": "wall_min", "expression": {"operand": "boss_wall_thickness"},
+         "comparator": "GTE", "threshold": 0.8, "result_unit": "mm"},
+        {"criterion_id": "wall_ratio", "expression": base.rule_bindings[0].expression,
+         "comparator": "GT", "threshold": 0.4, "result_unit": "ratio"},
+    ]
+    binding = replace(base.rule_bindings[0], expression=criteria[0]["expression"], operator=">=", acceptance_criteria_json=criteria)
+    plan = replace(base, rule_bindings=[binding], rules={
+        binding.rule_id: replace(base.rules[binding.rule_id], value=0.8, unit="mm", severity="high", severity_rationale="Two limits protect the boss wall.")
+    })
+    measurements = [
+        _measurement("measurement.boss.wall", "geometry.wall_thickness.boss", boss, "region.screw_boss.1.wall"),
+        _measurement("measurement.main.wall", "geometry.wall_thickness.main", main, "region.main_wall.1.wall"),
+    ]
+    evaluations, provenance = EvaluationEngine().evaluate(measurements, plan)
+    assert len(evaluations) == 1
+    result = evaluations[0]
+    assert result.outcome == outcome
+    assert result.severity == "high"
+    assert result.severity_rationale == "Two limits protect the boss wall."
+    assert result.measurement_ids == ["measurement.boss.wall", "measurement.main.wall"]
+    assert [item["criterion_id"] for item in result.criterion_results if item["outcome"] == "fail"] == failed
+    assert result.criterion_results[0]["region_refs"] == ["region.screw_boss.1.wall"]
+    assert result.criterion_results[1]["region_refs"] == ["region.main_wall.1.wall", "region.screw_boss.1.wall"]
+    assert provenance[result.evaluation_id]["criterion_results"] == result.criterion_results
+
+
+def test_composite_rule_keeps_a_known_failure_when_another_operand_is_missing():
+    base = _ratio_plan()
+    criteria = [
+        {"criterion_id": "wall_min", "expression": {"operand": "boss_wall_thickness"},
+         "comparator": "GTE", "threshold": 0.8, "result_unit": "mm"},
+        {"criterion_id": "wall_ratio", "expression": base.rule_bindings[0].expression,
+         "comparator": "GT", "threshold": 0.4, "result_unit": "ratio"},
+    ]
+    binding = replace(base.rule_bindings[0], expression=criteria[0]["expression"], operator=">=", acceptance_criteria_json=criteria)
+    plan = replace(base, rule_bindings=[binding], rules={binding.rule_id: replace(base.rules[binding.rule_id], value=0.8, unit="mm")})
+    evaluations, _ = EvaluationEngine().evaluate([
+        _measurement("measurement.boss.wall", "geometry.wall_thickness.boss", 0.7, "region.screw_boss.1.wall")
+    ], plan)
+    assert evaluations[0].outcome == "fail"
+    assert [item["outcome"] for item in evaluations[0].criterion_results] == ["fail", "indeterminate"]
+
+
+def test_composite_rule_rejects_inconsistent_pinned_primary_threshold():
+    base = _ratio_plan()
+    criterion = {
+        "criterion_id": "wall_ratio",
+        "expression": base.rule_bindings[0].expression,
+        "comparator": "BETWEEN",
+        "threshold": {"lower": 0.4, "upper": 0.6},
+        "result_unit": "ratio",
+    }
+    binding = replace(base.rule_bindings[0], acceptance_criteria_json=[criterion])
+    invalid = replace(base, rule_bindings=[binding], rules={
+        binding.rule_id: replace(base.rules[binding.rule_id], value={"lower": 0.5, "upper": 0.6})
+    })
+    with pytest.raises(DFMError) as exc_info:
+        EvaluationEngine().evaluate([], invalid)
+    assert exc_info.value.code == "evaluation_rule_invalid"
 
 
 def test_multi_measurement_binding_round_trips_and_matches_schema():
