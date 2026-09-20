@@ -1157,7 +1157,7 @@ class ProcessRegistry:
         Skips completion events the agent already consumed via wait/log or
         observed inline via poll() (see ``_drain_should_skip``).
 
-        Async-delegation and DFM report-ready events belong to one conversation.
+        Async-delegation and DFM report lifecycle events belong to one conversation.
         Draining one into the wrong session is a cross-chat leak (#58684, #55578). Two
         filter modes, strongest wins:
 
@@ -1186,7 +1186,11 @@ class ProcessRegistry:
             # Filter conversation-owned events so they are not delivered to the
             # wrong session/thread (#58684). Positive-proof callback beats
             # bare key equality when the caller can provide one.
-            if evt.get("type") in {"async_delegation", "dfm_report_ready"}:
+            if evt.get("type") in {
+                "async_delegation",
+                "dfm_report_ready",
+                "dfm_report_complete",
+            }:
                 if owns_event is not None:
                     try:
                         owned = bool(owns_event(evt))
@@ -2119,9 +2123,23 @@ def format_process_notification(evt: dict) -> "str | None":
             "has reached the reporting stage. Continue this run now: call "
             "dfm_analysis with action=report_context and these exact IDs, "
             "use its inline Runtime to author dfm-html-llm/v1, then call "
-            "dfm_analysis with action=render_html. Then call action=result "
-            "and present report.html. Do not wait for another user message "
+            "dfm_analysis with action=render_html. Rendering continues in the "
+            "background; wait for its completion notification or succeeded "
+            "status before calling action=result and presenting report.html. "
+            "Do not wait for another user message before queuing the report "
             "or declare success before report.html is attached.]"
+        )
+
+    if evt_type == "dfm_report_complete":
+        project_id = str(evt.get("project_id") or "")
+        run_id = str(evt.get("run_id") or "")
+        if not project_id or not run_id:
+            return None
+        return (
+            f"[IMPORTANT: Background HTML rendering for DFM project {project_id}, "
+            f"run {run_id} has completed. Call dfm_analysis with action=result "
+            "and these exact IDs now, then present report.html to the user. "
+            "Do not regenerate the report or wait for another user message.]"
         )
 
     _exit = evt.get("exit_code", "?")

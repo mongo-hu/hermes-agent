@@ -3667,6 +3667,7 @@ def _on_tool_progress(
     # The deterministic DFM worker can finish after the Agent turn ends.
     # Queue a same-conversation continuation even when progress UI is hidden.
     report_ready_event = None
+    report_complete_event = None
     if (
         event_type in {"background.tool.progress", "background.tool.complete"}
         and name == "dfm_analysis"
@@ -3688,10 +3689,37 @@ def _on_tool_progress(
                         "origin_ui_session_id": sid,
                         "session_key": str(owner.get("session_key") or ""),
                     }
+    if (
+        event_type == "background.tool.complete"
+        and name == "dfm_analysis"
+        and _kwargs.get("status") == "succeeded"
+        and _kwargs.get("report_html")
+        and _kwargs.get("project_id")
+        and _kwargs.get("run_id")
+    ):
+        with _sessions_lock:
+            owner = _sessions.get(sid)
+            if owner is not None and not owner.get("_finalized"):
+                pending = owner.setdefault("_dfm_report_complete_notifications", set())
+                identity = (str(_kwargs["project_id"]), str(_kwargs["run_id"]))
+                if identity not in pending:
+                    pending.add(identity)
+                    report_complete_event = {
+                        "type": "dfm_report_complete",
+                        "project_id": identity[0],
+                        "run_id": identity[1],
+                        "report_html": str(_kwargs["report_html"]),
+                        "origin_ui_session_id": sid,
+                        "session_key": str(owner.get("session_key") or ""),
+                    }
     if report_ready_event is not None:
         from tools.process_registry import process_registry
 
         process_registry.completion_queue.put(report_ready_event)
+    if report_complete_event is not None:
+        from tools.process_registry import process_registry
+
+        process_registry.completion_queue.put(report_complete_event)
     if not _tool_progress_enabled(sid):
         return
     if event_type == "tool.started" and name:
@@ -3740,6 +3768,7 @@ def _on_tool_progress(
             "run_id",
             "project_id",
             "viewer_manifest",
+            "report_html",
             "is_error",
         ):
             value = _kwargs.get(key)
@@ -8710,14 +8739,14 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
         # this the fallthrough keys every one as ("", "async_delegation")
         # and the second completion's status update is suppressed forever.
         return (evt.get("delegation_id", ""), evt_type)
-    if evt_type == "dfm_report_ready":
+    if evt_type in {"dfm_report_ready", "dfm_report_complete"}:
         return (evt.get("project_id", ""), evt.get("run_id", ""), evt_type)
     return (evt_sid, evt_type)
 
 
 def _dfm_report_notification_is_current(evt: dict) -> bool:
-    """Do not start a second editor turn for a report already completed elsewhere."""
-    if evt.get("type") != "dfm_report_ready":
+    """Reject stale report-ready and report-complete continuation events."""
+    if evt.get("type") not in {"dfm_report_ready", "dfm_report_complete"}:
         return True
     try:
         from tools.dfm.contracts import RunStatus
@@ -8726,8 +8755,12 @@ def _dfm_report_notification_is_current(evt: dict) -> bool:
         run = get_dfm_service().jobs.status(
             str(evt["project_id"]), str(evt["run_id"])
         )
-        return run.status is RunStatus.REPORTING and any(
-            artifact.kind == "report_html_runtime" for artifact in run.artifacts
+        if evt.get("type") == "dfm_report_ready":
+            return run.status is RunStatus.REPORTING and any(
+                artifact.kind == "report_html_runtime" for artifact in run.artifacts
+            )
+        return run.status is RunStatus.SUCCEEDED and any(
+            artifact.kind == "report_html" for artifact in run.artifacts
         )
     except Exception:
         logger.exception("Unable to verify DFM report-ready notification")
@@ -8779,7 +8812,8 @@ def _notification_poller_loop(
         # (background process completions etc.) keep the historical
         # adopt-orphans behavior.
         if (
-            evt.get("type") in {"async_delegation", "dfm_report_ready"}
+            evt.get("type")
+            in {"async_delegation", "dfm_report_ready", "dfm_report_complete"}
             and not _session_owns_notification_event(sid, session, evt)
         ):
             logger.warning(
@@ -8857,7 +8891,8 @@ def _notification_poller_loop(
         # resume of the owner's lineage can still claim it) rather than
         # injecting another chat's conversation here (#55578).
         if (
-            evt.get("type") in {"async_delegation", "dfm_report_ready"}
+            evt.get("type")
+            in {"async_delegation", "dfm_report_ready", "dfm_report_complete"}
             and not _session_owns_notification_event(sid, session, evt)
         ):
             deferred.append(evt)

@@ -6,8 +6,14 @@ from contextlib import redirect_stdout
 from io import StringIO
 import os
 from pathlib import Path
+from typing import Callable
 from uuid import uuid4
 
+from ...contracts import (
+    STAGE_REPORT_LAYOUT,
+    STAGE_REPORT_PACKAGING,
+    STAGE_REPORT_RENDERING,
+)
 from ...errors import DFMError
 from .template import DEFAULT_VENDOR_DIR, generate_html
 from .editor import wrap_editor_report
@@ -17,6 +23,8 @@ def render_html_report(
     llm_content_path: Path,
     runtime_data_path: Path,
     output_path: Path,
+    *,
+    on_progress: Callable[[str], None] | None = None,
 ) -> Path:
     """Render one self-contained HTML report from the two stable contracts."""
 
@@ -28,6 +36,8 @@ def render_html_report(
     edited = temporary.with_suffix('.editor.tmp')
     vendor_dir = DEFAULT_VENDOR_DIR.resolve()
     try:
+        if on_progress is not None:
+            on_progress(STAGE_REPORT_RENDERING)
         # The standalone generator prints its output path. Suppress that CLI
         # message here because the DFM service may be hosted over stdio JSON-RPC.
         with redirect_stdout(StringIO()):
@@ -42,11 +52,15 @@ def render_html_report(
                 "report_generation_failed",
                 "The DFM HTML generator did not produce a report.",
             )
+        if on_progress is not None:
+            on_progress(STAGE_REPORT_LAYOUT)
         wrap_editor_report(temporary, Path(llm_content_path).resolve(), Path(runtime_data_path).resolve(), edited)
         if not edited.is_file() or edited.stat().st_size == 0:
             raise DFMError('report_generation_failed', 'The DFM editor did not produce a report.')
         with edited.open('rb+') as stream:
             os.fsync(stream.fileno())
+        if on_progress is not None:
+            on_progress(STAGE_REPORT_PACKAGING)
         os.replace(edited, output_path)
     except DFMError:
         raise

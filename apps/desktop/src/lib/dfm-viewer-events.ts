@@ -77,12 +77,18 @@ export function dfmHtmlReportPathFromToolComplete(payload?: GatewayEventPayload)
     return null
   }
 
+  const backgroundReportPath = stringField(payload.report_html)
+
+  if (payload.status === 'succeeded' && backgroundReportPath) {
+    return backgroundReportPath
+  }
+
   const result = record(payload.result)
   const run = record(result.run)
   const report = record(result.report)
   const status = stringField(run.status, result.status, payload.status)
-  const kind = stringField(report.kind)
-  const path = stringField(report.path)
+  const path = stringField(report.path, backgroundReportPath)
+  const kind = stringField(report.kind, backgroundReportPath ? 'report_html' : '')
 
   if (status !== 'succeeded' || kind !== 'report_html' || !path) {
     return null

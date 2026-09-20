@@ -27,6 +27,8 @@ from ..contracts import (
     STAGE_EVIDENCE_RENDER,
     STAGE_OBJECTIVE_READY,
     STAGE_REPORT_EDITING,
+    STAGE_REPORT_QUEUED,
+    STAGE_REPORT_RENDERING,
     STAGE_REPORT_MATERIALIZE,
     STAGE_RULE_EVALUATION,
     WorkerEvent,
@@ -45,6 +47,9 @@ from .objective_cache import ObjectiveOperationCache
 
 
 logger = logging.getLogger(__name__)
+
+
+_REPORT_JOB_SUFFIX = ":report"
 
 
 def _utc_now() -> str:
@@ -178,6 +183,153 @@ class JobManager:
     def _forget_future(self, run_id: str) -> None:
         with self._lock:
             self._futures.pop(run_id, None)
+
+    @staticmethod
+    def _report_job_key(run_id: str) -> str:
+        return f"{run_id}{_REPORT_JOB_SUFFIX}"
+
+    def start_report(
+        self,
+        project_id: str,
+        run_id: str,
+        render: Callable[
+            [Callable[[str, int], None], CancellationToken], list[ArtifactRecord]
+        ],
+        *,
+        on_update: Callable[[RunRecord], None] | None = None,
+    ) -> RunRecord:
+        """Queue final report rendering without blocking the caller."""
+
+        job_key = self._report_job_key(run_id)
+        with self._lock:
+            run = self.status(project_id, run_id)
+            if run.status is RunStatus.SUCCEEDED and any(
+                item.kind == "report_html" for item in run.artifacts
+            ):
+                return run
+            if run.status is not RunStatus.REPORTING:
+                raise DFMError(
+                    "result_not_ready",
+                    "HTML reports require a report-ready DFM run.",
+                    {"run_id": run_id, "status": run.status.value},
+                )
+
+            existing = self._futures.get(job_key)
+            if existing is not None and not existing.done():
+                return run
+            if existing is not None:
+                self._futures.pop(job_key, None)
+
+            token = CancellationToken()
+            self._tokens[job_key] = token
+            if on_update is not None:
+                self._listeners[job_key] = on_update
+            queued = self._replace_run(
+                project_id,
+                run_id,
+                lambda item: replace(
+                    item,
+                    updated_at=_utc_now(),
+                    heartbeat_at=_utc_now(),
+                    stage=STAGE_REPORT_QUEUED,
+                    error=None,
+                ),
+            )
+            try:
+                future = self._executor.submit(
+                    self._execute_report,
+                    project_id,
+                    run_id,
+                    render,
+                    token,
+                )
+            except Exception:
+                self._tokens.pop(job_key, None)
+                self._mark_failure(
+                    project_id,
+                    run_id,
+                    RunStatus.FAILED,
+                    "runtime_submit_failed",
+                    "The DFM runtime could not submit HTML report rendering.",
+                    listener_key=job_key,
+                )
+                self._listeners.pop(job_key, None)
+                return self.status(project_id, run_id)
+            self._futures[job_key] = future
+            future.add_done_callback(
+                lambda _future, key=job_key: self._forget_future(key)
+            )
+            return queued
+
+    def _execute_report(
+        self,
+        project_id: str,
+        run_id: str,
+        render: Callable[
+            [Callable[[str, int], None], CancellationToken], list[ArtifactRecord]
+        ],
+        token: CancellationToken,
+    ) -> None:
+        job_key = self._report_job_key(run_id)
+        try:
+            token.raise_if_cancelled()
+            self._advance_stage(
+                project_id,
+                run_id,
+                STAGE_REPORT_RENDERING,
+                99,
+                listener_key=job_key,
+            )
+
+            def update_progress(stage: str, percent: int) -> None:
+                token.raise_if_cancelled()
+                self._advance_stage(
+                    project_id,
+                    run_id,
+                    stage,
+                    percent,
+                    listener_key=job_key,
+                )
+
+            artifacts = render(
+                update_progress,
+                token,
+            )
+            token.raise_if_cancelled()
+            completed = self.attach_artifacts(project_id, run_id, artifacts)
+            self._notify(job_key, completed)
+        except DFMError as exc:
+            status = (
+                RunStatus.CANCELLED
+                if exc.code == "run_cancelled"
+                else RunStatus.FAILED
+            )
+            self._mark_failure(
+                project_id,
+                run_id,
+                status,
+                exc.code,
+                exc.message,
+                listener_key=job_key,
+            )
+        except Exception:
+            logger.exception(
+                "Unexpected DFM report failure: project_id=%s run_id=%s",
+                project_id,
+                run_id,
+            )
+            self._mark_failure(
+                project_id,
+                run_id,
+                RunStatus.FAILED,
+                "report_generation_failed",
+                "The DFM HTML report could not be generated.",
+                listener_key=job_key,
+            )
+        finally:
+            with self._lock:
+                self._tokens.pop(job_key, None)
+                self._listeners.pop(job_key, None)
 
     @staticmethod
     def _plan_input_sha256(manifest: ProjectManifest, plan: PlanRecord | None) -> str:
@@ -365,12 +517,25 @@ class JobManager:
                 self._tokens.pop(run_id, None)
                 self._listeners.pop(run_id, None)
 
-    def _mark_failure(self, project_id: str, run_id: str, status: RunStatus, code: str, message: str) -> None:
+    def _mark_failure(
+        self,
+        project_id: str,
+        run_id: str,
+        status: RunStatus,
+        code: str,
+        message: str,
+        *,
+        listener_key: str | None = None,
+    ) -> None:
         try:
             updated = self._replace_run(
                 project_id,
                 run_id,
-                lambda run: run if run.status not in {RunStatus.QUEUED, RunStatus.RUNNING} else replace(
+                lambda run: run if run.status not in {
+                    RunStatus.QUEUED,
+                    RunStatus.RUNNING,
+                    RunStatus.REPORTING,
+                } else replace(
                     run,
                     status=status,
                     updated_at=_utc_now(),
@@ -379,12 +544,18 @@ class JobManager:
                     error={"code": code, "message": message},
                 ),
             )
-            self._notify(run_id, updated)
+            self._notify(listener_key or run_id, updated)
         except DFMError:
             return
 
     def _advance_stage(
-        self, project_id: str, run_id: str, stage: str, percent: int
+        self,
+        project_id: str,
+        run_id: str,
+        stage: str,
+        percent: int,
+        *,
+        listener_key: str | None = None,
     ) -> None:
         now = _utc_now()
         updated = self._replace_run(
@@ -398,7 +569,7 @@ class JobManager:
                 updated_at=now,
             ),
         )
-        self._notify(run_id, updated)
+        self._notify(listener_key or run_id, updated)
 
     def _complete_success(
         self,
@@ -616,6 +787,12 @@ class JobManager:
             return run
         with self._lock:
             if run.status is RunStatus.REPORTING:
+                job_key = self._report_job_key(run_id)
+                token = self._tokens.get(job_key)
+                if token:
+                    token.cancel()
+                future = self._futures.get(job_key)
+                cancelled_before_start = bool(future and future.cancel())
                 cancelled = self._replace_run(
                     project_id,
                     run_id,
@@ -627,7 +804,10 @@ class JobManager:
                         stage="cancelled",
                     ),
                 )
-                self._notify(run_id, cancelled)
+                self._notify(job_key, cancelled)
+                if cancelled_before_start:
+                    self._tokens.pop(job_key, None)
+                    self._listeners.pop(job_key, None)
                 return cancelled
             token = self._tokens.get(run_id)
             if token:

@@ -95,6 +95,41 @@ def test_dfm_reporting_queues_same_session_continuation_with_progress_hidden(mon
     )
 
 
+def test_dfm_report_completion_queues_result_continuation(monkeypatch, server):
+    from tools.process_registry import process_registry
+
+    notifications = Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", notifications)
+    monkeypatch.setattr(server, "_tool_progress_enabled", lambda _sid: False)
+    monkeypatch.setattr(
+        server,
+        "_sessions",
+        {"session-1": {"session_key": "conversation-1", "_finalized": False}},
+    )
+
+    server._on_tool_progress(
+        "session-1",
+        "background.tool.complete",
+        "dfm_analysis",
+        "DFM succeeded: complete (100%)",
+        project_id="project-1",
+        run_id="run-1",
+        status="succeeded",
+        report_html="C:\\reports\\run-1\\report.html",
+    )
+
+    events = process_registry.drain_notifications(
+        owns_event=lambda evt: server._session_owns_notification_event(
+            "session-1", server._sessions["session-1"], evt
+        )
+    )
+    assert len(events) == 1
+    event, prompt = events[0]
+    assert event["type"] == "dfm_report_complete"
+    assert event["report_html"] == "C:\\reports\\run-1\\report.html"
+    assert "action=result" in prompt
+
+
 def test_dfm_report_ready_notification_stays_in_its_owner_session(monkeypatch, server):
     from tools.process_registry import process_registry
 
@@ -144,3 +179,6 @@ def test_dfm_report_ready_notification_is_skipped_after_report_succeeds(monkeypa
     assert server._dfm_report_notification_is_current(event)
     run.status = RunStatus.SUCCEEDED
     assert not server._dfm_report_notification_is_current(event)
+    run.artifacts.append(SimpleNamespace(kind="report_html"))
+    completed = {**event, "type": "dfm_report_complete"}
+    assert server._dfm_report_notification_is_current(completed)
