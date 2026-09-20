@@ -90,6 +90,7 @@ def test_viewer_manifest_maps_failed_evaluation_to_geometry_refs(tmp_path):
                         "evaluation_id": "evaluation-draft",
                         "outcome": "fail",
                         "rule_id": "min_draft_deg",
+                        "check_id": "check.main_wall_minimum_draft",
                         "metric_id": "injection.geometry.draft",
                         "measurement_ids": ["measurement-draft-minimum"],
                         "actual": 0.4,
@@ -121,6 +122,15 @@ def test_viewer_manifest_maps_failed_evaluation_to_geometry_refs(tmp_path):
     assert payload["issue_count"] == 1
     assert payload["issues"][0]["geometry_refs"] == [
         {"kind": "face", "index": 7, "input_sha256": "a" * 64}
+    ]
+    assert payload["issues"][0]["check_id"] == "check.main_wall_minimum_draft"
+    assert payload["issues"][0]["issue_type_label"] == "拔模角问题"
+    assert payload["issue_type_counts"] == [
+        {
+            "issue_type_id": "check.main_wall_minimum_draft",
+            "label": "拔模角问题",
+            "count": 1,
+        }
     ]
     assert payload["feature_count"] == 1
     assert payload["features"][0] == {
@@ -159,5 +169,54 @@ def test_preview_manifest_renders_before_rule_evaluation(tmp_path):
     assert payload["input_sha256"] == "b" * 64
     assert payload["issue_count"] == 0
     assert payload["issues"] == []
+    assert payload["issue_type_counts"] == []
     assert payload["feature_count"] == 0
     assert payload["features"] == []
+
+
+def test_viewer_manifest_uses_failed_patches_instead_of_representative_measurement_face(tmp_path):
+    artifacts = [
+        _artifact(tmp_path, "render_scene", "render_scene.json", {
+            "render_mesh_snapshot": {"render_mesh_snapshot_id": "mesh-current"},
+        }),
+        _artifact(tmp_path, "topology_map", "topology_map.json", {}),
+        _artifact(tmp_path, "measurements", "measurements.json", {
+            "measurements": [{"measurement_id": "measure-1", "geometry_refs": [{"kind": "face", "index": 7}]}],
+        }),
+        _artifact(tmp_path, "features", "features.json", {"features": []}),
+        _artifact(tmp_path, "evaluations", "evaluations.json", {
+            "evaluations": [{
+                "evaluation_id": "evaluation-1", "outcome": "fail", "rule_id": "rule-1",
+                "measurement_ids": ["measure-1"],
+            }],
+        }),
+        _artifact(tmp_path, "evidence_geometry", "evidence_geometry.json", {
+            "failed_patches": [
+                {
+                    "evaluation_id": "evaluation-1", "render_mesh_snapshot_ref": "mesh-current",
+                    "geometry_refs": [{"kind": "face", "index": 9}],
+                    "triangle_refs": [{"primitive_id": "face-9", "triangle_id": 2, "render_mesh_snapshot_id": "mesh-current"}],
+                },
+                {
+                    "evaluation_id": "evaluation-1", "render_mesh_snapshot_ref": "mesh-current",
+                    "geometry_refs": [{"kind": "face", "index": 9}],
+                    "triangle_refs": [{"primitive_id": "face-9", "triangle_id": 2, "render_mesh_snapshot_id": "mesh-current"}],
+                },
+                {
+                    "evaluation_id": "evaluation-1", "render_mesh_snapshot_ref": "mesh-other",
+                    "geometry_refs": [{"kind": "face", "index": 11}],
+                    "triangle_refs": [{"primitive_id": "face-11", "triangle_id": 0, "render_mesh_snapshot_id": "mesh-other"}],
+                },
+            ],
+        }),
+    ]
+    plan = PlanRecord("plan_1", "step", ["occt_cpp"], "ready", "now")
+
+    result = materialize_viewer_manifest(tmp_path, "run_1", plan, artifacts)
+
+    assert result is not None
+    payload = json.loads((tmp_path / result.relative_path).read_text(encoding="utf-8"))
+    assert payload["issues"][0]["geometry_refs"] == [{"kind": "face", "index": 9}]
+    assert payload["issues"][0]["triangle_refs"] == [
+        {"primitive_id": "face-9", "triangle_id": 2, "render_mesh_snapshot_id": "mesh-current"}
+    ]

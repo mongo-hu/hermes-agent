@@ -198,7 +198,14 @@ DFM_ANALYSIS_SCHEMA = {
             },
             "analyzer_key": {
                 "type": "string",
-                "enum": ["occt_cpp", "step", "parasolid", "drawing", "fusion"],
+                "enum": [
+                    "occt_cpp_external",
+                    "pythonocc_internal",
+                    "parasolid",
+                    "drawing",
+                    "fusion",
+                ],
+                "description": "Geometry execution path. Use occt_cpp_external for dfm-geometry.exe or pythonocc_internal for the Agent-owned PythonOCC worker.",
             },
             "idempotency_key": {"type": "string"},
             "llm_content": {

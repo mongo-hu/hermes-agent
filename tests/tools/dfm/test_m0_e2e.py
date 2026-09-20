@@ -141,7 +141,9 @@ def test_injected_analyzer_vertical_slice_returns_desktop_compatible_artifact(tm
     analyzer_registry = AnalyzerRegistry()
     analyzer_registry.register(SuccessfulTestAnalyzer())
     service = DFMService(
-        config=DFMConfig(max_concurrent_runs=1, geometry_backend="step"),
+        config=DFMConfig(
+            max_concurrent_runs=1, geometry_backend="pythonocc_internal"
+        ),
         workspace=DFMWorkspace(),
         registry=analyzer_registry,
         reconcile_jobs=False,

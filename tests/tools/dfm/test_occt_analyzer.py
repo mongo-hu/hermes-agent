@@ -231,7 +231,7 @@ class SuccessfulRunner:
                         "shape_process_operations": ["FixShape"],
                         "geometry_healing_applied": True,
                         "geometry_healing_succeeded": True,
-                        "selected_transfer": "shape_processed",
+                        "selected_transfer": "normalized",
                         "strict_validation": {
                             "analyzable": False,
                             "valid_brep": False,

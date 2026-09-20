@@ -266,7 +266,7 @@ def test_configured_geometry_backend_does_not_silently_fall_back(tmp_path):
     registry.register(FusionAnalyzer())
     registry.register(ParasolidAnalyzer())
     service = DFMService(
-        config=DFMConfig(geometry_backend="occt_cpp"),
+        config=DFMConfig(geometry_backend="occt_cpp_external"),
         workspace=DFMWorkspace(tmp_path / "workspace"),
         registry=registry,
         reconcile_jobs=False,
@@ -295,6 +295,10 @@ def test_configured_geometry_backend_does_not_silently_fall_back(tmp_path):
         analyzer_key = service._objective_analyzer_key(manifest)
 
         assert analyzer_key == "occt_cpp"
+        assert (
+            service._objective_analyzer_key(manifest, "pythonocc_internal")
+            == "step"
+        )
         with pytest.raises(DFMError) as exc_info:
             registry.get(analyzer_key)
         assert exc_info.value.code == "analyzer_not_found"
@@ -309,7 +313,7 @@ def test_mixed_input_uses_agent_observation_and_fusion_submission_flow(tmp_path)
     registry.register(FusionAnalyzer())
     registry.register(ParasolidAnalyzer())
     service = DFMService(
-        config=DFMConfig(geometry_backend="step"),
+        config=DFMConfig(geometry_backend="pythonocc_internal"),
         workspace=DFMWorkspace(tmp_path / "workspace"),
         registry=registry,
         reconcile_jobs=False,

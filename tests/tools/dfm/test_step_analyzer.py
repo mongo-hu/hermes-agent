@@ -190,10 +190,10 @@ def test_step_capability_probe_is_stable_for_the_analyzer_lifetime(tmp_path):
 
     assert capability.status is CapabilityStatus.AVAILABLE
     assert analyzer.capability(context).status is CapabilityStatus.AVAILABLE
-    assert capability.details["backend_id"] == "pythonocc_reference"
+    assert capability.details["backend_id"] == "pythonocc_internal"
     assert capability.details["role"] == "reference_regression"
     assert capability.details["production_ready"] is False
-    assert capability.details["production_target"] == "external_occt_cpp"
+    assert capability.details["production_target"] == "occt_cpp_external"
     assert len(calls) == 1
 
 
