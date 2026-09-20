@@ -109,6 +109,57 @@ ORDER_POINTS_SCHEMA = {
     ),
 }
 
+HOTEL_PACKAGE_SEARCH_SCHEMA = {
+    "name": "hotel_package_search",
+    "description": (
+        "Search currently bookable hotel packages for a hotel selected from a prior hotel search. "
+        "Use this for package products, not ordinary room rates, promotions, or hotel benefits."
+    ),
+    "parameters": _object_schema(
+        "Hotel package search input.",
+        {
+            "hotelId": {"type": "string", "description": "Hotel ID from a prior hotel_search result."},
+            "resultRef": {
+                "type": "string",
+                "description": "Opaque resultRef returned by the hotel_search call that produced hotelId.",
+            },
+            "limit": {"type": "integer", "minimum": 1, "maximum": 10},
+        },
+        required=["hotelId", "resultRef"],
+    ),
+}
+
+KNOWLEDGE_SEARCH_SCHEMA = {
+    "name": "knowledge_search",
+    "description": (
+        "Search the Insight knowledge base for hotel policies, membership, booking consultation, "
+        "and service explanations."
+    ),
+    "parameters": _object_schema(
+        "Knowledge search input.",
+        {
+            "query": {"type": "string", "description": "Natural-language question."},
+            "knowledgeKey": {"type": "string", "description": "Optional exact knowledge topic."},
+            "domainCode": {"type": "string", "description": "Optional knowledge domain."},
+            "topicCodes": {"type": "array", "items": {"type": "string"}},
+            "hotelName": {"type": "string", "description": "Explicit hotel name, when present."},
+        },
+        required=["query"],
+    ),
+}
+
+USER_INFO_SCHEMA = {
+    "name": "user_info",
+    "description": "Query public account and membership information for the currently logged-in user.",
+    "parameters": _object_schema("user_info input.", {}),
+}
+
+CAR_SERVICE_CITIES_SCHEMA = {
+    "name": "car_service_cities",
+    "description": "List cities where concierge car service is available for the current channel.",
+    "parameters": _object_schema("car_service_cities input.", {}),
+}
+
 RESULT_QUERY_SCHEMA = {
     "type": "object",
     "description": (
@@ -538,6 +589,16 @@ registry.register(**_registration(
     mcp_tool="hotelux.support_playbook",
 ))
 registry.register(**_registration(ORDER_POINTS_SCHEMA, toolset="order_points", mcp_tool="order.points"))
+registry.register(**_registration(HOTEL_PACKAGE_SEARCH_SCHEMA, toolset="hotel_package_search", mcp_tool="hotel.package.search"))
+registry.register(**_registration(KNOWLEDGE_SEARCH_SCHEMA, toolset="knowledge_search", mcp_tool="knowledge.search"))
+registry.register(**_registration(USER_INFO_SCHEMA, toolset="user_info", mcp_tool="user.info"))
+registry.register(**_registration(
+    CAR_SERVICE_CITIES_SCHEMA,
+    toolset="car_service_cities",
+    mcp_tool="car.serviceCities",
+    capability_ref="car_serviceCities",
+    aliases={"car_service_cities"},
+))
 registry.register(**_registration(HOTEL_RATES_SCHEMA, toolset="hotel_rates", mcp_tool="hotel.rates"))
 registry.register(**_registration(
     ENTERPRISE_RESULT_QUERY_SCHEMA,

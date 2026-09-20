@@ -255,6 +255,39 @@ class TestApiServerAdapterToolset:
         assert args["guestCount"] == 2
         assert args["dateRangeStart"] < args["dateRangeEnd"]
 
+    def test_enterprise_tool_result_success_is_explicitly_opted_in(self):
+        from gateway.platforms.api_server import APIServerAdapter
+
+        result = {"ok": True, "data": {"balance": 1200}}
+
+        assert APIServerAdapter._normalize_enterprise_tool_result(
+            "points_balance",
+            result,
+        ) is None
+        assert APIServerAdapter._normalize_enterprise_tool_result(
+            "points_balance",
+            result,
+            include_success=True,
+        ) == {
+            "type": "tool_result",
+            "tool": "points_balance",
+            "ok": True,
+            "result": result,
+        }
+
+    def test_enterprise_success_events_are_limited_to_credential_backed_tools(self):
+        from gateway.platforms.api_server import APIServerAdapter
+
+        inputs = {
+            "credential_scope": ["points_balance", "afternoonTea_status", "hotel_search"],
+            "credential_toolsets": ["points_balance", "afternoon_tea_status", "hotel"],
+        }
+
+        assert APIServerAdapter._enterprise_should_emit_success_tool_result("points_balance", inputs)
+        assert APIServerAdapter._enterprise_should_emit_success_tool_result("afternoon_tea_status", inputs)
+        assert APIServerAdapter._enterprise_should_emit_success_tool_result("hotel_search", inputs)
+        assert not APIServerAdapter._enterprise_should_emit_success_tool_result("browser_navigate", inputs)
+
     def test_enterprise_direct_hotel_uses_structured_args(self, monkeypatch):
         from gateway.platforms.api_server import APIServerAdapter
         from gateway.config import PlatformConfig
@@ -314,6 +347,10 @@ class TestApiServerAdapterToolset:
                     "order_search",
                     "order_biQuery",
                     "order_points",
+                    "hotel_package_search",
+                    "knowledge_search",
+                    "user_info",
+                    "car_serviceCities",
                     "hotel_rates",
                     "hotel_rateRule",
                     "enterprise_resultQuery",
@@ -340,6 +377,10 @@ class TestApiServerAdapterToolset:
                     "order_search",
                     "order_biQuery",
                     "order_points",
+                    "hotel_package_search",
+                    "knowledge_search",
+                    "user_info",
+                    "car_serviceCities",
                     "hotel_rates",
                     "hotel_rateRule",
                     "enterprise_resultQuery",
@@ -366,16 +407,19 @@ class TestApiServerAdapterToolset:
             "activity_result_count",
             "activity_result_search",
             "afternoon_tea_status",
+            "car_service_cities",
             "case_handoff",
             "case_precheck",
             "charmdeer_hotel_policy",
             "charmdeer_support_playbook",
             "coupon_status",
             "enterprise_result_query",
+            "hotel_package_search",
             "hotel_rate_rule",
             "hotel_rates",
             "hotelux_hotel_policy",
             "hotelux_support_playbook",
+            "knowledge_search",
             "member_entitlement",
             "order_bi_query",
             "order_points",
@@ -384,7 +428,11 @@ class TestApiServerAdapterToolset:
             "promotion_explain",
             "resolver_city",
             "resolver_payment_type",
+            "user_info",
         ]
+        assert set(inputs["credential_toolsets"]) <= set(inputs["enterprise_toolsets"])
+        assert "afternoon_tea_status" in inputs["credential_toolsets"]
+        assert "hotel_rate_rule" in inputs["credential_toolsets"]
 
     def test_enterprise_direct_hotel_disabled_when_profile_context_needed(self):
         from gateway.platforms.api_server import APIServerAdapter

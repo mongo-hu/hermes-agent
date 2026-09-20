@@ -1472,7 +1472,12 @@ class APIServerAdapter(BasePlatformAdapter):
         return "酒店查询已完成，结果已返回。"
 
     @staticmethod
-    def _normalize_enterprise_tool_result(tool_name: str, function_result: Any) -> Optional[Dict[str, Any]]:
+    def _normalize_enterprise_tool_result(
+        tool_name: str,
+        function_result: Any,
+        *,
+        include_success: bool = False,
+    ) -> Optional[Dict[str, Any]]:
         if isinstance(function_result, (dict, list)):
             data = function_result
         elif isinstance(function_result, str):
@@ -1486,7 +1491,14 @@ class APIServerAdapter(BasePlatformAdapter):
         else:
             return None
         if not isinstance(data, dict) or data.get("ok") is not False:
-            return None
+            if not include_success:
+                return None
+            return {
+                "type": "tool_result",
+                "tool": tool_name,
+                "ok": True,
+                "result": data,
+            }
         error = data.get("error")
         if not isinstance(error, dict):
             error = {"message": str(error or "Tool execution failed.")}
@@ -1507,6 +1519,19 @@ class APIServerAdapter(BasePlatformAdapter):
             "status": data.get("status"),
             "error": error,
         }
+
+    @staticmethod
+    def _enterprise_should_emit_success_tool_result(
+        function_name: str,
+        inputs: Dict[str, Any],
+    ) -> bool:
+        credential_scope = set(inputs.get("credential_scope") or [])
+        credential_toolsets = set(inputs.get("credential_toolsets") or [])
+        return (
+            function_name in credential_scope
+            or function_name in credential_toolsets
+            or (function_name == "hotel_search" and "hotel" in credential_toolsets)
+        )
 
     # ------------------------------------------------------------------
     # Agent creation helper
@@ -1960,8 +1985,13 @@ class APIServerAdapter(BasePlatformAdapter):
             "hotel_rates": "hotel_rates",
             "hotel_rateRule": "hotel_rate_rule",
             "hotel_rate_rule": "hotel_rate_rule",
+            "hotel_package_search": "hotel_package_search",
             "enterprise_resultQuery": "enterprise_result_query",
             "enterprise_result_query": "enterprise_result_query",
+            "knowledge_search": "knowledge_search",
+            "user_info": "user_info",
+            "car_serviceCities": "car_service_cities",
+            "car_service_cities": "car_service_cities",
             "kanban": "kanban",
             "memory": "memory",
             "order_search": "order_search",
@@ -2050,7 +2080,19 @@ class APIServerAdapter(BasePlatformAdapter):
                 and self._env_flag("HERMES_ENTERPRISE_SKIP_HISTORY_FOR_FORCED_HOTEL_TOOL", False)
             )
         credential_ref = credential_broker.get("credentialRef")
-        credential_scope = credential_broker.get("scope") or []
+        raw_credential_scope = credential_broker.get("scope") or []
+        if not isinstance(raw_credential_scope, list):
+            raise ValueError("credentialBroker.scope must be a list.")
+        credential_scope = sorted({
+            str(item).strip()
+            for item in raw_credential_scope
+            if str(item or "").strip()
+        })
+        credential_toolsets = sorted({
+            capability_toolsets[item]
+            for item in credential_scope
+            if item in capability_toolsets
+        })
         credential_ttl = credential_broker.get("ttlSeconds")
         skip_context_files = self._env_flag("HERMES_ENTERPRISE_SKIP_CONTEXT_FILES", True)
         disable_environment_probe = self._env_flag("HERMES_ENTERPRISE_DISABLE_ENVIRONMENT_PROBE", True)
@@ -2114,6 +2156,8 @@ class APIServerAdapter(BasePlatformAdapter):
             "user_message": str(content),
             "system_prompt": system_prompt,
             "credential_ref": credential_ref,
+            "credential_scope": credential_scope,
+            "credential_toolsets": credential_toolsets,
             "profile_ref": profile_ref,
             "workspace_ref": workspace_ref,
             "memory_dir": memory_dir,
@@ -2193,7 +2237,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     (now - started_at) * 1000,
                     tool_elapsed_ms,
                 )
-                normalized = self._normalize_enterprise_tool_result("hotel_search", tool_result)
+                normalized = self._normalize_enterprise_tool_result(
+                    "hotel_search",
+                    tool_result,
+                    include_success=True,
+                )
                 final_response = (
                     self._enterprise_tool_user_message(normalized)
                     or self._enterprise_direct_hotel_success_message(tool_result)
@@ -2217,6 +2265,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "historySource": "remote_hermes",
                     "auditSource": "remote_hermes",
                     "direct": True,
+                    "events": [normalized] if normalized else [],
                 })
             except Exception as e:
                 logger.error("Enterprise direct hotel turn failed: %s", e, exc_info=True)
@@ -2242,6 +2291,7 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         last_tool_user_message: Optional[str] = None
         tool_started_at: Dict[str, float] = {}
+        tool_events: List[Dict[str, Any]] = []
 
         def _on_tool_start(tool_call_id, function_name, function_args):
             now = time.monotonic()
@@ -2267,8 +2317,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 (now - started_at) * 1000,
                 f"{((now - started) * 1000):.1f}" if started is not None else "unknown",
             )
-            normalized = self._normalize_enterprise_tool_result(function_name, function_result)
+            normalized = self._normalize_enterprise_tool_result(
+                function_name,
+                function_result,
+                include_success=self._enterprise_should_emit_success_tool_result(function_name, inputs),
+            )
             if normalized:
+                normalized["toolCallId"] = tool_call_id
+                normalized["args"] = function_args
+                tool_events.append(normalized)
                 error = normalized.get("error") or {}
                 user_message = str(error.get("userMessage") or "").strip()
                 if user_message:
@@ -2327,6 +2384,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "usage": usage,
             "historySource": "remote_hermes",
             "auditSource": "remote_hermes",
+            "events": tool_events,
         })
 
     async def _handle_enterprise_turn_stream(self, request: "web.Request") -> "web.StreamResponse":
@@ -2437,7 +2495,11 @@ class APIServerAdapter(BasePlatformAdapter):
             )
             if tool_call_id and tool_call_id in started_tool_call_ids:
                 started_tool_call_ids.discard(tool_call_id)
-            normalized = self._normalize_enterprise_tool_result(function_name, function_result)
+            normalized = self._normalize_enterprise_tool_result(
+                function_name,
+                function_result,
+                include_success=self._enterprise_should_emit_success_tool_result(function_name, inputs),
+            )
             if normalized:
                 normalized["toolCallId"] = tool_call_id
                 normalized["args"] = function_args
@@ -2511,7 +2573,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     elapsed_ms,
                     tool_elapsed_ms,
                 )
-                normalized = self._normalize_enterprise_tool_result("hotel_search", tool_result)
+                normalized = self._normalize_enterprise_tool_result(
+                    "hotel_search",
+                    tool_result,
+                    include_success=True,
+                )
                 if normalized:
                     normalized["toolCallId"] = tool_call_id
                     normalized["args"] = direct_hotel_args

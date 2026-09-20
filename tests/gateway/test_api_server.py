@@ -2875,6 +2875,12 @@ class TestEnterpriseDirectHotelStream:
         assert data["direct"] is True
         assert data["usage"]["input_tokens"] == 0
         assert data["response"] == "酒店查询已完成，返回 1 条结果。"
+        assert data["events"] == [{
+            "type": "tool_result",
+            "tool": "hotel_search",
+            "ok": True,
+            "result": {"ok": True, "hotels": [{"name": "H1"}]},
+        }]
         mock_run.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -2922,9 +2928,121 @@ class TestEnterpriseDirectHotelStream:
         assert resp.status == 200
         assert "event: tool_start" in text
         assert '"tool": "hotel_search"' in text
+        assert 'event: tool_result' in text
+        assert '"ok": true' in text
         assert '"direct": true' in text
         assert '"input_tokens": 0' in text
         mock_run.assert_not_awaited()
+
+
+class TestEnterpriseAgentToolResults:
+    @staticmethod
+    def _payload():
+        return {
+            "version": "enterprise-hermes-consumer-v1",
+            "requestId": "req-agent-tool-result",
+            "user": {"id": "staff-1", "type": "user"},
+            "session": {"id": "chat-agent-tool-result"},
+            "message": {"role": "user", "content": "查询我的积分"},
+            "runtimePolicy": {"allowedCapabilityRefs": ["points_balance"]},
+            "credentialBroker": {
+                "credentialRef": "cred-1",
+                "ttlSeconds": 300,
+                "scope": ["points_balance"],
+            },
+        }
+
+    @staticmethod
+    async def _run_agent_with_successful_tool(**kwargs):
+        kwargs["tool_start_callback"](
+            "tool-call-1",
+            "points_balance",
+            {},
+        )
+        kwargs["tool_complete_callback"](
+            "tool-call-1",
+            "points_balance",
+            {},
+            json.dumps({"ok": True, "data": {"balance": 1200}}),
+        )
+        stream_delta_callback = kwargs.get("stream_delta_callback")
+        if stream_delta_callback:
+            stream_delta_callback("积分余额是 1200。")
+        return (
+            {"final_response": "积分余额是 1200。", "completed": True},
+            {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        )
+
+    @pytest.mark.asyncio
+    async def test_json_turn_returns_successful_mcp_tool_result(
+        self,
+        auth_adapter,
+        monkeypatch,
+        tmp_path,
+    ):
+        import gateway.enterprise_workspace as enterprise_workspace
+
+        monkeypatch.setattr(enterprise_workspace, "get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(
+            auth_adapter,
+            "_run_agent",
+            self._run_agent_with_successful_tool,
+        )
+        app = _create_app(auth_adapter)
+        app.router.add_post("/v1/enterprise/turn", auth_adapter._handle_enterprise_turn)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/enterprise/turn",
+                json=self._payload(),
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["events"] == [{
+            "type": "tool_result",
+            "tool": "points_balance",
+            "ok": True,
+            "result": {"ok": True, "data": {"balance": 1200}},
+            "toolCallId": "tool-call-1",
+            "args": {},
+        }]
+
+    @pytest.mark.asyncio
+    async def test_stream_turn_emits_successful_mcp_tool_result(
+        self,
+        auth_adapter,
+        monkeypatch,
+        tmp_path,
+    ):
+        import gateway.enterprise_workspace as enterprise_workspace
+
+        monkeypatch.setattr(enterprise_workspace, "get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(
+            auth_adapter,
+            "_run_agent",
+            self._run_agent_with_successful_tool,
+        )
+        app = _create_app(auth_adapter)
+        app.router.add_post(
+            "/v1/enterprise/turn/stream",
+            auth_adapter._handle_enterprise_turn_stream,
+        )
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/enterprise/turn/stream",
+                json=self._payload(),
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            text = await resp.text()
+
+        assert resp.status == 200
+        assert "event: tool_result" in text
+        assert '"tool": "points_balance"' in text
+        assert '"balance": 1200' in text
+        assert "event: tool_done" in text
 
 
 # ---------------------------------------------------------------------------

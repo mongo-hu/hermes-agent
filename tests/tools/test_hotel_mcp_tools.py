@@ -9,6 +9,10 @@ def test_hotel_mcp_tools_register_individual_toolsets():
         "order_bi_query": "order_bi_query",
         "hotelux_support_playbook": "hotelux_support_playbook",
         "order_points": "order_points",
+        "hotel_package_search": "hotel_package_search",
+        "knowledge_search": "knowledge_search",
+        "user_info": "user_info",
+        "car_service_cities": "car_service_cities",
         "hotel_rates": "hotel_rates",
         "hotel_rate_rule": "hotel_rate_rule",
         "enterprise_result_query": "enterprise_result_query",
@@ -51,6 +55,7 @@ def test_hotel_mcp_tool_schema_uses_public_snake_case_names():
     assert registry.get_entry("resolver_shop_group").schema["name"] == "resolver_shop_group"
     assert registry.get_entry("afternoon_tea_status").schema["name"] == "afternoon_tea_status"
     assert registry.get_entry("activity_result_search").schema["name"] == "activity_result_search"
+    assert registry.get_entry("car_service_cities").schema["name"] == "car_service_cities"
 
 
 def test_hotel_mcp_tools_do_not_register_unsupported_remote_tools():
@@ -80,3 +85,8 @@ def test_hotel_rates_exposes_safe_runtime_result_query_schema():
     query_schema = registry.get_entry("enterprise_result_query").schema["parameters"]
     assert query_schema["required"] == ["resultRef"]
     assert "query" in query_schema["properties"]
+
+
+def test_hotel_package_search_requires_the_source_result_reference():
+    package_schema = registry.get_entry("hotel_package_search").schema["parameters"]
+    assert package_schema["required"] == ["hotelId", "resultRef"]
