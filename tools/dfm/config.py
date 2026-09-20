@@ -8,6 +8,39 @@ from typing import Any, Mapping
 from .errors import DFMError
 
 
+GEOMETRY_BACKEND_OCCT_CPP_EXTERNAL = "occt_cpp_external"
+GEOMETRY_BACKEND_PYTHONOCC_INTERNAL = "pythonocc_internal"
+
+_GEOMETRY_BACKEND_ALIASES = {
+    # Canonical user-facing names describe both implementation and deployment.
+    GEOMETRY_BACKEND_OCCT_CPP_EXTERNAL: GEOMETRY_BACKEND_OCCT_CPP_EXTERNAL,
+    GEOMETRY_BACKEND_PYTHONOCC_INTERNAL: GEOMETRY_BACKEND_PYTHONOCC_INTERNAL,
+    # Legacy values remain readable so existing config and persisted callers do
+    # not break during the naming migration.
+    "occt_cpp": GEOMETRY_BACKEND_OCCT_CPP_EXTERNAL,
+    "step": GEOMETRY_BACKEND_PYTHONOCC_INTERNAL,
+}
+
+_GEOMETRY_BACKEND_ANALYZERS = {
+    GEOMETRY_BACKEND_OCCT_CPP_EXTERNAL: "occt_cpp",
+    GEOMETRY_BACKEND_PYTHONOCC_INTERNAL: "step",
+}
+
+
+def normalize_geometry_backend(value: str) -> str:
+    """Return the canonical user-facing backend identity when known."""
+
+    normalized = value.strip()
+    return _GEOMETRY_BACKEND_ALIASES.get(normalized, normalized)
+
+
+def geometry_backend_analyzer_key(value: str) -> str:
+    """Map a user-facing backend identity to the stable internal Analyzer key."""
+
+    canonical = normalize_geometry_backend(value)
+    return _GEOMETRY_BACKEND_ANALYZERS.get(canonical, canonical)
+
+
 @dataclass(frozen=True)
 class DFMConfig:
     runtime_python: str = "auto"
@@ -30,7 +63,11 @@ class DFMConfig:
     geometry_executable: str = ""
     geometry_timeout_seconds: int = 900
     drawing_enabled: bool = True
-    geometry_backend: str = "occt_cpp"
+    geometry_backend: str = GEOMETRY_BACKEND_OCCT_CPP_EXTERNAL
+
+    @property
+    def geometry_analyzer_key(self) -> str:
+        return geometry_backend_analyzer_key(self.geometry_backend)
 
 
 def _nested(mapping: Mapping[str, Any], *keys: str, default: Any) -> Any:
@@ -233,5 +270,5 @@ def load_dfm_config(config: Mapping[str, Any] | None = None) -> DFMConfig:
             "dfm.geometry.timeout_seconds",
         ),
         drawing_enabled=drawing_enabled,
-        geometry_backend=geometry_backend.strip(),
+        geometry_backend=normalize_geometry_backend(geometry_backend),
     )

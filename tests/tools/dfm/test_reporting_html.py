@@ -407,13 +407,20 @@ def test_bundled_html_wrapper_renders_a_self_contained_contract(tmp_path):
     assert "综合评估" in html
 
 
-def test_html_summary_accounts_for_warning_issues_without_mislabeling_risk(tmp_path):
+def test_html_summary_counts_failed_checks_by_issue_type_without_severity(tmp_path):
     llm_path, runtime_path = _html_contract_fixture(tmp_path / "fixture")
     runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
     llm = json.loads(llm_path.read_text(encoding="utf-8"))
     first = runtime["report"]["issues"][0]
+    first["check_id"] = "check.main_wall_minimum_draft"
     first["severity"] = "warning"
-    second = {**first, "id": "evaluation-wall", "code": "injection.geometry.wall_thickness"}
+    second = {
+        **first,
+        "id": "evaluation-wall",
+        "check_id": "check.main_wall_minimum_thickness",
+        "code": "injection.geometry.wall_thickness",
+        "severity": "critical",
+    }
     runtime["report"]["issues"].append(second)
     runtime["report"]["stats"]["failed_count"] = 2
     llm["issues"].append({
@@ -427,7 +434,7 @@ def test_html_summary_accounts_for_warning_issues_without_mislabeling_risk(tmp_p
     output = tmp_path / "report.html"
     generate_html(llm_path, runtime_path, output)
     html = output.read_text(encoding="utf-8")
-    summary = html.split('<div class="summary-stat-strip">', 1)[1].split(
+    summary = html.split('<div class="summary-stat-strip"', 1)[1].split(
         '<div class="webgl-container"', 1
     )[0]
     cards = re.findall(
@@ -437,11 +444,10 @@ def test_html_summary_accounts_for_warning_issues_without_mislabeling_risk(tmp_p
     by_label = {label: int(value) for value, label in cards}
     assert by_label == {
         "问题总数": 2,
-        "高风险": 0,
-        "中风险": 0,
-        "低风险": 0,
-        "需关注/未分级": 2,
+        "拔模角问题": 1,
+        "壁厚问题": 1,
     }
+    assert "severity-badge" not in html
 
 
 def test_html_summary_embeds_failed_patch_locations_and_cell_based_scalar_fields(tmp_path):
@@ -453,7 +459,6 @@ def test_html_summary_embeds_failed_patch_locations_and_cell_based_scalar_fields
     runtime["global_issue_metadata"] = [{
         "issue_id": "evaluation-draft",
         "source_issue_id": "evaluation-draft",
-        "severity": "unclassified",
     }]
     runtime_path.write_text(json.dumps(runtime, ensure_ascii=False) + "\n", encoding="utf-8")
     (fixture / "evidence_geometry.json").write_text(json.dumps({

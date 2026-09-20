@@ -54,7 +54,7 @@ def service(tmp_path):
     registry.register(ParasolidAnalyzer())
     instance = DFMService(
         config=DFMConfig(
-            geometry_backend="step",
+            geometry_backend="pythonocc_internal",
             geometry_executable=str(tmp_path / "missing-dfm-geometry.exe"),
         ),
         registry=registry,

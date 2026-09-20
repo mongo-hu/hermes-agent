@@ -9,6 +9,7 @@ from typing import Any
 
 from ..contracts import ArtifactRecord, PlanRecord
 from ..errors import DFMError
+from ..issue_types import classify_issue_type, summarize_issue_types
 
 
 def _utc_now() -> str:
@@ -91,10 +92,16 @@ def materialize_result_reports(
             }
             | {str(ref) for ref in evaluation.get("region_refs", [])}
         )
+        metric_id = str(evaluation.get("metric_id") or "dfm")
+        check_id = str(evaluation.get("check_id") or "")
+        issue_type_id, issue_type_label = classify_issue_type(check_id, metric_id)
         issues.append(
             {
                 "id": evaluation_id,
-                "code": str(evaluation.get("metric_id") or "dfm"),
+                "code": metric_id,
+                "check_id": check_id,
+                "issue_type_id": issue_type_id,
+                "issue_type_label": issue_type_label,
                 "title": str(evaluation.get("rule_id") or "DFM rule").replace(
                     "_", " "
                 ).title(),
@@ -141,6 +148,7 @@ def materialize_result_reports(
             "measurement_count": len(measurements),
             "evaluation_count": len(evaluations_payload.get("evaluations", [])),
             "failed_count": len(issues),
+            "issue_type_counts": summarize_issue_types(issues),
             "indeterminate_count": len(indeterminate_checks),
         },
         "issues": issues,

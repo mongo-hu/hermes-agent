@@ -362,6 +362,12 @@ Artifact 和 Hermes 阶段更新推进。
 | `dfm_report.md` | 可读文本报告和兼容交付 | Agent、开发者 |
 | `dfm_report.pptx` | 安装 `python-pptx` 时生成的演示交付报告 | Desktop 用户 |
 
+当前报告与 Desktop 的问题统计口径是“未通过的业务 Check”：`outcome=fail` 即计为问题，
+按 `check_id` 聚合为问题类型；`dfm_report.json.stats.issue_type_counts` 与
+`dfm_viewer.json.issue_type_counts` 保存同一统计结果。旧工件没有 `check_id` 时，展示层才回退到
+`metric_id`（技术指标）分类。规则的 `severity`、`severity_rationale` 仍随结果保留，供后续定级方案使用，
+但当前 Preview、DFM 模型和 HTML 摘要不按高中低风险分组，也不依赖严重程度判断是否有问题。
+
 Desktop 与 HTML 摘要页的红色问题高亮都以 `evidence_geometry.json` 中按 `evaluation_id`
 关联的 FailedPatch 为准，定位到同一渲染网格快照的 `triangle_refs`；不能用写死的壁厚或拔模角阈值
 替代规则判定。Viewer v2 的 `issues[].triangle_refs` 是可选字段：旧工件没有精确三角片时，

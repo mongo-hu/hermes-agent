@@ -212,17 +212,24 @@ dfm:
   defaults:
     process: injection
   geometry:
+    backend: occt_cpp_external
     executable: "C:/path/to/dfm-geometry.exe"
     timeout_seconds: 900
   evidence:
     max_rendered_findings: 12
   retention:
     keep_failed_runs: true
-  geometry:
-    backend: step       # 当前参考实现；生产 OCCT C++ Adapter 注册后改为其 analyzer key
   drawing:
     enabled: true
 ```
+
+`dfm.geometry.backend` 使用几何引擎实现和部署位置命名，不使用 STEP 输入格式作为后端名称：
+
+- `occt_cpp_external`：调用独立的 C++ `dfm-geometry` 可执行程序；
+- `pythonocc_internal`：调用 Agent 仓库内置的 PythonOCC 参考 Worker。
+
+旧值 `occt_cpp`、`step` 仅作为兼容别名继续读取，并分别归一化为上述两个名称；新配置不要再使用旧值。
+内部 Analyzer key 暂时仍为 `occt_cpp`、`step`，用于兼容已有 Plan、Run 和 Artifact，不属于用户配置契约。
 
 `dfm.geometry.executable` 可留空；此时 Hermes 会检查仓库旁的标准 `dfm-geometry` 构建/安装
 目录，再检查 `PATH`。配置相对路径时以 Hermes 仓库根目录解析。找不到程序时 OCCT Capability

@@ -9,6 +9,7 @@ from typing import Any
 
 from .contracts import ArtifactRecord, PlanRecord
 from .errors import DFMError
+from .issue_types import classify_issue_type, summarize_issue_types
 
 
 def _utc_now() -> str:
@@ -119,12 +120,18 @@ def materialize_viewer_manifest(
                     continue
                 seen_triangles.add(key)
                 triangle_refs.append(ref)
+        metric_id = str(evaluation.get("metric_id") or "dfm")
+        check_id = str(evaluation.get("check_id") or "")
+        issue_type_id, issue_type_label = classify_issue_type(check_id, metric_id)
         issues.append({
             "evaluation_id": str(evaluation.get("evaluation_id") or ""),
             "title": str(evaluation.get("rule_id") or "DFM rule")
             .replace("_", " ")
             .title(),
-            "metric_id": str(evaluation.get("metric_id") or "dfm"),
+            "metric_id": metric_id,
+            "check_id": check_id,
+            "issue_type_id": issue_type_id,
+            "issue_type_label": issue_type_label,
             "actual": evaluation.get("actual"),
             "expected": evaluation.get("expected"),
             "operator": str(evaluation.get("operator") or ""),
@@ -178,6 +185,7 @@ def materialize_viewer_manifest(
         "topology_path": Path(by_kind["topology_map"].relative_path).name,
         "measurements_path": Path(by_kind["measurements"].relative_path).name,
         "issue_count": len(issues),
+        "issue_type_counts": summarize_issue_types(issues),
         "issues": issues,
         "feature_count": len(features),
         "features": features,
@@ -222,6 +230,7 @@ def materialize_preview_manifest(
         "topology_path": Path(by_kind["topology_map"].relative_path).name,
         "measurements_path": None,
         "issue_count": 0,
+        "issue_type_counts": [],
         "issues": [],
         "feature_count": 0,
         "features": [],

@@ -7,6 +7,8 @@ import os
 import re
 from pathlib import Path
 
+from ...issue_types import classify_issue_type, summarize_issue_types
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_VENDOR_DIR = SCRIPT_DIR / "vendor"
@@ -192,7 +194,6 @@ def normalize_contracts(llm_path, runtime_path):
             raise ContractError(f"{location} must be an object.")
         require_text(issue, "id", location)
         require_text(issue, "code", location)
-        require_text(issue, "severity", location)
         images = require_list(issue, "images", location)
         for image_index, image_name in enumerate(images):
             if not isinstance(image_name, str) or not image_name:
@@ -257,7 +258,6 @@ def normalize_contracts(llm_path, runtime_path):
             raise ContractError(f"{location} must be an object.")
         issue_id = require_text(item, "issue_id", location)
         require_text(item, "source_issue_id", location)
-        require_text(item, "severity", location)
         global_metadata_by_id[issue_id] = item
 
     no_evidence_ids = {
@@ -276,11 +276,15 @@ def normalize_contracts(llm_path, runtime_path):
             continue
         copy = copy_by_id[issue_id]
         metadata = global_metadata_by_id[issue_id]
+        issue_type_id, issue_type_label = classify_issue_type(
+            issue.get("check_id") or issue.get("issue_type_id"), issue.get("code")
+        )
         global_issues.append(
             {
                 "original_id": metadata["source_issue_id"],
                 "title": copy["human_title"],
-                "severity": metadata["severity"],
+                "issue_type_id": issue_type_id,
+                "issue_type_label": issue_type_label,
                 "description": copy["translated_message"],
             }
         )
@@ -448,6 +452,9 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         if issue.get("image") and issue.get("image") not in image_names:
             image_names.append(issue.get("image"))
         issue_insight = insights.get("issues", {}).get(issue_id, {})
+        issue_type_id, issue_type_label = classify_issue_type(
+            issue.get("check_id") or issue.get("issue_type_id"), code
+        )
         triangle_refs = []
         seen_triangles = set()
         for patch in patches_by_issue.get(issue_id, []):
@@ -466,10 +473,11 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
             "id": issue_id,
             "title": issue_insight.get("human_title") or issue.get("title") or code or "DFM 问题",
             "code": code,
+            "issue_type_id": issue_type_id,
+            "issue_type_label": issue_type_label,
             "mode": ("thickness" if "thickness" in code.lower() else
                      "draft" if "draft" in code.lower() else "issues"),
             "triangle_refs": triangle_refs,
-            "severity": str(issue.get("severity") or "unclassified").lower(),
             "actual": compact_number(metric.get("actual", "N/A")),
             "expected": compact_number(metric.get("expected", "N/A")),
             "operator": metric.get("operator", ""),
@@ -690,7 +698,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         }}
         .summary-stat-strip {{
             position: absolute; left: 15px; right: 15px; bottom: 15px; z-index: 12;
-            display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px;
+            display: grid; grid-template-columns: repeat(var(--summary-stat-columns, 3), minmax(0, 1fr)); gap: 8px;
             padding: 8px; border-radius: 12px;
             background: rgba(9,15,23,.72); border: 1px solid rgba(255,255,255,.12);
             backdrop-filter: blur(14px); box-shadow: 0 12px 26px rgba(0,0,0,.22);
@@ -825,12 +833,12 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
             color:#087E8B; background:#EDF8F8; font:700 8.5pt/1.1 ui-monospace,Consolas,monospace;
             white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
         }}
-        .severity-badge {{
+        .issue-type-badge {{
             display:flex; align-items:center; justify-content:center; gap:7px; border-radius:999px;
             font-size:8.5pt; font-weight:750; letter-spacing:.02em;
             box-shadow:none;
         }}
-        .severity-badge::before {{
+        .issue-type-badge::before {{
             content:""; width:6px; height:6px; flex:0 0 6px;
             border-radius:50%; background:currentColor;
         }}
@@ -923,7 +931,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         }}
         .finding-toolbar .evidence-return,
         .finding-rule-button,
-        .finding-toolbar .severity-badge {{
+        .finding-toolbar .issue-type-badge {{
             position: static; width: auto; height: 34px; min-width: 0;
             display: inline-flex; align-items: center; justify-content: center;
             padding: 0 13px; border-radius: 999px; white-space: nowrap;
@@ -941,7 +949,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         }}
         .finding-toolbar .rules-tooltip {{ position: relative; }}
         .finding-toolbar .rules-content {{ top: 42px !important; }}
-        .finding-toolbar .severity-badge {{ box-shadow: none; }}
+        .finding-toolbar .issue-type-badge {{ box-shadow: none; }}
         ::-webkit-scrollbar {{ width: 8px; height: 8px; }}
         ::-webkit-scrollbar-track {{ background: rgba(148,163,184,.12); border-radius: 10px; }}
         ::-webkit-scrollbar-thumb {{ background: rgba(71,84,103,.34); border-radius: 10px; }}
@@ -1054,28 +1062,31 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
     html += add_text("分析摘要", 0.65, 0.49, 10.8, 0.55, size=26, bold=True, valign="top")
     html += add_text("几何计算、问题分布与模型信息的一页总览", 0.67, 1.02, 11.7, 0.3, size=10, color="667085")
 
-    # Model-centric summary: live 3D is the primary visual, facts sit around it.
-    from collections import Counter
-    severities = [str(i.get("severity") or "unclassified").strip().lower() for i in issues]
-    counts = Counter(severities)
-    # Catalog `warning`/`info` values are not defined as high/medium/low risk.
-    # Show them explicitly rather than silently promoting or hiding them.
-    classified = counts["critical"] + counts["high"] + counts["medium"] + counts["low"]
-    risk_cards = [
-        ("问题总数", len(issues), "14213D", "F2F4F7"),
-        ("高风险", counts["critical"] + counts["high"], "D92D20", "FEF3F2"),
-        ("中风险", counts["medium"], "DC6803", "FFF8EB"),
-        ("低风险", counts["low"], "1570A6", "EFF8FF"),
-        ("需关注/未分级", len(issues) - classified, "667085", "F2F4F7"),
-    ]
+    # A failed Check is a problem. Severity is deliberately not used by the
+    # current report; classify the failed results by business Check instead.
+    issue_type_counts = summarize_issue_types(issues)
+    type_palette = ["D92D20", "087E8B", "7A5AF8", "DC6803", "1570A6", "667085"]
+    issue_type_colors = {
+        item["issue_type_id"]: type_palette[index % len(type_palette)]
+        for index, item in enumerate(issue_type_counts)
+    }
+    summary_cards = [("问题总数", len(issues), "14213D")]
+    summary_cards.extend(
+        (
+            item["label"],
+            item["count"],
+            issue_type_colors[item["issue_type_id"]],
+        )
+        for item in issue_type_counts
+    )
 
     html += f'<div class="webgl-wrapper" style="left:{inch2px(0.65)}px; top:{inch2px(1.48)}px; width:{inch2px(8.35)}px; height:{inch2px(5.38)}px;">'
     html += f'<div class="glass-panel"><button class="glass-btn active" onclick="activateSummary3D(\'issues\')">问题定位</button><button class="glass-btn" onclick="activateSummary3D(\'thickness\')">壁厚场</button><button class="glass-btn" onclick="activateSummary3D(\'draft\')">拔模场</button></div>'
     html += '<div id="activeModeLabel" class="cover-model-label">FAILED CHECKS · GEOMETRY EVIDENCE</div>'
     html += '<div id="modelIssueCallout" class="model-issue-callout"><div class="callout-title"></div><div class="callout-metric"></div></div>'
     html += f'<div class="legend"><div class="legend-item"><div class="legend-color" style="background:#F21F12"></div><span class="legend-text">未通过判定区域</span></div><div class="legend-item"><div class="legend-color" style="background:#9AA6B2"></div><span class="legend-text">半透明结构外壳</span></div></div>'
-    html += '<div class="summary-stat-strip">'
-    for label, value, color, fill in risk_cards:
+    html += f'<div class="summary-stat-strip" style="--summary-stat-columns:{max(1, len(summary_cards))};">'
+    for label, value, color in summary_cards:
         html += f'<div class="summary-stat-item"><div style="width:4px; align-self:stretch; border-radius:4px; background:#{color};"></div><div class="stat-value" data-target="{value}">{value}</div><div class="stat-label">{label}</div></div>'
     html += '</div>'
     html += f'<div class="webgl-container" data-mode="issues"></div></div>\n'
@@ -1157,30 +1168,13 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
 
     # --- SLIDES 4+: FINDINGS ---
     page = 3
-    SEVERITY = {"critical": "B42318", "high": "D92D20", "medium": "DC6803", "low": "1570A6", "info": "475467"}
-    SEVERITY_SURFACE = {
-        "critical": ("B42318", "FEF3F2", "FECDCA"),
-        "high": ("B42318", "FEF3F2", "FECDCA"),
-        "medium": ("B54708", "FFFAEB", "FEDF89"),
-        "low": ("175CD3", "EFF8FF", "B2DDFF"),
-        "info": ("344054", "F2F4F7", "D0D5DD"),
-    }
-
-    severity_labels = {
-        "critical": "严重",
-        "high": "高风险",
-        "medium": "中风险",
-        "low": "低风险",
-        "warning": "需关注",
-        "info": "需关注",
-        "unclassified": "未分级",
-    }
     evidence_issue_ids = [str(item.get("id") or "DFM") for item in issues_with_evidence]
     for issue_index, issue in enumerate(issues_with_evidence):
-        severity = str(issue.get("severity") or "info").lower()
-        color = SEVERITY.get(severity, SEVERITY["info"])
-        badge_text, badge_bg, badge_border = SEVERITY_SURFACE.get(severity, SEVERITY_SURFACE["info"])
-        severity_label = severity_labels.get(severity, "需关注")
+        issue_type_id, issue_type_label = classify_issue_type(
+            issue.get("check_id") or issue.get("issue_type_id"),
+            issue.get("code"),
+        )
+        color = issue_type_colors.get(issue_type_id, "D92D20")
         issue_id = str(issue.get("id") or "DFM")
         title = str(issue.get("title") or issue.get("code") or "DFM 问题")
 
@@ -1222,7 +1216,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
                 </ul>
                 </div>
             </div>
-            <div class="severity-badge" style="color:#{badge_text}; background:#{badge_bg}; border:1px solid #{badge_border};">{severity_label}</div>
+            <div class="issue-type-badge" style="color:#{color}; background:#{color}12; border:1px solid #{color}44;">{issue_type_label}</div>
         </div>\n'''
 
         html += f'<div class="element finding-side-panel" style="left:{inch2px(0.7)}px; top:{inch2px(1.35)}px; width:{inch2px(3.28)}px; height:{inch2px(5.45)}px;"></div>\n'
@@ -1399,7 +1393,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         engine_ver = issues[0]["metric"].get("algorithm_version", "Unknown")
 
     # Tiny Horizontal Footer for System Notes
-    notes_text = f"注：共识别 {len(issues)} 个问题，其中 {len(issues_with_evidence)} 个提供可视证据 ｜ 阈值与评级来自 dfm_report.json ｜ AI 结论请结合工程经验复核"
+    notes_text = f"注：共识别 {len(issues)} 个问题，其中 {len(issues_with_evidence)} 个提供可视证据 ｜ 阈值与判定来自 dfm_report.json ｜ AI 结论请结合工程经验复核"
     trace_text = f"溯源快照 ｜ 引擎：{engine_ver} ｜ CAD 哈希：{input_sha256}"
 
     html += f'<div class="element notes-band" style="left:{inch2px(0.94)}px; top:{inch2px(6.34)}px; width:{inch2px(11.45)}px; height:{inch2px(0.38)}px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; padding-top:7px;">'
@@ -1419,9 +1413,11 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
 
     for idx, iss in enumerate(global_issues):
         s_title = iss.get("title", iss.get("rule_id", "未命名规则"))
-        s_severity = str(iss.get("severity") or "info").lower()
-        s_color = SEVERITY.get(s_severity, SEVERITY["info"])
-        s_severity_label = severity_labels.get(s_severity, "需关注")
+        s_type_id, s_type_label = classify_issue_type(
+            iss.get("check_id") or iss.get("issue_type_id"),
+            iss.get("code"),
+        )
+        s_color = issue_type_colors.get(s_type_id, "D92D20")
         s_desc = iss.get("description", "无详细说明")
 
         iss_json = json.dumps(iss, ensure_ascii=False)
@@ -1431,7 +1427,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         <div onclick="openRawJson('{iss_b64}')" style="cursor:pointer; background:white; border-left:4px solid #{s_color}; padding:15px; border-radius:6px; margin-bottom:15px; box-shadow:0 2px 5px rgba(0,0,0,0.05); transition: transform 0.1s, box-shadow 0.1s;" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 4px 10px rgba(0,0,0,0.1)'" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 2px 5px rgba(0,0,0,0.05)'">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                 <div style="font-weight:bold; font-size:12pt; color:#17202A;">{s_title}</div>
-                <div style="background:#{s_color}22; color:#{s_color}; padding:2px 8px; border-radius:12px; font-size:8pt; font-weight:bold;">{s_severity_label}</div>
+                <div style="background:#{s_color}22; color:#{s_color}; padding:2px 8px; border-radius:12px; font-size:8pt; font-weight:bold;">{s_type_label}</div>
             </div>
             <div style="font-size:10pt; color:#475467; line-height:1.5;">{s_desc}</div>
         </div>
@@ -1623,7 +1619,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
             return keys;
         }}
 
-        // Industrial neutral palette: the part stays quiet while risk carries color.
+        // Industrial neutral palette: the part stays quiet while failed geometry carries color.
         const DEFAULT_COLOR = [0.72, 0.76, 0.80];
         const SAFE_COLOR = [0.34, 0.56, 0.61];
         const WARNING_COLOR = [1.00, 0.64, 0.08];
@@ -2324,7 +2320,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
 
             const techGrid = document.getElementById('traceTechGrid');
             techGrid.replaceChildren();
-            addTechRow('问题代码', `${{item.code || '未提供'}} · ${{item.severity || '未分类'}}`);
+            addTechRow('问题类型', `${{item.issue_type_label || '未提供'}} · ${{item.issue_type_id || item.code || '未提供'}}`);
             addTechRow('规则', `${{item.rule_id || '未提供'}} · 版本 ${{item.rule_version || '-'}} · 哈希 ${{item.rule_hash || '-'}}`);
             addTechRow('测量记录 ID', (item.measurement_ids || []).join(', ') || '未提供');
             addTechRow('分析算法', `${{item.algorithm_version || item.backend || '未提供'}}${{item.certified === undefined || item.certified === null ? '' : ` · certified=${{item.certified}}`}}`);

@@ -38,15 +38,19 @@ import {
   resolveTriangleRefPositions,
   type TopologyFace
 } from './dfm-viewer-geometry'
+import { classifyViewerIssueType, summarizeViewerIssueTypes, type ViewerIssueTypeCount } from './dfm-viewer-issues'
 
 interface ViewerIssue {
   actual: unknown
+  check_id?: string
   evaluation_id: string
   expected: unknown
   geometry_refs: GeometryReference[]
   triangle_refs?: RenderTriangleReference[]
   metric_id: string
   operator: string
+  issue_type_id?: string
+  issue_type_label?: string
   title: string
 }
 
@@ -66,6 +70,7 @@ interface ViewerManifest {
   feature_count?: number
   features?: ViewerFeature[]
   issue_count: number
+  issue_type_counts?: ViewerIssueTypeCount[]
   issues: ViewerIssue[]
   scene_path: string
   scope_id: string
@@ -614,6 +619,14 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
     [manifest]
   )
 
+  const issueTypeCounts = useMemo(() => {
+    if (manifest?.issue_type_counts?.length) {
+      return manifest.issue_type_counts
+    }
+
+    return summarizeViewerIssueTypes(manifest?.issues ?? [])
+  }, [manifest])
+
   const handleFacePick = useCallback(
     (faceIndex: number) => {
       setPickedFaceIndex(faceIndex)
@@ -756,11 +769,23 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
         >
           <section className="min-h-0 overflow-y-auto pr-1">
             <div className="mb-2 flex items-center justify-between">
-              <h2 className="text-xs font-semibold text-red-100">问题点</h2>
+              <h2 className="text-xs font-semibold text-red-100">问题分类与明细</h2>
               <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] text-red-200">
                 {manifest.issue_count}
               </span>
             </div>
+            {issueTypeCounts.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-1.5">
+                {issueTypeCounts.map(item => (
+                  <span
+                    className="rounded-full border border-red-300/15 bg-red-500/10 px-2 py-1 text-[10px] text-red-100"
+                    key={item.issue_type_id}
+                  >
+                    {item.label} <strong className="ml-1 font-semibold">{item.count}</strong>
+                  </span>
+                ))}
+              </div>
+            )}
             {manifest.issues.length === 0 ? (
               <div className="rounded-lg border border-sky-400/20 bg-sky-400/10 p-3 text-xs leading-5 text-sky-100">
                 {status === 'preview'
@@ -772,6 +797,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
                 {manifest.issues.map((issue, index) => {
                   const selected = issue.evaluation_id === activeIssueId
                   const refs = issue.geometry_refs.map(ref => `${ref.kind} #${ref.index}`).join('、') || '无拓扑引用'
+                  const [, issueTypeLabel] = classifyViewerIssueType(issue)
 
                   return (
                     <button
@@ -791,7 +817,8 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
                         </span>
                         <div className="min-w-0">
                           <h2 className="text-xs font-medium text-slate-100">{issue.title}</h2>
-                          <p className="mt-1 text-[11px] text-slate-400">{issue.metric_id}</p>
+                          <p className="mt-1 text-[11px] text-red-200">{issueTypeLabel}</p>
+                          <p className="mt-0.5 text-[10px] text-slate-500">{issue.check_id || issue.metric_id}</p>
                           <p className="mt-1.5 text-[11px] text-slate-300">
                             实际 {formatValue(issue.actual)} {issue.operator} 目标 {formatValue(issue.expected)}
                           </p>

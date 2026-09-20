@@ -1,6 +1,11 @@
 import pytest
 
-from tools.dfm.config import DFMConfig, load_dfm_config
+from tools.dfm.config import (
+    DFMConfig,
+    GEOMETRY_BACKEND_OCCT_CPP_EXTERNAL,
+    GEOMETRY_BACKEND_PYTHONOCC_INTERNAL,
+    load_dfm_config,
+)
 from tools.dfm.errors import DFMError
 
 
@@ -17,7 +22,7 @@ def test_dfm_config_defaults_match_m0_contract():
         keep_failed_runs=True,
         max_evidence_findings=12,
         drawing_enabled=True,
-        geometry_backend="occt_cpp",
+        geometry_backend=GEOMETRY_BACKEND_OCCT_CPP_EXTERNAL,
     )
 
 
@@ -41,7 +46,7 @@ def test_dfm_config_reads_nested_values():
             "drawing": {
                 "enabled": True,
             },
-            "geometry": {"backend": "occt_cpp"},
+            "geometry": {"backend": "pythonocc_internal"},
         }
     })
 
@@ -56,7 +61,24 @@ def test_dfm_config_reads_nested_values():
     assert config.nx_endpoint == "https://nx.example.internal"
     assert config.nx_request_timeout_seconds == 15
     assert config.nx_poll_interval_seconds == 1
-    assert config.geometry_backend == "occt_cpp"
+    assert config.geometry_backend == GEOMETRY_BACKEND_PYTHONOCC_INTERNAL
+    assert config.geometry_analyzer_key == "step"
+
+
+@pytest.mark.parametrize(
+    ("legacy", "canonical", "analyzer_key"),
+    [
+        ("occt_cpp", GEOMETRY_BACKEND_OCCT_CPP_EXTERNAL, "occt_cpp"),
+        ("step", GEOMETRY_BACKEND_PYTHONOCC_INTERNAL, "step"),
+    ],
+)
+def test_dfm_config_normalizes_legacy_geometry_backend_names(
+    legacy, canonical, analyzer_key
+):
+    config = load_dfm_config({"dfm": {"geometry": {"backend": legacy}}})
+
+    assert config.geometry_backend == canonical
+    assert config.geometry_analyzer_key == analyzer_key
 
 
 def test_dfm_config_reads_ontology_sync_contract():

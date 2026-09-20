@@ -213,7 +213,6 @@ def materialize_html_runtime(
                 {
                     "issue_id": issue_id,
                     "source_issue_id": issue_id,
-                    "severity": str(issue.get("severity") or "unclassified"),
                 }
             )
 

@@ -21,6 +21,7 @@ def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path):
             "evaluations": [
                 {
                     "evaluation_id": "evaluation-draft",
+                    "check_id": "check.main_wall_minimum_draft",
                     "metric_id": "injection.geometry.draft",
                     "measurement_ids": ["measurement-draft"],
                     "rule_id": "min_draft_deg",
@@ -103,6 +104,16 @@ def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path):
     assert report["issues"][0]["metric"]["certified"] is False
     assert report["issues"][0]["severity"] == "warning"
     assert report["issues"][0]["severity_rationale"] == "Draft angle affects release."
+    assert report["issues"][0]["check_id"] == "check.main_wall_minimum_draft"
+    assert report["issues"][0]["issue_type_id"] == "check.main_wall_minimum_draft"
+    assert report["issues"][0]["issue_type_label"] == "拔模角问题"
     assert report["issues"][0]["metric"]["criterion_results"][0]["criterion_id"] == "draft_min"
+    assert report["stats"]["issue_type_counts"] == [
+        {
+            "issue_type_id": "check.main_wall_minimum_draft",
+            "label": "拔模角问题",
+            "count": 1,
+        }
+    ]
     assert report["stats"]["indeterminate_count"] == 1
     assert report["indeterminate_checks"][0]["check_id"] == "check.boss_wall"

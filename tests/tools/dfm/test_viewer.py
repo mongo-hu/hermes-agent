@@ -90,6 +90,7 @@ def test_viewer_manifest_maps_failed_evaluation_to_geometry_refs(tmp_path):
                         "evaluation_id": "evaluation-draft",
                         "outcome": "fail",
                         "rule_id": "min_draft_deg",
+                        "check_id": "check.main_wall_minimum_draft",
                         "metric_id": "injection.geometry.draft",
                         "measurement_ids": ["measurement-draft-minimum"],
                         "actual": 0.4,
@@ -121,6 +122,15 @@ def test_viewer_manifest_maps_failed_evaluation_to_geometry_refs(tmp_path):
     assert payload["issue_count"] == 1
     assert payload["issues"][0]["geometry_refs"] == [
         {"kind": "face", "index": 7, "input_sha256": "a" * 64}
+    ]
+    assert payload["issues"][0]["check_id"] == "check.main_wall_minimum_draft"
+    assert payload["issues"][0]["issue_type_label"] == "拔模角问题"
+    assert payload["issue_type_counts"] == [
+        {
+            "issue_type_id": "check.main_wall_minimum_draft",
+            "label": "拔模角问题",
+            "count": 1,
+        }
     ]
     assert payload["feature_count"] == 1
     assert payload["features"][0] == {
@@ -159,6 +169,7 @@ def test_preview_manifest_renders_before_rule_evaluation(tmp_path):
     assert payload["input_sha256"] == "b" * 64
     assert payload["issue_count"] == 0
     assert payload["issues"] == []
+    assert payload["issue_type_counts"] == []
     assert payload["feature_count"] == 0
     assert payload["features"] == []
 

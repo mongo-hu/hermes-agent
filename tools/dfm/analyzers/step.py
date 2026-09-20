@@ -108,10 +108,10 @@ class StepAnalyzer:
             "The isolated PythonOCC STEP reference analyzer is available.",
             details={
                 "worker_version": self.version,
-                "backend_id": "pythonocc_reference",
+                "backend_id": "pythonocc_internal",
                 "role": "reference_regression",
                 "production_ready": False,
-                "production_target": "external_occt_cpp",
+                "production_target": "occt_cpp_external",
                 "supported_processes": ["die_casting", "injection"],
                 "format_ids": ["step"],
                 "representation": "brep",

@@ -21,7 +21,7 @@ from hermes_constants import get_hermes_home
 from .analyzers.base import AnalyzerContext, CancellationToken
 from .analyzers.fusion import GLOBAL_OBSERVATION_KINDS
 from .analyzers.registry import AnalyzerRegistry, build_default_registry
-from .config import DFMConfig, load_dfm_config
+from .config import DFMConfig, geometry_backend_analyzer_key, load_dfm_config
 from .contracts import (
     ArtifactRecord,
     ClarificationRecord,
@@ -1444,14 +1444,14 @@ class DFMService:
     ) -> str:
         requested_key = str(requested or "").strip()
         if requested_key and requested_key not in {"fusion", "geometry"}:
-            return requested_key
+            return geometry_backend_analyzer_key(requested_key)
         geometry_kinds = {
             item.kind
             for item in self._active_inputs(manifest)
             if item.kind in {"step", "parasolid"}
         }
         if "step" in geometry_kinds:
-            return self.config.geometry_backend
+            return self.config.geometry_analyzer_key
         if "parasolid" in geometry_kinds:
             return "parasolid"
         if manifest.input_mode == "drawing":
