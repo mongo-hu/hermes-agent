@@ -30,6 +30,10 @@ STAGE_RULE_EVALUATION = "rule_evaluation"
 STAGE_EVIDENCE_RENDER = "evidence_render"
 STAGE_REPORT_MATERIALIZE = "report_materialize"
 STAGE_REPORT_EDITING = "report_editing"
+STAGE_REPORT_QUEUED = "report_queued"
+STAGE_REPORT_RENDERING = "report_rendering"
+STAGE_REPORT_LAYOUT = "report_layout"
+STAGE_REPORT_PACKAGING = "report_packaging"
 STAGE_COMPLETE = "complete"
 
 

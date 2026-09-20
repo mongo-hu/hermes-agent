@@ -22,7 +22,7 @@ def _call(kind: str, args: dict, **context) -> str:
             working_dir = resolve_task_overrides(context.get("task_id")).get("cwd")
             if working_dir:
                 params["working_dir"] = working_dir
-        if kind == "analysis" and args.get("action") == "start":
+        if kind == "analysis" and args.get("action") in {"start", "render_html"}:
             params["_tool_progress_callback"] = context.get("tool_progress_callback")
             params["_tool_call_id"] = context.get("tool_call_id")
         result = (
@@ -71,7 +71,7 @@ DFM_PROJECT_SCHEMA = {
 
 DFM_ANALYSIS_SCHEMA = {
     "name": "dfm_analysis",
-    "description": "Run the DFM workflow. Drawing OCR is deterministic; use drawing_context and the current Hermes model once to organize every explicit drawing fact into validated drawing observations. Use fusion_context and submit_fusion_links for Agent semantic proposals that the service checks against geometry IDs. An HTML-capable STEP run (PDF drawing optional) remains reporting (not succeeded) after deterministic analysis; call report_context to obtain the complete Runtime, then author dfm-html-llm/v1 and call render_html. Only a validated report.html completes the run. Do not reinterpret OCR during reporting. The external OCCT C++ analyzer is integrated as experimental; PythonOCC remains the reference STEP backend and NX/Parasolid remains optional. Unavailable analyzers fail explicitly; never infer engineering findings from that status.",
+    "description": "Run the DFM workflow. Drawing OCR is deterministic; use drawing_context and the current Hermes model once to organize every explicit drawing fact into validated drawing observations. Use fusion_context and submit_fusion_links for Agent semantic proposals that the service checks against geometry IDs. An HTML-capable STEP run (PDF drawing optional) remains reporting (not succeeded) after deterministic analysis; call report_context to obtain the complete Runtime, then author dfm-html-llm/v1 and call render_html. render_html queues background rendering and returns immediately; wait for succeeded status or its completion notification before calling result. Only a validated report.html completes the run. Do not reinterpret OCR during reporting. The external OCCT C++ analyzer is integrated as experimental; PythonOCC remains the reference STEP backend and NX/Parasolid remains optional. Unavailable analyzers fail explicitly; never infer engineering findings from that status.",
     "parameters": {
         "type": "object",
         "properties": {

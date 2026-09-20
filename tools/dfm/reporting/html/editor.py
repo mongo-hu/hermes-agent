@@ -102,7 +102,11 @@ def wrap_editor_report(source: Path, llm_path: Path, runtime_path: Path, output:
         'present': {'controls': True, 'progress': True}, 'slides': layout['slides'],
         'dfm': {
             'version': 1, 'sourceSha256': hashlib.sha256(raw).hexdigest(),
-            'sourceGzip': base64.b64encode(gzip.compress(raw, mtime=0)).decode('ascii'),
+            # Level 6 keeps the report self-contained and compact while avoiding
+            # level-9 CPU cost on mesh-heavy reports.
+            'sourceGzip': base64.b64encode(
+                gzip.compress(raw, compresslevel=6, mtime=0)
+            ).decode('ascii'),
             'styles': layout['styles'], 'records': layout['records'],
             'contracts': {
                 'llm': llm['schema_version'], 'runtime': runtime['schema_version'],

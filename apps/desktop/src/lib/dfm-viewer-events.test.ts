@@ -96,6 +96,16 @@ describe('dfmHtmlReportPathFromToolComplete', () => {
     ).toBe('C:\\hermes\\runs\\run_1\\artifacts\\report.html')
   })
 
+  it('returns a completed HTML report path from a background render event', () => {
+    expect(
+      dfmHtmlReportPathFromToolComplete({
+        name: 'dfm_analysis',
+        status: 'succeeded',
+        report_html: 'C:\\hermes\\runs\\run_1\\artifacts\\report.html'
+      })
+    ).toBe('C:\\hermes\\runs\\run_1\\artifacts\\report.html')
+  })
+
   it('ignores report-pending runs and non-HTML artifacts', () => {
     expect(
       dfmHtmlReportPathFromToolComplete({

@@ -234,6 +234,135 @@ def test_html_capable_run_succeeds_only_after_html_is_attached(job_env):
     assert completed.progress_percent == 100
 
 
+def test_report_rendering_is_queued_and_reports_progress(job_env):
+    workspace, project_id, registry, _, managers = job_env
+    manager = JobManager(workspace, registry, DFMConfig(), reconcile=False)
+    managers.append(manager)
+    run_id = "run_async_report"
+    project_dir = workspace.project_dir(project_id)
+    output_dir = project_dir / "runs" / run_id / "artifacts"
+    output_dir.mkdir(parents=True)
+    runtime_path = output_dir / "runtime_data.jsonl"
+    runtime_path.write_text('{"schema_version":"dfm-html-runtime/v1"}\n', encoding="utf-8")
+    runtime = ArtifactRecord(
+        f"artifact_{run_id}_report_html_runtime",
+        "report_html_runtime",
+        runtime_path.relative_to(project_dir).as_posix(),
+        "application/x-ndjson",
+        "2026-07-14T00:00:00Z",
+    )
+    ManifestStore(project_dir).update(
+        lambda current: replace(
+            current,
+            runs=[
+                RunRecord(
+                    run_id,
+                    "test",
+                    "1",
+                    RunStatus.REPORTING,
+                    "2026-07-14T00:00:00Z",
+                    "2026-07-14T00:00:00Z",
+                    artifacts=[runtime],
+                    stage="report_editing",
+                    progress_percent=98,
+                )
+            ],
+            artifacts=[runtime],
+        )
+    )
+    started = Event()
+    release = Event()
+    updates = []
+
+    def render(progress, cancellation):
+        progress("report_layout", 99)
+        started.set()
+        while not release.wait(0.01):
+            cancellation.raise_if_cancelled()
+        html_path = output_dir / "report.html"
+        html_path.write_text("<html>report</html>", encoding="utf-8")
+        return [
+            ArtifactRecord(
+                f"artifact_{run_id}_report_html",
+                "report_html",
+                html_path.relative_to(project_dir).as_posix(),
+                "text/html; charset=utf-8",
+                "2026-07-14T00:00:00Z",
+            )
+        ]
+
+    queued = manager.start_report(
+        project_id,
+        run_id,
+        render,
+        on_update=updates.append,
+    )
+
+    assert queued.status is RunStatus.REPORTING
+    assert queued.stage == "report_queued"
+    assert started.wait(1)
+    rendering = manager.status(project_id, run_id)
+    assert rendering.status is RunStatus.REPORTING
+    assert rendering.stage == "report_layout"
+    assert rendering.progress_percent == 99
+
+    release.set()
+    completed = _wait_status(manager, project_id, run_id, RunStatus.SUCCEEDED)
+    assert completed.stage == "complete"
+    assert completed.progress_percent == 100
+    assert any(item.kind == "report_html" for item in completed.artifacts)
+    deadline = time.monotonic() + 1
+    while updates[-1].status is not RunStatus.SUCCEEDED and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert updates[-1].status is RunStatus.SUCCEEDED
+
+
+def test_report_rendering_failure_is_persisted_and_notified(job_env):
+    workspace, project_id, registry, _, managers = job_env
+    manager = JobManager(workspace, registry, DFMConfig(), reconcile=False)
+    managers.append(manager)
+    run_id = "run_report_failure"
+    ManifestStore(workspace.project_dir(project_id)).update(
+        lambda current: replace(
+            current,
+            runs=[
+                RunRecord(
+                    run_id,
+                    "test",
+                    "1",
+                    RunStatus.REPORTING,
+                    "2026-07-14T00:00:00Z",
+                    "2026-07-14T00:00:00Z",
+                    stage="report_editing",
+                    progress_percent=98,
+                )
+            ],
+        )
+    )
+    updates = []
+
+    def render(_progress, _cancellation):
+        raise DFMError("report_generation_failed", "layout failed")
+
+    manager.start_report(
+        project_id,
+        run_id,
+        render,
+        on_update=updates.append,
+    )
+
+    failed = _wait_status(manager, project_id, run_id, RunStatus.FAILED)
+    assert failed.stage == "failed"
+    assert failed.error == {
+        "code": "report_generation_failed",
+        "message": "layout failed",
+    }
+    deadline = time.monotonic() + 1
+    while updates[-1].status is not RunStatus.FAILED and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert updates[-1].status is RunStatus.FAILED
+
+
 def test_run_persists_incremental_progress_artifacts_and_event_log(job_env):
     workspace, project_id, _, _, managers = job_env
     analyzer = ProgressAnalyzer()

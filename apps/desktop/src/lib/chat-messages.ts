@@ -80,6 +80,7 @@ export type GatewayEventPayload = {
   project_id?: string
   run_id?: string
   viewer_manifest?: string
+  report_html?: string
   // moa.reference / moa.aggregating (Mixture of Agents per-model relay)
   label?: string
   index?: number

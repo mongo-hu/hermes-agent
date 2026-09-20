@@ -104,7 +104,7 @@ def test_dfm_project_resolves_quoted_desktop_ref_from_task_cwd(tmp_path):
     assert added["input"]["source_name"] == "mold bracket.step"
 
 
-def test_dfm_start_receives_internal_progress_context_without_schema_changes(
+def test_dfm_background_actions_receive_progress_context_without_schema_changes(
     monkeypatch,
 ):
     from tools import dfm_tool
@@ -121,18 +121,23 @@ def test_dfm_start_receives_internal_progress_context_without_schema_changes(
     monkeypatch.setattr(dfm_tool, "get_dfm_service", lambda: FakeService())
     discover_builtin_tools()
 
-    result = json.loads(
-        registry.dispatch(
-            "dfm_analysis",
-            {"action": "start", "project_id": "dfm_1", "plan_id": "plan_1"},
-            tool_progress_callback=callback,
-            tool_call_id="tool_1",
+    for action, arguments in (
+        ("start", {"plan_id": "plan_1"}),
+        ("render_html", {"run_id": "run_1", "llm_content": {}}),
+    ):
+        captured.clear()
+        result = json.loads(
+            registry.dispatch(
+                "dfm_analysis",
+                {"action": action, "project_id": "dfm_1", **arguments},
+                tool_progress_callback=callback,
+                tool_call_id=f"tool_{action}",
+            )
         )
-    )
 
-    assert result["ok"] is True
-    assert captured["_tool_progress_callback"] is callback
-    assert captured["_tool_call_id"] == "tool_1"
+        assert result["ok"] is True
+        assert captured["_tool_progress_callback"] is callback
+        assert captured["_tool_call_id"] == f"tool_{action}"
 
 
 def test_dfm_start_schema_requires_explicit_planned_id():

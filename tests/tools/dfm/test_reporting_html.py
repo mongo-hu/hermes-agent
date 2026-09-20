@@ -3,6 +3,7 @@ from dataclasses import replace
 from pathlib import Path
 import re
 import shutil
+import time
 
 import pytest
 
@@ -16,6 +17,7 @@ from tools.dfm.contracts import (
 from tools.dfm.errors import DFMError
 from tools.dfm.project.workspace import DFMWorkspace
 from tools.dfm.reporting.html import materialize_html_runtime, render_html_report
+from tools.dfm.reporting.html.editor_layout import layout_markup
 from tools.dfm.reporting.html.template import generate_html
 
 
@@ -653,13 +655,19 @@ def test_render_html_action_attaches_agent_content_and_html(
     )
 
     captured = {}
+    progress_events = []
 
-    def fake_render(llm_path, _runtime_path, output_path):
+    def fake_render(llm_path, _runtime_path, output_path, *, on_progress=None):
         captured.update(json.loads(llm_path.read_text(encoding="utf-8")))
+        if on_progress is not None:
+            on_progress("report_layout")
         output_path.write_text("<html>report</html>", encoding="utf-8")
         return output_path
 
     monkeypatch.setattr(service_module, "render_html_report", fake_render)
+    def capture_progress(event_type, name, preview, _args, **details):
+        progress_events.append((event_type, name, preview, details))
+
     llm_content = {
         "schema_version": "dfm-html-llm/v1",
         "part": {
@@ -693,6 +701,23 @@ def test_render_html_action_attaches_agent_content_and_html(
             project_id=manifest.project_id,
             run_id=run_id,
             llm_content=llm_content,
+            _tool_progress_callback=capture_progress,
+            _tool_call_id="tool-render-html",
+        )
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            status = service.analysis(
+                "status",
+                project_id=manifest.project_id,
+                run_id=run_id,
+            )
+            if status["run"]["status"] == "succeeded":
+                break
+            time.sleep(0.01)
+        finished = service.analysis(
+            "result",
+            project_id=manifest.project_id,
+            run_id=run_id,
         )
     finally:
         service.close()
@@ -701,12 +726,36 @@ def test_render_html_action_attaches_agent_content_and_html(
     assert context["ready"] is True
     assert context["runtime"] == runtime_payload
     assert exc_info.value.code == "result_not_ready"
-    assert result["run"]["status"] == "succeeded"
-    assert result["run"]["stage"] == "complete"
-    assert result["run"]["progress_percent"] == 100
-    assert result["report"]["kind"] == "report_html"
-    kinds = {item["kind"] for item in result["run"]["artifacts"]}
+    assert result["accepted"] is True
+    assert result["complete"] is False
+    assert result["next_action"] == "status"
+    assert result["run"]["status"] == "reporting"
+    assert finished["run"]["status"] == "succeeded"
+    assert finished["run"]["stage"] == "complete"
+    assert finished["run"]["progress_percent"] == 100
+    kinds = {item["kind"] for item in finished["run"]["artifacts"]}
     assert {"report_html_runtime", "report_html_llm", "report_html"} <= kinds
+    assert any(event[3]["stage"] == "report_layout" for event in progress_events)
+    assert progress_events[-1][0] == "background.tool.complete"
+    assert progress_events[-1][3]["status"] == "succeeded"
+    assert progress_events[-1][3]["report_html"].endswith("report.html")
+
+
+def test_layout_markup_skips_embedded_geometry_scripts_but_keeps_slide_dom():
+    large_scene = "mesh-coordinate," * 10000
+    markup = (
+        "<html><head><style>.slide{width:10px}</style>"
+        f"<script>const sceneData='{large_scene}'</script></head>"
+        "<body><section class='slide'>report</section>"
+        "<script src='three.js'></script></body></html>"
+    )
+
+    prepared = layout_markup(markup)
+
+    assert "mesh-coordinate" not in prepared
+    assert "<script" not in prepared.lower()
+    assert ".slide{width:10px}" in prepared
+    assert "<section class='slide'>report</section>" in prepared
 
 
 def test_report_context_returns_pending_without_claiming_success(tmp_path):

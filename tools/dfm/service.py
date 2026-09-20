@@ -12,7 +12,7 @@ import time
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from agent.context_references import parse_context_references
@@ -1875,8 +1875,10 @@ class DFMService:
         project_id: str,
         run_id: str,
         llm_content: object,
+        *,
+        on_update: Callable[[RunRecord], None] | None = None,
     ) -> dict[str, Any]:
-        """Render HTML after the current Agent supplies the narrative contract."""
+        """Queue HTML rendering after the Agent supplies the narrative contract."""
 
         if not isinstance(llm_content, dict):
             raise DFMError(
@@ -1898,6 +1900,9 @@ class DFMService:
                     **existing_html.to_dict(),
                     "path": str(project_dir / existing_html.relative_path),
                 },
+                "accepted": False,
+                "complete": True,
+                "next_action": "result",
             }
         if run.status not in {RunStatus.REPORTING, RunStatus.SUCCEEDED}:
             raise DFMError(
@@ -1924,37 +1929,53 @@ class DFMService:
         output_dir = project_dir / "runs" / run_id / "artifacts"
         llm_path = output_dir / "llm_content.jsonl"
         html_path = output_dir / "report.html"
-        suffix = uuid4().hex
-        llm_candidate = llm_path.with_name(f".{llm_path.name}.{suffix}.tmp")
-        html_candidate = html_path.with_name(f".{html_path.name}.{suffix}.candidate")
         try:
-            llm_candidate.write_text(
+            llm_payload = (
                 json.dumps(llm_content, ensure_ascii=False, separators=(",", ":"))
-                + "\n",
-                encoding="utf-8",
+                + "\n"
             )
-            render_html_report(
-                llm_candidate,
-                project_dir / runtime_artifact.relative_path,
-                html_candidate,
-            )
-            os.replace(llm_candidate, llm_path)
-            os.replace(html_candidate, html_path)
-        except (OSError, TypeError, ValueError) as exc:
+        except (TypeError, ValueError) as exc:
             raise DFMError(
                 "report_content_invalid",
-                "The Agent-authored HTML report content could not be materialized.",
+                "The Agent-authored HTML report content is not JSON serializable.",
                 {"error": str(exc)},
             ) from exc
-        finally:
-            llm_candidate.unlink(missing_ok=True)
-            html_candidate.unlink(missing_ok=True)
 
-        now = _utc_now()
-        attached = self.jobs.attach_artifacts(
-            project_id,
-            run_id,
-            [
+        def render(
+            update_progress: Callable[[str, int], None],
+            cancellation: CancellationToken,
+        ) -> list[ArtifactRecord]:
+            suffix = uuid4().hex
+            llm_candidate = llm_path.with_name(f".{llm_path.name}.{suffix}.tmp")
+            html_candidate = html_path.with_name(
+                f".{html_path.name}.{suffix}.candidate"
+            )
+            try:
+                cancellation.raise_if_cancelled()
+                llm_candidate.write_text(llm_payload, encoding="utf-8")
+                render_html_report(
+                    llm_candidate,
+                    project_dir / runtime_artifact.relative_path,
+                    html_candidate,
+                    on_progress=lambda stage: update_progress(stage, 99),
+                )
+                cancellation.raise_if_cancelled()
+                os.replace(llm_candidate, llm_path)
+                os.replace(html_candidate, html_path)
+            except DFMError:
+                raise
+            except (OSError, TypeError, ValueError) as exc:
+                raise DFMError(
+                    "report_content_invalid",
+                    "The Agent-authored HTML report content could not be materialized.",
+                    {"error": str(exc)},
+                ) from exc
+            finally:
+                llm_candidate.unlink(missing_ok=True)
+                html_candidate.unlink(missing_ok=True)
+
+            now = _utc_now()
+            return [
                 ArtifactRecord(
                     f"artifact_{run_id}_report_html_llm",
                     "report_html_llm",
@@ -1969,17 +1990,112 @@ class DFMService:
                     "text/html; charset=utf-8",
                     now,
                 ),
-            ],
-        )
-        report_artifact = next(
-            item for item in attached.artifacts if item.kind == "report_html"
+            ]
+
+        queued = self.jobs.start_report(
+            project_id,
+            run_id,
+            render,
+            on_update=on_update,
         )
         return {
             "ok": True,
             "project_id": project_id,
-            "run": self._run_dict(project_id, attached),
-            "report": {**report_artifact.to_dict(), "path": str(html_path)},
+            "accepted": queued.status is RunStatus.REPORTING,
+            "complete": queued.status is RunStatus.SUCCEEDED,
+            "next_action": (
+                "result" if queued.status is RunStatus.SUCCEEDED else "status"
+            ),
+            "run": self._run_dict(project_id, queued),
         }
+
+    def _tool_progress_listener(
+        self,
+        project_id: str,
+        params: dict[str, Any],
+    ) -> Callable[[RunRecord], None]:
+        progress_callback = params.get("_tool_progress_callback")
+        tool_call_id = str(params.get("_tool_call_id") or "")
+
+        def on_update(updated: RunRecord) -> None:
+            if not callable(progress_callback):
+                return
+            terminal = updated.status in {
+                RunStatus.SUCCEEDED,
+                RunStatus.FAILED,
+                RunStatus.CANCELLED,
+                RunStatus.BLOCKED,
+            }
+            latest = updated.artifacts[-1] if updated.artifacts else None
+            viewer = next(
+                (
+                    item
+                    for item in reversed(updated.artifacts)
+                    if item.kind == "dfm_viewer"
+                ),
+                None,
+            )
+            html_report = next(
+                (
+                    item
+                    for item in reversed(updated.artifacts)
+                    if item.kind == "report_html"
+                ),
+                None,
+            )
+            latest_text = (
+                f", latest {latest.kind}: {latest.relative_path}"
+                if latest is not None
+                else ""
+            )
+            preview = (
+                f"DFM {updated.status.value}: {updated.stage or 'working'} "
+                f"({updated.progress_percent}%, {len(updated.artifacts)} artifacts{latest_text})"
+            )
+            try:
+                progress_callback(
+                    "background.tool.complete"
+                    if terminal
+                    else "background.tool.progress",
+                    "dfm_analysis",
+                    preview,
+                    None,
+                    tool_id=tool_call_id,
+                    status=updated.status.value,
+                    stage=updated.stage,
+                    percent=updated.progress_percent,
+                    artifact_count=len(updated.artifacts),
+                    latest_artifact=(latest.relative_path if latest else None),
+                    latest_artifact_kind=(latest.kind if latest else None),
+                    run_id=updated.run_id,
+                    project_id=project_id,
+                    viewer_manifest=(
+                        str(
+                            (
+                                self.workspace.project_dir(project_id)
+                                / viewer.relative_path
+                            ).resolve()
+                        )
+                        if viewer is not None
+                        else None
+                    ),
+                    report_html=(
+                        str(
+                            (
+                                self.workspace.project_dir(project_id)
+                                / html_report.relative_path
+                            ).resolve()
+                        )
+                        if html_report is not None
+                        else None
+                    ),
+                    is_error=updated.status
+                    in {RunStatus.FAILED, RunStatus.BLOCKED},
+                )
+            except Exception:
+                return
+
+        return on_update
 
     def project(self, action: str, **params: Any) -> dict[str, Any]:
         if action == "create":
@@ -2568,74 +2684,12 @@ class DFMService:
                     "DFM analysis plan is no longer executable; create a new plan.",
                     {"plan_id": plan.plan_id, "status": plan.status},
                 )
-            progress_callback = params.get("_tool_progress_callback")
-            tool_call_id = str(params.get("_tool_call_id") or "")
-
-            def on_update(updated: RunRecord) -> None:
-                if not callable(progress_callback):
-                    return
-                terminal = updated.status in {
-                    RunStatus.SUCCEEDED,
-                    RunStatus.FAILED,
-                    RunStatus.CANCELLED,
-                    RunStatus.BLOCKED,
-                }
-                latest = updated.artifacts[-1] if updated.artifacts else None
-                viewer = next(
-                    (
-                        item
-                        for item in reversed(updated.artifacts)
-                        if item.kind == "dfm_viewer"
-                    ),
-                    None,
-                )
-                latest_text = (
-                    f", latest {latest.kind}: {latest.relative_path}"
-                    if latest is not None
-                    else ""
-                )
-                preview = (
-                    f"DFM {updated.status.value}: {updated.stage or 'working'} "
-                    f"({updated.progress_percent}%, {len(updated.artifacts)} artifacts{latest_text})"
-                )
-                try:
-                    progress_callback(
-                        "background.tool.complete"
-                        if terminal
-                        else "background.tool.progress",
-                        "dfm_analysis",
-                        preview,
-                        None,
-                        tool_id=tool_call_id,
-                        status=updated.status.value,
-                        stage=updated.stage,
-                        percent=updated.progress_percent,
-                        artifact_count=len(updated.artifacts),
-                        latest_artifact=(latest.relative_path if latest else None),
-                        latest_artifact_kind=(latest.kind if latest else None),
-                        run_id=updated.run_id,
-                        project_id=project_id,
-                        viewer_manifest=(
-                            str(
-                                (
-                                    self.workspace.project_dir(project_id)
-                                    / viewer.relative_path
-                                ).resolve()
-                            )
-                            if viewer is not None
-                            else None
-                        ),
-                        is_error=updated.status in {RunStatus.FAILED, RunStatus.BLOCKED},
-                    )
-                except Exception:
-                    return
-
             run = self.jobs.start(
                 project_id,
                 plan.analyzer_keys[0],
                 plan=plan,
                 idempotency_key=params.get("idempotency_key"),
-                on_update=on_update,
+                on_update=self._tool_progress_listener(project_id, params),
             )
             return {
                 "ok": True,
@@ -2656,6 +2710,7 @@ class DFMService:
                 project_id,
                 run_id,
                 params.get("llm_content"),
+                on_update=self._tool_progress_listener(project_id, params),
             )
         if action == "status":
             run = self.jobs.status(project_id, run_id)
