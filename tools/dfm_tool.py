@@ -204,10 +204,8 @@ DFM_ANALYSIS_SCHEMA = {
                     "parasolid",
                     "drawing",
                     "fusion",
-                    "occt_cpp",
-                    "step",
                 ],
-                "description": "Geometry execution path. Use occt_cpp_external for dfm-geometry.exe or pythonocc_internal for the Agent-owned PythonOCC worker. occt_cpp and step are deprecated compatibility aliases.",
+                "description": "Geometry execution path. Use occt_cpp_external for dfm-geometry.exe or pythonocc_internal for the Agent-owned PythonOCC worker.",
             },
             "idempotency_key": {"type": "string"},
             "llm_content": {
