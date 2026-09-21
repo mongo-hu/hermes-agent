@@ -94,10 +94,12 @@ test('Windows PATH casing and delimiter are preserved without POSIX sane entries
 
   assert.equal(pathEnvKey({ Path: 'x' }, 'win32'), 'Path')
   assert.equal(env.PATH, undefined)
-  assert.ok(env.Path.startsWith('C:\\Users\\test\\AppData\\Local\\hermes\\node\\bin;'))
-  assert.ok(env.Path.includes('\\venv\\Scripts;'))
-  assert.ok(env.Path.includes(';C:\\Windows\\System32;C:\\Windows'))
-  assert.equal(env.Path.includes('/opt/homebrew/bin'), false)
+  const windowsPath = env.Path
+  assert.ok(windowsPath, 'Windows backend Path should be defined')
+  assert.ok(windowsPath.startsWith('C:\\Users\\test\\AppData\\Local\\hermes\\node\\bin;'))
+  assert.ok(windowsPath.includes('\\venv\\Scripts;'))
+  assert.ok(windowsPath.includes(';C:\\Windows\\System32;C:\\Windows'))
+  assert.equal(windowsPath.includes('/opt/homebrew/bin'), false)
   assert.equal(env.PYTHONUTF8, '1')
   assert.equal(env.PYTHONIOENCODING, 'utf-8')
 })
