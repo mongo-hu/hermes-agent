@@ -2250,6 +2250,22 @@ def set_runtime_main(
     _RUNTIME_MAIN_API_MODE = (api_mode or "").strip()
 
 
+def get_runtime_main() -> Dict[str, str]:
+    """Return a snapshot of the active main-agent runtime for internal calls.
+
+    The API key is intentionally process-local and callers must never persist or
+    log this mapping.  A snapshot avoids routing a long-running auxiliary call
+    through a different conversation's subsequently selected runtime.
+    """
+    return {
+        "provider": _RUNTIME_MAIN_PROVIDER,
+        "model": _RUNTIME_MAIN_MODEL,
+        "base_url": _RUNTIME_MAIN_BASE_URL,
+        "api_key": _RUNTIME_MAIN_API_KEY,
+        "api_mode": _RUNTIME_MAIN_API_MODE,
+    }
+
+
 def clear_runtime_main() -> None:
     """Clear the runtime override (e.g. on session end)."""
     global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL

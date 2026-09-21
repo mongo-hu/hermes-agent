@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from agent.skill_utils import parse_frontmatter
+
 
 SKILL = Path("skills/manufacturing/dfm-analysis/SKILL.md")
 
@@ -7,9 +9,19 @@ SKILL = Path("skills/manufacturing/dfm-analysis/SKILL.md")
 def test_dfm_skill_exists_with_discoverable_metadata():
     text = SKILL.read_text(encoding="utf-8")
 
+    frontmatter, _ = parse_frontmatter(text)
+    description = frontmatter["description"]
+
     assert text.startswith("---\nname: dfm-analysis\n")
-    assert "description: Use when" in text
+    assert len(description) <= 60
+    assert "STEP/STP" in description
+    assert "PDF" in description
+    assert "PNG/JPG" in description
+    assert "DFM" in description
     assert "STEP" in text and "drawing" in text
+    assert "every attached STEP/STP" in text
+    assert "register both before" in text
+    assert "never silently select only the CAD input" in text
 
 
 def test_dfm_skill_prescribes_safe_complete_tool_workflow():
@@ -29,6 +41,7 @@ def test_dfm_skill_prescribes_safe_complete_tool_workflow():
         "capability",
         "artifact",
         "drawing_context",
+        "submit_crop_plan",
         "submit_observations",
         "fusion_context",
         "submit_fusion_links",
@@ -42,9 +55,12 @@ def test_dfm_skill_prescribes_safe_complete_tool_workflow():
     assert "not_implemented" in text
     assert "current Hermes conversation model" in text
     assert "Do not call a second model endpoint" in text
-    assert "every page listed in `available_pages`" in text
+    assert "two background calls" in text
+    assert "No separate vision API" in text
+    assert "do not open a PDF in a browser" in text
+    assert "An empty crop plan is rejected" in text
     assert "sole drawing-semantic source" in text
-    assert "Do not call `drawing_context` or reinterpret OCR" in text
+    assert "Do not call `drawing_context` or reinterpret the drawing" in text
     assert "every persisted `global_note` value" in text
     assert "final report editor" in text
     assert "translate/localize the report prose into the user's language" in text
@@ -62,6 +78,6 @@ def test_dfm_skill_defines_the_m1_injection_plan_boundary():
     assert "action=context" in text
     assert "injection" in text
     assert "unsupported_capability" in text
-    assert "Agent interpretation -> validated persistence -> plan -> start" in text
+    assert "full-page crop planning" in text
     assert "never invent" in text.lower()
     assert "standards" in text.lower()

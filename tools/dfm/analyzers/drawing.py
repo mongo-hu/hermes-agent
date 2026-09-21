@@ -1,4 +1,4 @@
-"""Adapter from isolated 2D OCR to Agent-readable evidence artifacts."""
+"""Adapter for deterministic drawing rendering and semantic crop metadata."""
 
 from __future__ import annotations
 
@@ -19,10 +19,14 @@ from ..contracts import (
 )
 from ..drawing_pipeline.interface import (
     DRAWING_PIPELINE_VERSION,
+    DrawingCrop,
+    DrawingImage,
     DrawingPipelineError,
     DrawingPipelineResult,
     execute_2d_pipeline,
     pipeline_capability,
+    prepare_crops,
+    render_overviews,
 )
 from ..errors import DFMError
 from .base import AnalyzerContext, CancellationToken
@@ -67,7 +71,7 @@ def _artifact(
 
 @dataclass(frozen=True)
 class DrawingDiscoveryBatch:
-    fragment_count: int = 0
+    page_count: int = 0
     artifacts: list[ArtifactRecord] = field(default_factory=list)
     diagnostics: list[dict[str, Any]] = field(default_factory=list)
 
@@ -83,6 +87,8 @@ class DrawingAnalyzer:
         enabled: bool = True,
         max_pages: int = 50,
         pipeline: Callable[..., DrawingPipelineResult] = execute_2d_pipeline,
+        overview_renderer: Callable[..., list[DrawingImage]] = render_overviews,
+        crop_renderer: Callable[..., list[DrawingCrop]] = prepare_crops,
         capability_probe: Callable[
             [set[str] | None], dict[str, Any]
         ] = pipeline_capability,
@@ -90,6 +96,8 @@ class DrawingAnalyzer:
         self.enabled = enabled
         self.max_pages = max_pages
         self.pipeline = pipeline
+        self.overview_renderer = overview_renderer
+        self.crop_renderer = crop_renderer
         self.capability_probe = capability_probe
 
     @property
@@ -99,6 +107,7 @@ class DrawingAnalyzer:
                 "version": self.version,
                 "max_pages": self.max_pages,
                 "semantic_interpreter": "hermes_agent_event_loop",
+                "extraction_mode": "model_planned_semantic_crops",
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -116,6 +125,8 @@ class DrawingAnalyzer:
             **details,
             "applicable": bool(drawing_inputs),
             "semantic_interpreter": "hermes_agent_event_loop",
+            "extraction_mode": "model_planned_semantic_crops",
+            "ocr_used": False,
         }
         if not self.enabled:
             return Capability(
@@ -136,7 +147,7 @@ class DrawingAnalyzer:
         return Capability(
             self.key,
             CapabilityStatus.AVAILABLE,
-            "Drawing observation extraction is available.",
+            "Drawing semantic crop extraction is available.",
             details=details,
         )
 
@@ -182,75 +193,16 @@ class DrawingAnalyzer:
         output_dir.mkdir(parents=True, exist_ok=True)
         base_name = f"drawing_{input_record.sha256[:16]}"
 
-        raw_artifact = None
         artifacts: list[ArtifactRecord] = []
-        if result.raw_text:
-            raw_path = output_dir / f"{base_name}_raw_ocr.txt"
-            raw_path.write_text(result.raw_text, encoding="utf-8", newline="\n")
-            raw_artifact = _artifact(
-                context.project_dir,
-                relative_dir / raw_path.name,
-                kind="drawing_raw_text",
-                media_type="text/plain",
-                run_id=context.run_id,
-                logical_id=(
-                    f"drawing-raw:{input_record.input_id}:"
-                    f"{self.version}:{self.cache_identity}"
-                ),
-            )
-            artifacts.append(raw_artifact)
-
-        fragments = []
-        for sequence, fragment in enumerate(result.fragments, start=1):
-            identity = json.dumps(
-                {
-                    "input_sha256": input_record.sha256,
-                    "sequence": sequence,
-                    "page": fragment.page,
-                    "bbox": fragment.bbox,
-                    "text": fragment.text,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            fragment_hash = hashlib.sha256(identity.encode("utf-8")).hexdigest()
-            fragments.append({
-                "fragment_id": f"fragment.drawing.{fragment_hash[:20]}",
-                "input_id": input_record.input_id,
-                "input_sha256": input_record.sha256,
-                "sequence": sequence,
-                **fragment.to_dict(),
-            })
-
-        fragments_path = output_dir / f"{base_name}_ocr_fragments.jsonl"
-        fragments_path.write_text(
-            "".join(
-                json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n"
-                for item in fragments
-            ),
-            encoding="utf-8",
-            newline="\n",
-        )
-        fragments_artifact = _artifact(
-            context.project_dir,
-            relative_dir / fragments_path.name,
-            kind="drawing_ocr_fragments",
-            media_type="application/x-ndjson",
-            run_id=context.run_id,
-            logical_id=(
-                f"drawing-fragments:{input_record.input_id}:"
-                f"{self.version}:{self.cache_identity}"
-            ),
-        )
-        artifacts.append(fragments_artifact)
-
         diagnostic = {
             "input_id": input_record.input_id,
             "input_sha256": input_record.sha256,
             "provider": result.provider,
             "provider_version": result.provider_version,
-            "ocr_fragment_count": len(fragments),
+            "page_count": len(result.pages),
+            "pages": [item.to_dict() for item in result.pages],
+            "ocr_used": False,
+            "extraction_mode": "model_planned_semantic_crops",
             "interpretation_status": "pending_agent",
             **result.diagnostics,
         }
@@ -273,7 +225,42 @@ class DrawingAnalyzer:
                 ),
             )
         )
-        return DrawingDiscoveryBatch(len(fragments), artifacts, [diagnostic])
+        return DrawingDiscoveryBatch(len(result.pages), artifacts, [diagnostic])
+
+    def render_overviews(
+        self,
+        context: AnalyzerContext,
+        input_record: InputRecord,
+    ) -> list[DrawingImage]:
+        path = (context.project_dir / input_record.relative_path).resolve()
+        try:
+            return self.overview_renderer(str(path), max_pages=self.max_pages)
+        except DrawingPipelineError as exc:
+            raise DFMError(exc.code, str(exc), exc.details) from exc
+        except Exception as exc:
+            raise DFMError(
+                "drawing_render_failed",
+                f"Drawing overview rendering failed: {exc}",
+                {"error_type": type(exc).__name__, "input_id": input_record.input_id},
+            ) from exc
+
+    def prepare_crops(
+        self,
+        context: AnalyzerContext,
+        input_record: InputRecord,
+        regions: object,
+    ) -> list[DrawingCrop]:
+        path = (context.project_dir / input_record.relative_path).resolve()
+        try:
+            return self.crop_renderer(str(path), regions, max_pages=self.max_pages)
+        except DrawingPipelineError as exc:
+            raise DFMError(exc.code, str(exc), exc.details) from exc
+        except Exception as exc:
+            raise DFMError(
+                "drawing_crop_plan_invalid",
+                f"Drawing crop preparation failed: {exc}",
+                {"error_type": type(exc).__name__, "input_id": input_record.input_id},
+            ) from exc
 
     def run(
         self,

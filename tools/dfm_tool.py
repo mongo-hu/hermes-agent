@@ -7,7 +7,7 @@ from tools.dfm.service import get_dfm_service
 from tools.registry import registry
 
 
-def _call(kind: str, args: dict, **context) -> str:
+def _call(kind: str, args: dict, **context) -> str | dict:
     try:
         if kind == "analysis" and args.get("action") == "cancel":
             raise DFMError(
@@ -25,11 +25,20 @@ def _call(kind: str, args: dict, **context) -> str:
         if kind == "analysis" and args.get("action") in {"start", "render_html"}:
             params["_tool_progress_callback"] = context.get("tool_progress_callback")
             params["_tool_call_id"] = context.get("tool_call_id")
+        if kind == "analysis" and args.get("action") == "discover":
+            # DFM drawing vision is an internal side-call, but it must use the
+            # exact provider/model/credentials of the active main Agent.  Keep
+            # this snapshot out of model-visible arguments and persisted state.
+            from agent.auxiliary_client import get_runtime_main
+
+            params["_main_runtime"] = get_runtime_main()
         result = (
             service.project(args.get("action", ""), **params)
             if kind == "project"
             else service.analysis(args.get("action", ""), **params)
         )
+        if isinstance(result, dict) and result.get("_multimodal") is True:
+            return result
         return json.dumps(result, ensure_ascii=False)
     except DFMError as exc:
         return json.dumps(exc.to_dict(), ensure_ascii=False)
@@ -37,7 +46,7 @@ def _call(kind: str, args: dict, **context) -> str:
 
 DFM_PROJECT_SCHEMA = {
     "name": "dfm_project",
-    "description": "Manage durable DFM projects and register STEP, Parasolid x_t, or drawing inputs. STEP registration may also produce an OCCT 3D preview when dfm-geometry is available. Use status before analysis to inspect format and process capabilities. confirm_fact may be called only after the user explicitly answers a clarification; never infer engineering facts from geometry.",
+    "description": "Manage durable DFM projects and register inputs. During project intake, call add_input once for every attached STEP/STP, Parasolid x_t, PDF, PNG, JPG, or JPEG file before status, discover, or plan; never silently omit a drawing when CAD is also attached. STEP registration may also produce an OCCT 3D preview when dfm-geometry is available. Use status before analysis to inspect format and process capabilities. confirm_fact may be called only after the user explicitly answers a clarification; never infer engineering facts from geometry.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -71,7 +80,7 @@ DFM_PROJECT_SCHEMA = {
 
 DFM_ANALYSIS_SCHEMA = {
     "name": "dfm_analysis",
-    "description": "Run the DFM workflow. Drawing OCR is deterministic; use drawing_context and the current Hermes model once to organize every explicit drawing fact into validated drawing observations. Use fusion_context and submit_fusion_links for Agent semantic proposals that the service checks against geometry IDs. An HTML-capable STEP run (PDF drawing optional) remains reporting (not succeeded) after deterministic analysis; call report_context to obtain the complete Runtime, then author dfm-html-llm/v1 and call render_html. render_html queues background rendering and returns immediately; wait for succeeded status or its completion notification before calling result. Only a validated report.html completes the run. Do not reinterpret OCR during reporting. The external OCCT C++ analyzer is integrated as experimental; PythonOCC remains the reference STEP backend and NX/Parasolid remains optional. Unavailable analyzers fail explicitly; never infer engineering findings from that status.",
+    "description": "Run the DFM workflow. discover performs drawing crop planning and fact extraction internally with the active main Hermes model and credentials; do not open PDFs in a browser or call vision_analyze/drawing_context. Use fusion_context and submit_fusion_links for semantic proposals checked against geometry IDs. An HTML-capable STEP run remains reporting until the current Hermes model authors dfm-html-llm/v1; render_html queues background rendering and returns immediately, so wait for succeeded status or its completion notification before result. Never configure a second model endpoint or reinterpret the drawing during reporting.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -80,6 +89,7 @@ DFM_ANALYSIS_SCHEMA = {
                 "enum": [
                     "discover",
                     "drawing_context",
+                    "submit_crop_plan",
                     "submit_observations",
                     "fusion_context",
                     "submit_fusion_links",
@@ -111,15 +121,34 @@ DFM_ANALYSIS_SCHEMA = {
                 "type": "string",
                 "description": "Drawing input identity returned by discover/drawing_context.",
             },
-            "page": {
-                "type": "integer",
-                "minimum": 1,
-                "description": "Optional drawing page filter for bounded OCR context.",
-            },
             "expected_revision": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Manifest revision returned by drawing_context or fusion_context; required by semantic submissions.",
+                "description": "Manifest revision returned by drawing_context, submit_crop_plan, or fusion_context; required by semantic submissions.",
+            },
+            "crop_regions": {
+                "type": "array",
+                "maxItems": 48,
+                "description": "Complete semantic crop plan produced by the current Hermes model from all drawing page images.",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "page": {"type": "integer", "minimum": 1},
+                        "region_id": {"type": "string", "minLength": 1, "maxLength": 80},
+                        "type": {
+                            "type": "string",
+                            "enum": ["notes", "title_block", "materials_bom", "assembly_dimensions", "manufacturing_callouts", "other"],
+                        },
+                        "bbox_1000": {
+                            "type": "array", "minItems": 4, "maxItems": 4,
+                            "items": {"type": "integer", "minimum": 0, "maximum": 1000},
+                        },
+                        "decision": {"type": "string", "enum": ["keep", "keep_uncertain"]},
+                        "reason": {"type": "string", "maxLength": 1000},
+                    },
+                    "required": ["page", "region_id", "type", "bbox_1000", "decision"],
+                },
             },
             "observations": {
                 "type": "array",
@@ -136,15 +165,16 @@ DFM_ANALYSIS_SCHEMA = {
                         "value": {},
                         "unit": {"type": ["string", "null"]},
                         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                        "source_fragment_refs": {
+                        "source_region_refs": {
                             "type": "array",
                             "minItems": 1,
                             "maxItems": 20,
                             "uniqueItems": True,
                             "items": {"type": "string"},
                         },
+                        "source_text": {"type": "string", "minLength": 1, "maxLength": 4000},
                     },
-                    "required": ["kind", "value", "confidence", "source_fragment_refs"],
+                    "required": ["kind", "value", "confidence", "source_region_refs"],
                 },
             },
             "fusion_links": {
@@ -211,7 +241,7 @@ DFM_ANALYSIS_SCHEMA = {
             "llm_content": {
                 "type": "object",
                 "additionalProperties": False,
-                "description": "Current-Agent final editorial report for action=render_html. Summarize, organize, and localize persisted drawing observations when present plus deterministic report facts into the user's language; preserve IDs, codes, numbers, operators, units, and versions exactly. Do not reinterpret OCR, invent engineering facts, claim unevaluated checks passed, or mechanically copy raw Runtime prose as the final report.",
+                "description": "Current-Agent final editorial report for action=render_html. Summarize, organize, and localize persisted drawing observations when present plus deterministic report facts into the user's language; preserve IDs, codes, numbers, operators, units, and versions exactly. Do not reinterpret the drawing, invent engineering facts, claim unevaluated checks passed, or mechanically copy raw Runtime prose as the final report.",
                 "properties": {
                     "schema_version": {
                         "type": "string",

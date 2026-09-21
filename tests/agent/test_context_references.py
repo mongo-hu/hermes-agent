@@ -242,7 +242,28 @@ def test_step_cad_reference_stays_opaque_to_protect_context_budget(tmp_path: Pat
     assert result.expanded
     assert result.injected_tokens < 100
     assert "kept opaque" in result.message
+    assert "action=add_input" in result.message
+    assert "every attached STEP/STP and PDF/PNG/JPG/JPEG" in result.message
     assert "MANIFOLD_SOLID_BREP" not in result.message
+
+
+def test_pdf_drawing_reference_requires_dfm_input_registration(tmp_path: Path):
+    from agent.context_references import preprocess_context_references
+
+    drawing = tmp_path / "drawing.pdf"
+    drawing.write_bytes(b"%PDF-1.7\n\x00drawing")
+
+    result = preprocess_context_references(
+        "Analyze @file:drawing.pdf", cwd=tmp_path, context_length=100_000
+    )
+
+    assert result.expanded
+    assert not result.warnings
+    assert "drawing file" in result.message
+    assert "`dfm_project`" in result.message
+    assert "`action=add_input`" in result.message
+    assert "every attached STEP/STP and PDF/PNG/JPG/JPEG" in result.message
+    assert str(drawing) in result.message
 
 
 def test_soft_budget_warns_and_hard_budget_refuses(sample_repo: Path):

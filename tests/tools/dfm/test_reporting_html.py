@@ -17,6 +17,7 @@ from tools.dfm.contracts import (
 from tools.dfm.errors import DFMError
 from tools.dfm.project.workspace import DFMWorkspace
 from tools.dfm.reporting.html import materialize_html_runtime, render_html_report
+from tools.dfm.reporting.html.editor import load_runtime
 from tools.dfm.reporting.html.editor_layout import layout_markup
 from tools.dfm.reporting.html.template import generate_html
 
@@ -37,6 +38,30 @@ def _artifact(
         "application/json",
         "now",
     )
+
+
+def test_editor_live_report_allows_complete_pdf_popup_without_same_origin():
+    shell, _extractor = load_runtime()
+
+    assert (
+        'o.setAttribute("sandbox","allow-scripts allow-popups '
+        'allow-popups-to-escape-sandbox")'
+    ) in shell
+    assert 'o.setAttribute("sandbox","allow-scripts")' not in shell
+    assert "allow-same-origin" not in shell
+
+
+def test_editor_relays_dfm_actions_without_automatic_presentation_or_fullscreen():
+    shell, extractor = load_runtime()
+    extraction = extractor.read_text(encoding="utf-8")
+
+    assert 'id="dfm-edit-action-bridge"' in shell
+    assert "api.editor.present(false,false)" in shell
+    assert 'action:"activate"' in shell
+    assert "startInPresentation" not in shell
+    assert "dfmActionKey" in extraction
+    assert "dfmActionKind" in extraction
+    assert "openEmbeddedPdf" in extraction
 
 
 def _drawing_observations(
@@ -407,6 +432,13 @@ def test_bundled_html_wrapper_renders_a_self_contained_contract(tmp_path):
     assert "evaluation-draft" in html
     assert "three.js" in html.lower()
     assert "综合评估" in html
+    payload = re.search(
+        r'<script type="application/bento\+json" id="bento-doc">(.*?)</script>',
+        html,
+        re.DOTALL,
+    )
+    assert payload is not None
+    assert "startInPresentation" not in json.loads(payload.group(1))["dfm"]
 
 
 def test_html_summary_counts_failed_checks_by_issue_type_without_severity(tmp_path):

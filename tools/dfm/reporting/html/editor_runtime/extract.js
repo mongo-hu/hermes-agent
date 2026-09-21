@@ -65,6 +65,8 @@ window.DfmTextRegions=DfmTextRegions; return (// Shared layout extraction for th
 () => {
   const styles=[...document.querySelectorAll('style')].map(n=>n.textContent).join('\n');
   const records={};
+  const nodePath=(root,target)=>{const path=[];for(let current=target;current!==root;current=current.parentNode){if(!current?.parentNode)return null;path.unshift([...current.parentNode.childNodes].indexOf(current));}return path;};
+  const resolvePath=(root,path)=>{let current=root;for(const index of path)current=current?.childNodes[index];return current;};
   const pages=[...document.querySelectorAll('.slide')];
   const slides=pages.map((page,i)=>{
     const children=[...page.children].filter(n=>n.matches('.element,.webgl-wrapper'));
@@ -76,6 +78,8 @@ window.DfmTextRegions=DfmTextRegions; return (// Shared layout extraction for th
       if(text) Object.assign(e,{type:'text',html:node.innerHTML,fontSize:parseFloat(c.fontSize),fontFamily:c.fontFamily,fontWeight:Number(c.fontWeight)||400,color:c.color,align:c.textAlign==='center'?'center':c.textAlign==='right'?'right':'left',valign:'top',lineHeight:parseFloat(c.lineHeight)/parseFloat(c.fontSize)||1.2,letterSpacing:parseFloat(c.letterSpacing)||0});
       else Object.assign(e,{type:'shape',shape:'rect',fill:'transparent',stroke:'transparent',strokeWidth:0,radius:0});
       const clone=node.cloneNode(true);
+      const actions=[node,...node.querySelectorAll('[onclick]')].filter(target=>target.hasAttribute?.('onclick')).map((target,k)=>({key:`${id}-action-${k}`,path:nodePath(node,target),kind:/\bopenEmbeddedPdf\s*\(/.test(target.getAttribute('onclick'))?'drawing-pdf':'live'})).filter(action=>action.path);
+      for(const action of actions){const target=resolvePath(clone,action.path);if(target?.nodeType===Node.ELEMENT_NODE){target.dataset.dfmActionKey=action.key;target.dataset.dfmActionKind=action.kind;}}
       clone.querySelectorAll('canvas,script,iframe').forEach(n=>n.remove());
       // Runtime posters are still previews; live 3D comes from the original HTML.
       clone.querySelectorAll('.webgl-live').forEach(n=>n.classList.remove('webgl-live'));
@@ -85,7 +89,7 @@ window.DfmTextRegions=DfmTextRegions; return (// Shared layout extraction for th
       clone.style.setProperty('width','100%','important');clone.style.setProperty('height','100%','important');
       clone.style.transform='none';
       const textBindings=text?[]:window.DfmTextRegions.collectDfmTextRegions(node).map(({key,path,text,runtimeOwned})=>({key,path,text,...(runtimeOwned?{runtimeOwned:true}:{})}));
-      records[id]={page:i,child:j,pageClass:page.className,html:clone.outerHTML,baseline:{...e},textBindings,label:node.matches('.webgl-wrapper')?'3D':node.textContent.trim().slice(0,40)};
+      records[id]={page:i,child:j,pageClass:page.className,html:clone.outerHTML,baseline:{...e},textBindings,actions,label:node.matches('.webgl-wrapper')?'3D':node.textContent.trim().slice(0,40)};
       // Full-page decoration stays in the slide background, not above all click targets.
       if(!text && node.matches('.shape-rect') && e.w>=page.offsetWidth*.95 && e.h>=page.offsetHeight*.95) e.locked=true;
       return e;
