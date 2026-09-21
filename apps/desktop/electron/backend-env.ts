@@ -94,7 +94,7 @@ function buildDesktopBackendEnv({
   currentEnv = process.env,
   platform = process.platform,
   pathModule = pathModuleForPlatform(platform)
-}: any = {}): Record<string, string> {
+}: any = {}): NodeJS.ProcessEnv {
   const delimiter = delimiterForPlatform(platform)
   const currentPythonPath = currentEnv?.PYTHONPATH || ''
   const key = pathEnvKey(currentEnv, platform)
