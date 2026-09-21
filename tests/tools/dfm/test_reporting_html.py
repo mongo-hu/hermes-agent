@@ -17,6 +17,7 @@ from tools.dfm.contracts import (
 from tools.dfm.errors import DFMError
 from tools.dfm.project.workspace import DFMWorkspace
 from tools.dfm.reporting.html import materialize_html_runtime, render_html_report
+from tools.dfm.reporting.html.editor import load_runtime
 from tools.dfm.reporting.html.editor_layout import layout_markup
 from tools.dfm.reporting.html.template import generate_html
 
@@ -37,6 +38,30 @@ def _artifact(
         "application/json",
         "now",
     )
+
+
+def test_editor_live_report_allows_complete_pdf_popup_without_same_origin():
+    shell, _extractor = load_runtime()
+
+    assert (
+        'o.setAttribute("sandbox","allow-scripts allow-popups '
+        'allow-popups-to-escape-sandbox")'
+    ) in shell
+    assert 'o.setAttribute("sandbox","allow-scripts")' not in shell
+    assert "allow-same-origin" not in shell
+
+
+def test_editor_relays_dfm_actions_without_automatic_presentation_or_fullscreen():
+    shell, extractor = load_runtime()
+    extraction = extractor.read_text(encoding="utf-8")
+
+    assert 'id="dfm-edit-action-bridge"' in shell
+    assert "api.editor.present(false,false)" in shell
+    assert 'action:"activate"' in shell
+    assert "startInPresentation" not in shell
+    assert "dfmActionKey" in extraction
+    assert "dfmActionKind" in extraction
+    assert "openEmbeddedPdf" in extraction
 
 
 def _drawing_observations(
@@ -326,7 +351,13 @@ def test_runtime_adapter_maps_existing_dfm_artifacts_without_recomputation(tmp_p
 def test_runtime_adapter_requires_persisted_drawing_semantics(tmp_path):
     run_id = "run_1"
     artifacts = [
-        _artifact(tmp_path, run_id, "dfm_report.json", "report_json", {}),
+        _artifact(
+            tmp_path,
+            run_id,
+            "dfm_report.json",
+            "report_json",
+            {"run_id": run_id},
+        ),
         _artifact(tmp_path, run_id, "render_scene.json", "render_scene", {}),
         _artifact(
             tmp_path,
@@ -377,6 +408,30 @@ def test_runtime_adapter_requires_persisted_drawing_semantics(tmp_path):
         tmp_path, run_id, plan, [drawing], artifacts
     ) is None
 
+    pending = materialize_html_runtime(
+        tmp_path,
+        run_id,
+        plan,
+        [drawing],
+        artifacts,
+        allow_pending_drawing=True,
+    )
+    assert pending is not None
+    runtime = json.loads(
+        (tmp_path / pending.relative_path).read_text(encoding="utf-8")
+    )
+    assert runtime["drawing_semantics"] == {
+        "input_id": drawing.input_id,
+        "input_sha256": drawing.sha256,
+        "status": "pending",
+        "source_artifact_id": None,
+        "observations": [],
+    }
+    assert runtime["resources"]["drawing_pdf_path"].endswith(
+        "inputs/drawing.pdf"
+    )
+    assert "drawing_observations_path" not in runtime["resources"]
+
 
 def test_runtime_adapter_skips_runs_without_a_pdf_drawing(tmp_path):
     run_id = "run_1"
@@ -407,6 +462,13 @@ def test_bundled_html_wrapper_renders_a_self_contained_contract(tmp_path):
     assert "evaluation-draft" in html
     assert "three.js" in html.lower()
     assert "综合评估" in html
+    payload = re.search(
+        r'<script type="application/bento\+json" id="bento-doc">(.*?)</script>',
+        html,
+        re.DOTALL,
+    )
+    assert payload is not None
+    assert "startInPresentation" not in json.loads(payload.group(1))["dfm"]
 
 
 def test_html_summary_counts_failed_checks_by_issue_type_without_severity(tmp_path):

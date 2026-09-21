@@ -6,10 +6,15 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from .core_pipeline import dependency_report, process_file
+from .core_pipeline import (
+    dependency_report,
+    process_file,
+    render_crops as render_crop_images,
+    render_overviews as render_page_images,
+)
 
 
-DRAWING_PIPELINE_VERSION = "2.0.0"
+DRAWING_PIPELINE_VERSION = "3.0.0"
 SUPPORTED_DRAWING_SUFFIXES = (".jpeg", ".jpg", ".pdf", ".png")
 
 
@@ -21,11 +26,10 @@ class DrawingPipelineError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class DrawingFragment:
-    text: str
-    confidence: float = 0.0
-    page: int | None = None
-    bbox: list[float] | None = None
+class DrawingPage:
+    page: int
+    width: float
+    height: float
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -35,16 +39,44 @@ class DrawingFragment:
 class DrawingPipelineResult:
     provider: str
     provider_version: str
-    fragments: list[DrawingFragment] = field(default_factory=list)
-    raw_text: str = ""
+    pages: list[DrawingPage] = field(default_factory=list)
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "provider": self.provider,
             "provider_version": self.provider_version,
-            "fragments": [item.to_dict() for item in self.fragments],
+            "pages": [item.to_dict() for item in self.pages],
             "diagnostics": dict(self.diagnostics),
+        }
+
+
+@dataclass(frozen=True)
+class DrawingImage:
+    page: int
+    pixel_width: int
+    pixel_height: int
+    png_bytes: bytes
+
+
+@dataclass(frozen=True)
+class DrawingCrop(DrawingImage):
+    region_id: str
+    type: str
+    bbox_1000: list[int]
+    decision: str
+    reason: str = ""
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "region_id": self.region_id,
+            "page": self.page,
+            "type": self.type,
+            "bbox_1000": list(self.bbox_1000),
+            "decision": self.decision,
+            "reason": self.reason,
+            "pixel_width": self.pixel_width,
+            "pixel_height": self.pixel_height,
         }
 
 
@@ -65,7 +97,7 @@ def execute_2d_pipeline(
     file_path: str,
     *,
     max_pages: int = 50,
-    processor: Callable[..., tuple[dict[str, Any], str]] = process_file,
+    processor: Callable[..., dict[str, Any]] = process_file,
 ) -> DrawingPipelineResult:
     path = Path(file_path)
     if not path.is_file():
@@ -88,7 +120,7 @@ def execute_2d_pipeline(
             capability,
         )
     try:
-        payload, raw_text = processor(
+        payload = processor(
             str(path),
             max_pages=max_pages,
         )
@@ -101,23 +133,46 @@ def execute_2d_pipeline(
             {"error_type": type(exc).__name__},
         ) from exc
     diagnostics = dict(payload.get("diagnostics") or {})
-    fragments = []
-    for item in payload.get("fragments") or []:
-        text = str(item.get("text") or "").strip()
-        if not text:
-            continue
-        fragments.append(
-            DrawingFragment(
-                text=text,
-                confidence=max(0.0, min(float(item.get("confidence") or 0.0), 1.0)),
-                page=item.get("page"),
-                bbox=item.get("bbox"),
-            )
+    pages = [
+        DrawingPage(
+            page=int(item["page"]),
+            width=float(item["width"]),
+            height=float(item["height"]),
         )
+        for item in payload.get("pages") or []
+    ]
     return DrawingPipelineResult(
-        provider="hermes_drawing_pipeline",
+        provider="hermes_semantic_crop_pipeline",
         provider_version=DRAWING_PIPELINE_VERSION,
-        fragments=fragments,
-        raw_text=raw_text,
+        pages=pages,
         diagnostics=diagnostics,
     )
+
+
+def render_overviews(
+    file_path: str,
+    *,
+    max_pages: int = 50,
+    renderer: Callable[..., list[dict[str, Any]]] = render_page_images,
+) -> list[DrawingImage]:
+    return [DrawingImage(**item) for item in renderer(file_path, max_pages=max_pages)]
+
+
+def prepare_crops(
+    file_path: str,
+    regions: object,
+    *,
+    max_pages: int = 50,
+    renderer: Callable[..., list[dict[str, Any]]] = render_crop_images,
+) -> list[DrawingCrop]:
+    try:
+        rendered = renderer(file_path, regions, max_pages=max_pages)
+        return [DrawingCrop(**item) for item in rendered]
+    except DrawingPipelineError:
+        raise
+    except Exception as exc:
+        raise DrawingPipelineError(
+            "drawing_crop_plan_invalid",
+            f"Drawing crop preparation failed: {exc}",
+            {"error_type": type(exc).__name__},
+        ) from exc

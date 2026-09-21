@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import math
@@ -9,6 +10,7 @@ import os
 import re
 import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,13 +48,50 @@ from .processes.occt_injection import (
     compile_occt_injection_plan,
     preview_operations,
 )
-from .reporting.html import render_html_report
+from .reporting.html import materialize_html_runtime, render_html_report
 from .runtime.jobs import JobManager
 from .viewer import materialize_preview_manifest
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+_DRAWING_CROP_PLANNER_PROMPT = """你是工程图纸的语义裁剪规划器，不负责抄写或总结图纸内容。
+输入是同一份工程图纸的全部页面预览。为后续 DFM 事实提取选择少量、完整、可读的矩形区域。
+
+必须保留：
+1. 标题栏中的零件身份、图号、版本、单位、比例、页数和通用公差；
+2. 所有技术 NOTES，每个编号、字母和连字符子项都必须落在某个保留区域内；
+3. 明确的材料表，并保留表头、部件名和材料的行关系；
+4. 产品总成页上的明确尺寸、公差、MAX、括号参考尺寸和制造/位置标注；
+5. 解释上述信息所需的邻近箭头、引出线、视图名和表头。
+
+排除目录、修订历史、料号图例、纯几何视图，以及配置页/配置矩阵中的料号、颜色、状态和配置专用尺寸。重复标题栏只保留信息最完整的一份。按完整语义块裁剪，禁止只框单词、数字或符号；不得切断 Note；尺寸区域同时包含数值、符号、尺寸线、箭头和对应视图；材料表包含表头和目标行。如果无法判断是否重要，使用 keep_uncertain，不能静默丢弃。
+
+坐标使用每页左上角为原点、范围 0 到 1000 的整数 [left, top, right, bottom]。不要在回复中解释；直接调用 dfm_analysis(action=submit_crop_plan)，传回 project_id、input_id、expected_revision 和 crop_regions。"""
+
+
+_DRAWING_EXTRACTION_PROMPT = """你是 Hermes DFM Discovery 阶段的图纸语义整理模型。
+你获得的是从同一份源图纸确定性渲染的高清语义区域。只整理图纸明确写出的事实，不推断材料、工艺、拔模方向、尺寸或表面要求。
+
+必须覆盖：标题栏身份、单位和通用公差；材料及其部件对应关系；产品总成页的明确尺寸、公差、MAX、括号参考尺寸及适用范围；所有制造约束；NOTES 的每个编号、字母或连字符子项。每条 Note 独立保存为 global_note，并保留完整原文；标准号、图号、数字和工程操作符必须逐字符保真。配置矩阵中的料号、状态、颜色及配置专用尺寸不得输出。无法辨认时不要猜测或静默省略。
+
+不要写普通回复；直接调用 dfm_analysis(action=submit_observations)。每条 observation 包含 kind、value、unit、confidence、source_region_refs，并可包含 source_text。source_region_refs 只能使用本消息给出的 REGION ID。提交全部事实后重新调用 discover。"""
+
+
+_BACKGROUND_CROP_PROMPT = """你是工程图纸的语义裁剪规划器。输入是同一份工程图纸的全部页面预览。
+请选择少量、完整、可读的矩形区域，覆盖标题栏（身份、图号、版本、单位、比例、页数、通用公差）、全部技术 NOTES、材料表及行关系、产品总成页的明确尺寸/公差/MAX/括号参考尺寸、制造与位置标注，以及理解这些内容所需的箭头、引出线、视图名和表头。排除目录、修订历史、料号图例、纯几何视图以及配置矩阵中的料号、颜色、状态和配置专用尺寸。不得切断 Note；不确定但可能重要的区域用 keep_uncertain。
+
+坐标使用每页左上角为原点、0 到 1000 的整数 [left, top, right, bottom]。只输出严格 JSON，不要 Markdown、解释或工具调用：
+{"regions":[{"page":1,"region_id":"p1_notes","type":"notes","bbox_1000":[0,0,1000,1000],"decision":"keep","reason":"..."}]}"""
+
+
+_BACKGROUND_EXTRACTION_PROMPT = """你是 Hermes DFM Discovery 的图纸事实提取器。输入是从同一源图纸确定性渲染的高清语义区域。
+只整理图纸明确写出的事实，不推断材料、工艺、拔模方向、尺寸或表面要求。必须覆盖标题栏身份、单位和通用公差；材料及部件对应关系；明确尺寸、公差、MAX、括号参考尺寸及适用范围；制造约束；NOTES 的每个编号、字母或连字符子项。每条 Note 单独保存为 global_note，并逐字符保真。配置矩阵中的料号、状态、颜色及配置专用尺寸不得输出；无法辨认时不要猜测。
+
+只输出严格 JSON，不要 Markdown、解释或工具调用：
+{"observations":[{"kind":"material","value":"ABS","unit":null,"confidence":0.95,"source_region_refs":["p1_material"],"source_text":"MATERIAL: ABS"}]}。source_region_refs 只能使用消息中提供的 REGION ID。"""
 
 
 def _resolve_input_path(raw_path: object, working_dir: object = None) -> Path:
@@ -74,13 +113,27 @@ def _resolve_input_path(raw_path: object, working_dir: object = None) -> Path:
 
 
 class DFMService:
-    _AGENT_INTERPRETATION_VERSION = "1.0.0"
+    _AGENT_INTERPRETATION_VERSION = "2.0.0"
     _AGENT_OBSERVATION_PROVIDER = "hermes_agent_event_loop"
     _OBSERVATION_KIND_GUIDANCE = (
         "material",
         "general_tolerance",
         "surface_finish",
         "part_name",
+        "document_number",
+        "drawing_type",
+        "document_type",
+        "document_part",
+        "revision",
+        "series",
+        "drawing_size",
+        "customer",
+        "document_status",
+        "dimension_units",
+        "projection",
+        "sheet_count",
+        "scale",
+        "release_date",
         "manufacturing_constraint",
         "thread_requirement",
         "global_note",
@@ -124,6 +177,7 @@ class DFMService:
         process_registry: ProcessAdapterRegistry | None = None,
         ontology_store: LocalOntologyStore | None = None,
         reconcile_jobs: bool = True,
+        vision_call: Callable[..., Any] | None = None,
     ) -> None:
         self.config = config or load_dfm_config()
         self.workspace = workspace or DFMWorkspace()
@@ -153,6 +207,7 @@ class DFMService:
         self.process_registry = process_registry or build_default_process_registry(
             self.ontology_store
         )
+        self._vision_call = vision_call
         self.inputs = InputRegistrar(self.workspace, self.config)
         registry_keys = set(self.registry.keys())
         self.discovery = DiscoveryEngine(
@@ -175,6 +230,223 @@ class DFMService:
         self.jobs = JobManager(
             self.workspace, self.registry, self.config, reconcile=reconcile_jobs
         )
+        self._drawing_executor = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="dfm-drawing"
+        )
+        self._drawing_futures: dict[tuple[str, str], Future[None]] = {}
+        self._drawing_futures_lock = threading.RLock()
+
+    @staticmethod
+    def _decode_background_json(raw: object, *, phase: str) -> dict[str, Any]:
+        text = str(raw or "").strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+            text = re.sub(r"\s*```$", "", text)
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end < start:
+            raise DFMError(
+                "drawing_vision_response_invalid",
+                f"The main model returned no JSON object during {phase}.",
+            )
+        try:
+            payload = json.loads(text[start : end + 1])
+        except json.JSONDecodeError as exc:
+            raise DFMError(
+                "drawing_vision_response_invalid",
+                f"The main model returned invalid JSON during {phase}.",
+                {"line": exc.lineno, "column": exc.colno},
+            ) from exc
+        if not isinstance(payload, dict):
+            raise DFMError(
+                "drawing_vision_response_invalid",
+                f"The main model returned a non-object during {phase}.",
+            )
+        return payload
+
+    def _call_main_vision(
+        self,
+        content: list[dict[str, Any]],
+        *,
+        runtime: dict[str, str],
+        max_tokens: int,
+    ) -> str:
+        if self._vision_call is not None:
+            result = self._vision_call(
+                content=content, runtime=runtime, max_tokens=max_tokens
+            )
+            return result if isinstance(result, str) else str(result or "")
+
+        provider = str(runtime.get("provider") or "").strip()
+        model = str(runtime.get("model") or "").strip()
+        if not provider or not model:
+            raise DFMError(
+                "drawing_vision_runtime_missing",
+                "DFM drawing discovery requires the active main Agent runtime.",
+            )
+        try:
+            from agent.auxiliary_client import call_llm, extract_content_or_reasoning
+
+            response = call_llm(
+                task="vision",
+                provider=provider,
+                model=model,
+                base_url=str(runtime.get("base_url") or "") or None,
+                api_key=str(runtime.get("api_key") or "") or None,
+                api_mode=str(runtime.get("api_mode") or "") or None,
+                messages=[{"role": "user", "content": content}],
+                temperature=0,
+                max_tokens=max_tokens,
+                timeout=480,
+            )
+            return extract_content_or_reasoning(response)
+        except DFMError:
+            raise
+        except Exception as exc:
+            raise DFMError(
+                "drawing_vision_failed",
+                "The active main Agent model could not complete background drawing vision.",
+                {"error": str(exc)[:500]},
+            ) from exc
+
+    def _interpret_drawing_in_background(
+        self,
+        project_id: str,
+        input_id: str,
+        runtime: dict[str, str],
+    ) -> None:
+        def submit_at_latest_revision(
+            operation: Callable[[int], dict[str, Any]],
+        ) -> dict[str, Any]:
+            for attempt in range(3):
+                try:
+                    return operation(self._store(project_id).load().revision)
+                except DFMError as exc:
+                    if exc.code != "manifest_conflict" or attempt == 2:
+                        raise
+            raise AssertionError("unreachable")
+
+        page_context = self._drawing_context(project_id, input_id)
+        crop_content = list(page_context["content"])
+        crop_content[0] = {
+            "type": "text",
+            "text": _BACKGROUND_CROP_PROMPT
+            + "\n\n上下文：\n"
+            + json.dumps(page_context["meta"], ensure_ascii=False, sort_keys=True),
+        }
+        crop_payload = self._decode_background_json(
+            self._call_main_vision(crop_content, runtime=runtime, max_tokens=6000),
+            phase="crop planning",
+        )
+        regions = crop_payload.get("regions")
+        if not isinstance(regions, list) or not regions:
+            raise DFMError(
+                "drawing_crop_plan_empty",
+                "The main model returned no usable drawing regions; discovery stopped instead of silently ignoring the drawing.",
+                {"input_id": input_id},
+            )
+        region_context = submit_at_latest_revision(
+            lambda revision: self._submit_crop_plan(
+                project_id, input_id, regions, revision
+            )
+        )
+        observation_content = list(region_context["content"])
+        observation_content[0] = {
+            "type": "text",
+            "text": _BACKGROUND_EXTRACTION_PROMPT
+            + "\n\n上下文：\n"
+            + json.dumps(region_context["meta"], ensure_ascii=False, sort_keys=True),
+        }
+        observation_payload = self._decode_background_json(
+            self._call_main_vision(
+                observation_content, runtime=runtime, max_tokens=10000
+            ),
+            phase="observation extraction",
+        )
+        observations = observation_payload.get("observations")
+        if not isinstance(observations, list):
+            raise DFMError(
+                "drawing_observations_invalid",
+                "The main model returned no observations array.",
+                {"input_id": input_id},
+            )
+        submit_at_latest_revision(
+            lambda revision: self._submit_observations(
+                project_id, input_id, observations, revision
+            )
+        )
+
+    def _run_drawing_interpretation(
+        self,
+        project_id: str,
+        input_id: str,
+        runtime: dict[str, str],
+    ) -> None:
+        """Finish one 2D interpretation without blocking the Agent/3D path."""
+
+        try:
+            self._interpret_drawing_in_background(project_id, input_id, runtime)
+        except Exception as exc:
+            details = (
+                {"code": exc.code, "message": exc.message, "details": exc.details}
+                if isinstance(exc, DFMError)
+                else {
+                    "code": "drawing_interpretation_failed",
+                    "message": str(exc)[:500],
+                    "details": {},
+                }
+            )
+            self._record_drawing_discovery_status(
+                project_id,
+                input_id,
+                "failed",
+                {
+                    "interpretation_status": "failed",
+                    "interpretation_error": details,
+                    "completed_at": _utc_now(),
+                },
+            )
+
+    def _forget_drawing_future(self, key: tuple[str, str]) -> None:
+        with self._drawing_futures_lock:
+            self._drawing_futures.pop(key, None)
+
+    def _start_drawing_interpretations(
+        self,
+        project_id: str,
+        input_ids: list[str],
+        runtime: dict[str, str],
+    ) -> list[str]:
+        """Queue 2D work and return immediately so normal 3D planning can proceed."""
+
+        started: list[str] = []
+        for input_id in input_ids:
+            key = (project_id, input_id)
+            with self._drawing_futures_lock:
+                existing = self._drawing_futures.get(key)
+                if existing is not None and not existing.done():
+                    continue
+                self._record_drawing_discovery_status(
+                    project_id,
+                    input_id,
+                    "running",
+                    {
+                        "interpretation_status": "running",
+                        "started_at": _utc_now(),
+                    },
+                )
+                future = self._drawing_executor.submit(
+                    self._run_drawing_interpretation,
+                    project_id,
+                    input_id,
+                    dict(runtime),
+                )
+                self._drawing_futures[key] = future
+                future.add_done_callback(
+                    lambda _future, selected=key: self._forget_drawing_future(selected)
+                )
+                started.append(input_id)
+        return started
 
     def _store(self, project_id: str) -> ManifestStore:
         return ManifestStore(self.workspace.project_dir(project_id))
@@ -586,7 +858,7 @@ class DFMService:
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise DFMError(
                 "drawing_artifact_invalid",
-                "The persisted drawing OCR fragments cannot be read.",
+                "The persisted drawing metadata cannot be read.",
                 {"path": str(path)},
             ) from exc
 
@@ -598,22 +870,22 @@ class DFMService:
                 digest.update(chunk)
         return digest.hexdigest()
 
-    def _drawing_fragment_artifact(
+    def _drawing_region_artifact(
         self, manifest: ProjectManifest, input_id: str
     ) -> ArtifactRecord:
         artifact = next(
             (
                 item
                 for item in reversed(manifest.artifacts)
-                if item.kind == "drawing_ocr_fragments"
+                if item.kind == "drawing_regions"
                 and f":{input_id}:" in item.logical_id
             ),
             None,
         )
         if artifact is None:
             raise DFMError(
-                "drawing_context_unavailable",
-                "Run drawing OCR discovery before requesting Agent interpretation context.",
+                "drawing_regions_unavailable",
+                "Submit a validated drawing crop plan before submitting observations.",
                 {"input_id": input_id},
             )
         return artifact
@@ -628,10 +900,12 @@ class DFMService:
             != "completed"
         ]
 
-    def _drawing_context(
-        self, project_id: str, input_id: str, page: object = None
-    ) -> dict[str, Any]:
-        manifest = self._refresh_drawing_ocr(project_id)
+    @staticmethod
+    def _png_data_url(payload: bytes) -> str:
+        return "data:image/png;base64," + base64.b64encode(payload).decode("ascii")
+
+    def _drawing_context(self, project_id: str, input_id: str) -> dict[str, Any]:
+        manifest = self._refresh_drawing_visual(project_id)
         active_drawings = [
             item for item in self._active_inputs(manifest) if item.kind == "drawing"
         ]
@@ -646,55 +920,256 @@ class DFMService:
                 "drawing_context requires one active drawing input_id.",
                 {"available_input_ids": [item.input_id for item in active_drawings]},
             )
-        page_number = None
-        if page is not None:
-            if isinstance(page, bool) or not isinstance(page, int) or page <= 0:
-                raise DFMError(
-                    "drawing_context_invalid",
-                    "drawing_context page must be a positive integer.",
-                )
-            page_number = page
-        artifact = self._drawing_fragment_artifact(manifest, input_record.input_id)
-        artifact_path = self.workspace.project_dir(project_id) / artifact.relative_path
-        fragments = self._read_ndjson(artifact_path)
-        available_pages = sorted({
-            int(item["page"])
-            for item in fragments
-            if isinstance(item.get("page"), int) and item["page"] > 0
-        })
-        if page_number is not None:
-            fragments = [item for item in fragments if item.get("page") == page_number]
-        truncated = page_number is None and len(fragments) > 200
-        if page_number is None:
-            fragments = fragments[:200]
-        return {
-            "ok": True,
+        analyzer = self.registry.get("drawing")
+        if not hasattr(analyzer, "render_overviews"):
+            raise DFMError(
+                "drawing_contract_missing",
+                "The drawing analyzer does not implement multimodal page rendering.",
+            )
+        context = AnalyzerContext(
+            manifest.project_id,
+            self.workspace.project_dir(manifest.project_id),
+            manifest.input_mode,
+            [input_record],
+        )
+        pages = analyzer.render_overviews(context, input_record)
+        contract = {
             "project_id": project_id,
-            "revision": manifest.revision,
-            "input": input_record.to_dict(),
-            "fragment_artifact": artifact.to_dict(),
-            "page": page_number,
-            "available_pages": available_pages,
-            "fragments": fragments,
-            "truncated": truncated,
-            "interpretation_contract": {
-                "provider": self._AGENT_OBSERVATION_PROVIDER,
-                "version": self._AGENT_INTERPRETATION_VERSION,
-                "allowed_kind_pattern": "^[a-z][a-z0-9_.-]{0,99}$",
-                "kind_guidance": list(self._OBSERVATION_KIND_GUIDANCE),
-                "required_fields": [
-                    "kind",
-                    "value",
-                    "confidence",
-                    "source_fragment_refs",
+            "input_id": input_record.input_id,
+            "input_sha256": input_record.sha256,
+            "expected_revision": manifest.revision,
+            "page_count": len(pages),
+            "coordinate_system": "top-left normalized integer bbox_1000",
+            "region_types": [
+                "notes",
+                "title_block",
+                "materials_bom",
+                "assembly_dimensions",
+                "manufacturing_callouts",
+                "other",
+            ],
+        }
+        content: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": _DRAWING_CROP_PLANNER_PROMPT
+                + "\n\n调用参数上下文：\n"
+                + json.dumps(contract, ensure_ascii=False, sort_keys=True),
+            }
+        ]
+        for page in pages:
+            content.extend([
+                {
+                    "type": "text",
+                    "text": f"PAGE {page.page} OF {len(pages)}",
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {"url": self._png_data_url(page.png_bytes)},
+                },
+            ])
+        summary = (
+            f"DFM drawing crop planning requires the {len(pages)} attached page images. "
+            "If the active model cannot see them, stop and report drawing_vision_required; "
+            "do not invent crop coordinates."
+        )
+        return {
+            "_multimodal": True,
+            "content": content,
+            "text_summary": summary,
+            "meta": contract,
+        }
+
+    def _materialize_drawing_regions(
+        self,
+        manifest: ProjectManifest,
+        input_record: InputRecord,
+        regions: list[dict[str, Any]],
+    ) -> ArtifactRecord:
+        relative_dir = Path("discovery") / "drawing" / input_record.sha256[:16]
+        output_dir = self.workspace.project_dir(manifest.project_id) / relative_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / (
+            f"drawing_{input_record.sha256[:16]}_regions.jsonl"
+        )
+        output_path.write_text(
+            "".join(
+                json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n"
+                for item in regions
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        digest = self._file_sha256(output_path)
+        return ArtifactRecord(
+            artifact_id=f"artifact_drawing-regions_{digest[:16]}",
+            kind="drawing_regions",
+            relative_path=(relative_dir / output_path.name).as_posix(),
+            media_type="application/x-ndjson",
+            created_at=_utc_now(),
+            logical_id=(
+                f"drawing-regions:{input_record.input_id}:"
+                f"{self._AGENT_INTERPRETATION_VERSION}"
+            ),
+            size_bytes=output_path.stat().st_size,
+            sha256=digest,
+        )
+
+    def _submit_crop_plan(
+        self,
+        project_id: str,
+        input_id: str,
+        raw_regions: object,
+        expected_revision: object,
+    ) -> dict[str, Any]:
+        manifest = self._refresh_drawing_visual(project_id)
+        if isinstance(expected_revision, bool) or not isinstance(
+            expected_revision, int
+        ):
+            raise DFMError(
+                "manifest_revision_required",
+                "submit_crop_plan requires the revision returned by drawing_context.",
+            )
+        input_record = next(
+            (
+                item
+                for item in self._active_inputs(manifest)
+                if item.input_id == input_id and item.kind == "drawing"
+            ),
+            None,
+        )
+        if input_record is None:
+            raise DFMError(
+                "drawing_input_missing",
+                "submit_crop_plan requires one active drawing input_id.",
+                {"input_id": input_id},
+            )
+        analyzer = self.registry.get("drawing")
+        if not hasattr(analyzer, "prepare_crops"):
+            raise DFMError(
+                "drawing_contract_missing",
+                "The drawing analyzer does not implement semantic cropping.",
+            )
+        context = AnalyzerContext(
+            manifest.project_id,
+            self.workspace.project_dir(manifest.project_id),
+            manifest.input_mode,
+            [input_record],
+        )
+        crops = analyzer.prepare_crops(context, input_record, raw_regions)
+        region_rows = [
+            {
+                "input_id": input_id,
+                "input_sha256": input_record.sha256,
+                **crop.metadata(),
+            }
+            for crop in crops
+        ]
+        region_artifact = self._materialize_drawing_regions(
+            manifest, input_record, region_rows
+        )
+
+        def submit(current: ProjectManifest) -> ProjectManifest:
+            previous_ids = {
+                item.observation_id
+                for item in current.observations
+                if item.input_id == input_id
+                and item.provenance.get("provider") == self._AGENT_OBSERVATION_PROVIDER
+            }
+            capabilities = dict(current.capabilities)
+            drawing = dict(capabilities.get("drawing_discovery") or {})
+            inputs = dict(drawing.get("inputs") or {})
+            input_state = dict(inputs.get(input_id) or {})
+            input_state.update({
+                "crop_status": "completed",
+                "region_count": len(region_rows),
+                "interpretation_status": "pending_agent",
+            })
+            inputs[input_id] = input_state
+            drawing["inputs"] = inputs
+            capabilities["drawing_discovery"] = drawing
+            capabilities.pop("fusion_review", None)
+            return replace(
+                current,
+                observations=[
+                    item
+                    for item in current.observations
+                    if not (
+                        item.input_id == input_id
+                        and item.provenance.get("provider")
+                        == self._AGENT_OBSERVATION_PROVIDER
+                    )
                 ],
-                "rules": [
-                    "Extract only explicitly stated drawing facts.",
-                    "Every observation must cite one or more returned fragment_id values.",
-                    "Do not create feature_refs, region_refs, IDs, or confirmed status.",
-                    "Submit an empty observations list when no explicit fact is present.",
+                fusion_links=[
+                    item
+                    for item in current.fusion_links
+                    if not previous_ids.intersection(item.observation_refs)
                 ],
-            },
+                artifacts=[
+                    item
+                    for item in current.artifacts
+                    if item.logical_id != region_artifact.logical_id
+                ]
+                + [region_artifact],
+                capabilities=capabilities,
+                plans=self._invalidate_plans_for_semantics(
+                    current, "drawing_crop_plan"
+                ),
+                updated_at=_utc_now(),
+            )
+
+        updated = self._store(project_id).update(
+            submit, expected_revision=expected_revision
+        )
+        contract = {
+            "project_id": project_id,
+            "input_id": input_id,
+            "input_sha256": input_record.sha256,
+            "expected_revision": updated.revision,
+            "provider": self._AGENT_OBSERVATION_PROVIDER,
+            "version": self._AGENT_INTERPRETATION_VERSION,
+            "allowed_kind_pattern": "^[a-z][a-z0-9_.-]{0,99}$",
+            "kind_guidance": list(self._OBSERVATION_KIND_GUIDANCE),
+            "required_fields": [
+                "kind",
+                "value",
+                "confidence",
+                "source_region_refs",
+            ],
+            "available_region_ids": [item["region_id"] for item in region_rows],
+        }
+        content: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": _DRAWING_EXTRACTION_PROMPT
+                + "\n\n调用参数上下文：\n"
+                + json.dumps(contract, ensure_ascii=False, sort_keys=True),
+            }
+        ]
+        for crop in crops:
+            content.extend([
+                {
+                    "type": "text",
+                    "text": (
+                        f"REGION {crop.region_id} | source page {crop.page} | "
+                        f"type {crop.type} | coordinates {crop.bbox_1000}"
+                    ),
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {"url": self._png_data_url(crop.png_bytes)},
+                },
+            ])
+        summary = (
+            f"DFM observation extraction requires the {len(crops)} attached crop images. "
+            "If the active model cannot see them, stop and report drawing_vision_required; "
+            "do not invent observations."
+        )
+        return {
+            "_multimodal": True,
+            "content": content,
+            "text_summary": summary,
+            "meta": {**contract, "region_artifact": region_artifact.to_dict()},
         }
 
     def _validate_agent_observations(
@@ -722,22 +1197,23 @@ class DFMService:
                 "submit_observations requires one active drawing input_id.",
                 {"input_id": input_id},
             )
-        fragment_artifact = self._drawing_fragment_artifact(manifest, input_id)
-        fragments = self._read_ndjson(
+        region_artifact = self._drawing_region_artifact(manifest, input_id)
+        regions = self._read_ndjson(
             self.workspace.project_dir(manifest.project_id)
-            / fragment_artifact.relative_path
+            / region_artifact.relative_path
         )
-        fragment_by_id = {
-            str(item.get("fragment_id")): item
-            for item in fragments
-            if item.get("fragment_id")
+        region_by_id = {
+            str(item.get("region_id")): item
+            for item in regions
+            if item.get("region_id")
         }
         allowed = {
             "kind",
             "value",
             "unit",
             "confidence",
-            "source_fragment_refs",
+            "source_region_refs",
+            "source_text",
         }
         observations: list[ObservationRecord] = []
         seen: set[str] = set()
@@ -751,7 +1227,8 @@ class DFMService:
             kind = str(proposal.get("kind") or "").strip().lower().replace(" ", "_")
             value = proposal.get("value")
             unit = proposal.get("unit")
-            source_fragment_refs = proposal.get("source_fragment_refs")
+            source_region_refs = proposal.get("source_region_refs")
+            source_text = proposal.get("source_text")
             raw_confidence = proposal.get("confidence")
             if not re.fullmatch(r"[a-z][a-z0-9_.-]{0,99}", kind):
                 raise DFMError(
@@ -777,6 +1254,16 @@ class DFMService:
                     "Observation unit must be null or a short non-empty string.",
                     {"index": index},
                 )
+            if source_text is not None and (
+                not isinstance(source_text, str)
+                or not source_text.strip()
+                or len(source_text) > 4000
+            ):
+                raise DFMError(
+                    "observation_source_text_invalid",
+                    "Observation source_text must be null or a non-empty string of at most 4000 characters.",
+                    {"index": index},
+                )
             if (
                 isinstance(raw_confidence, bool)
                 or not isinstance(raw_confidence, (int, float))
@@ -788,31 +1275,28 @@ class DFMService:
                     {"index": index},
                 )
             if (
-                not isinstance(source_fragment_refs, list)
-                or not 1 <= len(source_fragment_refs) <= 20
-                or len(source_fragment_refs) != len(set(source_fragment_refs))
+                not isinstance(source_region_refs, list)
+                or not 1 <= len(source_region_refs) <= 20
+                or len(source_region_refs) != len(set(source_region_refs))
                 or any(
-                    not isinstance(item, str) or item not in fragment_by_id
-                    for item in source_fragment_refs
+                    not isinstance(item, str) or item not in region_by_id
+                    for item in source_region_refs
                 )
             ):
                 raise DFMError(
                     "observation_evidence_invalid",
-                    "Every observation must cite one to twenty unique OCR fragment IDs from the selected drawing.",
+                    "Every observation must cite one to twenty unique crop region IDs from the selected drawing.",
                     {"index": index},
                 )
-            sources = [fragment_by_id[item] for item in source_fragment_refs]
-            confidence = min(
-                float(raw_confidence),
-                min(float(item.get("confidence") or 0.0) for item in sources),
-            )
+            sources = [region_by_id[item] for item in source_region_refs]
+            confidence = float(raw_confidence)
             identity = json.dumps(
                 {
                     "input_id": input_id,
                     "kind": kind,
                     "value": value,
                     "unit": unit,
-                    "source_fragment_refs": source_fragment_refs,
+                    "source_region_refs": source_region_refs,
                 },
                 ensure_ascii=False,
                 sort_keys=True,
@@ -834,8 +1318,8 @@ class DFMService:
                     kind=kind,
                     value=value.strip() if isinstance(value, str) else value,
                     source_refs=[
-                        f"artifact:{fragment_artifact.artifact_id}#fragment={item}"
-                        for item in source_fragment_refs
+                        f"artifact:{region_artifact.artifact_id}#region={item}"
+                        for item in source_region_refs
                     ],
                     confidence=confidence,
                     status="candidate",
@@ -845,22 +1329,38 @@ class DFMService:
                         "provider_version": self._AGENT_INTERPRETATION_VERSION,
                         "source_type": "DWG",
                         "input_sha256": input_record.sha256,
-                        "fragment_refs": list(source_fragment_refs),
+                        "region_refs": list(source_region_refs),
                         "pages": sorted({
                             int(item["page"])
                             for item in sources
                             if item.get("page") is not None
                         }),
-                        "original_text": "\n".join(
-                            str(item.get("text") or "") for item in sources
-                        )[:1000],
+                        "bboxes_1000": [
+                            list(item.get("bbox_1000") or []) for item in sources
+                        ],
+                        "original_text": (
+                            source_text.strip()[:4000]
+                            if isinstance(source_text, str)
+                            else ""
+                        ),
                     },
                 )
             )
-        return observations, fragment_artifact
+        return observations, region_artifact
 
     @staticmethod
     def _invalidate_plans_for_semantics(current: ProjectManifest, reason: str):
+        # Drawing observations and Agent fusion links enrich reporting, but do
+        # not change the deterministic geometry operations already pinned in an
+        # analysis plan.  Keeping those plans executable is what allows the 2D
+        # sidecar to finish while the unchanged 3D run is already underway.
+        if reason in {
+            "drawing_visual_refresh",
+            "drawing_crop_plan",
+            "drawing_interpretation",
+            "fusion_review",
+        }:
+            return list(current.plans)
         return [
             replace(
                 plan,
@@ -917,15 +1417,15 @@ class DFMService:
         proposals: object,
         expected_revision: object,
     ) -> dict[str, Any]:
-        manifest = self._refresh_drawing_ocr(project_id)
+        manifest = self._refresh_drawing_visual(project_id)
         if isinstance(expected_revision, bool) or not isinstance(
             expected_revision, int
         ):
             raise DFMError(
                 "manifest_revision_required",
-                "submit_observations requires the revision returned by drawing_context.",
+                "submit_observations requires the revision returned by submit_crop_plan.",
             )
-        observations, _fragment_artifact = self._validate_agent_observations(
+        observations, _region_artifact = self._validate_agent_observations(
             manifest, input_id, proposals
         )
         observation_artifact = self._materialize_agent_observations(
@@ -1197,14 +1697,16 @@ class DFMService:
             capabilities = dict(current.capabilities)
             drawing = dict(capabilities.get("drawing_discovery") or {})
             inputs = dict(drawing.get("inputs") or {})
-            inputs[input_id] = {"status": status, **details}
+            input_state = dict(inputs.get(input_id) or {})
+            input_state.update({"status": status, **details})
+            inputs[input_id] = input_state
             drawing.update({"status": status, "inputs": inputs})
             capabilities["drawing_discovery"] = drawing
             return replace(current, capabilities=capabilities, updated_at=_utc_now())
 
         return self._store(project_id).update(update)
 
-    def _refresh_drawing_ocr(self, project_id: str) -> ProjectManifest:
+    def _refresh_drawing_visual(self, project_id: str) -> ProjectManifest:
         store = self._store(project_id)
         manifest = store.load()
         drawing_inputs = [
@@ -1216,7 +1718,7 @@ class DFMService:
         if not hasattr(analyzer, "discover_input"):
             raise DFMError(
                 "drawing_contract_missing",
-                "The configured drawing analyzer does not implement OCR discovery.",
+                "The configured drawing analyzer does not implement visual discovery.",
             )
 
         for input_record in drawing_inputs:
@@ -1302,7 +1804,8 @@ class DFMService:
                 inputs[input_record.input_id] = {
                     "status": "completed",
                     "provider_version": analyzer.version,
-                    "ocr_fragment_count": batch.fragment_count,
+                    "page_count": batch.page_count,
+                    "crop_status": "pending_agent",
                     "interpretation_status": "pending_agent",
                     "diagnostics": batch.diagnostics,
                 }
@@ -1316,7 +1819,7 @@ class DFMService:
                     artifacts=[*artifacts, *batch.artifacts],
                     capabilities=capabilities,
                     plans=self._invalidate_plans_for_semantics(
-                        current, "drawing_ocr_refresh"
+                        current, "drawing_visual_refresh"
                     ),
                     updated_at=_utc_now(),
                 )
@@ -1561,12 +2064,41 @@ class DFMService:
 
     def _latest_discovery_snapshot(self, manifest: ProjectManifest):
         _refreshed, current_snapshot = self.discovery.freeze(manifest)
-        return next(
+        exact = next(
             (
                 item
                 for item in reversed(manifest.discovery_snapshots)
                 if item.content_sha256 == current_snapshot.content_sha256
                 and item.status == "frozen"
+            ),
+            None,
+        )
+        if exact is not None:
+            return exact
+
+        # A mixed project's background drawing sidecar can add Observation and
+        # FusionLink refs after 3D discovery was frozen.  Those semantic refs do
+        # not alter the geometry scope, so retain the newest snapshot whose
+        # inputs, facts, providers, features, regions, and geometry snapshots
+        # still match.  Any actual CAD/fact/provider change remains stale.
+        if manifest.input_mode != "fusion":
+            return None
+        return next(
+            (
+                item
+                for item in reversed(manifest.discovery_snapshots)
+                if item.status == "frozen"
+                and item.input_hashes == current_snapshot.input_hashes
+                and item.process == current_snapshot.process
+                and item.confirmed_fact_refs == current_snapshot.confirmed_fact_refs
+                and item.provider_versions == current_snapshot.provider_versions
+                and item.feature_refs == current_snapshot.feature_refs
+                and item.region_refs == current_snapshot.region_refs
+                and item.geometry_snapshot_ref
+                == current_snapshot.geometry_snapshot_ref
+                and item.topology_snapshot_id == current_snapshot.topology_snapshot_id
+                and item.render_mesh_snapshot_id
+                == current_snapshot.render_mesh_snapshot_id
             ),
             None,
         )
@@ -1777,6 +2309,68 @@ class DFMService:
             },
         )
 
+    def _drawing_report_state(self, manifest: ProjectManifest) -> dict[str, Any]:
+        inputs = (manifest.capabilities.get("drawing_discovery") or {}).get(
+            "inputs", {}
+        )
+        drawing_ids = [
+            item.input_id
+            for item in self._active_inputs(manifest)
+            if item.kind == "drawing"
+        ]
+        pending = []
+        failed = []
+        for input_id in drawing_ids:
+            state = dict(inputs.get(input_id) or {})
+            interpretation_status = str(
+                state.get("interpretation_status") or "pending_agent"
+            )
+            if interpretation_status == "failed":
+                failed.append(
+                    {
+                        "input_id": input_id,
+                        "error": state.get("interpretation_error") or {},
+                    }
+                )
+            elif interpretation_status != "completed":
+                pending.append(input_id)
+        return {
+            "pending_input_ids": pending,
+            "failed_inputs": failed,
+            "complete": not pending and not failed,
+        }
+
+    def _refresh_report_runtime(
+        self,
+        project_id: str,
+        run: RunRecord,
+        manifest: ProjectManifest,
+    ) -> RunRecord:
+        if not run.plan_snapshot:
+            return run
+        plan = PlanRecord.from_dict(run.plan_snapshot)
+        runtime_artifact = materialize_html_runtime(
+            self.workspace.project_dir(project_id),
+            run.run_id,
+            plan,
+            manifest.inputs,
+            run.artifacts,
+            semantic_artifacts=manifest.artifacts,
+            # The geometry plan may have been frozen before the asynchronous 2D
+            # sidecar completed.  Reporting intentionally consumes the latest
+            # validated observations rather than that earlier semantic ref set.
+            observation_refs=None,
+        )
+        if runtime_artifact is None:
+            raise DFMError(
+                "report_input_missing",
+                "The completed 2D and 3D branches could not be joined into the HTML Runtime.",
+                {"run_id": run.run_id},
+            )
+        return self.jobs.refresh_artifacts(
+            project_id, run.run_id, [runtime_artifact]
+        )
+
     def _report_context(
         self,
         project_id: str,
@@ -1801,7 +2395,18 @@ class DFMService:
         deadline = time.monotonic() + timeout
         while True:
             run = self.jobs.status(project_id, run_id)
-            if run.status not in {RunStatus.QUEUED, RunStatus.RUNNING}:
+            manifest = self._store(project_id).load()
+            drawing_state = self._drawing_report_state(manifest)
+            if drawing_state["failed_inputs"]:
+                raise DFMError(
+                    "drawing_interpretation_failed",
+                    "Background 2D drawing interpretation failed.",
+                    {"inputs": drawing_state["failed_inputs"]},
+                )
+            if (
+                run.status not in {RunStatus.QUEUED, RunStatus.RUNNING}
+                and drawing_state["complete"]
+            ):
                 break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -1810,6 +2415,7 @@ class DFMService:
                     "project_id": project_id,
                     "ready": False,
                     "next_action": "report_context",
+                    "drawing_background": drawing_state,
                     "run": self._run_dict(project_id, run),
                 }
             time.sleep(min(0.25, remaining))
@@ -1835,6 +2441,22 @@ class DFMService:
                 "This DFM run cannot enter Agent report editing.",
                 {"run_id": run_id, "status": run.status.value},
             )
+
+        manifest = self._store(project_id).load()
+        if self._fusion_review_required(manifest):
+            return {
+                "ok": False,
+                "project_id": project_id,
+                "ready": False,
+                "status": "agent_fusion_required",
+                "phase": "drawing_geometry_fusion",
+                "requires_user_response": False,
+                "next_action": "fusion_context",
+                "review_digest": self._fusion_review_digest(manifest),
+                "run": self._run_dict(project_id, run),
+            }
+
+        run = self._refresh_report_runtime(project_id, run, manifest)
 
         runtime_artifact = next(
             (
@@ -1884,6 +2506,26 @@ class DFMService:
             raise DFMError(
                 "report_content_invalid",
                 "render_html requires an llm_content object.",
+            )
+        manifest = self._store(project_id).load()
+        drawing_state = self._drawing_report_state(manifest)
+        if drawing_state["failed_inputs"]:
+            raise DFMError(
+                "drawing_interpretation_failed",
+                "Background 2D drawing interpretation failed.",
+                {"inputs": drawing_state["failed_inputs"]},
+            )
+        if drawing_state["pending_input_ids"]:
+            raise DFMError(
+                "result_not_ready",
+                "HTML rendering is waiting for background 2D drawing interpretation.",
+                drawing_state,
+            )
+        if self._fusion_review_required(manifest):
+            raise DFMError(
+                "agent_fusion_required",
+                "HTML rendering requires the completed drawing/geometry fusion review.",
+                {"next_action": "fusion_context"},
             )
         run = self.jobs.status(project_id, run_id)
         existing_html = next(
@@ -2253,7 +2895,13 @@ class DFMService:
             return self._drawing_context(
                 project_id,
                 str(params.get("input_id") or ""),
-                params.get("page"),
+            )
+        if action == "submit_crop_plan":
+            return self._submit_crop_plan(
+                project_id,
+                str(params.get("input_id") or ""),
+                params.get("crop_regions"),
+                params.get("expected_revision"),
             )
         if action == "submit_observations":
             return self._submit_observations(
@@ -2316,23 +2964,29 @@ class DFMService:
                 manifest = self._select_process(
                     project_id, requested_process, "user_selected"
                 )
-            manifest = self._refresh_drawing_ocr(project_id)
+            manifest = self._refresh_drawing_visual(project_id)
             manifest = self._ensure_clarifications(project_id, phase="discovery")
             pending_interpretations = self._pending_drawing_interpretations(manifest)
+            started_interpretations: list[str] = []
             if pending_interpretations:
-                return {
-                    "ok": False,
-                    "project_id": project_id,
-                    "status": "agent_interpretation_required",
-                    "phase": "drawing_interpretation",
-                    "requires_user_response": False,
-                    "next_action": "drawing_context",
-                    "pending_input_ids": pending_interpretations,
-                    "instructions": (
-                        "Use the current Hermes model to interpret bounded OCR fragments, "
-                        "then call submit_observations."
-                    ),
-                }
+                runtime = params.get("_main_runtime")
+                # Direct service callers retain the explicit protocol for tests
+                # and debugging. The Hermes tool supplies a runtime snapshot and
+                # performs both visual passes inside this discover invocation.
+                if not isinstance(runtime, dict):
+                    return {
+                        "ok": False,
+                        "project_id": project_id,
+                        "status": "agent_interpretation_required",
+                        "phase": "drawing_interpretation",
+                        "requires_user_response": False,
+                        "next_action": "drawing_context",
+                        "pending_input_ids": pending_interpretations,
+                    }
+                started_interpretations = self._start_drawing_interpretations(
+                    project_id, pending_interpretations, runtime
+                )
+                manifest = self._store(project_id).load()
             open_clarifications = self._open_clarifications(
                 manifest, requested_process, phase="discovery"
             )
@@ -2353,8 +3007,18 @@ class DFMService:
                         in {"candidate", "needs_confirmation", "conflict"}
                     ],
                 }
-            discovered = self._persist_geometry_candidates(project_id)
-            if self._fusion_review_required(discovered):
+            for attempt in range(3):
+                try:
+                    discovered = self._persist_geometry_candidates(project_id)
+                    break
+                except DFMError as exc:
+                    if exc.code != "manifest_conflict" or attempt == 2:
+                        raise
+            has_mixed_drawing_geometry = discovered.input_mode == "fusion"
+            if (
+                not has_mixed_drawing_geometry
+                and self._fusion_review_required(discovered)
+            ):
                 return {
                     "ok": False,
                     "project_id": project_id,
@@ -2368,7 +3032,11 @@ class DFMService:
                         "service will validate all geometry references."
                     ),
                 }
-            discovered = self._resolve_fusion_links(discovered)
+            # Mixed-project fusion is deliberately deferred until reporting.
+            # It is semantic enrichment for the report and must not gate the
+            # unchanged 3D plan/start path while the 2D sidecar is running.
+            if not self._fusion_review_required(discovered):
+                discovered = self._resolve_fusion_links(discovered)
             discovered, snapshot = self.discovery.freeze(discovered)
             existing_plan = next(
                 (
@@ -2395,18 +3063,17 @@ class DFMService:
                 input_hashes={item.input_id: item.sha256 for item in active_inputs},
                 operations=[
                     PlanOperation(
-                        "discovery.drawing_ocr",
-                        "extract_drawing_ocr_fragments",
+                        "discovery.drawing_visual_context",
+                        "render_and_interpret_drawing_regions",
                     ),
                     PlanOperation(
                         "discovery.agent_interpretation",
                         "persist_agent_drawing_observations",
-                        depends_on=["discovery.drawing_ocr"],
+                        depends_on=["discovery.drawing_visual_context"],
                     ),
                     PlanOperation(
                         "discovery.generic_geometry",
                         "recognize_ordinary_region",
-                        depends_on=["discovery.agent_interpretation"],
                         required_fact_names=["model_units"],
                     ),
                     PlanOperation(
@@ -2420,7 +3087,10 @@ class DFMService:
                     PlanOperation(
                         "discovery.fusion",
                         "validate_agent_fusion_links",
-                        depends_on=["discovery.process_features"],
+                        depends_on=[
+                            "discovery.process_features",
+                            "discovery.agent_interpretation",
+                        ],
                         feature_refs=list(snapshot.feature_refs),
                         region_refs=list(snapshot.region_refs),
                     ),
@@ -2441,14 +3111,32 @@ class DFMService:
             manifest = store.update(
                 lambda current: replace(
                     current,
-                    features=discovered.features,
-                    regions=discovered.regions,
-                    observations=discovered.observations,
-                    fusion_links=discovered.fusion_links,
-                    discovery_snapshots=discovered.discovery_snapshots,
-                    artifacts=discovered.artifacts,
-                    capabilities=discovered.capabilities,
-                    plans=plans,
+                    # Geometry candidates were already committed above.  Only
+                    # add the frozen snapshot/plan here: copying the stale
+                    # pre-freeze Manifest would overwrite concurrent 2D status,
+                    # crop artifacts, and observations from the sidecar.
+                    discovery_snapshots=[
+                        *current.discovery_snapshots,
+                        *[
+                            item
+                            for item in discovered.discovery_snapshots
+                            if all(
+                                existing.snapshot_id != item.snapshot_id
+                                for existing in current.discovery_snapshots
+                            )
+                        ],
+                    ],
+                    plans=[
+                        *current.plans,
+                        *[
+                            item
+                            for item in plans
+                            if all(
+                                existing.plan_id != item.plan_id
+                                for existing in current.plans
+                            )
+                        ],
+                    ],
                     updated_at=_utc_now(),
                 )
             )
@@ -2481,6 +3169,13 @@ class DFMService:
                 ],
                 "capability": self.discovery.capability(),
                 "drawing_discovery": manifest.capabilities.get("drawing_discovery", {}),
+                "drawing_background": {
+                    "started_input_ids": started_interpretations,
+                    "pending_input_ids": self._pending_drawing_interpretations(
+                        manifest
+                    ),
+                    "fusion_deferred_to_report": has_mixed_drawing_geometry,
+                },
                 "open_clarifications": [
                     item.to_dict()
                     for item in self._open_clarifications(manifest, phase="analysis")
@@ -2752,6 +3447,7 @@ class DFMService:
     def close(self) -> None:
         if self._ontology_background_sync is not None:
             self._ontology_background_sync.close()
+        self._drawing_executor.shutdown(wait=False, cancel_futures=True)
         self.jobs.shutdown()
         self.ontology_store.close()
 

@@ -473,6 +473,7 @@ class JobManager:
                         if snapshot.snapshot_id in plan.discovery_snapshot_refs
                         for observation_id in snapshot.observation_refs
                     },
+                    allow_pending_drawing=True,
                 )
                 if html_runtime is not None:
                     checked.append(
@@ -904,6 +905,54 @@ class JobManager:
             )
 
         updated = self._store(project_id).update(attach)
+        return self._find_run(updated, run_id)
+
+    def refresh_artifacts(
+        self,
+        project_id: str,
+        run_id: str,
+        artifacts: list[ArtifactRecord],
+    ) -> RunRecord:
+        """Replace generated artifacts without changing the run lifecycle state."""
+
+        project_dir = self.workspace.project_dir(project_id)
+        validated = [self._validate_artifact(project_dir, item) for item in artifacts]
+        if any(item.run_id != run_id for item in validated):
+            raise DFMError(
+                "artifact_invalid",
+                "A refreshed artifact belongs to a different DFM run.",
+                {"run_id": run_id},
+            )
+
+        def refresh(current: ProjectManifest) -> ProjectManifest:
+            runs = []
+            found = False
+            for run in current.runs:
+                if run.run_id != run_id:
+                    runs.append(run)
+                    continue
+                found = True
+                combined = {item.relative_path: item for item in run.artifacts}
+                combined.update({item.relative_path: item for item in validated})
+                runs.append(replace(run, artifacts=list(combined.values())))
+            if not found:
+                raise DFMError(
+                    "run_not_found", "DFM run was not found.", {"run_id": run_id}
+                )
+            project_artifacts = {
+                item.relative_path: item for item in current.artifacts
+            }
+            project_artifacts.update(
+                {item.relative_path: item for item in validated}
+            )
+            return replace(
+                current,
+                runs=runs,
+                artifacts=list(project_artifacts.values()),
+                updated_at=_utc_now(),
+            )
+
+        updated = self._store(project_id).update(refresh)
         return self._find_run(updated, run_id)
 
     def reconcile_incomplete_runs(self) -> None:

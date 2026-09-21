@@ -21,6 +21,123 @@ from .template import load_single_jsonl
 
 RUNTIME_DIR = Path(__file__).with_name('editor_runtime')
 DOCUMENT_SLOT = '__HERMES_DFM_DOCUMENT_JSON__'
+_LIVE_REPORT_SANDBOX = 'o.setAttribute("sandbox","allow-scripts")'
+_LIVE_REPORT_SANDBOX_WITH_PDF = (
+    'o.setAttribute("sandbox","allow-scripts allow-popups '
+    'allow-popups-to-escape-sandbox")'
+)
+_LIVE_IFRAME_TOKEN = 's=crypto.randomUUID(),l={'
+_LIVE_IFRAME_TOKEN_EXPOSED = 's=crypto.randomUUID(),l=(o.dataset.dfmBridge=s,{'
+_LIVE_ACTION_PAYLOAD = (
+    'textBindings:Object.fromEntries(Object.entries(r.records)'
+    '.filter(([,m])=>m.textBindings).map(([m,h])=>[m,h.textBindings]))}'
+)
+_LIVE_ACTION_PAYLOAD_WITH_ACTIONS = (
+    'textBindings:Object.fromEntries(Object.entries(r.records)'
+    '.filter(([,m])=>m.textBindings).map(([m,h])=>[m,h.textBindings])),'
+    'actions:Object.fromEntries(Object.entries(r.records)'
+    '.filter(([,m])=>m.actions?.length).map(([m,h])=>[m,h.actions]))})'
+)
+_LIVE_ACTION_BINDING = (
+    'b.parentElement!==s&&s.append(b),f.add(h.dfmKey);'
+    'let x=n.baselines[h.dfmKey]'
+)
+_LIVE_ACTION_BINDING_WITH_KEYS = (
+    'b.parentElement!==s&&s.append(b),f.add(h.dfmKey);'
+    'for(let A of n.actions?.[h.dfmKey]??[]){let B=b;'
+    'for(let C of A.path)B=B?.childNodes[C];'
+    'B?.nodeType===Node.ELEMENT_NODE&&(B.dataset.dfmActionKey=A.key)}'
+    'let x=n.baselines[h.dfmKey]'
+)
+_LIVE_READY_LISTENER = (
+    'window.addEventListener("load",()=>{window.dispatchEvent(new Event("resize")),'
+    'window.dispatchEvent(new Event("scroll")),u({action:"ready"})})'
+)
+_LIVE_READY_LISTENER_WITH_ACTIONS = (
+    'window.addEventListener("message",h=>{if(h.source===parent&&'
+    'h.data?.dfmBridge===n.token&&h.data.action==="activate"&&'
+    'typeof h.data.key==="string"){let g=document.querySelector('
+    '`[data-dfm-action-key="${CSS.escape(h.data.key)}"]`);g?.click()}}),'
+    + _LIVE_READY_LISTENER
+)
+_SHELL_END = '</script></body></html>'
+_EDIT_ACTION_BRIDGE = r'''<script id="dfm-edit-action-bridge">
+(()=>{
+  let sourceHtml=null;
+  let sourcePromise=null;
+  const source=()=>{
+    if(sourceHtml!==null)return Promise.resolve(sourceHtml);
+    const api=window.dfmBento;
+    if(!api?.source)return Promise.reject(new Error("DFM source is not ready"));
+    sourcePromise??=api.source().then(value=>(sourceHtml=value,value));
+    return sourcePromise;
+  };
+  const warm=()=>{
+    if(window.dfmBento?.source)void source().catch(()=>{});
+    else requestAnimationFrame(warm);
+  };
+  const actionAtPoint=(host,x,y)=>[...host.shadowRoot.querySelectorAll(
+    "[data-dfm-action-key]"
+  )].find(node=>{
+    const rect=node.getBoundingClientRect();
+    return x>=rect.left&&x<=rect.right&&y>=rect.top&&y<=rect.bottom;
+  });
+  const openDrawingPdf=()=>{
+    const popup=window.open("about:blank","_blank");
+    if(!popup){window.dfmBento?.editor?.toast?.("浏览器阻止了二维图纸窗口，请允许弹窗后重试。");return;}
+    try{popup.document.body.textContent="正在打开完整二维图纸…";}catch{}
+    source().then(html=>{
+      const match=html.match(/const embeddedPdfB64 = "([A-Za-z0-9+/=]*)";/);
+      if(!match)throw new Error("完整二维图纸数据不存在");
+      const raw=atob(match[1]);
+      const bytes=Uint8Array.from(raw,char=>char.charCodeAt(0));
+      popup.location.replace(URL.createObjectURL(new Blob([bytes],{type:"application/pdf"})));
+    }).catch(error=>{
+      try{popup.close();}catch{}
+      window.dfmBento?.editor?.toast?.(String(error.message||error));
+    });
+  };
+  const activate=async key=>{
+    const api=window.dfmBento;
+    const page=api?.store?.slide?.dfmPage;
+    if(!api?.editor||page===undefined)return;
+    api.editor.present(false,false);
+    const deadline=performance.now()+5000;
+    while(performance.now()<deadline){
+      const frame=document.querySelector(
+        `.bento-present-overlay iframe.dfm-live-report[data-dfm-page="${page}"][data-ready="true"]`
+      );
+      const token=frame?.dataset.dfmBridge;
+      if(frame?.contentWindow&&token){
+        frame.contentWindow.postMessage({dfmBridge:token,action:"activate",key},"*");
+        return;
+      }
+      await new Promise(resolve=>setTimeout(resolve,25));
+    }
+    api.editor.toast?.("交互报告启动超时，请重试。");
+  };
+  document.addEventListener("click",event=>{
+    if(document.querySelector(".bento-present-overlay"))return;
+    const host=event.composedPath().find(node=>
+      node instanceof HTMLElement&&node.classList?.contains("bento-el")&&node.shadowRoot
+    );
+    if(!host)return;
+    const action=actionAtPoint(host,event.clientX,event.clientY);
+    if(!action)return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if(action.dataset.dfmActionKind==="drawing-pdf")openDrawingPdf();
+    else void activate(action.dataset.dfmActionKey);
+  },true);
+  requestAnimationFrame(warm);
+})();
+</script>'''
+
+
+def _replace_runtime_marker(shell: str, marker: str, replacement: str, label: str) -> str:
+    if shell.count(marker) != 1:
+        raise ValueError(f'Editor runtime {label} marker is missing or ambiguous')
+    return shell.replace(marker, replacement)
 
 
 def load_runtime() -> tuple[str, Path]:
@@ -39,7 +156,42 @@ def load_runtime() -> tuple[str, Path]:
             assets[name] = raw.decode('utf-8')
         if assets['shell.html'].count(DOCUMENT_SLOT) != 1:
             raise ValueError('Editor runtime document slot is missing or ambiguous')
-        return assets['shell.html'], RUNTIME_DIR / 'extract.js'
+        # The integrity-checked original DFM report runs only in the live
+        # presentation iframe. Its complete-2D-drawing action opens an embedded
+        # PDF Blob in a new tab, which browsers block unless this narrowly
+        # scoped sandbox has allow-popups. Keep arbitrary inline handlers
+        # stripped from the editable canvas and do not grant same-origin.
+        shell = _replace_runtime_marker(
+            assets['shell.html'],
+            _LIVE_REPORT_SANDBOX,
+            _LIVE_REPORT_SANDBOX_WITH_PDF,
+            'live-report sandbox',
+        )
+        shell = _replace_runtime_marker(
+            shell, _LIVE_IFRAME_TOKEN, _LIVE_IFRAME_TOKEN_EXPOSED,
+            'live-report token',
+        )
+        shell = _replace_runtime_marker(
+            shell, _LIVE_ACTION_PAYLOAD, _LIVE_ACTION_PAYLOAD_WITH_ACTIONS,
+            'live-report action payload',
+        )
+        shell = _replace_runtime_marker(
+            shell, _LIVE_ACTION_BINDING, _LIVE_ACTION_BINDING_WITH_KEYS,
+            'live-report action binding',
+        )
+        shell = _replace_runtime_marker(
+            shell, _LIVE_READY_LISTENER, _LIVE_READY_LISTENER_WITH_ACTIONS,
+            'live-report action listener',
+        )
+        # The editable clone remains script-free. A click on an extracted DFM
+        # action is resolved geometrically, then relayed with a random iframe
+        # token to the integrity-checked original report. Nothing auto-starts
+        # presentation or requests browser fullscreen.
+        shell = _replace_runtime_marker(
+            shell, _SHELL_END, f'</script>{_EDIT_ACTION_BRIDGE}</body></html>',
+            'document end',
+        )
+        return shell, RUNTIME_DIR / 'extract.js'
     except (OSError, KeyError, ValueError) as exc:
         raise DFMError('report_generation_failed', 'The packaged DFM editor runtime is missing or invalid.',
                        {'error': str(exc)}) from exc
