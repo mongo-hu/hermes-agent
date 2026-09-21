@@ -148,6 +148,58 @@ def test_multi_measurement_ratio_evaluates_one_check_once():
     assert provenance[evaluation.evaluation_id]["check_id"] == evaluation.check_id
 
 
+def test_dimensionless_ratio_times_100_evaluates_as_percent():
+    base = _ratio_plan()
+    criterion = {
+        "criterion_id": "wall_percent",
+        "expression": {
+            "op": "multiply",
+            "args": [
+                base.rule_bindings[0].expression,
+                {"constant": 100, "unit": ""},
+            ],
+        },
+        "comparator": "GTE",
+        "threshold": 40,
+        "result_unit": "percent",
+    }
+    binding = replace(
+        base.rule_bindings[0],
+        expression=criterion["expression"],
+        operator=">=",
+        acceptance_criteria_json=[criterion],
+    )
+    plan = replace(
+        base,
+        rule_bindings=[binding],
+        rules={
+            binding.rule_id: replace(
+                base.rules[binding.rule_id], value=40, unit="percent"
+            )
+        },
+    )
+    measurements = [
+        _measurement(
+            "measurement.boss.wall",
+            "geometry.wall_thickness.boss",
+            1.0,
+            "region.screw_boss.1.wall",
+        ),
+        _measurement(
+            "measurement.main.wall",
+            "geometry.wall_thickness.main",
+            2.0,
+            "region.main_wall.1.wall",
+        ),
+    ]
+
+    evaluations, _ = EvaluationEngine().evaluate(measurements, plan)
+
+    assert evaluations[0].actual == pytest.approx(50)
+    assert evaluations[0].actual_unit == "percent"
+    assert evaluations[0].outcome == "pass"
+
+
 @pytest.mark.parametrize(
     "boss,main,outcome,failed",
     [(1.0, 2.0, "pass", []), (0.7, 2.0, "fail", ["wall_min", "wall_ratio"]), (1.0, 3.0, "fail", ["wall_ratio"])],

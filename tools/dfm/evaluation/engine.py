@@ -33,7 +33,7 @@ _OPERATORS = {
     "==": operator.eq,
     "!=": operator.ne,
 }
-_DIMENSIONLESS_UNITS = {None, "", "1", "ratio"}
+_DIMENSIONLESS_UNITS = {None, "", "1", "ratio", "%", "percent"}
 _CRITERION_OPERATORS = {
     "GT": ">", "GTE": ">=", "LT": "<", "LTE": "<=",
     "EQ": "==", "NE": "!=", "BETWEEN": "between",

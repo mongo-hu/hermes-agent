@@ -490,7 +490,7 @@ def _expression_operand_aliases(
             or isinstance(value, bool)
             or not isinstance(value, (int, float))
             or not math.isfinite(float(value))
-            or (unit is not None and (not isinstance(unit, str) or not unit))
+            or (unit is not None and not isinstance(unit, str))
         ):
             raise DFMError(
                 "plan_rule_binding_invalid",

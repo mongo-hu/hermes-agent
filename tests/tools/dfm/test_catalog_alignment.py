@@ -302,6 +302,54 @@ def test_schema_3_rejects_invalid_new_rule_contract(change):
     assert exc_info.value.code == "ontology_snapshot_invalid"
 
 
+def test_schema_3_installs_unresolved_geometric_metadata_but_will_not_compile_it():
+    value = composite_payload()
+    for concept in value["concepts"]:
+        if concept["concept_type"] != "geometric":
+            continue
+        concept["properties_json"].update({
+            "worker_geometric_id": "",
+            "quantity_id": "",
+            "dimension": "",
+            "canonical_unit": "",
+        })
+
+    store = LocalOntologyStore.from_package(rehash(value))
+
+    with pytest.raises(DFMError) as exc_info:
+        store.compile("injection", {"material": "ABS"}, operations())
+    assert exc_info.value.code == "ontology_capability_mismatch"
+
+
+def test_schema_3_accepts_empty_unit_for_a_dimensionless_constant():
+    value = composite_payload()
+    criterion = value["rules"][0]["acceptance_criteria_json"][0]
+    criterion.update({
+        "expression": {
+            "op": "multiply",
+            "args": [
+                {
+                    "op": "divide",
+                    "args": [
+                        {"operand": "actual"},
+                        {"operand": "actual"},
+                    ],
+                },
+                {"constant": 100, "unit": ""},
+            ],
+        },
+        "comparator": "GT",
+        "threshold": 20,
+        "result_unit": "percent",
+    })
+
+    compiled = LocalOntologyStore.from_package(rehash(value)).compile(
+        "injection", {"material": "ABS"}, operations()
+    )
+
+    assert compiled.rule_bindings[0].acceptance_criteria_json[0] == criterion
+
+
 @pytest.mark.parametrize(
     "change",
     ["concept_id", "unit", "nan", "mixed", "blank_text", "region_cache", "old_binding"],
