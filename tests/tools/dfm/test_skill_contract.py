@@ -55,10 +55,11 @@ def test_dfm_skill_prescribes_safe_complete_tool_workflow():
     assert "not_implemented" in text
     assert "current Hermes conversation model" in text
     assert "Do not call a second model endpoint" in text
-    assert "two background calls" in text
+    assert "non-blocking 2D sidecar" in text
+    assert "must never delay 3D `plan` or `start`" in text
     assert "No separate vision API" in text
     assert "do not open a PDF in a browser" in text
-    assert "An empty crop plan is rejected" in text
+    assert "An empty crop plan is recorded as a 2D failure" in text
     assert "sole drawing-semantic source" in text
     assert "Do not call `drawing_context` or reinterpret the drawing" in text
     assert "every persisted `global_note` value" in text

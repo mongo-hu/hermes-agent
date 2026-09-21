@@ -94,6 +94,7 @@ def materialize_html_runtime(
     artifacts: list[ArtifactRecord],
     semantic_artifacts: list[ArtifactRecord] | None = None,
     observation_refs: set[str] | None = None,
+    allow_pending_drawing: bool = False,
 ) -> ArtifactRecord | None:
     """Write runtime_data.jsonl from existing artifacts without recomputation.
 
@@ -142,23 +143,33 @@ def materialize_html_runtime(
             ),
             None,
         )
-        if observation_artifact is None:
+        if observation_artifact is None and not allow_pending_drawing:
             return None
-        drawing_observations = [
-            row
-            for row in _read_objects(project_dir, observation_artifact)
-            if row.get("input_id") == drawing.input_id
-            and (
-                observation_refs is None
-                or row.get("observation_id") in observation_refs
-            )
-        ]
+        drawing_observations = (
+            [
+                row
+                for row in _read_objects(project_dir, observation_artifact)
+                if row.get("input_id") == drawing.input_id
+                and (
+                    observation_refs is None
+                    or row.get("observation_id") in observation_refs
+                )
+            ]
+            if observation_artifact is not None
+            else []
+        )
         drawing_semantics = {
             "input_id": drawing.input_id,
             "input_sha256": drawing.sha256,
-            "source_artifact_id": observation_artifact.artifact_id,
+            "source_artifact_id": (
+                observation_artifact.artifact_id
+                if observation_artifact is not None
+                else None
+            ),
             "observations": drawing_observations,
         }
+        if observation_artifact is None:
+            drawing_semantics["status"] = "pending"
 
     fields: dict[str, ArtifactRecord] = {}
     for artifact in by_kind.get("scalar_field", []):
@@ -242,14 +253,11 @@ def materialize_html_runtime(
         ),
         "rule_library_path": _relative(rule_snapshot_path, output_dir),
     }
-    if drawing_path is not None and observation_artifact is not None:
-        resources.update(
-            {
-                "drawing_pdf_path": _relative(drawing_path, output_dir),
-                "drawing_observations_path": _relative(
-                    _artifact_path(project_dir, observation_artifact), output_dir
-                ),
-            }
+    if drawing_path is not None:
+        resources["drawing_pdf_path"] = _relative(drawing_path, output_dir)
+    if observation_artifact is not None:
+        resources["drawing_observations_path"] = _relative(
+            _artifact_path(project_dir, observation_artifact), output_dir
         )
     runtime = {
         "schema_version": "dfm-html-runtime/v1",

@@ -4,7 +4,7 @@
 >
 > 记录日期：2026-09-21
 >
-> 当前实现分支：`dfm-2D-crop`
+> 当前实现分支：`feat/dfm-2d-3d-parallel-discovery`
 >
 > 实验原型：`D:\hermes_deployment\hermes-agent-dfm-hermes-agent2\experiments\dfm_visual_extraction\scripts\semantic_crop_pipeline.py`
 
@@ -20,14 +20,14 @@
 - 不配置第二套视觉 API、模型或密钥；
 - 两次内部视觉请求复用当前主 Hermes Agent 的 provider、model、base URL、API key 和 API mode；
 - 两次视觉请求不进入主 Agent 对话循环，不携带主对话历史，也不把页面图片或中间模型输出写入主 Agent 上下文；
-- 主 Agent 只看到 `dfm_analysis(action="discover")` 的结构化最终结果或明确错误；
+- 主 Agent 只看到 `discover` 返回的 2D 后台状态，以及报告阶段汇合后的结构化结果或明确错误；
 - 不打开浏览器分析 PDF，不调用通用 `vision_analyze`，不依赖 OCR；
 - 坐标、区域 ID、Observation ID、revision 和持久化均由 DFM 服务校验；模型只能提出候选内容；
 - 空裁剪计划必须失败关闭，禁止把图纸静默当成“没有内容”。
 
-这里的“后台”是指 **DFM 工具调用内部的模型 side-call**。它不是独立队列任务；
-对用户界面而言只显示一个正在执行的 DFM Analysis 工具调用。混合 CAD + 图纸项目中，
-完整 2D 分支会与 3D 几何发现并行，但 2D 内部的两次请求仍因数据依赖而顺序执行。
+这里的“后台”是指由 `discover` 启动、在该工具返回后继续运行的 **非阻塞模型 sidecar**。
+它不启动或包裹 3D runtime；主 Agent 按原流程继续 clarification、plan 和 start，因此完整
+2D 分支与真正的 3D 计算重叠。2D 内部两次请求仍因数据依赖而顺序执行。
 
 ## 2. 总体数据流
 
@@ -45,18 +45,22 @@
        │    ├─ 获取页数/页面尺寸
        │    └─ 所有页面以 72 DPI 渲染到内存 PNG
        │
-       ├─ 并行分支 A：2D 图纸语义理解
+       ├─ 启动后不等待：2D 图纸语义 sidecar
        │    ├─ 多模态调用 1：全页语义裁剪规划
        │    ├─ 程序校验、补边、吸附并渲染 200 DPI 裁剪
        │    ├─ 多模态调用 2：高清区域事实提取
        │    └─ 校验 source_region_refs 并持久化区域与 Observation
        │
-       ├─ 并行分支 B：STEP/Parasolid 3D 几何发现
-       │
-       └─ 两分支汇合后继续 clarification、fusion 和 snapshot
+       └─ 原 3D 路径立即继续
             ├─ clarification（需要用户确认时）
-            ├─ 2D/3D fusion（仍可由主 Agent 提议）
-            └─ freeze discovery snapshot
+            ├─ freeze geometry discovery snapshot
+            ├─ plan
+            └─ start（真正 3D 计算）
+
+  report_context
+       ├─ 等待 2D/3D 都完成
+       ├─ 必要时执行 2D/3D fusion
+       └─ 用最新 Observation + 既有 3D 产物生成最终 Runtime
 ```
 
 ## 3. 为什么必须是“两次调用”
@@ -389,11 +393,12 @@ manifest.capabilities.drawing_discovery.inputs[input_id]
 
 1. `_refresh_drawing_visual` 生成/刷新 deterministic drawing diagnostics；
 2. `_pending_drawing_interpretations` 找出未完成的 drawing input；
-3. 如果存在 `_main_runtime` 且项目同时包含 STEP/Parasolid，使用
-   `_discover_geometry_and_drawings_in_parallel` 同时启动 2D 解释分支和 3D 几何发现；
-4. 若只有图纸，则逐个执行 `_interpret_drawing_in_background`；
-5. 等待相关分支结束，重新加载 Manifest，继续 clarification、fusion 和 snapshot；
-6. 正式工具调用不再向主 Agent 返回 `agent_interpretation_required`。
+3. 存在 `_main_runtime` 时，使用 `_start_drawing_interpretations` 把未完成图纸提交到
+   持久的 `dfm-drawing` executor；不调用 `Future.result()`；
+4. `discover` 继续固定 3D geometry snapshot 并返回，主 Agent 立即进入原 plan/start；
+5. 图纸 sidecar 独立写入 region、Observation 和状态；这些报告语义不会使既有几何 Plan 失效；
+6. `report_context` 等待两边完成，必要时返回 `agent_fusion_required`，Fusion 后重建 Runtime；
+7. 正式工具调用不再向主 Agent返回可见的手动图像分析流程。
 
 为了兼容单元测试和调试，当前直接调用 `DFMService.analysis("discover")` 且不传 `_main_runtime` 时仍会返回旧的 `agent_interpretation_required` 手动协议。迁移到新代码时可以保留这一兼容路径，也可以在所有生产入口确认切换完成后删除，但不要让正式工具调用回退到可见对话流程。
 
@@ -435,17 +440,23 @@ def _interpret_drawing_in_background(project_id, input_id, runtime):
         )
     )
 
-def _discover_geometry_and_drawings_in_parallel(project_id, input_ids, runtime):
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        geometry = executor.submit(_persist_geometry_candidates, project_id)
-        drawings = executor.submit(interpret_each_drawing, input_ids, runtime)
-        drawings.result()
-        try:
-            geometry.result()
-        except ManifestConflict:
-            # 只重放持久化；内容寻址的几何产物可以复用。
-            _persist_geometry_candidates(project_id)
-    return load_latest_manifest(project_id)
+def _start_drawing_interpretations(project_id, input_ids, runtime):
+    for input_id in input_ids:
+        if not has_running_future(project_id, input_id):
+            persist_status(input_id, "running")
+            drawing_executor.submit(
+                _interpret_drawing_in_background,
+                project_id,
+                input_id,
+                snapshot(runtime),
+            )
+    return_immediately()
+
+def report_context(project_id, run_id):
+    wait_for_existing_3d_run_and_drawing_sidecar()
+    if fusion_review_required():
+        return agent_fusion_required()
+    return rebuild_runtime_from_latest_observations_and_3d_artifacts()
 ```
 
 实验脚本第二次调用使用 12000 tokens；当前生产接入使用 10000。迁移时应根据最大区域数和真实图纸测试决定，建议先保持 12000 以避免长 Notes/BOM 被截断，再基于使用量数据调整。
@@ -453,9 +464,10 @@ def _discover_geometry_and_drawings_in_parallel(project_id, input_ids, runtime):
 ## 11. 必须保留的并发与一致性控制
 
 - ManifestStore 必须继续使用项目级锁和 `expected_revision` 做原子写入；
-- 2D 与 3D 并行期间，图纸提交必须在每次写入前读取最新 revision，并仅对
+- 2D sidecar 与 3D runtime 并行期间，图纸提交必须在每次写入前读取最新 revision，并仅对
   `manifest_conflict` 做有限重试；输入 ID、源文件哈希和分析上下文仍必须保持有效；
-- 3D 几何提交若因 2D 先写入而冲突，应等待 2D 分支结束后重放持久化；不能覆盖新 Manifest；
+- Discovery 最终提交只能追加自己的 Snapshot/Plan，不能把启动 sidecar 前的旧 Manifest
+  整体写回并覆盖新的 2D 状态、区域或 Observation；
 - 2D 内部第二轮必须等待第一轮裁剪和区域持久化完成，不能把这两个有依赖的模型请求并行化；
 - runtime 在工具调用入口做一次快照，避免长视觉调用期间另一个会话改变进程级 runtime；
 - API key 不得进入任何可序列化状态；
@@ -624,7 +636,7 @@ tests/tools/dfm/test_skill_contract.py
 
 1. **严格主模型复用**：确认辅助 vision router 不会在主模型不可用时回退其他 provider；需求是 fail closed，而不是悄悄换 API。
 2. **provider 命名**：现有 provenance 仍使用兼容名称 `hermes_agent_event_loop`，但视觉已在工具内部执行。新版本可增加新的 provider version 或迁移字段，但需考虑旧 Manifest 兼容。
-3. **同步等待**：当前“后台”不会污染对话，2D 与 3D 已并行重叠，但 `discover` 仍会等待两分支汇合。若改成真正异步 Job，必须保留 runtime snapshot、幂等和 revision 检查。
+3. **后台生命周期**：`discover` 已不再等待 2D；必须保留 runtime snapshot、同一 input 的 future 去重、失败状态持久化和 revision 检查。服务关闭时要取消尚未启动的 future。
 4. **超时与重试**：两次请求各 480 秒。网络重试不能跨 revision，也不能在第一次成功、第二次失败后把状态误标为 completed。
 5. **空 observations**：完整区域确实没有支持事实时可允许空 observations；空 crop regions 永远不允许。
 6. **多图纸项目**：每个 drawing input 独立两次调用；不要把不同源文件的 region ID 混在同一次 observation 校验中。
@@ -633,7 +645,7 @@ tests/tools/dfm/test_skill_contract.py
 
 ## 18. 一句话验收标准
 
-用户同时提交 STEP 和 PDF 后，只需看到一个 DFM Discovery 工具过程；DFM 在内部并行执行
-3D 几何发现与完整 2D 视觉分支，并用当前主 Agent 的同一模型和凭据顺序完成“全页规划 +
-高清区域提取”。主对话只收到两分支汇合后经过校验和持久化的结果，最终报告仍能打开完整
-原始 PDF，并且每条 2D 事实都能追到源文件、页码和区域。
+用户同时提交 STEP 和 PDF 后，`discover` 启动 2D sidecar 即返回；主 Agent 沿原流程启动
+真正 3D 计算，2D 使用当前主 Agent 的同一模型和凭据顺序完成“全页规划 + 高清区域提取”。
+`report_context` 等两边完成并在必要时 Fusion，最终报告仍能打开完整原始 PDF，且每条 2D
+事实都能追到源文件、页码和区域。

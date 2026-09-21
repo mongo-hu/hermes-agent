@@ -1,5 +1,6 @@
 import json
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,8 @@ from tools.dfm.contracts import (
     ObservationRecord,
     ProjectManifest,
     RegionRecord,
+    RunRecord,
+    RunStatus,
     WorkerEvent,
 )
 from tools.dfm.drawing_pipeline import interface
@@ -451,8 +454,11 @@ def test_mixed_input_uses_agent_observation_and_fusion_submission_flow(tmp_path)
         assert material["status"] == "needs_confirmation"
         assert material["provenance"]["provider"] == "hermes_agent_event_loop"
 
-        fusion_pending = service.analysis("discover", project_id=project_id)
-        assert fusion_pending["status"] == "agent_fusion_required"
+        discovery_started = service.analysis("discover", project_id=project_id)
+        assert discovery_started["ok"] is True
+        assert discovery_started["drawing_background"][
+            "fusion_deferred_to_report"
+        ] is True
         fusion_context = service.analysis("fusion_context", project_id=project_id)
         wall = next(
             item
@@ -545,6 +551,7 @@ def test_discover_runs_two_drawing_vision_passes_with_main_runtime(tmp_path):
         })
 
     service = DFMService(
+        config=DFMConfig(geometry_backend="pythonocc_internal"),
         workspace=DFMWorkspace(tmp_path / "workspace"),
         registry=registry,
         reconcile_jobs=False,
@@ -563,8 +570,16 @@ def test_discover_runs_two_drawing_vision_passes_with_main_runtime(tmp_path):
             project_id=project_id,
             _main_runtime={"provider": "custom:test", "model": "main-model"},
         )
-        manifest = service._store(project_id).load()
-        state = manifest.capabilities["drawing_discovery"]["inputs"][drawing["input_id"]]
+        deadline = time.monotonic() + 2
+        while True:
+            manifest = service._store(project_id).load()
+            state = manifest.capabilities["drawing_discovery"]["inputs"][
+                drawing["input_id"]
+            ]
+            if state.get("interpretation_status") == "completed":
+                break
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
 
         assert len(calls) == 2
         assert all(call[1]["model"] == "main-model" for call in calls)
@@ -576,54 +591,91 @@ def test_discover_runs_two_drawing_vision_passes_with_main_runtime(tmp_path):
         service.close()
 
 
-def test_drawing_vision_and_geometry_discovery_overlap_and_reconcile_conflict(
+def test_background_drawing_does_not_block_geometry_plan_or_start(
     tmp_path, monkeypatch
 ):
     registry = AnalyzerRegistry()
+    registry.register(StepAnalyzer(dependency_probe=lambda: False))
     registry.register(_drawing_analyzer())
     registry.register(FusionAnalyzer())
     service = DFMService(
+        config=DFMConfig(geometry_backend="pythonocc_internal"),
         workspace=DFMWorkspace(tmp_path / "workspace"),
         registry=registry,
         reconcile_jobs=False,
     )
     try:
-        project_id = service.project("create", name="Parallel discovery")["project_id"]
-        rendezvous = threading.Barrier(2)
-        worker_names = set()
-        geometry_calls = 0
+        project_id = service.project("create", name="Parallel analysis")["project_id"]
+        step_path = tmp_path / "part.step"
+        drawing_path = tmp_path / "drawing.png"
+        step_path.write_bytes(STEP_PAYLOAD)
+        drawing_path.write_bytes(b"png")
+        service.project("add_input", project_id=project_id, path=str(step_path))
+        drawing = service.project(
+            "add_input", project_id=project_id, path=str(drawing_path)
+        )["input"]
+        for name, value in {
+            "process": "injection",
+            "model_units": "mm",
+            "material": "ABS",
+            "pull_dir": [0, 0, 1],
+        }.items():
+            service.project(
+                "confirm_fact", project_id=project_id, fact_name=name, fact_value=value
+            )
 
-        def geometry_branch(selected_project_id):
-            nonlocal geometry_calls
-            geometry_calls += 1
-            if geometry_calls == 1:
-                worker_names.add(threading.current_thread().name)
-                rendezvous.wait(timeout=2)
-                raise DFMError("manifest_conflict", "Concurrent drawing update")
-            return service._store(selected_project_id).load()
+        drawing_started = threading.Event()
+        release_drawing = threading.Event()
 
         def drawing_branch(selected_project_id, input_id, runtime):
-            assert input_id == "input_drawing"
+            assert selected_project_id == project_id
+            assert input_id == drawing["input_id"]
             assert runtime["model"] == "main-model"
-            worker_names.add(threading.current_thread().name)
-            rendezvous.wait(timeout=2)
+            drawing_started.set()
+            assert release_drawing.wait(timeout=3)
 
-        monkeypatch.setattr(service, "_persist_geometry_candidates", geometry_branch)
-        monkeypatch.setattr(
-            service, "_interpret_drawing_in_background", drawing_branch
+        monkeypatch.setattr(service, "_interpret_drawing_in_background", drawing_branch)
+
+        discovery = service.analysis(
+            "discover",
+            project_id=project_id,
+            _main_runtime={"provider": "custom:test", "model": "main-model"},
+        )
+        assert drawing_started.wait(timeout=1)
+        assert discovery["ok"] is True
+        assert discovery["drawing_background"]["pending_input_ids"] == [
+            drawing["input_id"]
+        ]
+
+        plan = service.analysis("plan", project_id=project_id)
+        started = []
+
+        def start_job(selected_project_id, analyzer_key, **kwargs):
+            started.append((selected_project_id, analyzer_key, kwargs["plan"].plan_id))
+            return RunRecord(
+                "run_parallel",
+                analyzer_key,
+                "test",
+                RunStatus.QUEUED,
+                "now",
+                "now",
+                plan_id=kwargs["plan"].plan_id,
+                plan_snapshot=kwargs["plan"].to_dict(),
+            )
+
+        monkeypatch.setattr(service.jobs, "start", start_job)
+        run = service.analysis(
+            "start", project_id=project_id, plan_id=plan["plan"]["plan_id"]
         )
 
-        manifest = service._discover_geometry_and_drawings_in_parallel(
-            project_id,
-            ["input_drawing"],
-            {"provider": "custom:test", "model": "main-model"},
-        )
-
-        assert manifest.project_id == project_id
-        assert len(worker_names) == 2
-        assert all(name.startswith("dfm-discovery") for name in worker_names)
-        assert geometry_calls == 2
+        assert run["run"]["run_id"] == "run_parallel"
+        assert started and not release_drawing.is_set()
+        release_drawing.set()
+        service._drawing_futures[(project_id, drawing["input_id"])].result(timeout=2)
     finally:
+        release = locals().get("release_drawing")
+        if release is not None:
+            release.set()
         service.close()
 
 

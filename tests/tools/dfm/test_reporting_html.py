@@ -351,7 +351,13 @@ def test_runtime_adapter_maps_existing_dfm_artifacts_without_recomputation(tmp_p
 def test_runtime_adapter_requires_persisted_drawing_semantics(tmp_path):
     run_id = "run_1"
     artifacts = [
-        _artifact(tmp_path, run_id, "dfm_report.json", "report_json", {}),
+        _artifact(
+            tmp_path,
+            run_id,
+            "dfm_report.json",
+            "report_json",
+            {"run_id": run_id},
+        ),
         _artifact(tmp_path, run_id, "render_scene.json", "render_scene", {}),
         _artifact(
             tmp_path,
@@ -401,6 +407,30 @@ def test_runtime_adapter_requires_persisted_drawing_semantics(tmp_path):
     assert materialize_html_runtime(
         tmp_path, run_id, plan, [drawing], artifacts
     ) is None
+
+    pending = materialize_html_runtime(
+        tmp_path,
+        run_id,
+        plan,
+        [drawing],
+        artifacts,
+        allow_pending_drawing=True,
+    )
+    assert pending is not None
+    runtime = json.loads(
+        (tmp_path / pending.relative_path).read_text(encoding="utf-8")
+    )
+    assert runtime["drawing_semantics"] == {
+        "input_id": drawing.input_id,
+        "input_sha256": drawing.sha256,
+        "status": "pending",
+        "source_artifact_id": None,
+        "observations": [],
+    }
+    assert runtime["resources"]["drawing_pdf_path"].endswith(
+        "inputs/drawing.pdf"
+    )
+    assert "drawing_observations_path" not in runtime["resources"]
 
 
 def test_runtime_adapter_skips_runs_without_a_pdf_drawing(tmp_path):

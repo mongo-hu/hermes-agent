@@ -29,17 +29,20 @@
 | 原实验参考 | `D:\hermes_deployment\hermes-agent-dfm-hermes-agent2\experiments\dfm_visual_extraction\scripts\semantic_crop_pipeline.py` |
 | 临时 stash | `4488279c030eae7da9c8895aea92b13b9a531535`，完成恢复与验证后已删除 |
 
-本次没有创建提交；集成代码当前处于 Git 暂存区，便于提交前统一审查。
+首次集成提交为 `2e11a4a58f251a2d87a47ab51174aa08f631a68c`，分支为
+`feat/dfm-2d-3d-parallel-discovery`。同日的第二次编排修正继续提交在该分支：
+保留原 3D `discover -> plan -> start` 流程，把 2D 改成非阻塞后台 sidecar，
+并在报告阶段汇合结果。
 
 ### 2.1 改动文件数量（截至 2026-09-21）
 
-本次暂存区合计改动 **19 个文件**，其中：
+相对目标基线，本分支合计改动 **21 个文件**，其中：
 
-- **14 个代码文件**：13 个 Python 实现/自动化测试和 1 个编辑器提取器 JavaScript；
+- **16 个代码文件**：15 个 Python 实现/自动化测试和 1 个编辑器提取器 JavaScript；
 - **5 个行为说明、资源清单及文档文件**：1 个运行时 Manifest、1 个 Skill、
   1 个管线 README、2 个集成文档。
 
-14 个代码文件如下：
+16 个代码文件如下：
 
 1. `agent/auxiliary_client.py`
 2. `agent/context_references.py`
@@ -55,6 +58,8 @@
 12. `tools/dfm/service.py`
 13. `tools/dfm_tool.py`
 14. `tools/dfm/reporting/html/editor_runtime/extract.js`
+15. `tools/dfm/reporting/html/runtime_adapter.py`
+16. `tools/dfm/runtime/jobs.py`
 
 5 个行为说明、资源清单及文档文件如下：
 
@@ -75,20 +80,27 @@
   │    └─ 原始完整图纸复制/登记到 DFM 项目 inputs，保留文件哈希和输入 ID
   │
   └─ dfm_analysis(action=discover)
-       ├─ 并行分支 A：2D 图纸
+       ├─ 启动非阻塞 2D sidecar 后立即返回
        │    ├─ 72 DPI 渲染全部图纸页面，仅在内存中传递
        │    ├─ 当前主 Agent 模型后台调用 1：输出语义裁剪计划 JSON
        │    ├─ 程序校验、补边、去重、文本块吸附
        │    ├─ 200 DPI 渲染高清裁剪，仅在内存中传递
        │    ├─ 当前主 Agent 模型后台调用 2：输出图纸事实 JSON
        │    └─ 校验并持久化 drawing_regions / drawing_observations
-       ├─ 并行分支 B：3D STEP/Parasolid 几何发现
-       └─ 两分支汇合后继续 clarification、2D/3D 融合、分析与报告
+       └─ 原 3D 路径不等待 2D
+            └─ discover -> clarification -> plan -> start -> 3D runtime
+
+  dfm_analysis(action=report_context)
+       ├─ 等待尚未完成的 2D sidecar 和 3D runtime
+       ├─ 需要时返回 agent_fusion_required，由主 Agent 提交 FusionLink
+       ├─ 使用最新持久化 Observation 重建 HTML Runtime
+       └─ 进入原 render_html -> result 流程
 ```
 
-这里的“后台”是同一次 `discover` 工具调用内部的同步辅助模型调用。主对话不会收到页面图片、
-裁剪图片或中间提示词，只收到最终 DFM 工具结果。视觉调用复用当前主 Agent 的 provider、model、
-base URL、API key 和 API mode；没有第二套视觉 API 配置。
+这里的“后台”是由 `discover` 启动、在该工具返回后继续运行的 2D sidecar；不是浏览器操作，
+也没有改变 3D JobManager 的启动方式。主对话不会收到页面图片、裁剪图片或中间提示词，
+只收到持久化状态和最终汇合结果。视觉调用复用当前主 Agent 的 provider、model、base URL、
+API key 和 API mode；没有第二套视觉 API 配置。
 
 ## 4. 主要代码改动
 
@@ -152,14 +164,18 @@ base URL、API key 和 API mode；没有第二套视觉 API 配置。
 - 新增 `_BACKGROUND_CROP_PROMPT`：要求模型仅返回严格 JSON 裁剪计划。
 - 新增 `_BACKGROUND_EXTRACTION_PROMPT`：要求模型仅返回严格 JSON 图纸事实。
 - `_call_main_vision()` 使用 `agent.auxiliary_client.call_llm(task="vision")`，运行时来自主 Agent 快照。
-- `_interpret_drawing_in_background()` 在一次 `discover` 内串联两轮视觉调用。
-- 当项目同时存在待解释图纸和 STEP/Parasolid 时，
-  `_discover_geometry_and_drawings_in_parallel()` 用两个 worker 并行执行完整 2D 分支和 3D 几何发现；
-  两轮 2D 调用本身仍保持先规划、后提取的依赖顺序。
-- 两个分支在 Fusion 前汇合。Discovery Plan 也将普通几何与 Agent 图纸解释设为并列前置项，
-  `discovery.fusion` 同时依赖二者。
-- 两分支可能同时更新 Manifest：2D 提交在写入前刷新 revision，并对并发冲突做有限重试；
-  若 3D 提交输掉乐观锁竞争，则在 2D 完成后重放持久化，已完成的内容寻址几何产物可复用。
+- `_interpret_drawing_in_background()` 串联两轮视觉调用；`_start_drawing_interpretations()`
+  把它提交到持久的 `dfm-drawing` executor，`discover` 不调用 `Future.result()`。
+- 3D 路径仍由原 `plan` 和 `start` 驱动，原 JobManager、进度事件和计算阶段不内嵌到
+  `discover`，也不由 2D 线程启动。
+- Drawing Observation/FusionLink 是报告语义，不再使已经固定的几何分析 Plan 失效；
+  CAD、事实、工艺或 provider 变化仍按原规则使几何范围失效。
+- `report_context` 同时检查 2D 和 3D 状态；2D 尚未完成时返回 `ready=false`，完成后再要求
+  Fusion 审核，并以最新持久化 Observation 重建 Runtime。
+- JobManager 在 3D 先完成时允许生成 `drawing_semantics.status=pending` 的临时 Runtime；
+  该 Runtime 不会直接交给最终编辑器，而会在 `report_context` 汇合时被校验后的完整 Runtime 替换。
+- 并发 Manifest 更新采用原子更新；Discovery 最终提交只追加 Snapshot/Plan，不再用旧 Manifest
+  覆盖后台刚写入的 2D 状态、区域和 Observation。
 - 空裁剪计划返回 `drawing_crop_plan_empty`，不会静默跳过图纸。
 - 无主 Agent runtime 时保留显式 `agent_interpretation_required` 协议，供测试和调试使用。
 
@@ -173,7 +189,9 @@ base URL、API key 和 API mode；没有第二套视觉 API 配置。
 | `_validate_agent_observations()` | 校验事实字段和 `source_region_refs` |
 | `_submit_observations()` | 保存候选 Observation 并应用图纸来源策略 |
 | `_interpret_drawing_in_background()` | 将上述步骤自动串联到 `discover` |
-| `_discover_geometry_and_drawings_in_parallel()` | 并行编排 2D 视觉与 3D 几何发现，并在融合前汇合 |
+| `_start_drawing_interpretations()` | 非阻塞启动 2D sidecar，不等待、不启动或改写 3D runtime |
+| `_drawing_report_state()` | 报告阶段检查 2D pending/failed/completed 状态 |
+| `_refresh_report_runtime()` | 用最终 2D Observation 与既有 3D 产物重建 Runtime |
 
 ### 4.5 DFM 工具协议
 
@@ -193,8 +211,8 @@ base URL、API key 和 API mode；没有第二套视觉 API 配置。
 - frontmatter 描述改为：
   `Analyze STEP/STP CAD and PDF/PNG/JPG drawings for DFM.`
 - 明确所有附件必须逐个 `add_input`。
-- 明确两轮视觉分析在 `discover` 内后台完成并复用主 Agent。
-- 明确混合 CAD + 图纸项目中，2D 视觉分支与 3D 几何发现并行运行。
+- 明确 `discover` 只启动两轮视觉 sidecar 并复用主 Agent，不等待它完成。
+- 明确混合 CAD + 图纸项目中，2D sidecar 不阻塞原 3D `plan/start`，Fusion 延迟到报告汇合。
 - 明确不得打开浏览器查看图纸，不得配置第二模型端点。
 - 报告阶段只使用已经持久化的 drawing observations，不重新解释图纸。
 - 保留目标分支的异步 `render_html`、完成通知和禁止快速轮询约束。
@@ -270,6 +288,9 @@ DFM 工具内部辅助调用，不污染主对话历史。主 Agent 的普通对
   `36 passed, 1 skipped`。
 - 最终专项回归：`20 passed, 1 skipped`。
 - 并行编排加入后的图纸管线与 DFM Service 联合回归：`29 passed, 1 skipped`。
+- 非阻塞 2D sidecar、原 3D plan/start、JobManager 和 Runtime 适配专项回归：
+  `52 passed, 1 skipped, 2 deselected`；deselected 的两项是需要本机 Playwright
+  Chromium 的实际 HTML 布局渲染测试。
 - Ruff 静态检查：`All checks passed`。
 - HTML 溯源修复的两个专项测试：`2 passed`。
 - 使用系统 Python 和真实 Playwright Chromium 重新生成完整报告后，从默认编辑页
@@ -282,7 +303,7 @@ DFM 工具内部辅助调用，不污染主对话历史。主 Agent 的普通对
 
 ## 8. 审查与提交建议
 
-当前集成改动已经暂存，可用以下命令审查：
+当前集成位于 `feat/dfm-2d-3d-parallel-discovery`，可用以下命令审查：
 
 ```powershell
 git status --short

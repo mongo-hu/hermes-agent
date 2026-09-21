@@ -80,7 +80,7 @@ DFM_PROJECT_SCHEMA = {
 
 DFM_ANALYSIS_SCHEMA = {
     "name": "dfm_analysis",
-    "description": "Run the DFM workflow. discover performs drawing crop planning and fact extraction internally with the active main Hermes model and credentials; do not open PDFs in a browser or call vision_analyze/drawing_context. Use fusion_context and submit_fusion_links for semantic proposals checked against geometry IDs. An HTML-capable STEP run remains reporting until the current Hermes model authors dfm-html-llm/v1; render_html queues background rendering and returns immediately, so wait for succeeded status or its completion notification before result. Never configure a second model endpoint or reinterpret the drawing during reporting.",
+    "description": "Run the DFM workflow. discover launches drawing crop planning and fact extraction as a non-blocking 2D sidecar using the active main Hermes model and credentials, then immediately continues the unchanged 3D discover/plan/start path; do not open PDFs in a browser or call vision_analyze/drawing_context. report_context joins 2D with the completed 3D run and may require fusion_context plus submit_fusion_links before report editing. An HTML-capable STEP run remains reporting until the current Hermes model authors dfm-html-llm/v1; render_html queues background rendering and returns immediately, so wait for succeeded status or its completion notification before result. Never configure a second model endpoint or reinterpret the drawing during reporting.",
     "parameters": {
         "type": "object",
         "properties": {

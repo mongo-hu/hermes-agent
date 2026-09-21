@@ -10,7 +10,7 @@ import os
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,7 +48,7 @@ from .processes.occt_injection import (
     compile_occt_injection_plan,
     preview_operations,
 )
-from .reporting.html import render_html_report
+from .reporting.html import materialize_html_runtime, render_html_report
 from .runtime.jobs import JobManager
 from .viewer import materialize_preview_manifest
 
@@ -230,6 +230,11 @@ class DFMService:
         self.jobs = JobManager(
             self.workspace, self.registry, self.config, reconcile=reconcile_jobs
         )
+        self._drawing_executor = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="dfm-drawing"
+        )
+        self._drawing_futures: dict[tuple[str, str], Future[None]] = {}
+        self._drawing_futures_lock = threading.RLock()
 
     @staticmethod
     def _decode_background_json(raw: object, *, phase: str) -> dict[str, Any]:
@@ -371,42 +376,77 @@ class DFMService:
             )
         )
 
-    def _discover_geometry_and_drawings_in_parallel(
+    def _run_drawing_interpretation(
+        self,
+        project_id: str,
+        input_id: str,
+        runtime: dict[str, str],
+    ) -> None:
+        """Finish one 2D interpretation without blocking the Agent/3D path."""
+
+        try:
+            self._interpret_drawing_in_background(project_id, input_id, runtime)
+        except Exception as exc:
+            details = (
+                {"code": exc.code, "message": exc.message, "details": exc.details}
+                if isinstance(exc, DFMError)
+                else {
+                    "code": "drawing_interpretation_failed",
+                    "message": str(exc)[:500],
+                    "details": {},
+                }
+            )
+            self._record_drawing_discovery_status(
+                project_id,
+                input_id,
+                "failed",
+                {
+                    "interpretation_status": "failed",
+                    "interpretation_error": details,
+                    "completed_at": _utc_now(),
+                },
+            )
+
+    def _forget_drawing_future(self, key: tuple[str, str]) -> None:
+        with self._drawing_futures_lock:
+            self._drawing_futures.pop(key, None)
+
+    def _start_drawing_interpretations(
         self,
         project_id: str,
         input_ids: list[str],
         runtime: dict[str, str],
-    ) -> ProjectManifest:
-        """Overlap slow 2D model vision with independent 3D recognition.
+    ) -> list[str]:
+        """Queue 2D work and return immediately so normal 3D planning can proceed."""
 
-        Both branches may update the same manifest. ManifestStore serializes
-        each atomic write; background drawing submissions always refresh their
-        expected revision, while a geometry commit that loses the optimistic
-        race is replayed after drawing completion. Geometry artifacts are
-        content-addressed, so that replay reuses completed backend work.
-        """
-
-        def interpret_drawings() -> None:
-            for input_id in input_ids:
-                self._interpret_drawing_in_background(project_id, input_id, runtime)
-
-        with ThreadPoolExecutor(
-            max_workers=2, thread_name_prefix="dfm-discovery"
-        ) as executor:
-            geometry_future = executor.submit(
-                self._persist_geometry_candidates, project_id
-            )
-            drawing_future = executor.submit(interpret_drawings)
-            # Preserve the previous failure precedence: drawing interpretation
-            # errors surfaced before geometry discovery was attempted.
-            drawing_future.result()
-            try:
-                geometry_future.result()
-            except DFMError as exc:
-                if exc.code != "manifest_conflict":
-                    raise
-                self._persist_geometry_candidates(project_id)
-        return self._store(project_id).load()
+        started: list[str] = []
+        for input_id in input_ids:
+            key = (project_id, input_id)
+            with self._drawing_futures_lock:
+                existing = self._drawing_futures.get(key)
+                if existing is not None and not existing.done():
+                    continue
+                self._record_drawing_discovery_status(
+                    project_id,
+                    input_id,
+                    "running",
+                    {
+                        "interpretation_status": "running",
+                        "started_at": _utc_now(),
+                    },
+                )
+                future = self._drawing_executor.submit(
+                    self._run_drawing_interpretation,
+                    project_id,
+                    input_id,
+                    dict(runtime),
+                )
+                self._drawing_futures[key] = future
+                future.add_done_callback(
+                    lambda _future, selected=key: self._forget_drawing_future(selected)
+                )
+                started.append(input_id)
+        return started
 
     def _store(self, project_id: str) -> ManifestStore:
         return ManifestStore(self.workspace.project_dir(project_id))
@@ -1310,6 +1350,17 @@ class DFMService:
 
     @staticmethod
     def _invalidate_plans_for_semantics(current: ProjectManifest, reason: str):
+        # Drawing observations and Agent fusion links enrich reporting, but do
+        # not change the deterministic geometry operations already pinned in an
+        # analysis plan.  Keeping those plans executable is what allows the 2D
+        # sidecar to finish while the unchanged 3D run is already underway.
+        if reason in {
+            "drawing_visual_refresh",
+            "drawing_crop_plan",
+            "drawing_interpretation",
+            "fusion_review",
+        }:
+            return list(current.plans)
         return [
             replace(
                 plan,
@@ -1646,7 +1697,9 @@ class DFMService:
             capabilities = dict(current.capabilities)
             drawing = dict(capabilities.get("drawing_discovery") or {})
             inputs = dict(drawing.get("inputs") or {})
-            inputs[input_id] = {"status": status, **details}
+            input_state = dict(inputs.get(input_id) or {})
+            input_state.update({"status": status, **details})
+            inputs[input_id] = input_state
             drawing.update({"status": status, "inputs": inputs})
             capabilities["drawing_discovery"] = drawing
             return replace(current, capabilities=capabilities, updated_at=_utc_now())
@@ -2011,12 +2064,41 @@ class DFMService:
 
     def _latest_discovery_snapshot(self, manifest: ProjectManifest):
         _refreshed, current_snapshot = self.discovery.freeze(manifest)
-        return next(
+        exact = next(
             (
                 item
                 for item in reversed(manifest.discovery_snapshots)
                 if item.content_sha256 == current_snapshot.content_sha256
                 and item.status == "frozen"
+            ),
+            None,
+        )
+        if exact is not None:
+            return exact
+
+        # A mixed project's background drawing sidecar can add Observation and
+        # FusionLink refs after 3D discovery was frozen.  Those semantic refs do
+        # not alter the geometry scope, so retain the newest snapshot whose
+        # inputs, facts, providers, features, regions, and geometry snapshots
+        # still match.  Any actual CAD/fact/provider change remains stale.
+        if manifest.input_mode != "fusion":
+            return None
+        return next(
+            (
+                item
+                for item in reversed(manifest.discovery_snapshots)
+                if item.status == "frozen"
+                and item.input_hashes == current_snapshot.input_hashes
+                and item.process == current_snapshot.process
+                and item.confirmed_fact_refs == current_snapshot.confirmed_fact_refs
+                and item.provider_versions == current_snapshot.provider_versions
+                and item.feature_refs == current_snapshot.feature_refs
+                and item.region_refs == current_snapshot.region_refs
+                and item.geometry_snapshot_ref
+                == current_snapshot.geometry_snapshot_ref
+                and item.topology_snapshot_id == current_snapshot.topology_snapshot_id
+                and item.render_mesh_snapshot_id
+                == current_snapshot.render_mesh_snapshot_id
             ),
             None,
         )
@@ -2227,6 +2309,68 @@ class DFMService:
             },
         )
 
+    def _drawing_report_state(self, manifest: ProjectManifest) -> dict[str, Any]:
+        inputs = (manifest.capabilities.get("drawing_discovery") or {}).get(
+            "inputs", {}
+        )
+        drawing_ids = [
+            item.input_id
+            for item in self._active_inputs(manifest)
+            if item.kind == "drawing"
+        ]
+        pending = []
+        failed = []
+        for input_id in drawing_ids:
+            state = dict(inputs.get(input_id) or {})
+            interpretation_status = str(
+                state.get("interpretation_status") or "pending_agent"
+            )
+            if interpretation_status == "failed":
+                failed.append(
+                    {
+                        "input_id": input_id,
+                        "error": state.get("interpretation_error") or {},
+                    }
+                )
+            elif interpretation_status != "completed":
+                pending.append(input_id)
+        return {
+            "pending_input_ids": pending,
+            "failed_inputs": failed,
+            "complete": not pending and not failed,
+        }
+
+    def _refresh_report_runtime(
+        self,
+        project_id: str,
+        run: RunRecord,
+        manifest: ProjectManifest,
+    ) -> RunRecord:
+        if not run.plan_snapshot:
+            return run
+        plan = PlanRecord.from_dict(run.plan_snapshot)
+        runtime_artifact = materialize_html_runtime(
+            self.workspace.project_dir(project_id),
+            run.run_id,
+            plan,
+            manifest.inputs,
+            run.artifacts,
+            semantic_artifacts=manifest.artifacts,
+            # The geometry plan may have been frozen before the asynchronous 2D
+            # sidecar completed.  Reporting intentionally consumes the latest
+            # validated observations rather than that earlier semantic ref set.
+            observation_refs=None,
+        )
+        if runtime_artifact is None:
+            raise DFMError(
+                "report_input_missing",
+                "The completed 2D and 3D branches could not be joined into the HTML Runtime.",
+                {"run_id": run.run_id},
+            )
+        return self.jobs.refresh_artifacts(
+            project_id, run.run_id, [runtime_artifact]
+        )
+
     def _report_context(
         self,
         project_id: str,
@@ -2251,7 +2395,18 @@ class DFMService:
         deadline = time.monotonic() + timeout
         while True:
             run = self.jobs.status(project_id, run_id)
-            if run.status not in {RunStatus.QUEUED, RunStatus.RUNNING}:
+            manifest = self._store(project_id).load()
+            drawing_state = self._drawing_report_state(manifest)
+            if drawing_state["failed_inputs"]:
+                raise DFMError(
+                    "drawing_interpretation_failed",
+                    "Background 2D drawing interpretation failed.",
+                    {"inputs": drawing_state["failed_inputs"]},
+                )
+            if (
+                run.status not in {RunStatus.QUEUED, RunStatus.RUNNING}
+                and drawing_state["complete"]
+            ):
                 break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -2260,6 +2415,7 @@ class DFMService:
                     "project_id": project_id,
                     "ready": False,
                     "next_action": "report_context",
+                    "drawing_background": drawing_state,
                     "run": self._run_dict(project_id, run),
                 }
             time.sleep(min(0.25, remaining))
@@ -2285,6 +2441,22 @@ class DFMService:
                 "This DFM run cannot enter Agent report editing.",
                 {"run_id": run_id, "status": run.status.value},
             )
+
+        manifest = self._store(project_id).load()
+        if self._fusion_review_required(manifest):
+            return {
+                "ok": False,
+                "project_id": project_id,
+                "ready": False,
+                "status": "agent_fusion_required",
+                "phase": "drawing_geometry_fusion",
+                "requires_user_response": False,
+                "next_action": "fusion_context",
+                "review_digest": self._fusion_review_digest(manifest),
+                "run": self._run_dict(project_id, run),
+            }
+
+        run = self._refresh_report_runtime(project_id, run, manifest)
 
         runtime_artifact = next(
             (
@@ -2334,6 +2506,26 @@ class DFMService:
             raise DFMError(
                 "report_content_invalid",
                 "render_html requires an llm_content object.",
+            )
+        manifest = self._store(project_id).load()
+        drawing_state = self._drawing_report_state(manifest)
+        if drawing_state["failed_inputs"]:
+            raise DFMError(
+                "drawing_interpretation_failed",
+                "Background 2D drawing interpretation failed.",
+                {"inputs": drawing_state["failed_inputs"]},
+            )
+        if drawing_state["pending_input_ids"]:
+            raise DFMError(
+                "result_not_ready",
+                "HTML rendering is waiting for background 2D drawing interpretation.",
+                drawing_state,
+            )
+        if self._fusion_review_required(manifest):
+            raise DFMError(
+                "agent_fusion_required",
+                "HTML rendering requires the completed drawing/geometry fusion review.",
+                {"next_action": "fusion_context"},
             )
         run = self.jobs.status(project_id, run_id)
         existing_html = next(
@@ -2775,7 +2967,7 @@ class DFMService:
             manifest = self._refresh_drawing_visual(project_id)
             manifest = self._ensure_clarifications(project_id, phase="discovery")
             pending_interpretations = self._pending_drawing_interpretations(manifest)
-            geometry_prepared = False
+            started_interpretations: list[str] = []
             if pending_interpretations:
                 runtime = params.get("_main_runtime")
                 # Direct service callers retain the explicit protocol for tests
@@ -2791,21 +2983,10 @@ class DFMService:
                         "next_action": "drawing_context",
                         "pending_input_ids": pending_interpretations,
                     }
-                has_geometry = any(
-                    item.kind in {"step", "parasolid"}
-                    for item in self._active_inputs(manifest)
+                started_interpretations = self._start_drawing_interpretations(
+                    project_id, pending_interpretations, runtime
                 )
-                if has_geometry:
-                    manifest = self._discover_geometry_and_drawings_in_parallel(
-                        project_id, pending_interpretations, runtime
-                    )
-                    geometry_prepared = True
-                else:
-                    for input_id in pending_interpretations:
-                        self._interpret_drawing_in_background(
-                            project_id, input_id, runtime
-                        )
-                    manifest = self._store(project_id).load()
+                manifest = self._store(project_id).load()
             open_clarifications = self._open_clarifications(
                 manifest, requested_process, phase="discovery"
             )
@@ -2826,12 +3007,18 @@ class DFMService:
                         in {"candidate", "needs_confirmation", "conflict"}
                     ],
                 }
-            discovered = (
-                manifest
-                if geometry_prepared
-                else self._persist_geometry_candidates(project_id)
-            )
-            if self._fusion_review_required(discovered):
+            for attempt in range(3):
+                try:
+                    discovered = self._persist_geometry_candidates(project_id)
+                    break
+                except DFMError as exc:
+                    if exc.code != "manifest_conflict" or attempt == 2:
+                        raise
+            has_mixed_drawing_geometry = discovered.input_mode == "fusion"
+            if (
+                not has_mixed_drawing_geometry
+                and self._fusion_review_required(discovered)
+            ):
                 return {
                     "ok": False,
                     "project_id": project_id,
@@ -2845,7 +3032,11 @@ class DFMService:
                         "service will validate all geometry references."
                     ),
                 }
-            discovered = self._resolve_fusion_links(discovered)
+            # Mixed-project fusion is deliberately deferred until reporting.
+            # It is semantic enrichment for the report and must not gate the
+            # unchanged 3D plan/start path while the 2D sidecar is running.
+            if not self._fusion_review_required(discovered):
+                discovered = self._resolve_fusion_links(discovered)
             discovered, snapshot = self.discovery.freeze(discovered)
             existing_plan = next(
                 (
@@ -2920,14 +3111,32 @@ class DFMService:
             manifest = store.update(
                 lambda current: replace(
                     current,
-                    features=discovered.features,
-                    regions=discovered.regions,
-                    observations=discovered.observations,
-                    fusion_links=discovered.fusion_links,
-                    discovery_snapshots=discovered.discovery_snapshots,
-                    artifacts=discovered.artifacts,
-                    capabilities=discovered.capabilities,
-                    plans=plans,
+                    # Geometry candidates were already committed above.  Only
+                    # add the frozen snapshot/plan here: copying the stale
+                    # pre-freeze Manifest would overwrite concurrent 2D status,
+                    # crop artifacts, and observations from the sidecar.
+                    discovery_snapshots=[
+                        *current.discovery_snapshots,
+                        *[
+                            item
+                            for item in discovered.discovery_snapshots
+                            if all(
+                                existing.snapshot_id != item.snapshot_id
+                                for existing in current.discovery_snapshots
+                            )
+                        ],
+                    ],
+                    plans=[
+                        *current.plans,
+                        *[
+                            item
+                            for item in plans
+                            if all(
+                                existing.plan_id != item.plan_id
+                                for existing in current.plans
+                            )
+                        ],
+                    ],
                     updated_at=_utc_now(),
                 )
             )
@@ -2960,6 +3169,13 @@ class DFMService:
                 ],
                 "capability": self.discovery.capability(),
                 "drawing_discovery": manifest.capabilities.get("drawing_discovery", {}),
+                "drawing_background": {
+                    "started_input_ids": started_interpretations,
+                    "pending_input_ids": self._pending_drawing_interpretations(
+                        manifest
+                    ),
+                    "fusion_deferred_to_report": has_mixed_drawing_geometry,
+                },
                 "open_clarifications": [
                     item.to_dict()
                     for item in self._open_clarifications(manifest, phase="analysis")
@@ -3231,6 +3447,7 @@ class DFMService:
     def close(self) -> None:
         if self._ontology_background_sync is not None:
             self._ontology_background_sync.close()
+        self._drawing_executor.shutdown(wait=False, cancel_futures=True)
         self.jobs.shutdown()
         self.ontology_store.close()
 
