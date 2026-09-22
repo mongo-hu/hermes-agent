@@ -317,13 +317,14 @@ def test_new_feature_check_compiles_from_ontology_and_worker_capability_only():
     )
 
 
-def test_ontology_check_rejects_an_operand_absent_from_worker_capability():
+def test_ontology_check_skips_operand_absent_from_worker_capability():
     store = LocalOntologyStore.from_package(PACKAGE_PATH)
 
-    with pytest.raises(DFMError) as exc_info:
-        store.compile("injection", {"material": "ABS"}, [])
+    result = store.compile("injection", {"material": "ABS"}, [])
 
-    assert exc_info.value.code == "ontology_capability_mismatch"
+    # The check should be skipped, not raise an error
+    assert len(result.skipped_checks) > 0
+    assert any(sc.reason == "feature_not_found" for sc in result.skipped_checks)
 
 
 def test_multi_measurement_operands_resolve_distinct_regions_by_relation():

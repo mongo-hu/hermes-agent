@@ -9,7 +9,7 @@ rules; replacing the complete publication is the only write operation.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -152,12 +152,24 @@ class OntologySnapshotIdentity:
 
 
 @dataclass(frozen=True)
+class SkippedCheck:
+    """A check that was skipped because its required feature/operand is unavailable."""
+    check_id: str
+    reason: str
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"check_id": self.check_id, "reason": self.reason, "details": self.details}
+
+
+@dataclass(frozen=True)
 class CompiledOntologyPlan:
     identity: OntologySnapshotIdentity
     rules: dict[str, EffectiveRule]
     rule_bindings: list[RuleBinding]
     binding_selectors: dict[str, dict[str, dict[str, Any]]]
     accepted_fact_names: set[str]
+    skipped_checks: list[SkippedCheck] = field(default_factory=list)
 
 
 class LocalOntologyStore:
@@ -620,6 +632,7 @@ class LocalOntologyStore:
             compiled_rules: dict[str, EffectiveRule] = {}
             bindings: list[RuleBinding] = []
             selectors: dict[str, dict[str, dict[str, Any]]] = {}
+            skipped: list[SkippedCheck] = []
             for check in checks:
                 check_id = str(check["concept_id"])
                 rules = connection.execute(
@@ -639,11 +652,21 @@ class LocalOntologyStore:
                     """,
                     (check_id,),
                 ).fetchall()
+                check_skipped = False
                 for selected in candidates:
-                    binding, binding_selectors = self._compile_binding(
+                    result = self._compile_binding(
                         connection, check_id, selected, operand_rows,
                         operations, factor_runtime_keys, deferred=deferred,
                     )
+                    if result[0] is None:
+                        skipped.append(SkippedCheck(
+                            check_id=check_id,
+                            reason="feature_not_found",
+                            details=result[1],
+                        ))
+                        check_skipped = True
+                        break
+                    binding, binding_selectors = result
                     rule_id = str(selected["rule_id"])
                     if rule_id in compiled_rules:
                         self._invalid("A flattened publication contains multiple candidates with the same Rule ID.", {"rule_id": rule_id})
@@ -660,12 +683,15 @@ class LocalOntologyStore:
                     )
                     bindings.append(binding)
                     selectors[binding.binding_id] = binding_selectors
+                if check_skipped:
+                    continue
         return CompiledOntologyPlan(
             identity=identity,
             rules=compiled_rules,
             rule_bindings=bindings,
             binding_selectors=selectors,
             accepted_fact_names=accepted,
+            skipped_checks=skipped,
         )
 
     @contextmanager
@@ -1505,6 +1531,14 @@ class LocalOntologyStore:
             operation = cls._operation_for_operand(
                 operations, metric_id, quantity_id, check_id=check_id, alias=alias
             )
+            if operation is None:
+                return None, {
+                    "check_id": check_id,
+                    "reason": "operand_unresolvable",
+                    "operand_alias": alias,
+                    "metric_id": metric_id,
+                    "quantity_id": quantity_id,
+                }
             operand = RuleOperand(
                 alias=alias,
                 operation_id=operation.operation_id,
@@ -1693,7 +1727,7 @@ class LocalOntologyStore:
         *,
         check_id: str,
         alias: str,
-    ) -> PlanOperation:
+    ) -> PlanOperation | None:
         matches = [
             operation
             for operation in operations
@@ -1701,17 +1735,7 @@ class LocalOntologyStore:
             and quantity_id in operation.required_quantities
         ]
         if len(matches) != 1:
-            raise DFMError(
-                "ontology_capability_mismatch",
-                "A Check operand must resolve to exactly one declared geometry operation.",
-                {
-                    "check_id": check_id,
-                    "operand_alias": alias,
-                    "metric_id": metric_id,
-                    "quantity_id": quantity_id,
-                    "matching_operation_ids": [item.operation_id for item in matches],
-                },
-            )
+            return None
         return matches[0]
 
     @staticmethod

@@ -210,6 +210,25 @@ class InjectionProcessAdapter:
                 )
             return "mm"
         if key == "pull_dir":
+            # 支持本体库的枚举值格式（+Z, -Z, +X 等）和向量格式（[0,0,1] 等）
+            direction_map = {
+                "+X": [1.0, 0.0, 0.0], "-X": [-1.0, 0.0, 0.0],
+                "+Y": [0.0, 1.0, 0.0], "-Y": [0.0, -1.0, 0.0],
+                "+Z": [0.0, 0.0, 1.0], "-Z": [0.0, 0.0, -1.0],
+            }
+            
+            # 如果是字符串，尝试映射为向量
+            if isinstance(value, str):
+                value_upper = value.strip().upper()
+                if value_upper in direction_map:
+                    return direction_map[value_upper]
+                # 如果不是有效的方向枚举，报错
+                self._invalid(
+                    "pull_dir must be a direction enum (+X, -X, +Y, -Y, +Z, -Z) or a 3D vector.",
+                    {"value": value}
+                )
+            
+            # 否则按原逻辑处理向量格式
             if not isinstance(value, (list, tuple)) or len(value) != 3:
                 self._invalid("pull_dir must contain exactly three numbers.")
             try:

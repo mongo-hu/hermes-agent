@@ -302,7 +302,7 @@ def test_schema_3_rejects_invalid_new_rule_contract(change):
     assert exc_info.value.code == "ontology_snapshot_invalid"
 
 
-def test_schema_3_installs_unresolved_geometric_metadata_but_will_not_compile_it():
+def test_schema_3_installs_unresolved_geometric_metadata_and_skips_it():
     value = composite_payload()
     for concept in value["concepts"]:
         if concept["concept_type"] != "geometric":
@@ -316,9 +316,10 @@ def test_schema_3_installs_unresolved_geometric_metadata_but_will_not_compile_it
 
     store = LocalOntologyStore.from_package(rehash(value))
 
-    with pytest.raises(DFMError) as exc_info:
-        store.compile("injection", {"material": "ABS"}, operations())
-    assert exc_info.value.code == "ontology_capability_mismatch"
+    result = store.compile("injection", {"material": "ABS"}, operations())
+    # The check should be skipped rather than raising an error
+    assert len(result.skipped_checks) > 0
+    assert any(sc.reason == "feature_not_found" for sc in result.skipped_checks)
 
 
 def test_schema_3_accepts_empty_unit_for_a_dimensionless_constant():

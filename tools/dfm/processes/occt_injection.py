@@ -99,48 +99,73 @@ def compile_occt_injection_plan(
             )
         )
 
-    def operation_for(metric_id: str, quantity_id: str) -> str:
+    def operation_for(metric_id: str, quantity_id: str) -> str | None:
         matches = [
             item.operation_id
             for item in enriched
             if metric_id in item.metric_ids and quantity_id in item.required_quantities
         ]
         if len(matches) != 1:
-            raise DFMError(
-                "ontology_capability_mismatch",
-                "An ontology operand cannot be mapped to one OCCT calculator.",
-                {"metric_id": metric_id, "quantity_id": quantity_id},
-            )
+            return None
         return matches[0]
 
-    def map_operand(operand: RuleOperand) -> RuleOperand:
-        return replace(
-            operand,
-            operation_id=operation_for(operand.metric_id, operand.quantity_id),
-        )
+    def map_operand(operand: RuleOperand) -> RuleOperand | None:
+        op_id = operation_for(operand.metric_id, operand.quantity_id)
+        if op_id is None:
+            return None
+        return replace(operand, operation_id=op_id)
 
     bindings = []
+    skipped_bindings: list[str] = []
     for binding in base.rule_bindings:
+        primary_op = operation_for(binding.metric_id, binding.quantity_id)
+        if primary_op is None:
+            skipped_bindings.append(binding.binding_id)
+            continue
+        mapped_additionals = []
+        skip = False
+        for item in binding.additional_operands:
+            mapped = map_operand(item)
+            if mapped is None:
+                skip = True
+                break
+            mapped_additionals.append(mapped)
+        if skip:
+            skipped_bindings.append(binding.binding_id)
+            continue
         bindings.append(
             replace(
                 binding,
-                operation_id=operation_for(binding.metric_id, binding.quantity_id),
-                additional_operands=[
-                    map_operand(item) for item in binding.additional_operands
-                ],
+                operation_id=primary_op,
+                additional_operands=mapped_additionals,
             )
         )
+
+    # Filter rules/selectors to only include non-skipped bindings
+    skipped_binding_ids = set(skipped_bindings)
+    filtered_rules = {
+        rid: rule for rid, rule in base.rules.items()
+        if not any(
+            b.binding_id == f"binding.{b.check_id}.{rid}"
+            for b in base.rule_bindings
+            if b.binding_id in skipped_binding_ids
+        )
+    }
+    filtered_selectors = {
+        bid: sel for bid, sel in base.binding_selectors.items()
+        if bid not in skipped_binding_ids
+    }
 
     return ProcessPlan(
         process=base.process,
         adapter_version=f"{base.adapter_version}+occt-cli-v1",
         scope_id=base.scope_id,
         scope_version=base.scope_version,
-        rules=base.rules,
+        rules=filtered_rules,
         operations=enriched,
         accepted_inputs=base.accepted_inputs,
         rule_bindings=bindings,
-        binding_selectors=base.binding_selectors,
+        binding_selectors=filtered_selectors,
         ontology_snapshot_id=base.ontology_snapshot_id,
         ontology_snapshot_sha256=base.ontology_snapshot_sha256,
     )
