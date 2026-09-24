@@ -178,9 +178,27 @@ class LocalOntologyStore:
     def __init__(self, path: Path | None = None) -> None:
         self.path = Path(path) if path is not None else None
         self._memory: sqlite3.Connection | None = None
+        self._geometric_bindings: dict[str, dict[str, str]] = {}
         if self.path is None:
             self._memory = sqlite3.connect(":memory:")
             self._memory.row_factory = sqlite3.Row
+
+    def configure_geometric_bindings(
+        self, bindings: Mapping[str, Mapping[str, str]]
+    ) -> None:
+        """Install the worker projection keyed only by ontology Geometric ID.
+
+        The publication's legacy worker_geometric_id/quantity_id fields remain
+        readable for older workers, but an explicit capability binding wins.
+        """
+
+        self._geometric_bindings = {
+            str(concept_id): {
+                str(name): str(value)
+                for name, value in binding.items()
+            }
+            for concept_id, binding in bindings.items()
+        }
 
     @classmethod
     def from_package(
@@ -528,7 +546,10 @@ class LocalOntologyStore:
             catalog_specs = []
             for row in rows:
                 target = self._resolve_operand_target(
-                    connection, str(row["subject_id"]), row
+                    connection,
+                    str(row["subject_id"]),
+                    row,
+                    self._geometric_bindings,
                 )
                 if "operand_text" in target:
                     catalog_specs.append({**target, "check_id": str(row["subject_id"])})
@@ -656,7 +677,9 @@ class LocalOntologyStore:
                 for selected in candidates:
                     result = self._compile_binding(
                         connection, check_id, selected, operand_rows,
-                        operations, factor_runtime_keys, deferred=deferred,
+                        operations, factor_runtime_keys,
+                        geometric_bindings=self._geometric_bindings,
+                        deferred=deferred,
                     )
                     if result[0] is None:
                         skipped.append(SkippedCheck(
@@ -1491,6 +1514,7 @@ class LocalOntologyStore:
         operations: Sequence[PlanOperation],
         factor_runtime_keys: Mapping[str, str],
         *,
+        geometric_bindings: Mapping[str, Mapping[str, str]] | None = None,
         deferred: bool = False,
     ) -> tuple[RuleBinding, dict[str, dict[str, Any]]]:
         if not operand_rows:
@@ -1524,7 +1548,9 @@ class LocalOntologyStore:
             qualifiers = _load_json(row["qualifiers_json"], {})
             if qualifiers.get("alias") not in referenced:
                 continue
-            target = cls._resolve_operand_target(connection, check_id, row)
+            target = cls._resolve_operand_target(
+                connection, check_id, row, geometric_bindings
+            )
             alias = target["alias"]
             metric_id = target["metric_id"]
             quantity_id = target["quantity_id"]
@@ -1586,12 +1612,28 @@ class LocalOntologyStore:
         connection: sqlite3.Connection,
         check_id: str,
         operand_row: sqlite3.Row,
+        geometric_bindings: Mapping[str, Mapping[str, str]] | None = None,
     ) -> dict[str, Any]:
         """Resolve current Geometric metadata, or a legacy Metric/Region path."""
 
         qualifiers = _load_json(operand_row["qualifiers_json"], {})
         metric_properties = _load_json(operand_row["metric_properties_json"], {})
         alias = str(qualifiers.get("alias") or "")
+        geometric_id = str(operand_row["object_id"])
+        capability_binding = (geometric_bindings or {}).get(geometric_id)
+        if capability_binding is not None:
+            return {
+                "alias": alias,
+                "metric_id": capability_binding["metric_id"],
+                "quantity_id": capability_binding["quantity_id"],
+                "geometric_id": geometric_id,
+                "operand_text": str(qualifiers.get("operand_text") or geometric_id),
+                "feature_kind": capability_binding["feature_kind"],
+                "feature_kinds": [capability_binding["feature_kind"]],
+                "region_role": capability_binding["region_role"],
+                "discovery_operation_id": capability_binding["discovery_operation_id"],
+                "measurement_operation_id": capability_binding["measurement_operation_id"],
+            }
         if "worker_geometric_id" in metric_properties:
             feature_rows = connection.execute(
                 "SELECT feature.concept_id, feature.properties_json FROM ontology_relation relation "
@@ -1604,7 +1646,7 @@ class LocalOntologyStore:
                 "alias": alias,
                 "metric_id": metric_properties["worker_geometric_id"],
                 "quantity_id": metric_properties["quantity_id"],
-                "geometric_id": str(operand_row["object_id"]),
+                "geometric_id": geometric_id,
                 "operand_text": qualifiers["operand_text"],
                 "feature_type_ids": [str(item["concept_id"]) for item in feature_rows],
                 "feature_kinds": [_load_json(item["properties_json"], {})["worker_kind"] for item in feature_rows],

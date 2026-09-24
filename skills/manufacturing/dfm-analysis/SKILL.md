@@ -12,6 +12,12 @@ metadata:
 
 Manage every analysis as a durable DFM project. Treat tools as the source of engineering facts; use conversation to clarify intent and explain evidence.
 
+For questions about the current ontology or rule-set version, call
+`dfm_project` with `action=ontology_status`. Its installed-workspace response is
+the sole runtime source of truth. Never search or read the bundled
+`tools/dfm/scopes/*/ontology_snapshot*.json` files to answer a current-version
+question; those files are initialization seeds, not installed runtime state.
+
 ## Workflow
 
 The control boundary is
@@ -31,8 +37,9 @@ those decisions or return control to the Agent Loop from inside the worker.
 5. Inspect the returned DiscoverySnapshot, Observation/FusionLink status, Feature/Region coverage, provider statuses, and open analysis clarifications. Ask only the process adapter's returned missing analysis facts, using the same wait-then-`confirm_fact` rule. Never continue with a stale DiscoverySnapshot.
 6. Call `dfm_analysis` with `plan`. Omitted process selection keeps the project's
    current process; a new project defaults to the compatible `injection` adapter
-   and published `ontology.injection.default@1.2.0` Snapshot Schema 2 ontology/rule snapshot. The current publication
-   contains only main-wall thickness and draft-angle Checks. Die casting currently exposes only its
+   and the `injection.default` publication identified by the installed workspace
+   ontology returned by project status. Do not substitute a version copied from the bundled
+   initialization seed. Die casting currently exposes only its
    approved topology gate. Inspect the returned process, scope version, input hashes, operations,
    ontology snapshot ID/hash, DiscoverySnapshot reference, RuleBindings, and parameter provenance. Explain blocked checks and assumptions before
    execution. Pass `analyzer_key=occt_cpp` only when the external experimental OCCT C++ path is intentionally selected; omit it to retain the PythonOCC STEP reference path. Material and pull direction remain user-confirmed facts—never substitute ABS or `+Z` for a missing answer.

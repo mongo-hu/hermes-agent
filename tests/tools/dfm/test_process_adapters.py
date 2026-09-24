@@ -5,6 +5,10 @@ import pytest
 from tools.dfm.analyzers.base import AnalyzerContext
 from tools.dfm.errors import DFMError
 from tools.dfm.processes.registry import build_default_process_registry
+from tools.dfm.processes.occt_injection import (
+    geometry_binding_index,
+    probe_occt_geometry_capability,
+)
 
 
 @pytest.fixture
@@ -169,3 +173,80 @@ def test_injection_adapter_rejects_unknown_or_untrusted_parameters(context, para
         adapter.compile(context, parameters)
 
     assert exc_info.value.code == "process_parameter_invalid"
+
+
+def _occt_geometric_scope():
+    return {
+        "capability_id": "injection.geometry-core",
+        "version": "4.0.0",
+        "process": "injection",
+        "binding_mode": "geometric_id",
+        "legacy_binding_fields_active": False,
+        "geometric_bindings": [{
+            "concept_id": "G_WALL_THK_MIN",
+            "support_status": "supported",
+            "worker_geometric_id": "",
+            "quantity_id": "",
+            "dimension": "",
+            "canonical_unit": "",
+            "execution": {
+                "discovery_operation_id": "recognize_main_wall",
+                "feature_kind": "main_wall",
+                "region_role": "wall",
+                "measurement_operation_id": "measure_wall_thickness",
+                "result_selector": {"quantity_id": "thickness_mm"},
+            },
+        }],
+        "operations": [
+            {
+                "operation_id": "recognize_main_wall",
+                "calculator_id": "recognize_main_wall",
+                "depends_on": [],
+                "metric_ids": [],
+                "required_quantities": [],
+                "required_artifacts": ["features"],
+                "required_fact_names": [],
+                "arguments": {},
+                "algorithm_options": {},
+            },
+            {
+                "operation_id": "measure_wall_thickness",
+                "calculator_id": "measure_wall_thickness",
+                "depends_on": [],
+                "metric_ids": ["injection.geometry.wall_thickness"],
+                "required_quantities": ["thickness_mm"],
+                "required_artifacts": ["scalar_field"],
+                "required_fact_names": ["model_units"],
+                "arguments": {},
+                "algorithm_options": {},
+            },
+        ],
+    }
+
+
+def test_occt_scope_projects_worker_binding_from_geometric_id_only():
+    binding = geometry_binding_index(_occt_geometric_scope())["G_WALL_THK_MIN"]
+
+    assert binding == {
+        "metric_id": "injection.geometry.wall_thickness",
+        "quantity_id": "thickness_mm",
+        "feature_kind": "main_wall",
+        "region_role": "wall",
+        "discovery_operation_id": "recognize_main_wall",
+        "measurement_operation_id": "measure_wall_thickness",
+    }
+
+
+def test_occt_binding_is_loaded_through_capabilities_api(tmp_path, monkeypatch):
+    executable = tmp_path / "dfm-geometry.exe"
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    executable.touch()
+    monkeypatch.setattr(
+        "tools.dfm.processes.occt_injection.probe_geometry_executable",
+        lambda resolved: _occt_geometric_scope(),
+    )
+
+    loaded = probe_occt_geometry_capability(str(executable))
+
+    assert loaded is not None
+    assert loaded["geometric_bindings"][0]["concept_id"] == "G_WALL_THK_MIN"

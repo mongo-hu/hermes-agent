@@ -103,7 +103,21 @@ def test_project_actions_create_add_input_status_confirm_and_list(service):
         "clarification_model_units",
     }
     assert status["capabilities"]["step"]["status"] == "dependency_missing"
+    assert status["ontology"]["snapshot_id"] == dfm.ontology_store.identity().snapshot_id
     assert listed["projects"][0]["project_id"] == created["project_id"]
+
+
+def test_ontology_status_reads_installed_workspace_store(service):
+    dfm, _temp = service
+
+    result = dfm.project("ontology_status")
+
+    assert result == {
+        "ok": True,
+        "source": "installed_workspace",
+        "ontology_database": str(dfm.ontology_store.path),
+        "ontology": dfm.ontology_store.identity().to_dict(),
+    }
 
 
 def test_analysis_context_exposes_bounded_ontology_to_the_agent(service):

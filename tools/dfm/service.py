@@ -44,6 +44,8 @@ from .project.workspace import DFMWorkspace
 from .processes.registry import ProcessAdapterRegistry, build_default_process_registry
 from .processes.occt_injection import (
     compile_occt_injection_plan,
+    geometry_binding_index,
+    probe_occt_geometry_capability,
     preview_operations,
 )
 from .reporting.html import render_html_report
@@ -129,7 +131,7 @@ class DFMService:
         self.workspace = workspace or DFMWorkspace()
         self.registry = registry or build_default_registry(self.config)
         self.ontology_store = ontology_store or LocalOntologyStore(
-            self.workspace.root / "ontology" / "dfm-ontology.sqlite3"
+            self.workspace.ontology_dir / "dfm-ontology.sqlite3"
         )
         self.ontology_store.ensure_bootstrap(
             Path(__file__).resolve().parent
@@ -137,12 +139,19 @@ class DFMService:
             / "injection"
             / "ontology_snapshot_v2.json"
         )
+        self.occt_geometry_capability = probe_occt_geometry_capability(
+            self.config.geometry_executable
+        )
+        if self.occt_geometry_capability is not None:
+            self.ontology_store.configure_geometric_bindings(
+                geometry_binding_index(self.occt_geometry_capability)
+            )
         self.ontology_synchronizer: OntologySynchronizer | None = None
         self._ontology_background_sync: BackgroundOntologySync | None = None
         if self.config.ontology_endpoint:
             self.ontology_synchronizer = OntologySynchronizer(
                 store=self.ontology_store,
-                root=self.workspace.root / "ontology",
+                root=self.workspace.ontology_dir,
                 config=self.config,
             )
             self._ontology_background_sync = BackgroundOntologySync(
@@ -2098,6 +2107,13 @@ class DFMService:
         return on_update
 
     def project(self, action: str, **params: Any) -> dict[str, Any]:
+        if action == "ontology_status":
+            return {
+                "ok": True,
+                "source": "installed_workspace",
+                "ontology_database": str(self.ontology_store.path),
+                "ontology": self.ontology_store.identity().to_dict(),
+            }
         if action == "create":
             manifest = self.workspace.create_project(
                 params.get("name") or "Untitled DFM project",
@@ -2237,6 +2253,7 @@ class DFMService:
             return {
                 "ok": True,
                 "project": self._project_payload(manifest),
+                "ontology": self.ontology_store.identity().to_dict(),
                 "capabilities": self._capabilities(manifest),
                 "process_capabilities": process_capabilities,
             }

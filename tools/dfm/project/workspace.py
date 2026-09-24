@@ -15,6 +15,8 @@ from .manifest import ManifestStore
 
 
 _PROJECT_ID = re.compile(r"^dfm_[a-f0-9]{12,32}$")
+_CANONICAL_RELATIVE_ROOT = Path("workspace") / "dfm"
+_LEGACY_RELATIVE_ROOT = Path("dfm")
 
 
 def _utc_now() -> str:
@@ -23,8 +25,27 @@ def _utc_now() -> str:
 
 class DFMWorkspace:
     def __init__(self, root: Path | None = None) -> None:
-        self.root = Path(root) if root is not None else get_hermes_home() / "workspace" / "dfm"
+        hermes_home = get_hermes_home()
+        legacy_root = hermes_home / _LEGACY_RELATIVE_ROOT
+        if root is None and legacy_root.exists():
+            raise DFMError(
+                "dfm_workspace_conflict",
+                "A legacy DFM workspace exists outside the canonical workspace boundary.",
+                {
+                    "canonical_root": str(hermes_home / _CANONICAL_RELATIVE_ROOT),
+                    "legacy_root": str(legacy_root),
+                },
+            )
+        self.root = (
+            Path(root)
+            if root is not None
+            else hermes_home / _CANONICAL_RELATIVE_ROOT
+        )
         self.projects_dir = self.root / "projects"
+
+    @property
+    def ontology_dir(self) -> Path:
+        return self.root / "ontology"
 
     def project_dir(self, project_id: str) -> Path:
         if not _PROJECT_ID.fullmatch(project_id or ""):

@@ -322,6 +322,54 @@ def test_schema_3_installs_unresolved_geometric_metadata_and_skips_it():
     assert any(sc.reason == "feature_not_found" for sc in result.skipped_checks)
 
 
+def test_geometric_id_capability_binding_ignores_empty_legacy_fields():
+    value = composite_payload()
+    operand_relation = next(
+        row for row in value["relations"] if row["predicate"] == "USES_OPERAND"
+    )
+    previous_id = operand_relation["object_id"]
+    for concept in value["concepts"]:
+        if concept["concept_id"] != previous_id:
+            continue
+        concept["concept_id"] = "G_WALL_THK_MIN"
+        concept["properties_json"].update({
+            "worker_geometric_id": "",
+            "quantity_id": "",
+            "dimension": "",
+            "canonical_unit": "",
+        })
+    for relation in value["relations"]:
+        if relation["subject_id"] == previous_id:
+            relation["subject_id"] = "G_WALL_THK_MIN"
+        if relation["object_id"] == previous_id:
+            relation["object_id"] = "G_WALL_THK_MIN"
+
+    store = LocalOntologyStore.from_package(rehash(value))
+    store.configure_geometric_bindings({
+        "G_WALL_THK_MIN": {
+            "metric_id": METRIC,
+            "quantity_id": "thickness_mm",
+            "feature_kind": "main_wall",
+            "region_role": "wall",
+            "discovery_operation_id": "recognize_main_wall",
+            "measurement_operation_id": "measure_wall_thickness",
+        }
+    })
+
+    compiled = store.compile("injection", {"material": "ABS"}, operations())
+
+    assert not compiled.skipped_checks
+    assert compiled.rule_bindings[0].metric_id == METRIC
+    assert compiled.rule_bindings[0].quantity_id == "thickness_mm"
+    target = next(
+        item
+        for item in store.analysis_target_specs("injection")
+        if item["metric_id"] == METRIC
+    )
+    assert target["feature_kind"] == "main_wall"
+    assert target["region_role"] == "wall"
+
+
 def test_schema_3_accepts_empty_unit_for_a_dimensionless_constant():
     value = composite_payload()
     criterion = value["rules"][0]["acceptance_criteria_json"][0]
@@ -588,6 +636,27 @@ def test_unrecognized_comparison_text_is_not_treated_as_whole_part():
     with pytest.raises(DFMError) as error:
         engine.analysis_targets(*discovered())
     assert error.value.details["operand_text"] == "an unspecified custom local patch"
+
+
+def test_geometric_id_capability_uses_declared_region_not_operand_text():
+    from tools.dfm.ontology.targets import resolve_catalog_targets
+
+    manifest, snapshot = discovered("main_wall", "wall")
+    targets = resolve_catalog_targets(
+        [{
+            "check_id": "C_WALL",
+            "alias": "actual",
+            "metric_id": METRIC,
+            "feature_kinds": ["main_wall"],
+            "region_role": "wall",
+            "operand_text": "text that carries no executable geometry meaning",
+        }],
+        manifest,
+        snapshot,
+    )
+
+    assert len(targets) == 1
+    assert targets[0]["region"].region_id == "region.1"
 
 
 def test_adjacent_wall_requires_explicit_local_link_and_stays_on_same_input():

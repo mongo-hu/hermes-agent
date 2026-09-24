@@ -20,6 +20,7 @@ def test_dfm_tools_are_discovered_with_stable_schemas_and_dispatch(tmp_path):
         "status",
         "confirm_fact",
         "list",
+        "ontology_status",
     ]
     assert analysis_schema["parameters"]["properties"]["action"]["enum"] == [
         "discover",

@@ -50,6 +50,17 @@ def _select_regions(spec, anchor, features, regions):
         if anchor.feature_id in item.feature_refs
         and item.input_sha256 == anchor.input_sha256
     ]
+    capability_role = spec.get("region_role")
+    if capability_role:
+        selected = [item for item in candidates if item.role == capability_role]
+        if len(selected) != 1:
+            _scope_error(
+                spec,
+                anchor,
+                selected,
+                "A Geometric-ID capability binding must resolve to one Discovery region.",
+            )
+        return selected
     adjacent = any(_mentions(text, term) for term in ("adjacent", "相邻", "邻近"))
     if adjacent:
         direct = [item for item in candidates if item.role == "adjacent_main_wall"]

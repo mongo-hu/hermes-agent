@@ -23,6 +23,7 @@ def test_workspace_is_profile_aware_and_creates_project_layout(hermes_home):
     project_dir = workspace.project_dir(manifest.project_id)
 
     assert workspace.root == hermes_home / "workspace" / "dfm"
+    assert workspace.ontology_dir == hermes_home / "workspace" / "dfm" / "ontology"
     assert {path.name for path in project_dir.iterdir()} == {
         "inputs",
         "runs",
@@ -57,3 +58,17 @@ def test_project_paths_are_resolved_below_workspace(hermes_home):
     manifest = workspace.create_project("Bracket")
 
     assert workspace.project_dir(manifest.project_id).is_relative_to(Path(workspace.root))
+
+
+def test_legacy_workspace_conflict_fails_without_path_fallback(hermes_home):
+    legacy = hermes_home / "dfm"
+    legacy.mkdir()
+
+    with pytest.raises(DFMError) as exc_info:
+        DFMWorkspace()
+
+    assert exc_info.value.code == "dfm_workspace_conflict"
+    assert exc_info.value.details == {
+        "canonical_root": str(hermes_home / "workspace" / "dfm"),
+        "legacy_root": str(legacy),
+    }

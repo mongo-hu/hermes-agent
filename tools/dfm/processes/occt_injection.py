@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..analyzers.base import AnalyzerContext
+from ..analyzers.occt import discover_geometry_executable, probe_geometry_executable
 from ..contracts import PlanOperation, RuleOperand
 from ..errors import DFMError
 from .base import ProcessPlan
@@ -25,6 +26,110 @@ OCCT_SCOPE_PATH = (
     / "injection"
     / "geometry_core_v4.json"
 )
+
+
+def geometry_binding_index(scope: Mapping[str, Any]) -> dict[str, dict[str, str]]:
+    """Validate and project the Geometric-ID execution contract for Hermes."""
+
+    if scope.get("binding_mode") != "geometric_id":
+        raise DFMError(
+            "process_scope_invalid",
+            "The OCCT geometry scope must use Geometric-ID binding mode.",
+        )
+    if scope.get("legacy_binding_fields_active") is not False:
+        raise DFMError(
+            "process_scope_invalid",
+            "The OCCT geometry scope must disable legacy ontology binding fields.",
+        )
+    operations = {
+        str(item.get("operation_id")): item
+        for item in scope.get("operations", [])
+        if isinstance(item, Mapping) and item.get("operation_id")
+    }
+    result: dict[str, dict[str, str]] = {}
+    for raw in scope.get("geometric_bindings", []):
+        if not isinstance(raw, Mapping):
+            raise DFMError(
+                "process_scope_invalid",
+                "An OCCT Geometric-ID binding is not an object.",
+            )
+        concept_id = str(raw.get("concept_id") or "")
+        if not concept_id or concept_id in result:
+            raise DFMError(
+                "process_scope_invalid",
+                "OCCT Geometric-ID bindings must have unique non-empty IDs.",
+                {"concept_id": concept_id},
+            )
+        if raw.get("support_status") != "supported":
+            continue
+        execution = raw.get("execution")
+        if not isinstance(execution, Mapping):
+            raise DFMError(
+                "process_scope_invalid",
+                "A supported Geometric ID lacks an execution recipe.",
+                {"concept_id": concept_id},
+            )
+        discovery_id = str(execution.get("discovery_operation_id") or "")
+        measurement_id = str(execution.get("measurement_operation_id") or "")
+        selector = execution.get("result_selector")
+        quantity_id = str(
+            selector.get("quantity_id")
+            if isinstance(selector, Mapping)
+            else ""
+        )
+        feature_kind = str(execution.get("feature_kind") or "")
+        region_role = str(execution.get("region_role") or "")
+        discovery = operations.get(discovery_id)
+        measurement = operations.get(measurement_id)
+        metric_ids = (
+            measurement.get("metric_ids", [])
+            if isinstance(measurement, Mapping)
+            else []
+        )
+        required_quantities = (
+            measurement.get("required_quantities", [])
+            if isinstance(measurement, Mapping)
+            else []
+        )
+        if (
+            discovery is None
+            or measurement is None
+            or len(metric_ids) != 1
+            or quantity_id not in required_quantities
+            or not feature_kind
+            or not region_role
+        ):
+            raise DFMError(
+                "process_scope_invalid",
+                "A supported Geometric-ID recipe does not match declared OCCT operations.",
+                {"concept_id": concept_id},
+            )
+        result[concept_id] = {
+            "metric_id": str(metric_ids[0]),
+            "quantity_id": quantity_id,
+            "feature_kind": feature_kind,
+            "region_role": region_role,
+            "discovery_operation_id": discovery_id,
+            "measurement_operation_id": measurement_id,
+        }
+    return result
+
+
+def probe_occt_geometry_capability(
+    configured_executable: str = "",
+) -> dict[str, Any] | None:
+    """Read Geometric-ID bindings through the existing capabilities API."""
+
+    resolved = discover_geometry_executable(configured_executable)
+    if resolved is None:
+        return None
+    payload = probe_geometry_executable(resolved)
+    if not isinstance(payload.get("geometric_bindings"), list):
+        # An older executable can still serve publications that retain the
+        # legacy fields. It simply cannot activate Geometric-ID-only rows.
+        return None
+    geometry_binding_index(payload)
+    return payload
 
 
 def _load_operations() -> list[PlanOperation]:

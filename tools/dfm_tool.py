@@ -37,13 +37,20 @@ def _call(kind: str, args: dict, **context) -> str:
 
 DFM_PROJECT_SCHEMA = {
     "name": "dfm_project",
-    "description": "Manage durable DFM projects and register STEP, Parasolid x_t, or drawing inputs. STEP registration may also produce an OCCT 3D preview when dfm-geometry is available. Use status before analysis to inspect format and process capabilities. confirm_fact may be called only after the user explicitly answers a clarification; never infer engineering facts from geometry.",
+    "description": "Manage durable DFM projects and query the installed workspace ontology. Use ontology_status as the sole source for the current ontology/rule publication; never determine the installed version from bundled source files. Register STEP, Parasolid x_t, or drawing inputs. STEP registration may also produce an OCCT 3D preview when dfm-geometry is available. Use status before analysis to inspect format, the project's ontology identity, and process capabilities. confirm_fact may be called only after the user explicitly answers a clarification; never infer engineering facts from geometry.",
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["create", "add_input", "status", "confirm_fact", "list"],
+                "enum": [
+                    "create",
+                    "add_input",
+                    "status",
+                    "confirm_fact",
+                    "list",
+                    "ontology_status",
+                ],
             },
             "project_id": {"type": "string"},
             "name": {"type": "string"},
