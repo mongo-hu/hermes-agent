@@ -105,8 +105,16 @@ class DiscoveryEngine:
         discovery_state = dict(capabilities.get("geometry_discovery") or {})
         by_input = dict(discovery_state.get("inputs") or {})
         provider_capability = self.geometry_provider.capability()
+        provider_capability_signature = _content_hash({
+            "engine_version": provider_capability.get("engine_version"),
+            "recognizer_ids": provider_capability.get("recognizer_ids", []),
+            "discovery_operation_ids": provider_capability.get(
+                "discovery_operation_ids", []
+            ),
+        })
         if provider_capability.get("status") == "available" and project_dir is not None:
             for input_record in geometry_inputs:
+                cached_discovery = by_input.get(input_record.sha256, {})
                 already_discovered = any(
                     item.input_sha256 == input_record.sha256
                     and item.kind == "main_wall"
@@ -114,7 +122,11 @@ class DiscoveryEngine:
                     and item.recognizer_version == self.geometry_provider.version
                     for item in features
                 )
-                if already_discovered and input_record.sha256 in by_input:
+                if (
+                    already_discovered
+                    and cached_discovery.get("capability_signature")
+                    == provider_capability_signature
+                ):
                     continue
                 resolved_facts = {
                     item.name: ResolvedArgument(
@@ -162,6 +174,7 @@ class DiscoveryEngine:
                 by_input[input_record.sha256] = {
                     "provider": self.geometry_provider.key,
                     "provider_version": self.geometry_provider.version,
+                    "capability_signature": provider_capability_signature,
                     "topology_snapshot_id": result.topology_snapshot_id,
                     "render_mesh_snapshot_id": result.render_mesh_snapshot_id,
                     "geometry_snapshot_ref": result.geometry_snapshot_ref,

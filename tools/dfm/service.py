@@ -2564,7 +2564,12 @@ class DFMService:
                     and fact.name in defaults.accepted_inputs
                 }
                 process_plan = (
-                    compile_occt_injection_plan(adapter, context, raw_parameters)
+                    compile_occt_injection_plan(
+                        adapter,
+                        context,
+                        raw_parameters,
+                        self.occt_geometry_capability,
+                    )
                     if str(analyzer_key) == "occt_cpp" and process == "injection"
                     else adapter.compile(context, raw_parameters)
                 )

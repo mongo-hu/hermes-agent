@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from ..analyzers.base import AnalyzerContext
 from ..contracts import (
@@ -79,6 +79,8 @@ class InjectionProcessAdapter:
         self,
         context: AnalyzerContext,
         raw_parameters: Mapping[str, Any],
+        *,
+        operations_override: Sequence[PlanOperation] | None = None,
     ) -> ProcessPlan:
         scope = self._load_scope()
         defaults = scope["parameters"]
@@ -127,7 +129,11 @@ class InjectionProcessAdapter:
                     "kind": "engineering_context",
                 }
 
-        operations = [PlanOperation.from_dict(item) for item in scope["operations"]]
+        operations = (
+            list(operations_override)
+            if operations_override is not None
+            else [PlanOperation.from_dict(item) for item in scope["operations"]]
+        )
         compiled = self.ontology_store.compile(self.key, ontology_facts, operations)
         enriched_operations = []
         for operation in operations:

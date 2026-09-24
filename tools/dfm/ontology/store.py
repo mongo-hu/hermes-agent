@@ -179,6 +179,7 @@ class LocalOntologyStore:
         self.path = Path(path) if path is not None else None
         self._memory: sqlite3.Connection | None = None
         self._geometric_bindings: dict[str, dict[str, str]] = {}
+        self._geometric_binding_mode_configured = False
         if self.path is None:
             self._memory = sqlite3.connect(":memory:")
             self._memory.row_factory = sqlite3.Row
@@ -199,6 +200,7 @@ class LocalOntologyStore:
             }
             for concept_id, binding in bindings.items()
         }
+        self._geometric_binding_mode_configured = True
 
     @classmethod
     def from_package(
@@ -299,9 +301,24 @@ class LocalOntologyStore:
         if identity.process != process:
             return ()
         with self._connect() as connection:
+            blocked_checks: set[str] = set()
+            if self._geometric_binding_mode_configured:
+                blocked_checks = {
+                    str(row["subject_id"])
+                    for row in connection.execute(
+                        "SELECT subject_id, object_id FROM ontology_relation "
+                        "WHERE predicate = 'USES_OPERAND'"
+                    ).fetchall()
+                    if str(row["object_id"]).startswith("G_")
+                    and str(row["object_id"]) not in self._geometric_bindings
+                }
             rows = connection.execute(
                 """
-                SELECT factor.concept_id, factor.properties_json, relation.qualifiers_json
+                SELECT relation.subject_id,
+                       subject.concept_type AS subject_type,
+                       factor.concept_id,
+                       factor.properties_json,
+                       relation.qualifiers_json
                 FROM ontology_relation AS relation
                 JOIN ontology_concept AS subject ON subject.concept_id = relation.subject_id
                 JOIN ontology_concept AS factor ON factor.concept_id = relation.object_id
@@ -313,6 +330,11 @@ class LocalOntologyStore:
             ).fetchall()
         merged: dict[str, dict[str, Any]] = {}
         for row in rows:
+            if (
+                row["subject_type"] == "check"
+                and str(row["subject_id"]) in blocked_checks
+            ):
+                continue
             properties = _load_json(row["properties_json"], {})
             qualifiers = _load_json(row["qualifiers_json"], {})
             if qualifiers.get("required") is False:
@@ -545,6 +567,16 @@ class LocalOntologyStore:
             specs: dict[tuple[str, str, str], dict[str, Any]] = {}
             catalog_specs = []
             for row in rows:
+                geometric_id = str(row["object_id"])
+                if (
+                    self._geometric_binding_mode_configured
+                    and geometric_id.startswith("G_")
+                    and geometric_id not in self._geometric_bindings
+                ):
+                    # Geometric-ID mode is fail-closed. An ontology concept
+                    # omitted by the runtime capability must not fall back to
+                    # empty legacy worker fields or create an analysis target.
+                    continue
                 target = self._resolve_operand_target(
                     connection,
                     str(row["subject_id"]),

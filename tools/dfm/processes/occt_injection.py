@@ -14,7 +14,7 @@ from typing import Any, Mapping
 
 from ..analyzers.base import AnalyzerContext
 from ..analyzers.occt import discover_geometry_executable, probe_geometry_executable
-from ..contracts import PlanOperation, RuleOperand
+from ..contracts import PlanOperation, ResolvedArgument, RuleOperand
 from ..errors import DFMError
 from .base import ProcessPlan
 from .injection import InjectionProcessAdapter
@@ -94,6 +94,8 @@ def geometry_binding_index(scope: Mapping[str, Any]) -> dict[str, dict[str, str]
         if (
             discovery is None
             or measurement is None
+            or discovery.get("status") != "available"
+            or measurement.get("status") != "available"
             or len(metric_ids) != 1
             or quantity_id not in required_quantities
             or not feature_kind
@@ -132,7 +134,54 @@ def probe_occt_geometry_capability(
     return payload
 
 
-def _load_operations() -> list[PlanOperation]:
+def _load_operations(
+    capability: Mapping[str, Any] | None = None,
+) -> list[PlanOperation]:
+    if capability is not None:
+        geometry_binding_index(capability)
+        declared = {
+            str(item.get("operation_id")): item
+            for item in capability.get("operations", [])
+            if isinstance(item, Mapping) and item.get("operation_id")
+        }
+        available = {
+            operation_id
+            for operation_id, item in declared.items()
+            if item.get("status") == "available"
+        }
+        # A module is executable only when its complete dependency closure is
+        # also available. Partially filled factories therefore stay out of plans.
+        changed = True
+        while changed:
+            changed = False
+            for operation_id in tuple(available):
+                dependencies = declared[operation_id].get("depends_on", [])
+                if any(str(dependency) not in available for dependency in dependencies):
+                    available.remove(operation_id)
+                    changed = True
+        return [
+            PlanOperation(
+                operation_id=operation_id,
+                calculator_id=str(declared[operation_id].get("calculator_id") or ""),
+                depends_on=[
+                    str(value)
+                    for value in declared[operation_id].get("depends_on", [])
+                ],
+                metric_ids=[
+                    str(value)
+                    for value in declared[operation_id].get("metric_ids", [])
+                ],
+                required_quantities=[
+                    str(value)
+                    for value in declared[operation_id].get("required_quantities", [])
+                ],
+                required_artifacts=[
+                    str(value)
+                    for value in declared[operation_id].get("required_artifacts", [])
+                ],
+            )
+            for operation_id in sorted(available)
+        ]
     try:
         payload = json.loads(OCCT_SCOPE_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -171,30 +220,43 @@ def compile_occt_injection_plan(
     adapter: InjectionProcessAdapter,
     context: AnalyzerContext,
     raw_parameters: Mapping[str, Any],
+    capability: Mapping[str, Any] | None,
 ) -> ProcessPlan:
     """Reuse remote rules/facts while replacing only the geometry calculators."""
 
-    base = adapter.compile(context, raw_parameters)
-    operations = _load_operations()
-    base_by_calculator = {item.calculator_id: item for item in base.operations}
+    operations = _load_operations(capability)
+    base = adapter.compile(
+        context,
+        raw_parameters,
+        operations_override=operations,
+    )
 
-    load = base_by_calculator.get("load_geometry")
-    draft = base_by_calculator.get("measure_draft")
+    def resolved_argument(name: str, default: Any = None) -> ResolvedArgument:
+        raw = raw_parameters.get(name, default)
+        if isinstance(raw, Mapping):
+            return ResolvedArgument(
+                raw.get("value"),
+                str(raw.get("source_ref") or f"fact:{name}"),
+                raw.get("unit"),
+            )
+        return ResolvedArgument(raw, f"fact:{name}")
+
     enriched: list[PlanOperation] = []
     for operation in operations:
         arguments = dict(operation.arguments)
         required_fact_names = list(operation.required_fact_names)
-        if operation.calculator_id == "geometry_preflight" and load is not None:
-            model_unit = load.arguments.get("model_unit")
-            if model_unit is not None:
-                arguments["model_unit"] = model_unit
+        if operation.calculator_id == "geometry_preflight":
+            arguments["model_unit"] = resolved_argument("model_units", "mm")
             required_fact_names = ["model_units"]
-        if operation.calculator_id in {"measure_draft", "measure_undercut"}:
-            pull_direction = draft.arguments.get("pull_direction") if draft else None
-            if pull_direction is not None:
-                arguments["pull_direction"] = pull_direction
+        if operation.calculator_id in {
+            "measure_draft",
+            "measure_undercut",
+            "measure_main_wall_draft",
+            "measure_screw_boss_draft",
+        }:
+            arguments["pull_direction"] = resolved_argument("pull_dir")
             required_fact_names = ["model_units", "pull_dir"]
-        elif operation.calculator_id == "measure_wall_thickness":
+        elif operation.metric_ids:
             required_fact_names = ["model_units"]
         enriched.append(
             replace(

@@ -365,7 +365,7 @@ def test_plan_is_persisted_but_unavailable_production_start_fails_explicitly(ser
     assert discovery["features"][0]["kind"] == "ordinary_part"
     assert discovery["regions"][0]["mode"] == "whole_model"
     assert discovery["capability"]["providers"]["occt_cpp_feature_recognition"] == (
-        "occt-main-wall-adapter-1.0.0:dependency_missing"
+        "occt-injection-features-adapter-1.1.0:dependency_missing"
     )
     assert plan["plan"]["analyzer_keys"] == ["step"]
     assert plan["plan"]["discovery_snapshot_refs"] == [

@@ -206,6 +206,7 @@ def _occt_geometric_scope():
                 "required_quantities": [],
                 "required_artifacts": ["features"],
                 "required_fact_names": [],
+                "status": "available",
                 "arguments": {},
                 "algorithm_options": {},
             },
@@ -217,6 +218,7 @@ def _occt_geometric_scope():
                 "required_quantities": ["thickness_mm"],
                 "required_artifacts": ["scalar_field"],
                 "required_fact_names": ["model_units"],
+                "status": "available",
                 "arguments": {},
                 "algorithm_options": {},
             },
@@ -235,6 +237,16 @@ def test_occt_scope_projects_worker_binding_from_geometric_id_only():
         "discovery_operation_id": "recognize_main_wall",
         "measurement_operation_id": "measure_wall_thickness",
     }
+
+
+def test_occt_supported_binding_requires_available_runtime_operations():
+    scope = _occt_geometric_scope()
+    scope["operations"][1]["status"] = "unavailable"
+
+    with pytest.raises(DFMError) as exc_info:
+        geometry_binding_index(scope)
+
+    assert exc_info.value.code == "process_scope_invalid"
 
 
 def test_occt_binding_is_loaded_through_capabilities_api(tmp_path, monkeypatch):

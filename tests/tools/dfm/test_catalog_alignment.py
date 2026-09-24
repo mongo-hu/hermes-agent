@@ -304,22 +304,38 @@ def test_schema_3_rejects_invalid_new_rule_contract(change):
 
 def test_schema_3_installs_unresolved_geometric_metadata_and_skips_it():
     value = composite_payload()
+    renamed_ids = {}
     for concept in value["concepts"]:
         if concept["concept_type"] != "geometric":
             continue
+        previous_id = concept["concept_id"]
+        concept["concept_id"] = f"G_UNIMPLEMENTED_{len(renamed_ids) + 1}"
+        renamed_ids[previous_id] = concept["concept_id"]
         concept["properties_json"].update({
             "worker_geometric_id": "",
             "quantity_id": "",
             "dimension": "",
             "canonical_unit": "",
         })
+    for relation in value["relations"]:
+        relation["subject_id"] = renamed_ids.get(
+            relation["subject_id"], relation["subject_id"]
+        )
+        relation["object_id"] = renamed_ids.get(
+            relation["object_id"], relation["object_id"]
+        )
 
     store = LocalOntologyStore.from_package(rehash(value))
+    store.configure_geometric_bindings({})
 
     result = store.compile("injection", {"material": "ABS"}, operations())
     # The check should be skipped rather than raising an error
     assert len(result.skipped_checks) > 0
     assert any(sc.reason == "feature_not_found" for sc in result.skipped_checks)
+    assert store.analysis_target_specs("injection") == ()
+    assert [
+        item["name"] for item in store.fact_requirements("injection")
+    ] == ["model_units"]
 
 
 def test_geometric_id_capability_binding_ignores_empty_legacy_fields():
