@@ -59,21 +59,29 @@ GEOMETRY_OPERATION_PAIRS = (
 
 
 def _valid_capability_operations(payload: object) -> bool:
-    if not isinstance(payload, list) or len(payload) != len(GEOMETRY_OPERATION_PAIRS):
+    if not isinstance(payload, list):
         return False
-    try:
-        observed = {
-            (item["operation_id"], item["calculator_id"])
-            for item in payload
-            if isinstance(item, dict)
-            and item.get("maturity") == "experimental"
-            and item.get("algorithm_version") == ENGINE_VERSION
-            and isinstance(item.get("limits"), dict)
-            and isinstance(item.get("algorithm_options"), list)
-        }
-    except (KeyError, TypeError):
-        return False
-    return observed == set(GEOMETRY_OPERATION_PAIRS)
+    observed: set[tuple[str, str]] = set()
+    for item in payload:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("operation_id"), str)
+            or not item["operation_id"]
+            or not isinstance(item.get("calculator_id"), str)
+            or not item["calculator_id"]
+            or item.get("maturity") != "experimental"
+            or item.get("algorithm_version") != ENGINE_VERSION
+            or not isinstance(item.get("limits"), dict)
+            or not isinstance(item.get("algorithm_options"), list)
+        ):
+            return False
+        pair = (item["operation_id"], item["calculator_id"])
+        if pair in observed:
+            return False
+        observed.add(pair)
+    # Capability evolution is additive: Hermes requires its known baseline,
+    # while newer declared or placeholder algorithms may be advertised too.
+    return set(GEOMETRY_OPERATION_PAIRS).issubset(observed)
 
 
 def _valid_runtime_limits(payload: object) -> bool:

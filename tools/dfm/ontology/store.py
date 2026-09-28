@@ -351,6 +351,11 @@ class LocalOntologyStore:
                 "required_by": sorted({
                     str(item) for item in qualifiers.get("required_by", []) if str(item)
                 }),
+                "check_ids": (
+                    [str(row["subject_id"])]
+                    if row["subject_type"] == "check"
+                    else []
+                ),
             }
             current = merged.get(runtime_key)
             if current is None:
@@ -358,6 +363,9 @@ class LocalOntologyStore:
                 continue
             current["required_by"] = sorted(
                 set(current["required_by"]) | set(requirement["required_by"])
+            )
+            current["check_ids"] = sorted(
+                set(current["check_ids"]) | set(requirement["check_ids"])
             )
             if current["phase"] != "discovery" and requirement["phase"] == "discovery":
                 current["phase"] = "discovery"

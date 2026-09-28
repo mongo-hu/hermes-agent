@@ -1,3 +1,5 @@
+import base64
+import gzip
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -405,7 +407,12 @@ def test_bundled_html_wrapper_renders_a_self_contained_contract(tmp_path):
     assert output.is_file()
     html = output.read_text(encoding="utf-8")
     assert "evaluation-draft" in html
-    assert "three.js" in html.lower()
+    source_gzip = re.search(r'"sourceGzip":"([^"]+)"', html)
+    assert source_gzip is not None
+    source_html = gzip.decompress(base64.b64decode(source_gzip.group(1))).decode(
+        "utf-8"
+    )
+    assert "three.js" in source_html.lower()
     assert "综合评估" in html
 
 
@@ -610,7 +617,12 @@ def test_runtime_adapter_output_renders_with_agent_authored_content(tmp_path):
     html = html_path.read_text(encoding="utf-8")
     assert "evaluation-draft" in html
     assert "主壁拔模角不足" in html
-    assert "three.js" in html.lower()
+    source_gzip = re.search(r'"sourceGzip":"([^"]+)"', html)
+    assert source_gzip is not None
+    source_html = gzip.decompress(base64.b64decode(source_gzip.group(1))).decode(
+        "utf-8"
+    )
+    assert "three.js" in source_html.lower()
 
 
 def test_render_html_action_attaches_agent_content_and_html(
@@ -791,3 +803,41 @@ def test_report_context_returns_pending_without_claiming_success(tmp_path):
     assert context["ready"] is False
     assert context["next_action"] == "report_context"
     assert context["run"]["status"] == "running"
+
+
+def test_report_context_returns_terminal_failure_as_status(tmp_path):
+    from tools.dfm import service as service_module
+    from tools.dfm.service import DFMService
+
+    workspace = DFMWorkspace(tmp_path / "workspace")
+    manifest = workspace.create_project("Failed DFM run")
+    run = RunRecord(
+        "run_failed",
+        "step",
+        "test",
+        RunStatus.FAILED,
+        "now",
+        "now",
+        stage="geometry_analysis",
+        progress_percent=40,
+        error={"code": "pull_direction_invalid", "message": "Invalid direction."},
+    )
+    service_module.ManifestStore(workspace.project_dir(manifest.project_id)).update(
+        lambda current: replace(current, runs=[run])
+    )
+    service = DFMService(workspace=workspace, reconcile_jobs=False)
+    try:
+        context = service.analysis(
+            "report_context",
+            project_id=manifest.project_id,
+            run_id=run.run_id,
+            wait_seconds=0,
+        )
+    finally:
+        service.close()
+
+    assert context["ok"] is True
+    assert context["ready"] is False
+    assert context["complete"] is True
+    assert context["next_action"] == "status"
+    assert context["run"]["status"] == "failed"

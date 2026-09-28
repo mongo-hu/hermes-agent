@@ -2615,6 +2615,17 @@ def _load_enabled_toolsets() -> list[str] | None:
     cfg = None
     fallback_notice = None
 
+    def configured_disabled_toolsets(config: object) -> set[str]:
+        if not isinstance(config, dict):
+            return set()
+        agent_config = config.get("agent")
+        if not isinstance(agent_config, dict):
+            return set()
+        disabled = agent_config.get("disabled_toolsets")
+        if not isinstance(disabled, list):
+            return set()
+        return {str(item) for item in disabled if str(item).strip()}
+
     # Coding posture (base Hermes): with no explicit pin, collapse to the
     # coding toolset (+ enabled MCP servers) when sitting in a code workspace.
     # The desktop app and `hermes --tui` both land here. See
@@ -2625,13 +2636,22 @@ def _load_enabled_toolsets() -> list[str] | None:
         try:
             from agent.coding_context import coding_selection
 
-            selection = coding_selection(platform=_resolve_session_platform())
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            selection = coding_selection(
+                platform=_resolve_session_platform(), config=cfg
+            )
             if selection is not None:
+                disabled = configured_disabled_toolsets(cfg)
+                enabled = set(selection) - disabled
                 # Fold in `project` here too: this is a GUI-only resolver, and
                 # the focus-mode coding posture returns before the fallback path
                 # that normally adds it — without this the desktop loses the
                 # project tools exactly when sitting in a repo (see below).
-                return sorted({*selection, "project"})
+                if "project" not in disabled:
+                    enabled.add("project")
+                return sorted(enabled)
         except Exception:
             pass
 
@@ -2748,7 +2768,10 @@ def _load_enabled_toolsets() -> list[str] | None:
         # surface them. This resolver runs ONLY in the desktop/TUI gateway, so
         # folding in the `project` toolset here is the gate that exposes them on
         # exactly the surface that can follow a project move.
-        return sorted(enabled | {"project"})
+        disabled = configured_disabled_toolsets(cfg)
+        if "project" not in disabled:
+            enabled.add("project")
+        return sorted(enabled)
     except Exception:
         if fallback_notice is not None:
             print(

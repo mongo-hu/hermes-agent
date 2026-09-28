@@ -62,9 +62,33 @@ class InjectionProcessAdapter:
                 question=str(item["question"]),
                 phase=str(item["phase"]),
                 required_by=tuple(str(value) for value in item["required_by"]),
+                check_ids=tuple(str(value) for value in item["check_ids"]),
             )
             for item in self.ontology_store.fact_requirements(self.key)
         )
+        by_name = {item.name: item for item in ontology_requirements}
+
+        def startup_requirement(
+            name: str,
+            question: str,
+            required_by: tuple[str, ...],
+        ) -> FactRequirement:
+            published = by_name.get(name)
+            if published is None:
+                return FactRequirement(
+                    name=name,
+                    question=question,
+                    phase="discovery",
+                    required_by=required_by,
+                )
+            return FactRequirement(
+                name=published.name,
+                question=published.question or question,
+                phase="discovery",
+                required_by=published.required_by or required_by,
+                check_ids=published.check_ids,
+            )
+
         return (
             FactRequirement(
                 name="process",
@@ -72,7 +96,21 @@ class InjectionProcessAdapter:
                 phase="discovery",
                 required_by=("feature.process_semantics",),
             ),
-            *ontology_requirements,
+            startup_requirement(
+                "model_units",
+                "What length unit was used to author the STEP model?",
+                ("geometry.load",),
+            ),
+            startup_requirement(
+                "pull_dir",
+                "What is the confirmed mold pull direction?",
+                ("geometry.draft",),
+            ),
+            *(
+                item
+                for item in ontology_requirements
+                if item.name not in {"process", "model_units", "pull_dir"}
+            ),
         )
 
     def compile(
@@ -201,6 +239,11 @@ class InjectionProcessAdapter:
             )
         return scope
 
+    def normalize_parameter(self, key: str, value: Any) -> Any:
+        """Validate and canonicalize one injection adapter parameter."""
+
+        return self._normalize_value(key, value)
+
     def _normalize_value(self, key: str, value: Any) -> Any:
         if key == "material":
             material = str(value or "").strip().upper()
@@ -218,9 +261,12 @@ class InjectionProcessAdapter:
         if key == "pull_dir":
             # 支持本体库的枚举值格式（+Z, -Z, +X 等）和向量格式（[0,0,1] 等）
             direction_map = {
-                "+X": [1.0, 0.0, 0.0], "-X": [-1.0, 0.0, 0.0],
-                "+Y": [0.0, 1.0, 0.0], "-Y": [0.0, -1.0, 0.0],
-                "+Z": [0.0, 0.0, 1.0], "-Z": [0.0, 0.0, -1.0],
+                "+X": [1.0, 0.0, 0.0], "X+": [1.0, 0.0, 0.0],
+                "-X": [-1.0, 0.0, 0.0], "X-": [-1.0, 0.0, 0.0],
+                "+Y": [0.0, 1.0, 0.0], "Y+": [0.0, 1.0, 0.0],
+                "-Y": [0.0, -1.0, 0.0], "Y-": [0.0, -1.0, 0.0],
+                "+Z": [0.0, 0.0, 1.0], "Z+": [0.0, 0.0, 1.0],
+                "-Z": [0.0, 0.0, -1.0], "Z-": [0.0, 0.0, -1.0],
             }
             
             # 如果是字符串，尝试映射为向量

@@ -5,7 +5,9 @@ import pytest
 from tools.dfm.analyzers.base import AnalyzerContext
 from tools.dfm.errors import DFMError
 from tools.dfm.processes.registry import build_default_process_registry
+from tools.dfm.processes.base import ProcessPlan
 from tools.dfm.processes.occt_injection import (
+    compile_occt_injection_plan,
     geometry_binding_index,
     probe_occt_geometry_capability,
 )
@@ -30,6 +32,29 @@ def test_default_process_registry_supports_injection_and_die_casting():
 
     assert exc_info.value.code == "unsupported_capability"
     assert exc_info.value.details["supported_processes"] == ["die_casting", "injection"]
+
+
+def test_injection_startup_requirements_do_not_depend_on_ontology_rows(monkeypatch):
+    adapter = build_default_process_registry().get("injection")
+    published = adapter.ontology_store.fact_requirements
+    monkeypatch.setattr(
+        adapter.ontology_store,
+        "fact_requirements",
+        lambda process: [
+            item
+            for item in published(process)
+            if item["name"] not in {"model_units", "pull_dir"}
+        ],
+    )
+
+    requirements = adapter.fact_requirements()
+
+    assert [item.name for item in requirements[:3]] == [
+        "process",
+        "model_units",
+        "pull_dir",
+    ]
+    assert all(item.phase == "discovery" for item in requirements[:3])
 
 
 def test_die_casting_scope_is_independent_and_topology_only(context):
@@ -92,7 +117,11 @@ def test_injection_plan_uses_published_ontology_and_capability_provenance(contex
     assert requirements["material"].required_by == (
         "check.main_wall_minimum_thickness",
     )
+    assert requirements["material"].check_ids == (
+        "check.main_wall_minimum_thickness",
+    )
     assert requirements["pull_dir"].required_by == ("geometry.draft",)
+    assert requirements["pull_dir"].check_ids == ("check.main_wall_minimum_draft",)
     measured = plan.operations[2:]
     assert all(
         item.required_artifacts
@@ -125,6 +154,39 @@ def test_confirmed_geometry_fact_is_normalized_and_traced(context):
     )
     assert draft.arguments["pull_direction"].value == [0.0, 1.0, 0.0]
     assert draft.arguments["pull_direction"].source_ref == "fact:fact_pull_direction"
+
+
+def test_occt_plan_does_not_restore_raw_pull_direction_after_adapter_normalization(
+    context,
+):
+    adapter = build_default_process_registry().get("injection")
+
+    plan = compile_occt_injection_plan(
+        adapter,
+        context,
+        {
+            "model_units": {
+                "value": "mm",
+                "source": "project_fact",
+                "source_ref": "fact:fact_model_units",
+            },
+            "pull_dir": {
+                "value": "Z+",
+                "source": "project_fact",
+                "source_ref": "fact:fact_pull_direction",
+            },
+        },
+        None,
+    )
+
+    draft_operations = [
+        item for item in plan.operations if "pull_direction" in item.arguments
+    ]
+    assert draft_operations
+    assert all(
+        item.arguments["pull_direction"].value == [0.0, 0.0, 1.0]
+        for item in draft_operations
+    )
 
 
 def test_material_profile_changes_hermes_rule_without_entering_backend_arguments(
@@ -237,6 +299,33 @@ def test_occt_scope_projects_worker_binding_from_geometric_id_only():
         "discovery_operation_id": "recognize_main_wall",
         "measurement_operation_id": "measure_wall_thickness",
     }
+
+
+def test_occt_plan_drops_operations_when_no_rule_binding_is_executable(context):
+    class NoRuleAdapter:
+        @staticmethod
+        def normalize_parameter(_name, value):
+            return value
+
+        @staticmethod
+        def compile(_context, _parameters, *, operations_override):
+            return ProcessPlan(
+                process="injection",
+                adapter_version="test",
+                scope_id="test",
+                scope_version="1",
+                rules={},
+                operations=list(operations_override),
+                accepted_inputs=set(),
+                rule_bindings=[],
+            )
+
+    plan = compile_occt_injection_plan(
+        NoRuleAdapter(), context, {}, _occt_geometric_scope()
+    )
+
+    assert plan.operations == []
+    assert plan.rule_bindings == []
 
 
 def test_occt_supported_binding_requires_available_runtime_operations():

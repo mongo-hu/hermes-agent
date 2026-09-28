@@ -12,14 +12,18 @@ from tools.dfm.analyzers.registry import AnalyzerRegistry
 from tools.dfm.analyzers.step import StepAnalyzer
 from tools.dfm.config import DFMConfig
 from tools.dfm.errors import DFMError
+from tools.dfm.processes.base import FactRequirement
 from tools.dfm.service import DFMService
 from tools.dfm.contracts import (
     ClarificationRecord,
+    Capability,
+    CapabilityStatus,
     FeatureRecord,
     GeometryRef,
     ObservationRecord,
     RegionRecord,
 )
+from tools.dfm.processes.occt_injection import geometry_binding_index
 
 
 STEP_PAYLOAD = (
@@ -86,7 +90,6 @@ def test_project_actions_create_add_input_status_confirm_and_list(service):
     assert added["input"]["kind"] == "step"
     assert {item["clarification_id"] for item in added["open_clarifications"]} == {
         "clarification_process",
-        "clarification_model_units",
     }
     assert confirmed["fact"]["status"] == "confirmed"
     assert status["project"]["input_mode"] == "step"
@@ -100,11 +103,84 @@ def test_project_actions_create_add_input_status_confirm_and_list(service):
         item["clarification_id"] for item in status["project"]["open_clarifications"]
     } == {
         "clarification_process",
-        "clarification_model_units",
     }
     assert status["capabilities"]["step"]["status"] == "dependency_missing"
     assert status["ontology"]["snapshot_id"] == dfm.ontology_store.identity().snapshot_id
     assert listed["projects"][0]["project_id"] == created["project_id"]
+
+
+def test_requested_process_is_routing_state_until_confirmed_as_a_fact(service):
+    dfm, temp = service
+    created = dfm.project("create", name="Legacy caller", process="injection")
+    source = temp / "part.step"
+    source.write_bytes(STEP_PAYLOAD)
+
+    added = dfm.project(
+        "add_input",
+        project_id=created["project_id"],
+        path=str(source),
+    )
+    status = dfm.project("status", project_id=created["project_id"])["project"]
+
+    assert [
+        item["clarification_id"] for item in added["open_clarifications"]
+    ] == ["clarification_process"]
+    assert not any(item["name"] == "process" for item in status["facts"])
+
+
+def test_discovery_asks_startup_facts_before_feature_scoped_rule_facts(service):
+    dfm, temp = service
+    adapter = dfm.process_registry.get("injection")
+    original_requirements = adapter.fact_requirements
+    adapter.fact_requirements = lambda: (
+        *original_requirements(),
+        FactRequirement(
+            "boss_only_factor",
+            "Boss-only factor?",
+            "analysis",
+            check_ids=("check.screw_boss.not_discovered",),
+        ),
+    )
+    project_id = dfm.project("create", name="Scoped questions")["project_id"]
+    source = temp / "part.step"
+    source.write_bytes(STEP_PAYLOAD)
+    dfm.project("add_input", project_id=project_id, path=str(source))
+
+    blocked = dfm.analysis("discover", project_id=project_id)
+
+    assert blocked["ok"] is True
+    assert [item["clarification_id"] for item in blocked["clarifications"]] == [
+        "clarification_process"
+    ]
+    dfm.project(
+        "confirm_fact",
+        project_id=project_id,
+        fact_name="process",
+        fact_value="injection",
+    )
+    blocked = dfm.analysis("discover", project_id=project_id)
+
+    assert {item["clarification_id"] for item in blocked["clarifications"]} == {
+        "clarification_model_units",
+        "clarification_pull_dir",
+    }
+    for name, value in {"model_units": "mm", "pull_dir": "Z+"}.items():
+        dfm.project(
+            "confirm_fact",
+            project_id=project_id,
+            fact_name=name,
+            fact_value=value,
+        )
+
+    discovered = dfm.analysis("discover", project_id=project_id)
+    status = dfm.project("status", project_id=project_id)["project"]
+
+    assert [
+        item["clarification_id"] for item in discovered["open_clarifications"]
+    ] == ["clarification_material"]
+    assert next(
+        item["value"] for item in status["facts"] if item["name"] == "pull_dir"
+    ) == [0.0, 0.0, 1.0]
 
 
 def test_ontology_status_reads_installed_workspace_store(service):
@@ -225,6 +301,13 @@ def test_fact_alias_units_closes_model_units_clarification(service):
     source = temp / "part.step"
     source.write_bytes(STEP_PAYLOAD)
     dfm.project("add_input", project_id=project_id, path=str(source))
+    dfm.project(
+        "confirm_fact",
+        project_id=project_id,
+        fact_name="process",
+        fact_value="injection",
+    )
+    dfm.analysis("discover", project_id=project_id)
 
     confirmed = dfm.project(
         "confirm_fact", project_id=project_id, fact_name="units", fact_value="mm"
@@ -244,12 +327,40 @@ def test_fact_alias_units_closes_model_units_clarification(service):
     assert row["status"] == "answered"
 
 
+def test_desktop_choice_labels_are_normalized_as_confirmed_facts(service):
+    dfm, _temp = service
+    project_id = dfm.project("create", name="Desktop choices")["project_id"]
+
+    process = dfm.project(
+        "confirm_fact",
+        project_id=project_id,
+        fact_name="process",
+        fact_value="注塑成型 (Injection Molding)",
+    )
+    units = dfm.project(
+        "confirm_fact",
+        project_id=project_id,
+        fact_name="model_units",
+        fact_value="毫米 (mm)",
+    )
+
+    assert process["fact"]["value"] == "injection"
+    assert units["fact"]["value"] == "mm"
+
+
 def test_legacy_model_length_unit_clarification_is_reconciled(service):
     dfm, temp = service
     project_id = dfm.project("create", name="Legacy unit clarification")["project_id"]
     source = temp / "part.step"
     source.write_bytes(STEP_PAYLOAD)
     dfm.project("add_input", project_id=project_id, path=str(source))
+    dfm.project(
+        "confirm_fact",
+        project_id=project_id,
+        fact_name="process",
+        fact_value="injection",
+    )
+    dfm.analysis("discover", project_id=project_id)
     dfm._store(project_id).update(
         lambda current: replace(
             current,
@@ -355,9 +466,16 @@ def test_plan_is_persisted_but_unavailable_production_start_fails_explicitly(ser
     added = dfm.project("add_input", project_id=project_id, path=str(source))
 
     blocked = dfm.analysis("plan", project_id=project_id)
-    assert blocked["status"] == "discovery_required"
-    assert blocked["next_action"] == "discover"
+    assert blocked["ok"] is True
+    assert blocked["status"] == "clarification_required"
+    assert blocked["next_action"] == "clarify"
+    assert [item["clarification_id"] for item in blocked["clarifications"]] == [
+        "clarification_process"
+    ]
     confirm_step_facts(dfm, project_id)
+    awaiting_discovery = dfm.analysis("plan", project_id=project_id)
+    assert awaiting_discovery["ok"] is True
+    assert awaiting_discovery["status"] == "discovery_required"
     discovery = dfm.analysis("discover", project_id=project_id)
     plan = dfm.analysis("plan", project_id=project_id)
 
@@ -395,6 +513,119 @@ def test_plan_is_persisted_but_unavailable_production_start_fails_explicitly(ser
     with pytest.raises(DFMError) as exc_info:
         dfm.analysis("start", project_id=project_id, plan_id=plan["plan"]["plan_id"])
     assert exc_info.value.code == "dependency_missing"
+
+
+def test_occt_plan_stops_when_no_supported_rule_is_applicable(service, monkeypatch):
+    dfm, temp = service
+    scope = {
+        "binding_mode": "geometric_id",
+        "legacy_binding_fields_active": False,
+        "geometric_bindings": [
+            {
+                "concept_id": "G_WALL_THK_MIN",
+                "support_status": "supported",
+                "execution": {
+                    "discovery_operation_id": "recognize_main_wall",
+                    "feature_kind": "main_wall",
+                    "region_role": "wall",
+                    "measurement_operation_id": "measure_wall_thickness",
+                    "result_selector": {"quantity_id": "thickness_mm"},
+                },
+            }
+        ],
+        "operations": [
+            {
+                "operation_id": "recognize_main_wall",
+                "calculator_id": "recognize_main_wall",
+                "depends_on": [],
+                "metric_ids": [],
+                "required_quantities": [],
+                "required_artifacts": ["features"],
+                "status": "available",
+                "arguments": {},
+                "algorithm_options": {},
+            },
+            {
+                "operation_id": "measure_wall_thickness",
+                "calculator_id": "measure_wall_thickness",
+                "depends_on": [],
+                "metric_ids": ["injection.geometry.wall_thickness"],
+                "required_quantities": ["thickness_mm"],
+                "required_artifacts": ["scalar_field"],
+                "status": "available",
+                "arguments": {},
+                "algorithm_options": {},
+            },
+        ],
+    }
+
+    class AvailableOcctAnalyzer:
+        key = "occt_cpp"
+        version = "test"
+        supported_inputs = ("step",)
+
+        @staticmethod
+        def capability(_context):
+            return Capability(
+                "occt_cpp", CapabilityStatus.AVAILABLE, "available for test"
+            )
+
+        @staticmethod
+        def run(_context, _cancellation):
+            raise AssertionError("a no-applicable-checks plan must not start")
+
+    project_id = dfm.project("create", name="Unsupported OCCT rule set")["project_id"]
+    source = temp / "part.step"
+    source.write_bytes(STEP_PAYLOAD)
+    dfm.project("add_input", project_id=project_id, path=str(source))
+    dfm.registry.register(AvailableOcctAnalyzer())
+    dfm.occt_geometry_capability = scope
+    dfm.ontology_store.configure_geometric_bindings(geometry_binding_index(scope))
+    monkeypatch.setattr(
+        "tools.dfm.service.compile_occt_injection_plan",
+        lambda adapter, context, raw_parameters, capability: replace(
+            adapter.compile(context, raw_parameters),
+            rules={},
+            operations=[],
+            rule_bindings=[],
+            binding_selectors={},
+        ),
+    )
+    confirm_step_facts(dfm, project_id)
+    dfm.analysis("discover", project_id=project_id)
+
+    result = dfm.analysis("plan", project_id=project_id, analyzer_key="occt_cpp")
+
+    assert result["status"] == "no_applicable_checks"
+    assert result["next_action"] == "complete"
+    assert result["reason_code"] == "no_applicable_supported_rules"
+    assert result["supported_geometric_ids"] == ["G_WALL_THK_MIN"]
+    assert result["ontology"]["rule_set_version"]
+    assert result["published_check_ids"]
+    assert "plan" not in result
+    manifest = dfm.project("status", project_id=project_id)["project"]
+    assert all(item["phase"] == "discovery" for item in manifest["plans"])
+
+    adapter = dfm.process_registry.get("injection")
+    original_compile = adapter.compile
+    monkeypatch.setattr(
+        adapter,
+        "compile",
+        lambda context, raw_parameters: replace(
+            original_compile(context, raw_parameters),
+            rules={},
+            operations=[],
+            rule_bindings=[],
+            binding_selectors={},
+        ),
+    )
+
+    fallback = dfm.analysis("plan", project_id=project_id, analyzer_key="step")
+
+    assert fallback["status"] == "no_applicable_checks"
+    assert fallback["next_action"] == "complete"
+    manifest = dfm.project("status", project_id=project_id)["project"]
+    assert all(item["phase"] == "discovery" for item in manifest["plans"])
 
 
 def test_input_or_confirmed_fact_invalidates_prior_plan(service):
@@ -626,7 +857,18 @@ def test_die_casting_plan_uses_its_own_facts_scope_and_operations(service):
     source.write_bytes(STEP_PAYLOAD)
     dfm.project("add_input", project_id=project_id, path=str(source))
 
-    blocked = dfm.analysis("discover", project_id=project_id, process="die_casting")
+    blocked = dfm.analysis("discover", project_id=project_id)
+
+    assert [item["clarification_id"] for item in blocked["clarifications"]] == [
+        "clarification_process"
+    ]
+    dfm.project(
+        "confirm_fact",
+        project_id=project_id,
+        fact_name="process",
+        fact_value="压铸",
+    )
+    blocked = dfm.analysis("discover", project_id=project_id)
 
     assert [item["clarification_id"] for item in blocked["clarifications"]] == [
         "clarification_model_units"
@@ -637,8 +879,8 @@ def test_die_casting_plan_uses_its_own_facts_scope_and_operations(service):
         fact_name="model_units",
         fact_value="mm",
     )
-    discovery = dfm.analysis("discover", project_id=project_id, process="die_casting")
-    result = dfm.analysis("plan", project_id=project_id, process="die_casting")
+    discovery = dfm.analysis("discover", project_id=project_id)
+    result = dfm.analysis("plan", project_id=project_id)
     status = dfm.project("status", project_id=project_id)
 
     assert result["plan"]["process"] == "die_casting"
@@ -651,7 +893,7 @@ def test_die_casting_plan_uses_its_own_facts_scope_and_operations(service):
         "inspect_topology",
     ]
     assert status["project"]["process"] == "die_casting"
-    assert status["project"]["process_source"] == "user_selected"
+    assert status["project"]["process_source"] == "user_confirmed"
 
 
 def test_parasolid_capability_is_local_and_does_not_disable_step(service):

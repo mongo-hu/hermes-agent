@@ -39,6 +39,8 @@ def test_dfm_tools_are_discovered_with_stable_schemas_and_dispatch(tmp_path):
     assert "observations" in analysis_schema["parameters"]["properties"]
     assert "fusion_links" in analysis_schema["parameters"]["properties"]
     assert "llm_content" in analysis_schema["parameters"]["properties"]
+    assert "process" not in project_schema["parameters"]["properties"]
+    assert "process" not in analysis_schema["parameters"]["properties"]
     assert analysis_schema["parameters"]["properties"]["analyzer_key"]["enum"] == [
         "occt_cpp_external",
         "pythonocc_internal",

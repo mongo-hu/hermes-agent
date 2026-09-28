@@ -804,6 +804,39 @@ def test_capability_probe_rejects_incomplete_operation_registry(tmp_path):
     assert capability.error_code == "geometry_protocol_invalid"
 
 
+def test_capability_probe_accepts_additive_operation_registry(tmp_path):
+    extended = {
+        **CAPABILITIES,
+        "operations": [
+            *CAPABILITIES["operations"],
+            {
+                "operation_id": "recognize_screw_boss",
+                "calculator_id": "recognize_screw_boss",
+                "kind": "feature_recognition",
+                "process": "injection",
+                "depends_on": ["topology.aag"],
+                "metric_ids": [],
+                "required_quantities": [],
+                "required_artifacts": ["features"],
+                "status": "unavailable",
+                "unavailable_reason": "not_implemented",
+                "maturity": "experimental",
+                "algorithm_version": ENGINE_VERSION,
+                "limits": {},
+                "algorithm_options": [],
+            },
+        ],
+    }
+    analyzer = OcctAnalyzer(
+        "C:/dfm/dfm-geometry.exe",
+        capability_probe=lambda executable: extended,
+    )
+
+    capability = analyzer.capability(AnalyzerContext("dfm_1", tmp_path, "step", []))
+
+    assert capability.status is CapabilityStatus.AVAILABLE
+
+
 def test_occt_analyzer_runs_versioned_request_and_returns_validated_artifacts(tmp_path):
     input_path = tmp_path / "inputs" / "part.step"
     input_path.parent.mkdir()

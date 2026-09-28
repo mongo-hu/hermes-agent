@@ -331,6 +331,7 @@ def test_mixed_input_uses_agent_observation_and_fusion_submission_flow(tmp_path)
         for fact_name, fact_value in {
             "process": "injection",
             "model_units": "mm",
+            "pull_dir": [0, 0, 1],
         }.items():
             service.project(
                 "confirm_fact",
@@ -340,6 +341,7 @@ def test_mixed_input_uses_agent_observation_and_fusion_submission_flow(tmp_path)
             )
 
         pending = service.analysis("discover", project_id=project_id)
+        assert pending["ok"] is True
         assert pending["status"] == "agent_interpretation_required"
 
         drawing_context = service.analysis(
@@ -377,6 +379,7 @@ def test_mixed_input_uses_agent_observation_and_fusion_submission_flow(tmp_path)
         assert material["provenance"]["provider"] == "hermes_agent_event_loop"
 
         fusion_pending = service.analysis("discover", project_id=project_id)
+        assert fusion_pending["ok"] is True
         assert fusion_pending["status"] == "agent_fusion_required"
         fusion_context = service.analysis("fusion_context", project_id=project_id)
         wall = next(

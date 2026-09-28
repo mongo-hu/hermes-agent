@@ -14,7 +14,7 @@ from typing import Any, Mapping
 
 from ..analyzers.base import AnalyzerContext
 from ..analyzers.occt import discover_geometry_executable, probe_geometry_executable
-from ..contracts import PlanOperation, ResolvedArgument, RuleOperand
+from ..contracts import PlanOperation, ResolvedArgument, RuleBinding, RuleOperand
 from ..errors import DFMError
 from .base import ProcessPlan
 from .injection import InjectionProcessAdapter
@@ -216,6 +216,28 @@ def preview_operations() -> list[PlanOperation]:
     return operations
 
 
+def _rule_operation_closure(
+    operations: list[PlanOperation],
+    bindings: list[RuleBinding],
+) -> list[PlanOperation]:
+    """Keep only calculators required by executable RuleBindings."""
+
+    by_id = {item.operation_id: item for item in operations}
+    required: set[str] = set()
+
+    def include(operation_id: str) -> None:
+        if operation_id in required or operation_id not in by_id:
+            return
+        required.add(operation_id)
+        for dependency in by_id[operation_id].depends_on:
+            include(dependency)
+
+    for binding in bindings:
+        for operand in binding.measurement_operands():
+            include(operand.operation_id)
+    return [item for item in operations if item.operation_id in required]
+
+
 def compile_occt_injection_plan(
     adapter: InjectionProcessAdapter,
     context: AnalyzerContext,
@@ -235,11 +257,11 @@ def compile_occt_injection_plan(
         raw = raw_parameters.get(name, default)
         if isinstance(raw, Mapping):
             return ResolvedArgument(
-                raw.get("value"),
+                adapter.normalize_parameter(name, raw.get("value")),
                 str(raw.get("source_ref") or f"fact:{name}"),
                 raw.get("unit"),
             )
-        return ResolvedArgument(raw, f"fact:{name}")
+        return ResolvedArgument(adapter.normalize_parameter(name, raw), f"fact:{name}")
 
     enriched: list[PlanOperation] = []
     for operation in operations:
@@ -329,7 +351,7 @@ def compile_occt_injection_plan(
         scope_id=base.scope_id,
         scope_version=base.scope_version,
         rules=filtered_rules,
-        operations=enriched,
+        operations=_rule_operation_closure(enriched, bindings),
         accepted_inputs=base.accepted_inputs,
         rule_bindings=bindings,
         binding_selectors=filtered_selectors,

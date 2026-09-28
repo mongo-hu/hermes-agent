@@ -94,7 +94,43 @@ class DFMService:
         "hole_diameter",
         "hole_depth",
     )
-    _FACTS_REQUIRING_NORMALIZATION = {"pull_dir"}
+    _DISCOVERY_FACT_NAMES = frozenset({"process", "model_units", "pull_dir"})
+    _PROCESS_ALIASES = {
+        "injection": "injection",
+        "injection_molding": "injection",
+        "注塑成型": "injection",
+        "注塑成型_(injection_molding)": "injection",
+        "injection_molding_(注塑成型)": "injection",
+        "注塑": "injection",
+        "热塑性注塑": "injection",
+        "die_casting": "die_casting",
+        "diecasting": "die_casting",
+        "压铸_(die_casting)": "die_casting",
+        "die_casting_(压铸)": "die_casting",
+        "压铸": "die_casting",
+    }
+    _MODEL_UNIT_ALIASES = {
+        "millimeter": "mm",
+        "millimeters": "mm",
+        "millimeter (mm)": "mm",
+        "毫米 (mm)": "mm",
+        "mm (毫米)": "mm",
+        "毫米": "mm",
+    }
+    _PULL_DIRECTIONS = {
+        "+X": [1.0, 0.0, 0.0],
+        "X+": [1.0, 0.0, 0.0],
+        "-X": [-1.0, 0.0, 0.0],
+        "X-": [-1.0, 0.0, 0.0],
+        "+Y": [0.0, 1.0, 0.0],
+        "Y+": [0.0, 1.0, 0.0],
+        "-Y": [0.0, -1.0, 0.0],
+        "Y-": [0.0, -1.0, 0.0],
+        "+Z": [0.0, 0.0, 1.0],
+        "Z+": [0.0, 0.0, 1.0],
+        "-Z": [0.0, 0.0, -1.0],
+        "Z-": [0.0, 0.0, -1.0],
+    }
     _FACT_ALIASES = {
         "unit": "model_units",
         "units": "model_units",
@@ -266,37 +302,76 @@ class DFMService:
 
     @staticmethod
     def _normalize_fact_value(fact_name: str, raw_value: Any) -> Any:
-        """Normalize fact values that may be serialized as JSON strings.
+        """Convert user input into the canonical fact representation once."""
 
-        Some facts (like pull_dir) require array values, but tool parameters
-        are JSON-serialized. This method parses them back to proper types.
-
-        Args:
-            fact_name: The name of the fact being confirmed.
-            raw_value: The raw value from the tool call (may be a JSON string).
-
-        Returns:
-            The normalized value (parsed if necessary).
-        """
-        if fact_name not in DFMService._FACTS_REQUIRING_NORMALIZATION:
+        if fact_name == "process":
+            key = (
+                str(raw_value or "")
+                .strip()
+                .lower()
+                .replace("-", "_")
+                .replace(" ", "_")
+            )
+            if key not in DFMService._PROCESS_ALIASES:
+                raise DFMError(
+                    "fact_invalid",
+                    "process must be injection or die_casting",
+                    {"fact_name": fact_name, "value": raw_value},
+                )
+            return DFMService._PROCESS_ALIASES[key]
+        if fact_name == "model_units":
+            key = str(raw_value or "").strip().lower()
+            if not key:
+                raise DFMError(
+                    "fact_invalid",
+                    "model_units must be a non-empty length unit",
+                    {"fact_name": fact_name, "value": raw_value},
+                )
+            return DFMService._MODEL_UNIT_ALIASES.get(key, key)
+        if fact_name != "pull_dir":
             return raw_value
 
-        # If already a list/tuple, return as-is
-        if isinstance(raw_value, (list, tuple)):
-            return raw_value
-
-        # If a string, try to parse as JSON
-        if isinstance(raw_value, str):
+        value = raw_value
+        if isinstance(value, str):
+            direction = DFMService._PULL_DIRECTIONS.get(value.strip().upper())
+            if direction is not None:
+                return list(direction)
             try:
-                import json
-
-                parsed = json.loads(raw_value)
-                if isinstance(parsed, list):
-                    return parsed
-            except (json.JSONDecodeError, ValueError):
-                pass
-
-        return raw_value
+                value = json.loads(value)
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise DFMError(
+                    "fact_invalid",
+                    "pull_dir must be +X, -X, +Y, -Y, +Z, -Z, or a 3D vector",
+                    {"fact_name": fact_name, "value": raw_value},
+                ) from exc
+        if not isinstance(value, (list, tuple)) or len(value) != 3:
+            raise DFMError(
+                "fact_invalid",
+                "pull_dir must contain exactly three numbers",
+                {"fact_name": fact_name, "value": raw_value},
+            )
+        try:
+            vector = [float(item) for item in value]
+        except (TypeError, ValueError) as exc:
+            raise DFMError(
+                "fact_invalid",
+                "pull_dir must contain exactly three numbers",
+                {"fact_name": fact_name, "value": raw_value},
+            ) from exc
+        if not all(math.isfinite(item) for item in vector):
+            raise DFMError(
+                "fact_invalid",
+                "pull_dir must contain finite numbers",
+                {"fact_name": fact_name, "value": raw_value},
+            )
+        magnitude = math.sqrt(sum(item * item for item in vector))
+        if magnitude == 0:
+            raise DFMError(
+                "fact_invalid",
+                "pull_dir must be a non-zero vector",
+                {"fact_name": fact_name, "value": raw_value},
+            )
+        return [item / magnitude for item in vector]
 
     @staticmethod
     def _factor_value_matches_schema(value: Any, schema: Any) -> bool:
@@ -1487,23 +1562,54 @@ class DFMService:
             process or manifest.process or self.config.default_process
         )
         requirements = adapter.fact_requirements()
-        available_discovery_facts = self.discovery.required_fact_names()
+        applicable_check_ids: set[str] | None = None
+        if phase == "analysis":
+            snapshot = next(
+                (
+                    item
+                    for item in reversed(manifest.discovery_snapshots)
+                    if item.status == "frozen"
+                ),
+                None,
+            )
+            if snapshot is None:
+                return []
+            applicable_check_ids = self._applicable_analysis_check_ids(
+                manifest, snapshot
+            )
         confirmed = {
             self._canonical_fact_name(fact.name)
             for fact in manifest.facts
             if fact.status == "confirmed"
         }
-        if manifest.process_source != "default":
-            confirmed.add("process")
+        process_is_confirmed = "process" in confirmed
         existing = {item.clarification_id: item for item in manifest.clarifications}
         result = []
         for requirement in requirements:
+            name = self._canonical_fact_name(requirement.name)
             required_in_phase = requirement.phase == phase
-            if phase == "discovery" and requirement.name in available_discovery_facts:
-                required_in_phase = True
+            if phase == "discovery":
+                # The process chooses the adapter and therefore the remaining
+                # startup contract. Ask it first instead of exposing facts from
+                # the default adapter as though they applied to every process.
+                required_in_phase = (
+                    name == "process"
+                    if not process_is_confirmed
+                    else name in self._DISCOVERY_FACT_NAMES
+                )
+            elif phase == "analysis":
+                required_in_phase = (
+                    name not in self._DISCOVERY_FACT_NAMES
+                    and requirement.phase == "analysis"
+                    and (
+                        not requirement.check_ids
+                        or bool(
+                            applicable_check_ids.intersection(requirement.check_ids)
+                        )
+                    )
+                )
             if phase != "all" and not required_in_phase:
                 continue
-            name = self._canonical_fact_name(requirement.name)
             question = requirement.question
             if name in confirmed:
                 continue
@@ -1561,9 +1667,19 @@ class DFMService:
 
     def _project_payload(self, manifest: ProjectManifest) -> dict[str, Any]:
         payload = manifest.to_dict()
-        phase = "analysis" if manifest.discovery_snapshots else "discovery"
+        discovery_open = self._open_clarifications(manifest, phase="discovery")
+        phase = (
+            "discovery"
+            if discovery_open or not manifest.discovery_snapshots
+            else "analysis"
+        )
         payload["open_clarifications"] = [
-            item.to_dict() for item in self._open_clarifications(manifest, phase=phase)
+            item.to_dict()
+            for item in (
+                discovery_open
+                if phase == "discovery"
+                else self._open_clarifications(manifest, phase=phase)
+            )
         ]
         payload["discovery_capability"] = self.discovery.capability()
         return payload
@@ -1579,6 +1695,21 @@ class DFMService:
             ),
             None,
         )
+
+    def _applicable_analysis_check_ids(
+        self, manifest: ProjectManifest, snapshot
+    ) -> set[str]:
+        """Return checks backed by both capability and discovered semantic scope."""
+
+        result: set[str] = set()
+        for target in self.discovery.analysis_targets(manifest, snapshot):
+            result.update(str(value) for value in target.get("check_ids", []))
+            result.update(
+                str(key[0])
+                for key in target.get("operand_anchors", {})
+                if isinstance(key, tuple) and key
+            )
+        return result
 
     def _bind_discovery_scope(
         self,
@@ -1719,6 +1850,46 @@ class DFMService:
             rule_bindings=bindings,
         )
 
+    @staticmethod
+    def _confirmed_process(manifest: ProjectManifest) -> str | None:
+        return next(
+            (
+                str(fact.value)
+                for fact in reversed(manifest.facts)
+                if fact.name == "process" and fact.status == "confirmed"
+            ),
+            None,
+        )
+
+    def _resolve_process(self, manifest: ProjectManifest, requested: object = None) -> str:
+        requested_value = str(requested or "").strip()
+        if requested_value:
+            try:
+                requested_value = str(
+                    self._normalize_fact_value("process", requested_value)
+                )
+            except DFMError as exc:
+                raise DFMError(
+                    "process_invalid",
+                    exc.message,
+                    {"process": requested},
+                ) from exc
+        confirmed = self._confirmed_process(manifest)
+        if confirmed and requested_value and confirmed != requested_value:
+            raise DFMError(
+                "process_conflict",
+                "The requested process conflicts with the confirmed process fact.",
+                {"confirmed": confirmed, "requested": requested_value},
+            )
+        process = (
+            confirmed
+            or requested_value
+            or manifest.process
+            or self.config.default_process
+        )
+        self.process_registry.get(process)
+        return process
+
     def _select_process(
         self, project_id: str, process: str, source: str
     ) -> ProjectManifest:
@@ -1837,6 +2008,20 @@ class DFMService:
                     "next_action": "result",
                     "run": self._run_dict(project_id, run),
                 }
+
+        if run.status in {
+            RunStatus.FAILED,
+            RunStatus.BLOCKED,
+            RunStatus.CANCELLED,
+        }:
+            return {
+                "ok": True,
+                "project_id": project_id,
+                "ready": False,
+                "complete": True,
+                "next_action": "status",
+                "run": self._run_dict(project_id, run),
+            }
 
         if run.status is not RunStatus.REPORTING:
             raise DFMError(
@@ -2121,8 +2306,11 @@ class DFMService:
             )
             requested_process = str(params.get("process") or "").strip()
             if requested_process:
+                requested_process = self._resolve_process(
+                    manifest, requested_process
+                )
                 manifest = self._select_process(
-                    manifest.project_id, requested_process, "user_selected"
+                    manifest.project_id, requested_process, "requested"
                 )
             return {
                 "ok": True,
@@ -2175,13 +2363,9 @@ class DFMService:
             if not name:
                 raise DFMError("fact_invalid", "fact_name is required.")
 
-            # Normalize fact_value: parse JSON strings for known array parameters
             raw_value = params.get("fact_value")
             normalized_value = self._normalize_fact_value(name, raw_value)
             if name == "process":
-                normalized_value = str(normalized_value or "").strip()
-                if normalized_value == "injection_molding":
-                    normalized_value = "injection"
                 self.process_registry.get(normalized_value)
 
             fact = FactRecord(
@@ -2328,17 +2512,19 @@ class DFMService:
             resolved = self._resolve_factor_observations(manifest)
             if resolved is not manifest:
                 manifest = store.update(lambda _current: resolved)
-            requested_process = str(params.get("process") or manifest.process or "")
-            if params.get("process"):
+            requested_process = self._resolve_process(
+                manifest, params.get("process")
+            )
+            if params.get("process") and manifest.process != requested_process:
                 manifest = self._select_process(
-                    project_id, requested_process, "user_selected"
+                    project_id, requested_process, "requested"
                 )
             manifest = self._refresh_drawing_ocr(project_id)
             manifest = self._ensure_clarifications(project_id, phase="discovery")
             pending_interpretations = self._pending_drawing_interpretations(manifest)
             if pending_interpretations:
                 return {
-                    "ok": False,
+                    "ok": True,
                     "project_id": project_id,
                     "status": "agent_interpretation_required",
                     "phase": "drawing_interpretation",
@@ -2355,7 +2541,7 @@ class DFMService:
             )
             if open_clarifications:
                 return {
-                    "ok": False,
+                    "ok": True,
                     "project_id": project_id,
                     "status": "clarification_required",
                     "phase": "discovery",
@@ -2373,7 +2559,7 @@ class DFMService:
             discovered = self._persist_geometry_candidates(project_id)
             if self._fusion_review_required(discovered):
                 return {
-                    "ok": False,
+                    "ok": True,
                     "project_id": project_id,
                     "status": "agent_fusion_required",
                     "phase": "drawing_geometry_fusion",
@@ -2513,19 +2699,37 @@ class DFMService:
             analyzer_key = self._objective_analyzer_key(
                 manifest, params.get("analyzer_key")
             )
-            requested_process = str(
-                params.get("process") or manifest.process or self.config.default_process
+            requested_process = self._resolve_process(
+                manifest, params.get("process")
             )
-            manifest = self._select_process(
-                project_id,
-                requested_process,
-                "user_selected" if params.get("process") else manifest.process_source,
+            if manifest.process != requested_process:
+                manifest = self._select_process(
+                    project_id,
+                    requested_process,
+                    "requested" if params.get("process") else manifest.process_source,
+                )
+            manifest = self._ensure_clarifications(project_id, phase="discovery")
+            discovery_clarifications = self._open_clarifications(
+                manifest, requested_process, phase="discovery"
             )
+            if discovery_clarifications:
+                return {
+                    "ok": True,
+                    "project_id": project_id,
+                    "status": "clarification_required",
+                    "phase": "discovery",
+                    "requires_user_response": True,
+                    "next_action": "clarify",
+                    "do_not_infer": True,
+                    "clarifications": [
+                        item.to_dict() for item in discovery_clarifications
+                    ],
+                }
             manifest = self._ensure_clarifications(project_id, phase="analysis")
             discovery_snapshot = self._latest_discovery_snapshot(manifest)
             if discovery_snapshot is None:
                 return {
-                    "ok": False,
+                    "ok": True,
                     "project_id": project_id,
                     "status": "discovery_required",
                     "phase": "discovery",
@@ -2537,7 +2741,7 @@ class DFMService:
             )
             if open_clarifications:
                 return {
-                    "ok": False,
+                    "ok": True,
                     "project_id": project_id,
                     "status": "clarification_required",
                     "requires_user_response": True,
@@ -2579,6 +2783,36 @@ class DFMService:
                     discovery_snapshot,
                     preserve_single_operation_ids=str(analyzer_key) == "occt_cpp",
                 )
+                if (
+                    str(analyzer_key) in {"occt_cpp", "step"}
+                    and process == "injection"
+                    and not process_plan.rule_bindings
+                ):
+                    supported_geometric_ids = sorted(
+                        geometry_binding_index(self.occt_geometry_capability or {})
+                    )
+                    return {
+                        "ok": True,
+                        "project_id": project_id,
+                        "status": "no_applicable_checks",
+                        "phase": "analysis",
+                        "requires_user_response": False,
+                        "next_action": "complete",
+                        "reason_code": "no_applicable_supported_rules",
+                        "message": (
+                            "The installed ontology has published checks, but no released "
+                            "rule for the discovered features can be fully evaluated with "
+                            "the current OCCT Geometric-ID capabilities. Available generic "
+                            "calculators do not replace unsupported rule operands."
+                        ),
+                        "ontology": self.ontology_store.identity().to_dict(),
+                        "published_check_ids": list(
+                            self.ontology_store.check_ids(process)
+                        ),
+                        "discovery_snapshot_ref": discovery_snapshot.snapshot_id,
+                        "supported_geometric_ids": supported_geometric_ids,
+                        "capability": capability.to_dict(),
+                    }
             parent_plan_id = str(params.get("base_plan_id") or "") or None
             parent_plan = next(
                 (item for item in manifest.plans if item.plan_id == parent_plan_id),

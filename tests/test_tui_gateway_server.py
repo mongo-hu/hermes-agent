@@ -754,10 +754,44 @@ def test_load_enabled_toolsets_folds_project_into_focus_posture(monkeypatch):
     monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
 
     import agent.coding_context as cc
+    import hermes_cli.config as config_mod
 
     monkeypatch.setattr(cc, "coding_selection", lambda **_: ["coding", "figma"])
+    monkeypatch.setattr(config_mod, "load_config", lambda: {})
 
     assert server._load_enabled_toolsets() == ["coding", "figma", "project"]
+
+
+def test_load_enabled_toolsets_honors_hard_disabled_toolsets(monkeypatch):
+    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
+
+    import agent.coding_context as cc
+    import hermes_cli.config as config_mod
+
+    config = {
+        "agent": {"disabled_toolsets": ["coding", "kanban", "project"]},
+        "platform_toolsets": {"cli": ["clarify", "dfm", "skills"]},
+    }
+    monkeypatch.setattr(cc, "coding_selection", lambda **_: ["coding"])
+    monkeypatch.setattr(config_mod, "load_config", lambda: config)
+
+    assert server._load_enabled_toolsets() == []
+
+
+def test_load_enabled_toolsets_does_not_readd_disabled_project(monkeypatch):
+    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
+
+    import agent.coding_context as cc
+    import hermes_cli.config as config_mod
+
+    config = {
+        "agent": {"disabled_toolsets": ["kanban", "project"]},
+        "platform_toolsets": {"cli": ["clarify", "dfm", "skills"]},
+    }
+    monkeypatch.setattr(cc, "coding_selection", lambda **_: None)
+    monkeypatch.setattr(config_mod, "load_config", lambda: config)
+
+    assert server._load_enabled_toolsets() == ["clarify", "dfm", "skills"]
 
 
 def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):

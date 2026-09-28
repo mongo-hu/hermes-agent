@@ -408,6 +408,7 @@ class DiscoveryEngine:
                     "feature": feature,
                     "region": region,
                     "metric_id": metric_id,
+                    "check_ids": list(binding.get("check_ids", [])),
                     "rule_profile": binding.get("rule_profile"),
                     "fallback_to": binding.get("fallback_to"),
                 })

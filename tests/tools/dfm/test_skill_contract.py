@@ -53,6 +53,9 @@ def test_dfm_skill_prescribes_safe_complete_tool_workflow():
     assert "this is not success" in text
     assert "Only this successful action moves the run to `succeeded`/100%" in text
     assert "do not use terminal/read-file" in text
+    assert "Do not pass `process` to `create`" in text
+    assert "plan`, without a `process` argument" in text
+    assert "terminal failed/blocked/cancelled run" in text
 
 
 def test_dfm_skill_defines_the_m1_injection_plan_boundary():

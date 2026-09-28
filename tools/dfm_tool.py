@@ -37,7 +37,7 @@ def _call(kind: str, args: dict, **context) -> str:
 
 DFM_PROJECT_SCHEMA = {
     "name": "dfm_project",
-    "description": "Manage durable DFM projects and query the installed workspace ontology. Use ontology_status as the sole source for the current ontology/rule publication; never determine the installed version from bundled source files. Register STEP, Parasolid x_t, or drawing inputs. STEP registration may also produce an OCCT 3D preview when dfm-geometry is available. Use status before analysis to inspect format, the project's ontology identity, and process capabilities. confirm_fact may be called only after the user explicitly answers a clarification; never infer engineering facts from geometry.",
+    "description": "Manage durable DFM projects and query the installed workspace ontology. Use ontology_status as the sole source for the current ontology/rule publication; never determine the installed version from bundled source files. Create projects without inferring a process: process is confirmed only through confirm_fact after the user answers its clarification. Register STEP, Parasolid x_t, or drawing inputs. STEP registration may also produce an OCCT 3D preview when dfm-geometry is available. Use status before analysis to inspect format, the project's ontology identity, and process capabilities. confirm_fact may be called only after the user explicitly answers a clarification; never infer engineering facts from geometry.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -54,18 +54,13 @@ DFM_PROJECT_SCHEMA = {
             },
             "project_id": {"type": "string"},
             "name": {"type": "string"},
-            "process": {
-                "type": "string",
-                "enum": ["injection", "die_casting"],
-                "description": "Manufacturing intent selected by the user when creating the project.",
-            },
             "path": {
                 "type": "string",
                 "description": "Local path or Desktop @file: reference",
             },
             "fact_name": {
                 "type": "string",
-                "description": "Canonical names: material, model_units, pull_dir. Use only the user's explicit answer.",
+                "description": "Startup names are process, model_units, and pull_dir. After discovery, use the canonical factor name returned by an open clarification. Use only the user's explicit answer.",
             },
             "fact_value": {
                 "description": "The user's explicit answer; never a model-inferred value."
@@ -197,11 +192,6 @@ DFM_ANALYSIS_SCHEMA = {
             "base_plan_id": {
                 "type": "string",
                 "description": "Invalidated plan to rebuild with only affected operations.",
-            },
-            "process": {
-                "type": "string",
-                "enum": ["injection", "die_casting"],
-                "description": "Manufacturing process selected by the user. Pass it to discover before compiling the analysis plan.",
             },
             "analyzer_key": {
                 "type": "string",

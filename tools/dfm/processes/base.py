@@ -34,6 +34,7 @@ class FactRequirement:
     question: str
     phase: str
     required_by: tuple[str, ...] = ()
+    check_ids: tuple[str, ...] = ()
 
 
 @runtime_checkable
