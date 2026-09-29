@@ -19,6 +19,7 @@ from ..contracts import (
     PlanRecord,
     RuleBinding,
     RuleOperand,
+    _acceptance_criteria_groups,
     _expression_operand_aliases,
 )
 from ..errors import DFMError
@@ -62,7 +63,7 @@ def _utc_now() -> str:
 class EvaluationEngine:
     """The sole production owner of Measurement → Evaluation comparison."""
 
-    version = "hermes-evaluation-v3"
+    version = "hermes-evaluation-v4"
 
     def materialize(
         self,
@@ -218,7 +219,10 @@ class EvaluationEngine:
                 {"binding_id": binding.binding_id, "rule_id": binding.rule_id},
             )
         if binding.acceptance_criteria_json:
-            first = binding.acceptance_criteria_json[0]
+            groups = _acceptance_criteria_groups(
+                binding.acceptance_criteria_json, binding_id=binding.binding_id
+            )
+            first = groups[0][0]
             if parameter.value != first["threshold"] or parameter.unit != first["result_unit"]:
                 raise DFMError(
                     "evaluation_rule_invalid",
@@ -257,55 +261,83 @@ class EvaluationEngine:
         criterion_results = []
         expression = binding.expression or {"operand": binding.operand_alias}
         if binding.acceptance_criteria_json:
-            for criterion in binding.acceptance_criteria_json:
-                aliases = _expression_operand_aliases(criterion["expression"], binding_id=binding.binding_id)
-                missing = sorted(aliases.intersection(unavailable))
-                criterion_measurements = [
-                    measurement
-                    for alias in sorted(aliases.intersection(resolved))
-                    for measurement in resolved[alias].measurements
-                ]
-                result = {
-                    "criterion_id": criterion["criterion_id"],
-                    "expression": criterion["expression"],
-                    "operator": _CRITERION_OPERATORS[criterion["comparator"]],
-                    "expected": criterion["threshold"],
-                    "unit": criterion["result_unit"],
-                    "actual": None,
-                    "outcome": "indeterminate" if missing else "pass",
-                    "measurement_ids": list(dict.fromkeys(
-                        measurement.measurement_id for measurement in criterion_measurements
-                    )),
-                    "feature_refs": sorted({
-                        ref for measurement in criterion_measurements
-                        for ref in measurement.feature_refs
-                    }),
-                    "region_refs": sorted({
-                        ref for measurement in criterion_measurements
-                        for ref in measurement.region_refs
-                    }),
-                }
-                if missing:
-                    result["unavailable_operands"] = missing
-                else:
-                    try:
-                        value = self._evaluate_expression(criterion["expression"], resolved, binding.binding_id)
-                        self._validate_result_unit(value.unit, criterion["result_unit"], binding_id=binding.binding_id)
-                        number = self._finite_number(value.value, binding_id=binding.binding_id, operand_alias=criterion["criterion_id"])
-                        result["actual"] = value.value
-                        result["outcome"] = "pass" if self._compare(result["operator"], number, criterion["threshold"], binding_id=binding.binding_id) else "fail"
-                    except DFMError as exc:
-                        if exc.code not in {"evaluation_expression_invalid", "evaluation_value_invalid", "evaluation_unit_invalid"}:
-                            raise
-                        result["outcome"] = "indeterminate"
-                        result["error_code"] = exc.code
-                criterion_results.append(result)
-            representative = next((item for item in criterion_results if item["outcome"] == "fail"), None)
-            if representative is None:
-                representative = next((item for item in criterion_results if item["outcome"] == "indeterminate"), criterion_results[0])
-            outcome = ("fail" if any(item["outcome"] == "fail" for item in criterion_results)
-                else "indeterminate" if any(item["outcome"] == "indeterminate" for item in criterion_results)
-                else "pass")
+            groups = _acceptance_criteria_groups(
+                binding.acceptance_criteria_json, binding_id=binding.binding_id
+            )
+            grouped_contract = isinstance(binding.acceptance_criteria_json[0], list)
+            group_results = []
+            for group_index, group in enumerate(groups):
+                current_group = []
+                for criterion in group:
+                    aliases = _expression_operand_aliases(criterion["expression"], binding_id=binding.binding_id)
+                    missing = sorted(aliases.intersection(unavailable))
+                    criterion_measurements = [
+                        measurement
+                        for alias in sorted(aliases.intersection(resolved))
+                        for measurement in resolved[alias].measurements
+                    ]
+                    result = {
+                        "criterion_id": criterion["criterion_id"],
+                        "expression": criterion["expression"],
+                        "operator": _CRITERION_OPERATORS[criterion["comparator"]],
+                        "expected": criterion["threshold"],
+                        "unit": criterion["result_unit"],
+                        "actual": None,
+                        "outcome": "indeterminate" if missing else "pass",
+                        "measurement_ids": list(dict.fromkeys(
+                            measurement.measurement_id for measurement in criterion_measurements
+                        )),
+                        "feature_refs": sorted({
+                            ref for measurement in criterion_measurements
+                            for ref in measurement.feature_refs
+                        }),
+                        "region_refs": sorted({
+                            ref for measurement in criterion_measurements
+                            for ref in measurement.region_refs
+                        }),
+                    }
+                    if grouped_contract:
+                        result["group_index"] = group_index
+                    if missing:
+                        result["unavailable_operands"] = missing
+                    else:
+                        try:
+                            value = self._evaluate_expression(criterion["expression"], resolved, binding.binding_id)
+                            self._validate_result_unit(value.unit, criterion["result_unit"], binding_id=binding.binding_id)
+                            number = self._finite_number(value.value, binding_id=binding.binding_id, operand_alias=criterion["criterion_id"])
+                            result["actual"] = value.value
+                            result["outcome"] = "pass" if self._compare(result["operator"], number, criterion["threshold"], binding_id=binding.binding_id) else "fail"
+                        except DFMError as exc:
+                            if exc.code not in {"evaluation_expression_invalid", "evaluation_value_invalid", "evaluation_unit_invalid"}:
+                                raise
+                            result["outcome"] = "indeterminate"
+                            result["error_code"] = exc.code
+                    current_group.append(result)
+                    criterion_results.append(result)
+                group_results.append(current_group)
+            group_outcomes = [
+                "fail" if any(item["outcome"] == "fail" for item in group)
+                else "indeterminate" if any(item["outcome"] == "indeterminate" for item in group)
+                else "pass"
+                for group in group_results
+            ]
+            outcome = (
+                "pass" if "pass" in group_outcomes
+                else "fail" if all(item == "fail" for item in group_outcomes)
+                else "indeterminate"
+            )
+            if outcome == "pass":
+                passing_group = group_results[group_outcomes.index("pass")]
+                representative = passing_group[0]
+            elif outcome == "fail":
+                representative = next(
+                    item for item in criterion_results if item["outcome"] == "fail"
+                )
+            else:
+                representative = next(
+                    item for item in criterion_results
+                    if item["outcome"] == "indeterminate"
+                )
             expression = representative["expression"]
             actual = _ExpressionValue(representative["actual"], representative["unit"])
             expected = representative["expected"]

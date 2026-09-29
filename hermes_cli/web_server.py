@@ -161,6 +161,21 @@ def _warm_gateway_module() -> None:
         pass
 
 
+def _start_dfm_ontology_sync() -> None:
+    """Start the configured DFM ontology synchronizer with Hermes itself."""
+    try:
+        from tools.dfm.config import load_dfm_config
+
+        if not load_dfm_config().ontology_endpoint:
+            return
+        from tools.dfm.service import get_dfm_service
+
+        get_dfm_service()
+        _log.info("DFM ontology synchronization started at Hermes startup")
+    except Exception:
+        _log.exception("DFM ontology synchronization failed to start")
+
+
 def _resolve_restart_drain_timeout() -> float:
     try:
         from hermes_cli.gateway import _get_restart_drain_timeout
@@ -188,6 +203,10 @@ async def _lifespan(app: "FastAPI"):
     # Running in an executor means the cost is paid in a worker thread while
     # the server socket is already open and accepting probes.
     asyncio.get_event_loop().run_in_executor(None, _warm_gateway_module)
+
+    # DFM publications must refresh when Hermes starts, without waiting for a
+    # conversation to invoke the DFM toolset first.
+    asyncio.get_event_loop().run_in_executor(None, _start_dfm_ontology_sync)
 
     # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
     # since the app has no gateway running the scheduler. Server `hermes

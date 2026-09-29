@@ -527,13 +527,34 @@ def _expression_operand_aliases(
     return aliases
 
 
-def _validate_acceptance_criteria(criteria: Any, *, binding_id: str) -> set[str]:
-    """Validate the bounded Schema 3 conjunction and return its operand aliases."""
+def _acceptance_criteria_groups(
+    criteria: Any, *, binding_id: str
+) -> list[list[dict[str, Any]]]:
+    """Read legacy flat criteria or the Schema 4 OR-of-AND representation."""
     if not isinstance(criteria, list) or not criteria:
         raise DFMError("plan_rule_binding_invalid", "Acceptance criteria must be a nonempty array.", {"binding_id": binding_id})
+    if all(isinstance(item, dict) for item in criteria):
+        return [criteria]
+    if all(
+        isinstance(group, list)
+        and group
+        and all(isinstance(item, dict) for item in group)
+        for group in criteria
+    ):
+        return criteria
+    raise DFMError(
+        "plan_rule_binding_invalid",
+        "Acceptance criteria must be either one flat AND group or nonempty OR groups of nonempty AND criteria.",
+        {"binding_id": binding_id},
+    )
+
+
+def _validate_acceptance_criteria(criteria: Any, *, binding_id: str) -> set[str]:
+    """Validate Schema 3 flat AND or Schema 4 OR-of-AND acceptance criteria."""
+    groups = _acceptance_criteria_groups(criteria, binding_id=binding_id)
     identifiers: set[str] = set()
     aliases: set[str] = set()
-    for item in criteria:
+    for item in (criterion for group in groups for criterion in group):
         if not isinstance(item, dict) or set(item) != {"criterion_id", "expression", "comparator", "threshold", "result_unit"}:
             raise DFMError("plan_rule_binding_invalid", "An acceptance criterion has invalid fields.", {"binding_id": binding_id})
         criterion_id = item["criterion_id"]
@@ -630,7 +651,7 @@ class RuleBinding:
     additional_operands: list[RuleOperand] = field(default_factory=list)
     expression: dict[str, Any] | None = None
     rule_selection: dict[str, Any] | None = None
-    acceptance_criteria_json: list[dict[str, Any]] = field(default_factory=list)
+    acceptance_criteria_json: list[dict[str, Any]] | list[list[dict[str, Any]]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
@@ -767,7 +788,10 @@ class RuleBinding:
                 {"binding_id": self.binding_id},
             )
         if self.acceptance_criteria_json:
-            first = self.acceptance_criteria_json[0]
+            groups = _acceptance_criteria_groups(
+                self.acceptance_criteria_json, binding_id=self.binding_id
+            )
+            first = groups[0][0]
             comparators = {"GT": ">", "GTE": ">=", "LT": "<", "LTE": "<=", "EQ": "==", "NE": "!=", "BETWEEN": "between"}
             if (not isinstance(first, dict) or not self.check_id or self.expression != first.get("expression")
                     or self.operator != comparators.get(first.get("comparator"))):

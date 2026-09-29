@@ -196,6 +196,35 @@ def test_ontology_status_reads_installed_workspace_store(service):
     }
 
 
+def test_sync_ontology_uses_configured_synchronizer_and_returns_installed_identity(service):
+    dfm, _temp = service
+    expected_identity = dfm.ontology_store.identity().to_dict()
+
+    class Synchronizer:
+        def sync_once(self):
+            return {"changed": False, "snapshot_id": expected_identity["snapshot_id"]}
+
+    dfm.ontology_synchronizer = Synchronizer()
+    result = dfm.project("sync_ontology")
+
+    assert result == {
+        "ok": True,
+        "source": "remote_publication",
+        "sync": {"changed": False, "snapshot_id": expected_identity["snapshot_id"]},
+        "ontology_database": str(dfm.ontology_store.path),
+        "ontology": expected_identity,
+    }
+
+
+def test_sync_ontology_requires_configured_endpoint(service):
+    dfm, _temp = service
+
+    with pytest.raises(DFMError) as exc_info:
+        dfm.project("sync_ontology")
+
+    assert exc_info.value.code == "ontology_sync_unavailable"
+
+
 def test_analysis_context_exposes_bounded_ontology_to_the_agent(service):
     dfm, _temp = service
     project_id = dfm.project("create", name="Ontology context")["project_id"]

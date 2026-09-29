@@ -21,13 +21,20 @@ import sqlite3
 from typing import Any, Iterator, Mapping, Sequence
 from uuid import uuid4
 
-from ..contracts import EffectiveRule, PlanOperation, RuleBinding, RuleOperand, _expression_operand_aliases
+from ..contracts import (
+    EffectiveRule,
+    PlanOperation,
+    RuleBinding,
+    RuleOperand,
+    _acceptance_criteria_groups,
+    _expression_operand_aliases,
+)
 from ..errors import DFMError
 from .catalog_contract import catalog_json_field, current_catalog, validate_catalog
 
 
-ONTOLOGY_SNAPSHOT_SCHEMA_VERSION = 3
-SUPPORTED_ONTOLOGY_SNAPSHOT_SCHEMA_VERSIONS = {1, 2, 3}
+ONTOLOGY_SNAPSHOT_SCHEMA_VERSION = 4
+SUPPORTED_ONTOLOGY_SNAPSHOT_SCHEMA_VERSIONS = {1, 2, 3, 4}
 LOCAL_DATABASE_SCHEMA_VERSION = 3
 _CONCEPT_TYPES = {
     "process",
@@ -1311,7 +1318,11 @@ class LocalOntologyStore:
         rule_rows = []
         for item in payload["rules"]:
             criteria = catalog_json_field(item, "acceptance_criteria", publication_schema_version, []) or []
-            primary = criteria[0] if criteria else item
+            groups = (
+                _acceptance_criteria_groups(criteria, binding_id=item["rule_id"])
+                if criteria else []
+            )
+            primary = groups[0][0] if groups else item
             rule_rows.append((
                 item["rule_version_id"],
                 item["rule_id"],
@@ -1570,11 +1581,16 @@ class LocalOntologyStore:
             if "acceptance_criteria_json" in rule.keys() else []
         )
         if criteria:
+            groups = _acceptance_criteria_groups(
+                criteria, binding_id=str(rule["rule_id"])
+            )
             expression_aliases = _expression_operand_aliases(
-                criteria[0]["expression"], binding_id=str(rule["rule_id"])
+                groups[0][0]["expression"], binding_id=str(rule["rule_id"])
             )
             referenced = set(expression_aliases)
-            for criterion in criteria[1:]:
+            for criterion in (
+                item for group in groups for item in group
+            ):
                 referenced.update(_expression_operand_aliases(
                     criterion["expression"], binding_id=str(rule["rule_id"])
                 ))

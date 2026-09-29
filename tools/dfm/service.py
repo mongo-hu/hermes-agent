@@ -2299,6 +2299,20 @@ class DFMService:
                 "ontology_database": str(self.ontology_store.path),
                 "ontology": self.ontology_store.identity().to_dict(),
             }
+        if action == "sync_ontology":
+            if self.ontology_synchronizer is None:
+                raise DFMError(
+                    "ontology_sync_unavailable",
+                    "DFM ontology synchronization is not configured.",
+                )
+            sync = self.ontology_synchronizer.sync_once()
+            return {
+                "ok": True,
+                "source": "remote_publication",
+                "sync": sync,
+                "ontology_database": str(self.ontology_store.path),
+                "ontology": self.ontology_store.identity().to_dict(),
+            }
         if action == "create":
             manifest = self.workspace.create_project(
                 params.get("name") or "Untitled DFM project",

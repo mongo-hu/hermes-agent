@@ -34,6 +34,7 @@ class OntologySynchronizer:
         self.http = http_client
         self.packages_dir = self.root / "packages"
         self.revocations_path = self.root / "revocations.json"
+        self._sync_lock = threading.Lock()
 
     @staticmethod
     def _verify_hash(payload: Mapping[str, Any], expected_hash: str = "") -> None:
@@ -153,6 +154,10 @@ class OntologySynchronizer:
         return {"changed": True, "snapshot_id": snapshot_id, "rolled_back": True}
 
     def sync_once(self) -> dict[str, Any]:
+        with self._sync_lock:
+            return self._sync_once()
+
+    def _sync_once(self) -> dict[str, Any]:
         latest = self._get_latest()
         revoked = {str(item) for item in latest.get("revoked_snapshot_ids", [])}
         self._write_json(self.revocations_path, sorted(revoked))
