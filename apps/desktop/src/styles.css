@@ -1464,8 +1464,12 @@ text-* variant utilities. */ .btn-arc {
    user is now reading a diff/output, so let it grow to full height instead of
    peering at it through a ~2-row viewport. Collapsing the row drops it back
    into the compact, auto-scrolling window. Beats a larger fixed cap since an
-   open row already bounds its own payload with an inner scroll. */
-.tool-group-scroll:has([data-tool-row][data-tool-open]) {
+   open row already bounds its own payload with an inner scroll.
+   A live clarify card also needs its question, choices and submit controls
+   visible together. It becomes a normal tool row after answering/stopping,
+   which automatically restores the compact window. */
+.tool-group-scroll:has([data-tool-row][data-tool-open]),
+.tool-group-scroll:has([data-slot='clarify-inline']) {
   max-height: none;
   -webkit-mask-image: none;
   mask-image: none;
