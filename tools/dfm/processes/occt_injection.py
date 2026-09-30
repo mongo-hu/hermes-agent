@@ -274,7 +274,6 @@ def compile_occt_injection_plan(
             "measure_draft",
             "measure_undercut",
             "measure_main_wall_draft",
-            "measure_screw_boss_draft",
         }:
             arguments["pull_direction"] = resolved_argument("pull_dir")
             required_fact_names = ["model_units", "pull_dir"]

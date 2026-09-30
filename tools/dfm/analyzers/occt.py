@@ -31,7 +31,7 @@ from .base import AnalyzerContext, CancellationToken
 from .objective_result import validate_objective_result
 
 
-ENGINE_VERSION = "occt-dfm-geometry-1.9.0"
+ENGINE_VERSION = "occt-dfm-geometry-1.10.1"
 GEOMETRY_SCOPE_ID = "injection.geometry-core"
 GEOMETRY_SCOPE_VERSION = "4.0.0"
 CAPABILITY_CONTRACT = "dfm.geometry.capabilities/v1"
@@ -53,7 +53,7 @@ GEOMETRY_OPERATION_PAIRS = (
     ("recognize_surface_probe", "recognize_surface_probe"),
     ("recognize_chamfer", "recognize_chamfer"),
     ("recognize_rib", "recognize_rib"),
-    ("recognize_boss", "recognize_boss"),
+    ("recognize_screw_boss", "recognize_screw_boss"),
     ("recognize_main_wall", "recognize_main_wall"),
 )
 

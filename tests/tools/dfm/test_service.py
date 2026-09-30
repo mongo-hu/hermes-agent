@@ -14,6 +14,7 @@ from tools.dfm.config import DFMConfig
 from tools.dfm.errors import DFMError
 from tools.dfm.processes.base import FactRequirement
 from tools.dfm.service import DFMService
+from tools.dfm.feature_recognition.occt_cpp import OCCTCppFeatureRecognitionProvider
 from tools.dfm.contracts import (
     ClarificationRecord,
     Capability,
@@ -135,10 +136,10 @@ def test_discovery_asks_startup_facts_before_feature_scoped_rule_facts(service):
     adapter.fact_requirements = lambda: (
         *original_requirements(),
         FactRequirement(
-            "boss_only_factor",
+            "screw_boss_only_factor",
             "Boss-only factor?",
             "analysis",
-            check_ids=("check.screw_boss.not_discovered",),
+            check_ids=("check.boss.not_discovered",),
         ),
     )
     project_id = dfm.project("create", name="Scoped questions")["project_id"]
@@ -483,7 +484,7 @@ def test_plan_is_persisted_but_unavailable_production_start_fails_explicitly(ser
     assert discovery["features"][0]["kind"] == "ordinary_part"
     assert discovery["regions"][0]["mode"] == "whole_model"
     assert discovery["capability"]["providers"]["occt_cpp_feature_recognition"] == (
-        "occt-injection-features-adapter-1.1.0:dependency_missing"
+        f"{OCCTCppFeatureRecognitionProvider.version}:dependency_missing"
     )
     assert plan["plan"]["analyzer_keys"] == ["step"]
     assert plan["plan"]["discovery_snapshot_refs"] == [

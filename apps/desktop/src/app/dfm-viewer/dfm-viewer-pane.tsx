@@ -466,7 +466,7 @@ function formatValue(value: unknown): string {
 }
 
 const FEATURE_LABELS: Record<string, string> = {
-  boss: 'Boss柱',
+  screw_boss: '螺钉柱',
   blend: '圆角链',
   canonical_surface: '规范曲面',
   cavity: '型腔',

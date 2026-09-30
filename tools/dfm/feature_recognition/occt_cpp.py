@@ -1,4 +1,4 @@
-"""Production OCCT main-wall discovery adapter."""
+"""Production OCCT main-wall and screw-boss discovery adapter."""
 
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ def _content_hash(payload: dict[str, Any]) -> str:
 
 class OCCTCppFeatureRecognitionProvider:
     key = "occt_cpp_feature_recognition"
-    version = "occt-injection-features-adapter-1.1.0"
+    version = "occt-injection-features-adapter-3.0.0"
 
     def __init__(
         self,
@@ -423,9 +423,30 @@ class OCCTCppFeatureRecognitionProvider:
                         "geometry_protocol_invalid",
                         "OCCT screw-boss output lacks role_face_indices.",
                     )
+                role_face_indices = dict(role_face_indices)
+                recognition_roles = screw_native.get("parameters", {}).get(
+                    "recognition_role_face_indices", {}
+                )
+                if not isinstance(recognition_roles, Mapping):
+                    raise DFMError(
+                        "geometry_protocol_invalid",
+                        "OCCT screw-boss recognition roles must be an object.",
+                    )
+                body_indices = {
+                    index
+                    for values in recognition_roles.values()
+                    if isinstance(values, list)
+                    for index in values
+                    if isinstance(index, int)
+                }
+                # Body keeps detected geometry visible even when no metric region is ready.
+                role_face_indices["body"] = sorted(body_indices) or [
+                    ref.index for ref in screw_geometry_refs
+                ]
                 feature_region_refs: list[str] = []
                 refs_by_index = {ref.index: ref for ref in screw_geometry_refs}
                 for role in (
+                    "body",
                     "outer_side",
                     "inner_side",
                     "top",
@@ -475,12 +496,6 @@ class OCCTCppFeatureRecognitionProvider:
                     )
                     feature_region_refs.append(screw_region_id)
                     screw_region_refs.append(screw_region_id)
-                if not feature_region_refs:
-                    raise DFMError(
-                        "geometry_protocol_invalid",
-                        "OCCT screw-boss output has no usable semantic regions.",
-                        {"feature_id": screw_feature_id},
-                    )
                 features.append(
                     FeatureRecord(
                         feature_id=screw_feature_id,

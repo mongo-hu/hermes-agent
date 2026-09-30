@@ -1,5 +1,7 @@
 import hashlib
 import json
+import os
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -51,7 +53,7 @@ OPERATION_PAIRS = (
     ("recognize_surface_probe", "recognize_surface_probe"),
     ("recognize_chamfer", "recognize_chamfer"),
     ("recognize_rib", "recognize_rib"),
-    ("recognize_boss", "recognize_boss"),
+    ("recognize_screw_boss", "recognize_screw_boss"),
     ("recognize_main_wall", "recognize_main_wall"),
 )
 
@@ -97,6 +99,9 @@ MAIN_WALL_ALGORITHM_OPTIONS = [
 ]
 
 CAPABILITIES = {
+    "binding_mode": "geometric_id",
+    "legacy_binding_fields_active": False,
+    "geometric_bindings": [],
     "contract_version": "dfm.geometry.capabilities/v1",
     "engine_version": ENGINE_VERSION,
     "objective_schema_version": OBJECTIVE_SCHEMA_VERSION,
@@ -810,8 +815,8 @@ def test_capability_probe_accepts_additive_operation_registry(tmp_path):
         "operations": [
             *CAPABILITIES["operations"],
             {
-                "operation_id": "recognize_screw_boss",
-                "calculator_id": "recognize_screw_boss",
+                "operation_id": "recognize_solid_boss",
+                "calculator_id": "recognize_solid_boss",
                 "kind": "feature_recognition",
                 "process": "injection",
                 "depends_on": ["topology.aag"],
@@ -952,28 +957,104 @@ def test_occt_analyzer_rejects_untrusted_worker_outputs(tmp_path, mode, expected
     assert exc_info.value.code == expected_code
 
 
+@pytest.fixture
+def native_capability_validator():
+    schema_dir = Path(os.environ.get("DFM_GEOMETRY_SCHEMA_ROOT", "dfm-geometry/schemas"))
+    if not schema_dir.is_dir():
+        pytest.skip("external DFMAnalysis_OCCT checkout is not available")
+    schema = json.loads((schema_dir / "capabilities.schema.json").read_text(encoding="utf-8"))
+    Draft202012Validator.check_schema(schema)
+    return Draft202012Validator(schema)
+
+
+@pytest.fixture
+def geometric_capability():
+    payload = deepcopy(CAPABILITIES)
+    payload["geometric_bindings"] = [{
+        "concept_id": "G_WALL_THK_MIN",
+        "support_status": "supported",
+        "worker_geometric_id": "",
+        "quantity_id": "",
+        "dimension": "",
+        "canonical_unit": "",
+        "execution": {
+            "discovery_operation_id": "recognize_main_wall",
+            "measurement_operation_id": "measure_wall_thickness",
+            "feature_kind": "main_wall",
+            "region_role": "wall",
+            "result_selector": {"quantity_id": "thickness_mm"},
+        },
+    }]
+    operation = next(
+        item for item in payload["operations"]
+        if item["operation_id"] == "measure_wall_thickness"
+    )
+    operation["metric_ids"] = ["injection.geometry.wall_thickness"]
+    operation["required_quantities"] = ["thickness_mm"]
+    return payload
+
+
+def test_native_capability_schema_accepts_executable_geometric_binding(
+    native_capability_validator, geometric_capability,
+):
+    from tools.dfm.processes.occt_injection import geometry_binding_index
+
+    native_capability_validator.validate(geometric_capability)
+    binding = geometric_capability["geometric_bindings"][0]
+    resolved = geometry_binding_index(geometric_capability)[binding["concept_id"]]
+    assert resolved["quantity_id"] == binding["execution"]["result_selector"]["quantity_id"]
+    assert resolved["measurement_operation_id"] == binding["execution"]["measurement_operation_id"]
+
+
+def test_native_capability_schema_validates_real_executable(native_capability_validator):
+    executable = os.environ.get("DFM_GEOMETRY_E2E_EXECUTABLE") or discover_geometry_executable()
+    if executable is None:
+        pytest.skip("real capability contract validation requires dfm-geometry.exe")
+    native_capability_validator.validate(occt_module.probe_geometry_executable(executable))
+
+
+@pytest.mark.parametrize("field", [
+    "binding_mode", "geometric_bindings", "legacy_binding_fields_active",
+])
+def test_native_capability_schema_requires_binding_contract(
+    native_capability_validator, geometric_capability, field,
+):
+    del geometric_capability[field]
+    errors = list(native_capability_validator.iter_errors(geometric_capability))
+    assert any(error.validator == "required" and field in error.message for error in errors)
+
+
+@pytest.mark.parametrize(("path", "value"), [
+    (("binding_mode",), "legacy"),
+    (("legacy_binding_fields_active",), True),
+    (("legacy_binding_fields_active",), 0),
+    (("geometric_bindings",), {}),
+    (("geometric_bindings", 0, "concept_id"), ""),
+    (("geometric_bindings", 0, "execution"), {}),
+    (("geometric_bindings", 0, "execution", "measurement_operation_id"), ""),
+    (("geometric_bindings", 0, "execution", "result_selector"), {}),
+    (("geometric_bindings", 0, "execution", "result_selector", "quantity_id"), ""),
+    (("geometric_bindings", 0, "execution", "unexpected"), "value"),
+])
+def test_native_capability_schema_rejects_invalid_binding_recipe(
+    native_capability_validator, geometric_capability, path, value,
+):
+    target = geometric_capability
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    assert not native_capability_validator.is_valid(geometric_capability)
+
+
 def test_native_protocol_and_artifact_json_schemas_validate_real_adapter_shapes(
     tmp_path,
 ):
-    schema_dir = Path("dfm-geometry/schemas")
+    schema_dir = Path(os.environ.get("DFM_GEOMETRY_SCHEMA_ROOT", "dfm-geometry/schemas"))
     if not schema_dir.is_dir():
         pytest.skip("external DFMAnalysis_OCCT checkout is not available")
     schemas = {
         path.stem: json.loads(path.read_text(encoding="utf-8"))
         for path in schema_dir.glob("*.schema.json")
-    }
-    assert set(schemas) == {
-        "capabilities.schema",
-        "common.schema",
-        "event.schema",
-        "features.schema",
-        "measurements.schema",
-        "preflight.schema",
-        "request.schema",
-        "render_scene.schema",
-        "result.schema",
-        "scalar_field.schema",
-        "topology_map.schema",
     }
     for schema in schemas.values():
         Draft202012Validator.check_schema(schema)

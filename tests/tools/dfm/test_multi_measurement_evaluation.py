@@ -47,7 +47,7 @@ def _measurement(
 
 def _ratio_plan() -> PlanRecord:
     binding = RuleBinding(
-        binding_id="binding.screw_boss.wall_ratio",
+        binding_id="binding.boss.wall_ratio",
         operation_id="geometry.wall_thickness.boss",
         metric_id=METRIC_ID,
         quantity_id=QUANTITY_ID,
@@ -55,7 +55,7 @@ def _ratio_plan() -> PlanRecord:
         operator="between",
         aggregation="identity",
         check_id="C_SCREW_BOSS_WALL_THK",
-        operand_alias="boss_wall_thickness",
+        operand_alias="screw_boss_wall_thickness",
         region_refs=["region.screw_boss.1.wall"],
         additional_operands=[
             RuleOperand(
@@ -70,7 +70,7 @@ def _ratio_plan() -> PlanRecord:
         expression={
             "op": "divide",
             "args": [
-                {"operand": "boss_wall_thickness"},
+                {"operand": "screw_boss_wall_thickness"},
                 {"operand": "adjacent_main_wall_thickness"},
             ],
         },
@@ -82,7 +82,7 @@ def _ratio_plan() -> PlanRecord:
         status="ready",
         created_at="2026-08-24T00:00:00Z",
         process="injection",
-        scope_id="injection.screw-boss",
+        scope_id="injection.boss",
         scope_version="1.0.0",
         rules={
             "R_SCREW_BOSS_WALL_THK_001": EffectiveRule(
@@ -142,7 +142,7 @@ def test_multi_measurement_ratio_evaluates_one_check_once():
     assert evaluation.outcome == "pass"
     assert evaluation.severity == "warning"
     assert set(evaluation.operand_values) == {
-        "boss_wall_thickness",
+        "screw_boss_wall_thickness",
         "adjacent_main_wall_thickness",
     }
     assert provenance[evaluation.evaluation_id]["check_id"] == evaluation.check_id
@@ -207,7 +207,7 @@ def test_dimensionless_ratio_times_100_evaluates_as_percent():
 def test_composite_rule_reuses_measurements_and_reports_each_clause(boss, main, outcome, failed):
     base = _ratio_plan()
     criteria = [
-        {"criterion_id": "wall_min", "expression": {"operand": "boss_wall_thickness"},
+        {"criterion_id": "wall_min", "expression": {"operand": "screw_boss_wall_thickness"},
          "comparator": "GTE", "threshold": 0.8, "result_unit": "mm"},
         {"criterion_id": "wall_ratio", "expression": base.rule_bindings[0].expression,
          "comparator": "GT", "threshold": 0.4, "result_unit": "ratio"},
@@ -236,7 +236,7 @@ def test_composite_rule_reuses_measurements_and_reports_each_clause(boss, main, 
 def test_composite_rule_keeps_a_known_failure_when_another_operand_is_missing():
     base = _ratio_plan()
     criteria = [
-        {"criterion_id": "wall_min", "expression": {"operand": "boss_wall_thickness"},
+        {"criterion_id": "wall_min", "expression": {"operand": "screw_boss_wall_thickness"},
          "comparator": "GTE", "threshold": 0.8, "result_unit": "mm"},
         {"criterion_id": "wall_ratio", "expression": base.rule_bindings[0].expression,
          "comparator": "GT", "threshold": 0.4, "result_unit": "ratio"},

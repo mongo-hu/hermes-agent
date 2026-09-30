@@ -188,8 +188,8 @@
       "algorithm_options": {}
     },
     {
-      "operation_id": "recognize_boss",
-      "calculator_id": "recognize_boss",
+      "operation_id": "recognize_screw_boss",
+      "calculator_id": "recognize_screw_boss",
       "depends_on": ["topology.aag"],
       "metric_ids": [],
       "required_quantities": [],

@@ -202,7 +202,7 @@ def test_new_feature_check_compiles_from_ontology_and_worker_capability_only():
     payload = _package()
     payload["concepts"].extend([
         {
-            "concept_id": "feature.screw_boss",
+            "concept_id": "feature.boss",
             "concept_type": "feature_type",
             "name_zh": "螺钉柱",
             "definition": "用于螺钉连接的柱状注塑特征。",
@@ -220,7 +220,7 @@ def test_new_feature_check_compiles_from_ontology_and_worker_capability_only():
             "status": "active",
         },
         {
-            "concept_id": "check.screw_boss.minimum_wall",
+            "concept_id": "check.boss.minimum_wall",
             "concept_type": "check",
             "name_zh": "螺钉柱最小柱壁",
             "definition": "判断螺钉柱柱壁最小厚度。",
@@ -231,40 +231,40 @@ def test_new_feature_check_compiles_from_ontology_and_worker_capability_only():
     ])
     payload["relations"].extend([
         {
-            "relation_id": "rel.process.injection.check.screw-boss-wall",
+            "relation_id": "rel.process.injection.check.boss-wall",
             "subject_id": "process.injection",
             "predicate": "HAS_CHECK",
-            "object_id": "check.screw_boss.minimum_wall",
+            "object_id": "check.boss.minimum_wall",
             "qualifiers": {},
             "sort_order": 30,
         },
         {
-            "relation_id": "rel.feature.screw-boss.region.wall",
-            "subject_id": "feature.screw_boss",
+            "relation_id": "rel.feature.screw_boss.region.wall",
+            "subject_id": "feature.boss",
             "predicate": "HAS_REGION",
             "object_id": "region.screw_boss.wall",
             "qualifiers": {},
             "sort_order": 10,
         },
         {
-            "relation_id": "rel.check.screw-boss-wall.feature",
-            "subject_id": "check.screw_boss.minimum_wall",
+            "relation_id": "rel.check.boss-wall.feature",
+            "subject_id": "check.boss.minimum_wall",
             "predicate": "APPLIES_TO_FEATURE",
-            "object_id": "feature.screw_boss",
+            "object_id": "feature.boss",
             "qualifiers": {},
             "sort_order": 10,
         },
         {
-            "relation_id": "rel.check.screw-boss-wall.region.wall",
-            "subject_id": "check.screw_boss.minimum_wall",
+            "relation_id": "rel.check.boss-wall.region.wall",
+            "subject_id": "check.boss.minimum_wall",
             "predicate": "APPLIES_TO_REGION",
             "object_id": "region.screw_boss.wall",
             "qualifiers": {},
             "sort_order": 15,
         },
         {
-            "relation_id": "rel.check.screw-boss-wall.operand.actual",
-            "subject_id": "check.screw_boss.minimum_wall",
+            "relation_id": "rel.check.boss-wall.operand.actual",
+            "subject_id": "check.boss.minimum_wall",
             "predicate": "USES_OPERAND",
             "object_id": "metric.injection.wall_thickness",
             "qualifiers": {
@@ -276,10 +276,10 @@ def test_new_feature_check_compiles_from_ontology_and_worker_capability_only():
         },
     ])
     payload["rules"].append({
-        "rule_version_id": "rule-version.screw-boss-wall.1",
+        "rule_version_id": "rule-version.boss-wall.1",
         "rule_id": "R_INJ_SCREW_BOSS_WALL_MIN",
         "version": "1.0.0",
-        "check_id": "check.screw_boss.minimum_wall",
+        "check_id": "check.boss.minimum_wall",
         "name": "螺钉柱最小柱壁",
         "conditions": [],
         "expression": {"operand": "actual"},
@@ -299,7 +299,7 @@ def test_new_feature_check_compiles_from_ontology_and_worker_capability_only():
     binding = next(
         item
         for item in compiled.rule_bindings
-        if item.check_id == "check.screw_boss.minimum_wall"
+        if item.check_id == "check.boss.minimum_wall"
     )
 
     assert binding.metric_id == "injection.geometry.wall_thickness"
