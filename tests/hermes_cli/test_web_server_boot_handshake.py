@@ -84,6 +84,16 @@ def test_lifespan_warmup_is_nonblocking():
 # Test 2 — get_status run_in_executor keeps event loop free for other requests
 # ---------------------------------------------------------------------------
 
+def test_lifespan_starts_dfm_ontology_sync():
+    """Starting Hermes schedules DFM ontology synchronization immediately."""
+    from fastapi.testclient import TestClient
+
+    started = threading.Event()
+    with patch.object(web_server_mod, "_start_dfm_ontology_sync", started.set):
+        with TestClient(web_server_mod.app, raise_server_exceptions=False):
+            assert started.wait(timeout=1)
+
+
 def test_get_status_does_not_block_event_loop():
     """
     /api/status calls _resolve_restart_drain_timeout via run_in_executor.

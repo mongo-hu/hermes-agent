@@ -250,6 +250,100 @@ def test_composite_rule_keeps_a_known_failure_when_another_operand_is_missing():
     assert [item["outcome"] for item in evaluations[0].criterion_results] == ["fail", "indeterminate"]
 
 
+@pytest.mark.parametrize(
+    "measure_main,main_value,outcome",
+    [(True, 2.0, "pass"), (True, 0.5, "fail"), (False, None, "indeterminate")],
+)
+def test_or_of_and_groups_use_three_state_rule_semantics(
+    measure_main, main_value, outcome
+):
+    base = _ratio_plan()
+    groups = [
+        [{
+            "criterion_id": "boss_min",
+            "expression": {"operand": "boss_wall_thickness"},
+            "comparator": "GTE",
+            "threshold": 2.0,
+            "result_unit": "mm",
+        }],
+        [{
+            "criterion_id": "main_min",
+            "expression": {"operand": "adjacent_main_wall_thickness"},
+            "comparator": "GTE",
+            "threshold": 1.0,
+            "result_unit": "mm",
+        }],
+    ]
+    binding = replace(
+        base.rule_bindings[0],
+        expression=groups[0][0]["expression"],
+        operator=">=",
+        acceptance_criteria_json=groups,
+    )
+    plan = replace(
+        base,
+        rule_bindings=[binding],
+        rules={
+            binding.rule_id: replace(
+                base.rules[binding.rule_id], value=2.0, unit="mm"
+            )
+        },
+    )
+    measurements = [
+        _measurement(
+            "measurement.boss.wall",
+            "geometry.wall_thickness.boss",
+            1.0,
+            "region.screw_boss.1.wall",
+        )
+    ]
+    if measure_main:
+        measurements.append(
+            _measurement(
+                "measurement.main.wall",
+                "geometry.wall_thickness.main",
+                main_value,
+                "region.main_wall.1.wall",
+            )
+        )
+
+    evaluations, _ = EvaluationEngine().evaluate(measurements, plan)
+
+    assert evaluations[0].outcome == outcome
+    assert [
+        (item["group_index"], item["outcome"])
+        for item in evaluations[0].criterion_results
+    ] == [
+        (0, "fail"),
+        (1, "pass" if measure_main and main_value >= 1.0 else "fail" if measure_main else "indeterminate"),
+    ]
+
+
+def test_grouped_binding_round_trips_and_matches_schema():
+    base = _ratio_plan()
+    criterion = {
+        "criterion_id": "wall_ratio",
+        "expression": base.rule_bindings[0].expression,
+        "comparator": "BETWEEN",
+        "threshold": {"lower": 0.4, "upper": 0.6},
+        "result_unit": "ratio",
+    }
+    binding = replace(base.rule_bindings[0], acceptance_criteria_json=[[criterion]])
+    payload = binding.to_dict()
+
+    assert RuleBinding.from_dict(payload) == binding
+    schema_path = (
+        Path(__file__).resolve().parents[3]
+        / "tools"
+        / "dfm"
+        / "schemas"
+        / "rule_binding.schema.json"
+    )
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    jsonschema.Draft202012Validator(schema).validate(payload)
+
+
 def test_composite_rule_rejects_inconsistent_pinned_primary_threshold():
     base = _ratio_plan()
     criterion = {

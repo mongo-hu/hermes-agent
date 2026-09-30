@@ -74,6 +74,21 @@ def composite_payload():
     return rehash(value)
 
 
+def grouped_payload():
+    value = composite_payload()
+    value["schema_version"] = 4
+    rule = value["rules"][0]
+    bounded_group = deepcopy(rule["acceptance_criteria_json"])
+    alternate = deepcopy(bounded_group[0])
+    alternate.update(
+        criterion_id="wall_alternate_minimum",
+        threshold=3.0,
+    )
+    rule["acceptance_criteria_json"] = [bounded_group, [alternate]]
+    rule["severity_rationale"] = "Either released engineering range is acceptable."
+    return rehash(value)
+
+
 def rehash(value):
     value.pop("content_sha256", None)
     value["content_sha256"] = hashlib.sha256(
@@ -238,6 +253,33 @@ def test_schema_3_rule_hash_is_independent_of_the_failed_criterion():
         for actual in (1.0, 1.5, 2.5)
     }
     assert len(hashes) == 1
+
+
+@pytest.mark.parametrize(
+    "actual,outcome",
+    [(1.5, "pass"), (2.5, "fail"), (3.5, "pass")],
+)
+def test_schema_4_or_of_and_groups_install_compile_and_evaluate(actual, outcome):
+    value = grouped_payload()
+    store = LocalOntologyStore.from_package(value)
+    compiled = store.compile("injection", {"material": "ABS"}, operations())
+    binding = compiled.rule_bindings[0]
+
+    assert binding.acceptance_criteria_json == value["rules"][0]["acceptance_criteria_json"]
+    evaluations, _ = EvaluationEngine().evaluate([measurement(actual)], plan(compiled))
+
+    assert evaluations[0].outcome == outcome
+    assert {item["group_index"] for item in evaluations[0].criterion_results} == {0, 1}
+
+
+def test_schema_3_rejects_schema_4_grouped_criteria():
+    value = grouped_payload()
+    value["schema_version"] = 3
+
+    with pytest.raises(DFMError) as exc_info:
+        LocalOntologyStore.from_package(rehash(value))
+
+    assert exc_info.value.code == "ontology_snapshot_invalid"
 
 
 def test_schema_3_compiler_collects_operands_from_every_criterion():

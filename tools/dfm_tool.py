@@ -37,7 +37,7 @@ def _call(kind: str, args: dict, **context) -> str:
 
 DFM_PROJECT_SCHEMA = {
     "name": "dfm_project",
-    "description": "Manage durable DFM projects and query the installed workspace ontology. Use ontology_status as the sole source for the current ontology/rule publication; never determine the installed version from bundled source files. Create projects without inferring a process: process is confirmed only through confirm_fact after the user answers its clarification. Register STEP, Parasolid x_t, or drawing inputs. STEP registration may also produce an OCCT 3D preview when dfm-geometry is available. Use status before analysis to inspect format, the project's ontology identity, and process capabilities. confirm_fact may be called only after the user explicitly answers a clarification; never infer engineering facts from geometry.",
+    "description": "Manage durable DFM projects and the installed workspace ontology. Use sync_ontology when the user explicitly asks to pull or refresh the latest publication; use ontology_status to report the installed publication. Never determine the installed version from bundled source files or use shell commands for ontology synchronization. Create projects without inferring a process: process is confirmed only through confirm_fact after the user answers its clarification. Register STEP, Parasolid x_t, or drawing inputs. STEP registration may also produce an OCCT 3D preview when dfm-geometry is available. Use status before analysis to inspect format, the project's ontology identity, and process capabilities. confirm_fact may be called only after the user explicitly answers a clarification; never infer engineering facts from geometry.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -50,6 +50,7 @@ DFM_PROJECT_SCHEMA = {
                     "confirm_fact",
                     "list",
                     "ontology_status",
+                    "sync_ontology",
                 ],
             },
             "project_id": {"type": "string"},

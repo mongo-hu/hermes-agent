@@ -10,7 +10,11 @@ from typing import Any, Mapping
 
 from jsonschema import Draft202012Validator, FormatChecker
 
-from ..contracts import _expression_operand_aliases, _validate_acceptance_criteria
+from ..contracts import (
+    _acceptance_criteria_groups,
+    _expression_operand_aliases,
+    _validate_acceptance_criteria,
+)
 from ..errors import DFMError
 
 
@@ -40,7 +44,7 @@ def catalog_json_field(
 
 
 def expression_unit(expression: Mapping[str, Any], operand_units: Mapping[str, str | None]) -> str | None:
-    """Check Schema 3 expression units against the evaluation engine's arithmetic."""
+    """Check published expression units against the evaluation engine's arithmetic."""
     if "operand" in expression:
         return operand_units[expression["operand"]]
     if "constant" in expression:
@@ -250,7 +254,11 @@ def validate_catalog(payload: Mapping[str, Any], validate_source_policy) -> None
                     None if qualifier["aggregation"] == "count"
                     else catalog_json_field(concepts[relation["object_id"]], "properties", version)["canonical_unit"]
                 )
-            for criterion in catalog_json_field(rule, "acceptance_criteria", version):
+            groups = _acceptance_criteria_groups(
+                catalog_json_field(rule, "acceptance_criteria", version),
+                binding_id=rule["rule_id"],
+            )
+            for criterion in (item for group in groups for item in group):
                 try:
                     unit = expression_unit(criterion["expression"], operand_units)
                 except (KeyError, ValueError) as exc:
@@ -270,7 +278,7 @@ def validate_catalog(payload: Mapping[str, Any], validate_source_policy) -> None
             invalid("Expression references undeclared Operand aliases.", rule_id=rule["rule_id"])
         for condition in catalog_json_field(rule, "conditions", version):
             if payload["schema_version"] >= 3 and "geometric_id" in condition:
-                invalid("Schema 3 applicability conditions must reference Factors only.", rule_id=rule["rule_id"])
+                invalid("Schema 3+ applicability conditions must reference Factors only.", rule_id=rule["rule_id"])
             if "geometric_id" in condition:
                 geometric = operands[check].get(condition["geometric_id"])
                 if (

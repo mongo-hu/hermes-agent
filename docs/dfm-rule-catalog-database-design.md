@@ -289,9 +289,9 @@ AnalysisPlan 时结合 Operand 原文、Discovery 结果和经过认证的 Capab
 
 ### 4.4 `dfm_rule_version`
 
-一行保存一条完整、不可变的规则版本。一条 Rule Version 对一个 Check 定义一组必须同时成立的合格判定，
-不按技术指标拆成多条规则或新增 `rule_condition` 表；Agent 按 Check 获取候选规则，管理后台以完整决策行
-编辑和审核。
+一行保存一条完整、不可变的规则版本。一条 Rule Version 对一个 Check 定义一个或多个可替代的合格判定组：
+组内判定项全部 AND，组间 OR；不按技术指标拆成多条规则或新增 `rule_condition` 表。Agent 按 Check 获取
+候选规则，管理后台以完整决策行编辑和审核。
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -302,7 +302,7 @@ AnalysisPlan 时结合 Operand 原文、Discovery 结果和经过认证的 Capab
 | `owner_organization_id` | char(32) nullable | 空为系统规则，非空为企业创建规则；实际生效范围仍由 Rule Set 决定 |
 | `name` | varchar(180) | 规则名称 |
 | `conditions_json` | json | 规则适用条件数组，仅使用已确认的 Factor/Fact，全部 AND；不表示 Check 的合格判定 |
-| `acceptance_criteria_json` | json | 非空合格判定项数组，全部 AND；每项包含 `criterion_id/expression/comparator/threshold/result_unit` |
+| `acceptance_criteria_json` | json | 非空两层数组；外层为 OR 分组，内层为 AND 判定项；每项包含 `criterion_id/expression/comparator/threshold/result_unit` |
 | `severity` | varchar(20) nullable | 规则失效后果的严重度代码：`critical/high/medium/low`；Draft 可暂空，审核通过前必填；无 `warning` 默认值 |
 | `severity_rationale` | text nullable | 针对本规则及适用条件的定级理由；Draft 可暂空，审核通过前必填 |
 | `recommendation_template` | text nullable | 工程建议模板 |
@@ -325,14 +325,14 @@ AnalysisPlan 时结合 Operand 原文、Discovery 结果和经过认证的 Capab
 筛选适用的 Rule Version；若今后确需按孔径等几何量选择不同规格，须单独定义明确的几何适用条件契约，
 与合格判定项严格区分，不把它伪装成 Factor。
 
-`acceptance_criteria_json` 中每个 `criterion_id` 在一条 Rule Version 内唯一，用于结果和证据追踪；
+`acceptance_criteria_json` 中每个 `criterion_id` 在整条 Rule Version（跨所有分组）内唯一，用于结果和证据追踪；
 `expression` 可引用同一 Check 的多个 `USES_OPERAND.qualifiers.alias` 并使用受控算术运算；
 `comparator` 为 `GT/GTE/LT/LTE/EQ/NE/BETWEEN`；`threshold` 为常量、上下限或发布前已编译的
 查表结果；`result_unit` 是表达式结果和阈值的共同单位。一个 Operand 可以在多个判定项中复用，
-测量只做一次。判定项数组隐含 AND，不引入任意布尔脚本或 OR；确有 OR 业务需求时再扩展受控契约。
-所有判定项通过才算 Check 通过；任一有效判定项失败则 Check 失败，并继续记录其他项的结果。
-若尚无失败项但存在缺失或无效 Measurement，Check 为无法判定，不能当作通过，也不得因此
-换选另一条规则；已取得的测量与判定结果仍须保留。
+测量只做一次。契约只允许固定的两层 OR-of-AND，不允许任意嵌套布尔脚本。内层组的所有判定项通过，
+该组才通过；任一项失败则该组失败；无失败但存在缺失或无效 Measurement 时该组无法判定。
+任一组通过则 Check 通过；所有组都失败才算 Check 失败；没有组通过且至少一组无法判定时，Check
+为无法判定。不得因某一组失败或无法判定而换选另一条 Rule Version；所有已取得的测量与判定结果均须保留。
 `conditions_json` 和 `acceptance_criteria_json` 均属于规则语义内容，纳入 `content_sha256`；
 改变适用条件、任一判定表达式或阈值时，必须创建新的 Rule Version。
 
@@ -388,26 +388,28 @@ Rule Version 适用条件与合格判定示例（省略了需单独审核的分�
     {"factor_id": "factor.surface_texture", "operator": "IN", "value": ["MT11010", "MT11020"]}
   ],
   "acceptance_criteria_json": [
-    {
-      "criterion_id": "boss_wall_min",
-      "expression": {"operand": "boss_wall_thickness"},
-      "comparator": "GTE",
-      "threshold": 2.0,
-      "result_unit": "mm"
-    },
-    {
-      "criterion_id": "boss_to_main_wall_ratio_min",
-      "expression": {
-        "op": "divide",
-        "args": [
-          {"operand": "boss_wall_thickness"},
-          {"operand": "adjacent_main_wall_thickness"}
-        ]
+    [
+      {
+        "criterion_id": "boss_wall_min",
+        "expression": {"operand": "boss_wall_thickness"},
+        "comparator": "GTE",
+        "threshold": 2.0,
+        "result_unit": "mm"
       },
-      "comparator": "GT",
-      "threshold": 0.4,
-      "result_unit": "ratio"
-    }
+      {
+        "criterion_id": "boss_to_main_wall_ratio_min",
+        "expression": {
+          "op": "divide",
+          "args": [
+            {"operand": "boss_wall_thickness"},
+            {"operand": "adjacent_main_wall_thickness"}
+          ]
+        },
+        "comparator": "GT",
+        "threshold": 0.4,
+        "result_unit": "ratio"
+      }
+    ]
   ]
 }
 ```
@@ -500,7 +502,7 @@ Measurement/Feature/Region 证据。若工程要求“等于某标称值”，�
 | `ontology_version` | varchar(32) | 本体版本 |
 | `rule_set_id` | char(32) FK | 已展开的规则集 |
 | `scope_type/scope_key` | varchar | 运行作用域 |
-| `schema_version` | integer | Snapshot Schema 版本；当前实现为 `2`，增加规则定级和复合合格判定契约后的新发布版本升级为 `3` |
+| `schema_version` | integer | Snapshot Schema 版本；`2` 为历史单判定，`3` 为一维全 AND 复合判定，`4` 为两层 OR-of-AND 复合判定；新发布使用 `4` |
 | `artifact_uri` | text | JSON/SQLite 发布物位置 |
 | `content_sha256` | char(64) | 发布物哈希 |
 | `status` | varchar(20) | `building/released/revoked` |
@@ -511,7 +513,7 @@ Measurement/Feature/Region 证据。若工程要求“等于某标称值”，�
 - 所有关系引用存在且 Concept Type 合法；
 - Check 的每个 Operand 能通过 Geometric 的运行绑定在目标 OCCT Capability 中解析出唯一 Metric/Quantity；
 - `conditions_json` 只用于 Factor 适用性筛选，不含 Geometric 合格判定；
-- `acceptance_criteria_json` 非空，`criterion_id` 不重复；每项表达式只使用本 Check 声明的
+- `acceptance_criteria_json` 是非空外层 OR 数组，每个内层 AND 数组也非空，`criterion_id` 在整条规则内不重复；每项表达式只使用本 Check 声明的
   Operand Alias 和白名单算术运算，比较符属于受控集合；
 - Factor 条件满足其数据 Schema 或枚举选项；
 - Factor 的 `source_policy` 只使用受控来源码，自动采信与强制确认来源均为允许来源且互不重叠；
@@ -541,11 +543,12 @@ Agent 不复制管理库全部表，只安装一次发布后展开的运行投�
 `USES_OPERAND.qualifiers.operand_text` 中保存比较对象原文；Region 是 Discovery/Measurement
 运行数据，不是本体概念。
 
-Schema 3 发布快照与管理库对 JSON 字段采用相同名称，值仍是 JSON 对象、数组或标量，
+Schema 3/4 发布快照与管理库对 JSON 字段采用相同名称，值仍是 JSON 对象、数组或标量，
 不是二次序列化的字符串：Concept 使用 `aliases_json/data_schema_json/properties_json`，
 Relation 使用 `qualifiers_json`，FactorOption 使用 `value_json`，Rule Version 使用
 `conditions_json/acceptance_criteria_json`。Agent 的 Check Context 和 Plan 规则绑定也沿用
-这些名称；Schema 2 历史快照继续按旧字段读取，不作为新发布物的命名范本。
+这些名称；Schema 4 将 `acceptance_criteria_json` 固定为两层 OR-of-AND 数组。Schema 2/3 历史快照
+继续按旧结构读取，不作为新发布物的命名范本。
 
 ### 5.2 `ontology_concept`
 
@@ -569,17 +572,18 @@ Factor Concept 的 `properties_json.source_policy` 随快照发布，供 Agent �
 
 ### 5.5 `rule_version`
 
-当前 Rule Set 展开后的候选规则版本。Schema 3 目标流程中，Agent 先按 Check 和已确认的 Factor
+当前 Rule Set 展开后的候选规则版本。Schema 4 目标流程中，Agent 先按 Check 和已确认的 Factor
 选出适用 Rule Version，Plan 固定该版本及完整的发布态 `acceptance_criteria_json`，再编译其引用的
 Geometric Operand 并执行 Measurement。测量后逐项计算合格判定；不得将判定项当作规则选择条件，
 也不得因第一项不合格而跳过后续判定或选择默认规则。
 
-一个 Check 实例对应一个综合 Evaluation：所有项通过才 `pass`，已测项有失败则 `fail`，
-无失败但存在缺失或无效测量则为无法判定，不能默认为 `pass`。结果保存每个 `criterion_id` 的
+一个 Check 实例对应一个综合 Evaluation：任一 AND 组全部通过即 `pass`；所有组各自至少有一项失败
+才 `fail`；没有组通过且至少一组因缺失或无效测量无法判定时，整体为无法判定，不能默认为 `pass`。
+结果保存每个 `criterion_id` 的分组序号、
 表达式值、单位、比较符、阈值、单项状态，以及原始 Measurement 和 Feature/Region 证据引用；
 失败 Check 只生成一个业务问题，不按判定项重复计数。
 
-Schema 3 发布 JSON 直接使用表字段名 `acceptance_criteria_json`、`conditions_json`
+Schema 3/4 发布 JSON 直接使用表字段名 `acceptance_criteria_json`、`conditions_json`
 和 `severity_rationale`；不再发布旧的 `expression/comparator/threshold/result_unit` 单项字段。
 Agent 本地投影沿用现有 `rule_version.severity`，增加 `severity_rationale`，
 不新增本地口径表。Plan 固定所选规则及其定级字段；
@@ -587,7 +591,7 @@ Agent 本地投影沿用现有 `rule_version.severity`，增加 `severity_ration
 HTML 只做确定性汇总：`critical/high → 高`、`medium → 中`、`low → 低`。
 Schema 2 历史快照中的 `warning` 或缺失严重度只可作为“历史未定级”展示，
 不得默认为 `medium`，也不得在运行时借用 Check 的 `default_severity` 补齐。
-Schema 2 的单表达式字段和 Geometric 规则选择条件仅供历史快照兼容执行；Schema 3 新发布物
+Schema 2 的单表达式字段和 Geometric 规则选择条件仅供历史快照兼容执行；Schema 4 新发布物
 使用 `acceptance_criteria_json`，不再把技术指标合格阈值发布到 `conditions_json`。
 
 本地库不需要 `rule_set_item`、审批、用户或知识文档表；这些只属于管理控制层。
@@ -630,7 +634,7 @@ AI 不直接查询任意 SQL，也不靠表名猜测含义。
 
 ```text
 新增/生成 Draft Rule
-→ 校验 Factor 适用条件、全部判定项、Operand 和单位
+→ 校验 Factor 适用条件、OR/AND 分组、全部判定项、Operand 和单位
 → 依据经工程审核的分级口径填写严重度及定级理由
 → 工程师审核阈值、适用条件和定级依据
 → 加入 Rule Set
@@ -639,8 +643,8 @@ AI 不直接查询任意 SQL，也不靠表名猜测含义。
 → 新 Plan 自动使用新 RuleBinding
 ```
 
-在 Schema 3 通用编译和复合判定能力落地后，新增遵循该契约的规则无需再改 Agent 业务代码；
-Agent 已具备 Schema 3 通用编译和复合判定能力；Mold 发布器和实际规则数据仍需迁移。
+在 Schema 4 通用编译和 OR-of-AND 判定能力落地后，新增遵循该契约的规则无需再改 Agent 业务代码；
+Agent 同时保留 Schema 2/3 历史兼容。
 
 ### 7.2 新增特征和 Check
 
@@ -652,7 +656,7 @@ OCCT 新增 Recognizer/Region/Metric Capability
 → Agent 通用编译器生成 Operation + RuleBinding
 ```
 
-待 Schema 3 复合判定契约落地后，只要使用已支持的数据契约、聚合方式、表达式 DSL 和证据模式，
+Schema 4 复合判定契约落地后，只要使用已支持的数据契约、聚合方式、表达式 DSL 和证据模式，
 新增特征和 Check 不需要逐条改 Agent 业务代码。
 
 以下情况仍需改 Agent 通用基础设施：
@@ -673,7 +677,7 @@ OCCT 新增 Recognizer/Region/Metric Capability
 → Agent 根据 conditions_json 中的 Factor 适用条件选择适用的 Rule Version（不要求唯一）
 → 按 APPLIES_TO_FEATURE + USES_OPERAND.operand_text 编译所选规则需要的 AnalysisPlan
 → OCCT 测量所选规则全部判定项引用的 Geometric Operand
-→ 逐项执行发布态 acceptance_criteria_json，全部通过才判 Check 通过
+→ 按组执行发布态 acceptance_criteria_json：组内 AND、组间 OR
 → 保留各判定项结果及 Measurement/Feature/Region 证据，形成一个综合 Evaluation
 → 失败时从选中 Rule Version 复制严重度和定级理由，生成一条业务问题
 → AI读取 Check Context + Evaluation 解释原因和建议
@@ -687,7 +691,7 @@ Calculator 或算法版本变化才使客观 Measurement 缓存失效。
 
 已落地：
 
-- `ontology_snapshot.schema.json`：Agent 同时校验 Snapshot Schema 2/3，Schema 3 使用复合判定字段；
+- `ontology_snapshot.schema.json`：Agent 同时校验 Snapshot Schema 2/3/4，Schema 4 使用两层 OR-of-AND 复合判定字段；
 - `ontology_snapshot_v2.json`：本体 `ontology.injection.default@1.3.0`、规则集 `injection.default@1.2.0` 的示例快照；
 - `LocalOntologyStore`：JSON 发布包校验、SQLite 原子安装、只读查询；
 - Check Context：按 Check 输出概念、关系、选项和规则；
@@ -707,8 +711,8 @@ Calculator 或算法版本变化才使客观 Measurement 缓存失效。
 4. OCCT Capability 与本体发布做 CI 交叉校验；
 5. 增加螺钉柱壁厚比例等多 Operand Golden Check 和专用复合证据 Renderer。
 
-分级与复合判定设计落地仍需跨仓迁移。**Agent 已实现 Schema 3 读取、Plan 编译、复合 Evaluation、
-逐项结果与严重度理由传递，并保留 Schema 2 兼容；Mold 当前表、导入器和发布器尚未迁移。**
+分级与复合判定设计已按版本化契约跨仓落地。**Agent 保留 Schema 2/3 读取，并实现 Schema 4
+OR-of-AND 读取、Plan 编译、复合 Evaluation、逐项结果与严重度理由传递；Mold 新发布物使用 Schema 4。**
 Mold 的 Rule Version 需沿用现有 `severity`，新增
 `severity_rationale` 和 `acceptance_criteria_json`；现有 `expression_json/comparator/threshold_json/result_unit`
 只作为迁移来源，旧单项规则可转换为一个判定项，全部新发布链路改用复合判定字段。
@@ -719,9 +723,9 @@ Mold 的 Rule Version 需沿用现有 `severity`，新增
 旧字段在历史快照兼容期保留，待数据、发布器和 Agent 完成迁移后再退役。
 
 同时，工程师须确认分级口径，移除模型及导入器的 `warning` 默认值，并在审批/发布及
-Snapshot Schema 3 中校验等级、理由和复合判定；逐条评审旧规则，创建新的 Rule Version、
+Snapshot Schema 4 中校验等级、理由和复合判定；逐条评审旧规则，创建新的 Rule Version、
 Rule Set 和 Publication。Mold 的模型、序列化器、导入器、发布器和 Snapshot Schema 仍需相应修改；
-OCCT 仍只负责返回客观 Measurement。Agent 对 Schema 3 严格校验，已发布 `warning` 行及旧快照
+OCCT 仍只负责返回客观 Measurement。Agent 对 Schema 4 严格校验，已发布 `warning` 行及旧快照
 不得原地改写，
 历史分析继续按原快照复现；全部迁移完成前，报告保留“历史未定级”计数。
 数据库级 `CHECK` 约束须在历史 `warning` 版本退出可发布状态或建立明确的历史豁免后再启用，
