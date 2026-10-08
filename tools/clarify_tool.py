@@ -57,6 +57,9 @@ def clarify_tool(
     question: str,
     choices: Optional[List[str]] = None,
     callback: Optional[Callable] = None,
+    dfm_project_id: Optional[str] = None,
+    dfm_fact_name: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> str:
     """
     Ask the user a question, optionally with multiple-choice options.
@@ -68,6 +71,9 @@ def clarify_tool(
         callback: Platform-provided function that handles the actual UI
                   interaction. Signature: callback(question, choices) -> str.
                   Injected by the agent runner (cli.py / gateway).
+        dfm_project_id: Optional project whose open factor is being answered.
+        dfm_fact_name: Canonical open DFM factor; startup options come from
+                       the DFM service and rule-factor options from ontology.
 
     Returns:
         JSON string with the user's response.
@@ -77,7 +83,56 @@ def clarify_tool(
 
     question = question.strip()
 
-    # Validate and trim choices
+    dfm_service = None
+    if not dfm_project_id and not dfm_fact_name and session_id:
+        from tools.dfm.errors import DFMError
+        from tools.dfm.service import get_dfm_service
+        from tools.dfm_tool import active_dfm_project_id
+
+        active_project_id = active_dfm_project_id(session_id)
+        if active_project_id:
+            try:
+                active_project = get_dfm_service().project(
+                    "status", project_id=active_project_id
+                )["project"]
+            except DFMError:
+                active_project = None
+            if active_project is not None:
+                open_facts = active_project["open_clarifications"]
+                if open_facts:
+                    # A DFM answer must be attributed to a specific project
+                    # and factor before any UI question is shown.
+                    return json.dumps({
+                        "error": "DFM clarification requires dfm_project_id and dfm_fact_name.",
+                        "code": "dfm_fact_binding_required",
+                        "dfm_project_id": active_project_id,
+                        "dfm_fact_name": open_facts[0]["clarification_id"].removeprefix("clarification_"),
+                    }, ensure_ascii=False)
+    if dfm_project_id or dfm_fact_name:
+        if not dfm_project_id or not dfm_fact_name:
+            return json.dumps({"error": "Both dfm_project_id and dfm_fact_name are required."})
+        from tools.dfm.errors import DFMError
+        from tools.dfm.service import get_dfm_service
+
+        try:
+            dfm_service = get_dfm_service()
+            project = dfm_service.project("status", project_id=dfm_project_id)["project"]
+            fact_name = dfm_service._canonical_fact_name(dfm_fact_name)
+            pending = next((
+                item for item in project["open_clarifications"]
+                if item.get("clarification_id") == f"clarification_{fact_name}"
+            ), None)
+            if pending is None:
+                return json.dumps({"error": "This DFM fact is not awaiting a user answer."})
+            question = pending["question"]
+            choices = list(dfm_service.clarification_choices(
+                project.get("process") or dfm_service.config.default_process,
+                fact_name,
+            ))
+        except DFMError as exc:
+            return json.dumps(exc.to_dict(), ensure_ascii=False)
+    # Generic clarifications retain their existing four-choice limit. DFM
+    # choices come from the published ontology and must not be truncated.
     if choices is not None:
         if not isinstance(choices, list):
             return tool_error("choices must be a list of strings.")
@@ -87,7 +142,7 @@ def clarify_tool(
         # so the CLI panel, Discord buttons, and Telegram list all render clean
         # text and the resolved answer is never a raw Python dict repr.
         choices = [s for s in (_flatten_choice(c) for c in choices) if s]
-        if len(choices) > MAX_CHOICES:
+        if dfm_service is None and len(choices) > MAX_CHOICES:
             choices = choices[:MAX_CHOICES]
         if not choices:
             choices = None  # empty list → open-ended
@@ -106,10 +161,30 @@ def clarify_tool(
             ensure_ascii=False,
         )
 
+    if dfm_service is not None:
+        if not str(user_response).strip():
+            return json.dumps({"error": "The user did not answer the DFM fact."})
+        try:
+            confirmed = dfm_service.project(
+                "confirm_fact",
+                project_id=dfm_project_id,
+                fact_name=fact_name,
+                fact_value=str(user_response).strip(),
+            )
+        except DFMError as exc:
+            return json.dumps(exc.to_dict(), ensure_ascii=False)
+    else:
+        confirmed = None
+
     return json.dumps({
         "question": question,
         "choices_offered": choices,
         "user_response": str(user_response).strip(),
+        **({"dfm_fact": confirmed["fact"]} if confirmed is not None else {}),
+        **(
+            {"next_action": confirmed["next_action"]}
+            if confirmed is not None and "next_action" in confirmed else {}
+        ),
     }, ensure_ascii=False)
 
 
@@ -144,7 +219,12 @@ CLARIFY_SCHEMA = {
         "- A decision has meaningful trade-offs the user should weigh in on\n\n"
         "Do NOT use this tool for simple yes/no confirmation of dangerous "
         "commands (the terminal tool handles that). Prefer making a reasonable "
-        "default choice yourself when the decision is low-stakes."
+        "default choice yourself when the decision is low-stakes. For a DFM "
+        "open clarification, provide dfm_project_id and dfm_fact_name and omit "
+        "choices. An unbound question during an active DFM clarification is "
+        "rejected without showing it to the user. The tool fetches every "
+        "published option and records the user's answer without a separate "
+        "confirmation call."
     ),
     "parameters": {
         "type": "object",
@@ -169,6 +249,14 @@ CLARIFY_SCHEMA = {
                     "entirely ONLY for a genuinely open-ended free-text question."
                 ),
             },
+            "dfm_project_id": {
+                "type": "string",
+                "description": "DFM project ID when answering a DFM open clarification.",
+            },
+            "dfm_fact_name": {
+                "type": "string",
+                "description": "Canonical DFM factor name from the open clarification.",
+            },
         },
         "required": ["question"],
     },
@@ -185,7 +273,10 @@ registry.register(
     handler=lambda args, **kw: clarify_tool(
         question=args.get("question", ""),
         choices=args.get("choices"),
-        callback=kw.get("callback")),
+        callback=kw.get("callback"),
+        dfm_project_id=args.get("dfm_project_id"),
+        dfm_fact_name=args.get("dfm_fact_name"),
+        session_id=kw.get("session_id")),
     check_fn=check_clarify_requirements,
     emoji="❓",
 )

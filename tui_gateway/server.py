@@ -8790,14 +8790,83 @@ def _dfm_report_notification_is_current(evt: dict) -> bool:
         return False
 
 
+def _dfm_report_complete_message(evt: dict) -> str:
+    """Present a finished report from persisted run state, without another LLM turn."""
+    import json
+    from pathlib import Path
+
+    from tools.dfm.service import get_dfm_service
+
+    project_id = str(evt["project_id"])
+    run_id = str(evt["run_id"])
+    result = get_dfm_service().analysis("result", project_id=project_id, run_id=run_id)
+    artifacts = result["run"]["artifacts"]
+    html_artifact = next(item for item in artifacts if item["kind"] == "report_html")
+    report_artifact = next(item for item in artifacts if item["kind"] == "report_json")
+    html_path = Path(html_artifact["path"])
+    report_path = Path(report_artifact["path"])
+    if not html_path.is_file() or not report_path.is_file():
+        raise ValueError("Completed DFM report artifacts are missing")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    if report.get("run_id") != run_id:
+        raise ValueError("Completed DFM report belongs to another run")
+    issue_count = len(report.get("issues", []))
+    return (
+        f"DFM 分析完成：本次规则评估发现 {issue_count} 项未通过。\n\n"
+        f"HTML 报告：`{html_path}`\n\n"
+        f"项目：`{project_id}`；运行：`{run_id}`。"
+    )
+
+
+def _publish_dfm_report_completion(sid: str, session: dict, evt: dict) -> None:
+    try:
+        message = _dfm_report_complete_message(evt)
+    except Exception:
+        logger.exception("Unable to present completed DFM report")
+        message = (
+            "DFM 分析已完成，但报告文件未能从本次运行中读取。"
+            f"请检查项目 `{evt.get('project_id')}` 的运行 `{evt.get('run_id')}`。"
+        )
+    notification = (
+        f"[DFM 后台完成通知] 项目 {evt.get('project_id')} 的运行 "
+        f"{evt.get('run_id')} 已生成报告。"
+    )
+    with session["history_lock"]:
+        history = session.setdefault("history", [])
+        # This completion arrives between turns. Keep the stored conversation
+        # alternating without sending another unconstrained model prompt.
+        include_notification = not history or history[-1].get("role") != "user"
+        if include_notification:
+            history.append({"role": "user", "content": notification})
+        history.append({"role": "assistant", "content": message})
+        session["history_version"] = int(session.get("history_version", 0)) + 1
+    try:
+        _ensure_session_db_row(session)
+        with _session_db(session) as db:
+            if db is not None:
+                if include_notification:
+                    db.append_message(
+                        session_id=session["session_key"], role="user", content=notification
+                    )
+                db.append_message(
+                    session_id=session["session_key"], role="assistant", content=message
+                )
+    except Exception:
+        logger.exception("Unable to persist completed DFM report message")
+    _emit("message.start", sid)
+    _emit("message.delta", sid, {"text": message})
+    _emit("message.complete", sid, {"text": message, "status": "complete"})
+
+
 def _notification_poller_loop(
     stop_event: threading.Event, sid: str, session: dict
 ) -> None:
     """Poll completion_queue and dispatch notifications autonomously.
 
     Runs in a daemon thread started by _init_session(). Emits a
-    status.update (kind=process) for user visibility, then chains an
-    agent turn via _run_prompt_submit if the session is idle.
+    status.update (kind=process) for user visibility. Report completion
+    is presented from persisted artifacts; events that still need Agent
+    work chain a turn via _run_prompt_submit when the session is idle.
 
     NOTE: The completion_queue is global (one per process). If multiple
     TUI sessions coexist, whichever poller wakes first grabs the event,
@@ -8857,7 +8926,11 @@ def _notification_poller_loop(
         if not _dfm_report_notification_is_current(evt):
             continue
 
-        text = format_process_notification(evt)
+        text = (
+            "DFM HTML 报告已生成。"
+            if evt.get("type") == "dfm_report_complete"
+            else format_process_notification(evt)
+        )
         if not text:
             continue
 
@@ -8882,6 +8955,14 @@ def _notification_poller_loop(
             # non-empty, so without a sleep this loop spins at full speed
             # (100% CPU, GIL churn) for as long as the session stays busy.
             time.sleep(0.25)
+            continue
+
+        if evt.get("type") == "dfm_report_complete":
+            try:
+                _publish_dfm_report_completion(sid, session, evt)
+            finally:
+                with session["history_lock"]:
+                    session["running"] = False
             continue
 
         rid = f"__notif__{int(time.time() * 1000)}"
@@ -8925,7 +9006,11 @@ def _notification_poller_loop(
             continue
         if not _dfm_report_notification_is_current(evt):
             continue
-        text = format_process_notification(evt)
+        text = (
+            "DFM HTML 报告已生成。"
+            if evt.get("type") == "dfm_report_complete"
+            else format_process_notification(evt)
+        )
         if not text:
             continue
 
@@ -8939,6 +9024,14 @@ def _notification_poller_loop(
                 process_registry.completion_queue.put(evt)
                 break
             session["running"] = True
+
+        if evt.get("type") == "dfm_report_complete":
+            try:
+                _publish_dfm_report_completion(sid, session, evt)
+            finally:
+                with session["history_lock"]:
+                    session["running"] = False
+            continue
 
         rid = f"__notif__{int(time.time() * 1000)}"
         try:

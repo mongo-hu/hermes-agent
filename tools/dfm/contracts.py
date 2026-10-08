@@ -433,6 +433,8 @@ class EffectiveRule:
     version: str = "1"
     severity: str = "unclassified"
     severity_rationale: str | None = None
+    name: str | None = None
+    recommendation_template: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -1276,6 +1278,8 @@ class WorkerEvent:
     message: str | None = None
     external_job_id: str | None = None
     contract_version: str = ""
+    measured_feature_count: int | None = None
+    unavailable_features: list[dict[str, str]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -1331,6 +1335,27 @@ class WorkerEvent:
                 "worker_event_invalid",
                 "DFM worker progress details are invalid.",
             )
+        if event.measured_feature_count is not None and (
+            event.type != "progress"
+            or isinstance(event.measured_feature_count, bool)
+            or not isinstance(event.measured_feature_count, int)
+            or event.measured_feature_count < 0
+        ):
+            raise DFMError("worker_event_invalid", "DFM measured feature count is invalid.")
+        if event.unavailable_features is not None and (
+            event.type != "progress"
+            or not isinstance(event.unavailable_features, list)
+            or any(
+                not isinstance(item, dict)
+                or not all(
+                    isinstance(item.get(key), str) and item[key]
+                    for key in ("feature_id", "quantity_id", "status", "reason")
+                )
+                or item["status"] not in {"not_supported", "not_applicable"}
+                for item in event.unavailable_features
+            )
+        ):
+            raise DFMError("worker_event_invalid", "DFM unavailable features are invalid.")
         return event
 
 

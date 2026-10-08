@@ -38,7 +38,7 @@ import {
   resolveTriangleRefPositions,
   type TopologyFace
 } from './dfm-viewer-geometry'
-import { classifyViewerIssueType, summarizeViewerIssueTypes, type ViewerIssueTypeCount } from './dfm-viewer-issues'
+import { classifyViewerIssueType, formatViewerValue, summarizeViewerIssueTypes, type ViewerIssueTypeCount } from './dfm-viewer-issues'
 
 interface ViewerIssue {
   actual: unknown
@@ -457,14 +457,6 @@ function ModelCanvas({
   return <div className="h-full min-h-0 w-full" ref={hostRef} />
 }
 
-function formatValue(value: unknown): string {
-  if (typeof value === 'number') {
-    return Number.isInteger(value) ? String(value) : value.toFixed(3)
-  }
-
-  return String(value ?? '—')
-}
-
 const FEATURE_LABELS: Record<string, string> = {
   screw_boss: '螺钉柱',
   blend: '圆角链',
@@ -525,7 +517,7 @@ function formatFeatureParameters(parameters: Record<string, unknown>): string {
         ([key, value]) =>
           PARAMETER_LABELS[key] +
           ' ' +
-          formatValue(value) +
+          formatViewerValue(value) +
           (key.endsWith('_mm') ? ' mm' : key.endsWith('_deg') ? '°' : '')
       )
       .join(' · ') || '无尺寸参数'
@@ -820,7 +812,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
                           <p className="mt-1 text-[11px] text-red-200">{issueTypeLabel}</p>
                           <p className="mt-0.5 text-[10px] text-slate-500">{issue.check_id || issue.metric_id}</p>
                           <p className="mt-1.5 text-[11px] text-slate-300">
-                            实际 {formatValue(issue.actual)} {issue.operator} 目标 {formatValue(issue.expected)}
+                            未满足：实际 {formatViewerValue(issue.actual)} {issue.operator === 'between' ? '∈' : issue.operator} 目标 {formatViewerValue(issue.expected)}
                           </p>
                           <p className="mt-1 break-words text-[10px] text-slate-500">{refs}</p>
                         </div>

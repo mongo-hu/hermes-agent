@@ -49,6 +49,7 @@ from .processes.occt_injection import (
     preview_operations,
 )
 from .reporting.html import render_html_report
+from .reporting.html.template import ContractError, normalize_editorial_content
 from .runtime.jobs import JobManager
 from .viewer import materialize_preview_manifest
 
@@ -94,7 +95,12 @@ class DFMService:
         "hole_diameter",
         "hole_depth",
     )
-    _DISCOVERY_FACT_NAMES = frozenset({"process", "model_units", "pull_dir"})
+    _STARTUP_FACTS = (
+        ("process", "请选择 DFM 分析工艺。", ()),
+        ("model_units", "请确认模型单位长度。", ("mm", "inch")),
+        ("pull_dir", "请确认主出模方向。", ("+X", "-X", "+Y", "-Y", "+Z", "-Z")),
+    )
+    _DISCOVERY_FACT_NAMES = frozenset(name for name, _, _ in _STARTUP_FACTS)
     _PROCESS_ALIASES = {
         "injection": "injection",
         "injection_molding": "injection",
@@ -1558,6 +1564,27 @@ class DFMService:
             manifest.input_mode == "parasolid" and self.config.nx_endpoint
         ):
             return []
+        confirmed = {
+            self._canonical_fact_name(fact.name): fact.value
+            for fact in manifest.facts
+            if fact.status == "confirmed"
+        }
+        existing = {item.clarification_id: item for item in manifest.clarifications}
+        if phase == "discovery":
+            # These three project prerequisites are independent of the
+            # published process-specific ontology and precede recognition.
+            pending = []
+            for name, question, _choices in self._STARTUP_FACTS:
+                if name in confirmed:
+                    continue
+                clarification_id = f"clarification_{name}"
+                item = existing.get(clarification_id)
+                pending.append(
+                    replace(item, question=question, status="open", answer=None)
+                    if item is not None
+                    else ClarificationRecord(clarification_id, question, "open")
+                )
+            return pending
         adapter = self.process_registry.get(
             process or manifest.process or self.config.default_process
         )
@@ -1577,27 +1604,11 @@ class DFMService:
             applicable_check_ids = self._applicable_analysis_check_ids(
                 manifest, snapshot
             )
-        confirmed = {
-            self._canonical_fact_name(fact.name)
-            for fact in manifest.facts
-            if fact.status == "confirmed"
-        }
-        process_is_confirmed = "process" in confirmed
-        existing = {item.clarification_id: item for item in manifest.clarifications}
         result = []
         for requirement in requirements:
             name = self._canonical_fact_name(requirement.name)
             required_in_phase = requirement.phase == phase
-            if phase == "discovery":
-                # The process chooses the adapter and therefore the remaining
-                # startup contract. Ask it first instead of exposing facts from
-                # the default adapter as though they applied to every process.
-                required_in_phase = (
-                    name == "process"
-                    if not process_is_confirmed
-                    else name in self._DISCOVERY_FACT_NAMES
-                )
-            elif phase == "analysis":
+            if phase == "analysis":
                 required_in_phase = (
                     name not in self._DISCOVERY_FACT_NAMES
                     and requirement.phase == "analysis"
@@ -1610,16 +1621,32 @@ class DFMService:
                 )
             if phase != "all" and not required_in_phase:
                 continue
-            question = requirement.question
-            if name in confirmed:
+            choices = self.ontology_store.fact_enum_values(adapter.key, name)
+            if name in confirmed and (not choices or confirmed[name] in choices):
                 continue
+            question = requirement.question
             clarification_id = f"clarification_{name}"
             item = existing.get(clarification_id)
-            if item is None or item.status == "open":
-                result.append(
-                    item or ClarificationRecord(clarification_id, question, "open")
-                )
+            result.append(
+                replace(item, question=question, status="open", answer=None)
+                if item is not None
+                else ClarificationRecord(clarification_id, question, "open")
+            )
         return result
+
+    def clarification_choices(self, process: str, fact_name: str) -> tuple[Any, ...]:
+        """User-facing options for one pending factor."""
+
+        name = self._canonical_fact_name(fact_name)
+        if name == "process":
+            return tuple(
+                getattr(self.process_registry.get(key), "display_name_zh", key)
+                for key in self.process_registry.keys()
+            )
+        for startup_name, _question, options in self._STARTUP_FACTS:
+            if name == startup_name:
+                return options
+        return self.ontology_store.fact_enum_values(process, name)
 
     def _reconcile_clarifications(self, project_id: str) -> ProjectManifest:
         """Close old open clarification rows when an alias fact already exists."""
@@ -1723,7 +1750,24 @@ class DFMService:
 
         if not process_plan.rule_bindings:
             return process_plan
-        targets = self.discovery.analysis_targets(manifest, snapshot)
+        # Published targets may include checks excluded by this run's facts.
+        metrics_by_check: dict[str, set[str]] = {}
+        for binding in process_plan.rule_bindings:
+            metrics_by_check.setdefault(binding.check_id, set()).update(
+                operand.metric_id for operand in binding.measurement_operands()
+            )
+        targets = []
+        for target in self.discovery.analysis_targets(manifest, snapshot):
+            metric_id = target["metric_id"]
+            checks = set(target.get("check_ids", [])) | {
+                key[0] for key in target.get("operand_anchors", {})
+            }
+            if any(
+                metric_id in metrics
+                and (not checks or check_id in checks or not check_id)
+                for check_id, metrics in metrics_by_check.items()
+            ):
+                targets.append(target)
         templates = {
             metric_id: operation
             for operation in process_plan.operations
@@ -1990,7 +2034,7 @@ class DFMService:
                     "project_id": project_id,
                     "ready": False,
                     "next_action": "report_context",
-                    "run": self._run_dict(project_id, run),
+                    "run": self._report_run_dict(run),
                 }
             time.sleep(min(0.25, remaining))
 
@@ -2006,7 +2050,7 @@ class DFMService:
                     "ready": False,
                     "complete": True,
                     "next_action": "result",
-                    "run": self._run_dict(project_id, run),
+                    "run": self._report_run_dict(run),
                 }
 
         if run.status in {
@@ -2020,7 +2064,7 @@ class DFMService:
                 "ready": False,
                 "complete": True,
                 "next_action": "status",
-                "run": self._run_dict(project_id, run),
+                "run": self._report_run_dict(run),
             }
 
         if run.status is not RunStatus.REPORTING:
@@ -2060,8 +2104,9 @@ class DFMService:
             "ready": True,
             "complete": False,
             "next_action": "render_html",
+            "required_issue_ids": self._report_issue_ids(rows[0]),
             "runtime": rows[0],
-            "run": self._run_dict(project_id, run),
+            "run": self._report_run_dict(run),
         }
 
     def _render_html(
@@ -2089,7 +2134,7 @@ class DFMService:
             return {
                 "ok": True,
                 "project_id": project_id,
-                "run": self._run_dict(project_id, run),
+                "run": self._report_run_dict(run),
                 "report": {
                     **existing_html.to_dict(),
                     "path": str(project_dir / existing_html.relative_path),
@@ -2123,6 +2168,38 @@ class DFMService:
         output_dir = project_dir / "runs" / run_id / "artifacts"
         llm_path = output_dir / "llm_content.jsonl"
         html_path = output_dir / "report.html"
+        runtime_rows = self._read_ndjson(project_dir / runtime_artifact.relative_path)
+        if len(runtime_rows) != 1 or not isinstance(runtime_rows[0], dict):
+            raise DFMError(
+                "report_input_invalid",
+                "The HTML report Runtime must contain exactly one JSON object.",
+            )
+        required_ids = self._report_issue_ids(runtime_rows[0])
+        submitted_issues = llm_content.get("issues")
+        if not isinstance(submitted_issues, list) or any(
+            not isinstance(issue, dict) or not isinstance(issue.get("issue_id"), str)
+            for issue in submitted_issues
+        ):
+            raise DFMError(
+                "report_content_invalid",
+                "llm_content.issues must contain issue_id objects.",
+                {"required_issue_ids": required_ids},
+            )
+        submitted_ids = [issue["issue_id"] for issue in submitted_issues]
+        if len(submitted_ids) != len(set(submitted_ids)) or set(submitted_ids) != set(required_ids):
+            raise DFMError(
+                "report_content_invalid",
+                "llm_content issue IDs must exactly match report_context.required_issue_ids.",
+                {
+                    "required_issue_ids": required_ids,
+                    "missing_issue_ids": sorted(set(required_ids) - set(submitted_ids)),
+                    "unknown_issue_ids": sorted(set(submitted_ids) - set(required_ids)),
+                },
+            )
+        try:
+            llm_content = normalize_editorial_content(llm_content)
+        except ContractError as exc:
+            raise DFMError("report_content_invalid", str(exc)) from exc
         try:
             llm_payload = (
                 json.dumps(llm_content, ensure_ascii=False, separators=(",", ":"))
@@ -2200,7 +2277,7 @@ class DFMService:
             "next_action": (
                 "result" if queued.status is RunStatus.SUCCEEDED else "status"
             ),
-            "run": self._run_dict(project_id, queued),
+            "run": self._report_run_dict(queued),
         }
 
     def _tool_progress_listener(
@@ -2381,6 +2458,22 @@ class DFMService:
             normalized_value = self._normalize_fact_value(name, raw_value)
             if name == "process":
                 self.process_registry.get(normalized_value)
+            else:
+                manifest = self._store(project_id).load()
+                choices = (
+                    () if name == "pull_dir" else self.clarification_choices(
+                        str(manifest.process or self.config.default_process), name
+                    )
+                )
+                if choices:
+                    if isinstance(normalized_value, str):
+                        normalized_value = normalized_value.strip()
+                    if normalized_value not in choices:
+                        raise DFMError(
+                            "fact_invalid",
+                            "Fact value is not a published option for this factor.",
+                            {"fact_name": name, "value": raw_value, "allowed_values": list(choices)},
+                        )
 
             fact = FactRecord(
                 f"fact_{uuid4().hex[:16]}", name, normalized_value, "user", "confirmed"
@@ -2435,11 +2528,23 @@ class DFMService:
                 )
 
             manifest = self._store(project_id).update(confirm)
+            pending_startup = self._open_clarifications(manifest, phase="discovery")
+            if pending_startup:
+                next_action = "clarify"
+            elif name in self._DISCOVERY_FACT_NAMES or not any(
+                item.status == "frozen" for item in manifest.discovery_snapshots
+            ):
+                next_action = "discover"
+            elif self._open_clarifications(manifest, phase="analysis"):
+                next_action = "clarify"
+            else:
+                next_action = "plan"
             return {
                 "ok": True,
                 "project_id": project_id,
                 "fact": fact.to_dict(),
                 "revision": manifest.revision,
+                "next_action": next_action,
             }
         if action == "status":
             manifest = self._reconcile_clarifications(project_id)
@@ -2814,10 +2919,10 @@ class DFMService:
                         "next_action": "complete",
                         "reason_code": "no_applicable_supported_rules",
                         "message": (
-                            "The installed ontology has published checks, but no released "
-                            "rule for the discovered features can be fully evaluated with "
-                            "the current OCCT Geometric-ID capabilities. Available generic "
-                            "calculators do not replace unsupported rule operands."
+                            "No released rule could be bound for the confirmed facts, "
+                            "discovered features, and available geometry capabilities. "
+                            "This result alone does not establish that an OCCT algorithm "
+                            "is missing."
                         ),
                         "ontology": self.ontology_store.identity().to_dict(),
                         "published_check_ids": list(
@@ -3018,6 +3123,39 @@ class DFMService:
             if relative
         }
         return payload
+
+    @staticmethod
+    def _report_run_dict(run: RunRecord) -> dict[str, Any]:
+        """The report author needs status, not the plan and every raw artifact."""
+        return {
+            "run_id": run.run_id,
+            "status": run.status.value,
+            "stage": run.stage,
+            "progress_percent": run.progress_percent,
+            "error": run.error,
+        }
+
+    @staticmethod
+    def _report_issue_ids(runtime: dict[str, Any]) -> list[str]:
+        report = runtime.get("report")
+        issues = report.get("issues") if isinstance(report, dict) else None
+        if not isinstance(issues, list) or any(
+            not isinstance(issue, dict)
+            or not isinstance(issue.get("id"), str)
+            or not issue["id"]
+            for issue in issues
+        ):
+            raise DFMError(
+                "report_input_invalid",
+                "The HTML report Runtime must contain issues with stable IDs.",
+            )
+        ids = [issue["id"] for issue in issues]
+        if len(ids) != len(set(ids)):
+            raise DFMError(
+                "report_input_invalid",
+                "The HTML report Runtime contains duplicate issue IDs.",
+            )
+        return ids
 
     def close(self) -> None:
         if self._ontology_background_sync is not None:

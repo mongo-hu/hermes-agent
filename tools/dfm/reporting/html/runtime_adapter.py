@@ -17,7 +17,6 @@ _PROCESS_LABELS = {
     "die_casting": "压铸 (Die Casting)",
 }
 
-
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -86,6 +85,57 @@ def _one(
     return values[-1] if values else None
 
 
+def _html_field_catalog(
+    project_dir: Path,
+    output_dir: Path,
+    artifacts: list[ArtifactRecord],
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    grouped: dict[
+        tuple[str, str, str], list[tuple[ArtifactRecord, dict[str, Any]]]
+    ] = {}
+    for artifact in artifacts:
+        payload = _read_object(project_dir, artifact)
+        identity = (
+            str(payload.get("metric_id") or ""),
+            str(payload.get("quantity_id") or ""),
+            str(payload.get("unit") or ""),
+        )
+        grouped.setdefault(identity, []).append((artifact, payload))
+
+    catalog: list[dict[str, Any]] = []
+    legacy: dict[str, str] = {}
+    for index, (identity, sources) in enumerate(sorted(grouped.items()), start=1):
+        metric_id, quantity_id, unit = identity
+        if len(sources) == 1:
+            path = _artifact_path(project_dir, sources[0][0])
+        else:
+            merged = {
+                "schema_version": 2,
+                "metric_id": metric_id,
+                "quantity_id": quantity_id,
+                "unit": unit,
+                "samples": [sample for _, payload in sources for sample in payload.get("samples", [])],
+                "cells": [cell for _, payload in sources for cell in payload.get("cells", [])],
+                "source_artifact_ids": [artifact.artifact_id for artifact, _ in sources],
+            }
+            path = output_dir / f"report_scalar_field_{index:03d}.json"
+            path.write_text(json.dumps(merged, ensure_ascii=False), encoding="utf-8")
+        entry = {
+            "id": f"field_{index:03d}",
+            "metric_id": metric_id,
+            "quantity_id": quantity_id,
+            "unit": unit,
+            "path": _relative(path, output_dir),
+            "source_count": len(sources),
+        }
+        catalog.append(entry)
+        if metric_id == "injection.geometry.wall_thickness":
+            legacy["thickness"] = entry["path"]
+        elif metric_id == "injection.geometry.draft":
+            legacy["draft"] = entry["path"]
+    return catalog, legacy
+
+
 def materialize_html_runtime(
     project_dir: Path,
     run_id: str,
@@ -97,9 +147,8 @@ def materialize_html_runtime(
 ) -> ArtifactRecord | None:
     """Write runtime_data.jsonl from existing artifacts without recomputation.
 
-    The V1 HTML contract requires geometry-derived scene, thickness, draft and
-    evidence artifacts. A PDF drawing enriches the report when present, but is
-    not required to generate HTML for a geometry-only run.
+    Use every scalar field produced by the current geometry run. The report
+    may have any number of fields; a PDF drawing is optional.
     """
 
     by_kind: dict[str, list[ArtifactRecord]] = {}
@@ -120,7 +169,6 @@ def materialize_html_runtime(
     if (
         report_artifact is None
         or scene_artifact is None
-        or geometry_artifact is None
     ):
         return None
     if len(drawings) > 1:
@@ -160,19 +208,6 @@ def materialize_html_runtime(
             "observations": drawing_observations,
         }
 
-    fields: dict[str, ArtifactRecord] = {}
-    for artifact in by_kind.get("scalar_field", []):
-        payload = _read_object(project_dir, artifact)
-        metric_id = str(payload.get("metric_id") or "")
-        if metric_id == "injection.geometry.wall_thickness":
-            fields["thickness"] = artifact
-        elif metric_id == "injection.geometry.draft":
-            fields["draft"] = artifact
-    if set(fields) != {"thickness", "draft"}:
-        return None
-
-    output_dir = project_dir / "runs" / run_id / "artifacts"
-    output_dir.mkdir(parents=True, exist_ok=True)
     report = _read_object(project_dir, report_artifact)
     if str(report.get("run_id") or "") != run_id:
         raise DFMError(
@@ -180,6 +215,16 @@ def materialize_html_runtime(
             "The JSON report belongs to a different DFM run.",
         )
 
+    output_dir = project_dir / "runs" / run_id / "artifacts"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if geometry_artifact is None:
+        geometry_path = output_dir / "report_evidence_geometry.json"
+        geometry_path.write_text('{"failed_patches": []}', encoding="utf-8")
+    else:
+        geometry_path = _artifact_path(project_dir, geometry_artifact)
+    field_catalog, legacy_fields = _html_field_catalog(
+        project_dir, output_dir, by_kind.get("scalar_field", [])
+    )
     rule_snapshot_path = output_dir / "dfm_rule_snapshot.json"
     rule_snapshot = {
         "schema_version": 1,
@@ -233,13 +278,9 @@ def materialize_html_runtime(
         "scene_path": _relative(
             _artifact_path(project_dir, scene_artifact), output_dir
         ),
-        "scalar_fields": {
-            key: _relative(_artifact_path(project_dir, artifact), output_dir)
-            for key, artifact in fields.items()
-        },
-        "evidence_geometry_path": _relative(
-            _artifact_path(project_dir, geometry_artifact), output_dir
-        ),
+        "scalar_fields": legacy_fields,
+        "field_catalog": field_catalog,
+        "evidence_geometry_path": _relative(geometry_path, output_dir),
         "rule_library_path": _relative(rule_snapshot_path, output_dir),
     }
     if drawing_path is not None and observation_artifact is not None:

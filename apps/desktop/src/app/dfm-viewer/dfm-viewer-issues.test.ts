@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest'
 
-import { summarizeViewerIssueTypes } from './dfm-viewer-issues'
+import { formatViewerValue, summarizeViewerIssueTypes } from './dfm-viewer-issues'
+
+describe('formatViewerValue', () => {
+  it('shows numeric intervals instead of object strings', () => {
+    expect(formatViewerValue({ lower: 0.2, upper: 0.25 })).toBe('[0.2, 0.25]')
+  })
+
+  it('retains enough precision near a failed threshold', () => {
+    expect(formatViewerValue(0.4999999999)).toBe('0.4999999999')
+  })
+})
 
 describe('summarizeViewerIssueTypes', () => {
   it('groups failed results by business Check without using severity', () => {

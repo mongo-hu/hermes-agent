@@ -18,7 +18,6 @@ def test_dfm_tools_are_discovered_with_stable_schemas_and_dispatch(tmp_path):
         "create",
         "add_input",
         "status",
-        "confirm_fact",
         "list",
         "ontology_status",
         "sync_ontology",
@@ -142,6 +141,144 @@ def test_dfm_background_actions_receive_progress_context_without_schema_changes(
         assert result["ok"] is True
         assert captured["_tool_progress_callback"] is callback
         assert captured["_tool_call_id"] == f"tool_{action}"
+
+
+def test_discovery_tool_returns_bounded_counts_without_geometry_payload(monkeypatch):
+    from tools import dfm_tool
+
+    feature_kinds = ("ordinary_part", "main_wall", "screw_boss", "screw_boss")
+    discovery = {
+        "ok": True,
+        "project_id": "dfm_1",
+        "phase": "discovery",
+        "plan": {"operations": ["large geometry" * 10_000]},
+        "snapshot": {"snapshot_id": "snapshot_1", "status": "frozen"},
+        "features": [
+            {"feature_id": f"feature_{index}", "kind": kind, "status": "confirmed",
+             "properties": {"raw": "geometry" * 10_000}}
+            for index, kind in enumerate(feature_kinds)
+        ],
+        "regions": [
+            {"region_id": f"region_{index}", "role": kind,
+             "geometry_refs": ["face" * 10_000]}
+            for index, kind in enumerate(feature_kinds)
+        ],
+        "observations": [],
+        "fusion_links": [],
+        "capability": {"status": "available", "providers": {"occt_cpp": "available"}},
+        "drawing_discovery": {"status": "not_applicable"},
+        "open_clarifications": [],
+    }
+
+    class FakeService:
+        def analysis(self, action, **params):
+            assert action == "discover"
+            return discovery
+
+    monkeypatch.setattr(dfm_tool, "get_dfm_service", lambda: FakeService())
+    output = dfm_tool._call("analysis", {"action": "discover", "project_id": "dfm_1"})
+    summary = json.loads(output)
+
+    assert len(output) < 10_000
+    assert summary["feature_count"] == 4
+    assert summary["feature_counts"] == {
+        "ordinary_part": 1, "main_wall": 1, "screw_boss": 2,
+    }
+    assert summary["region_count"] == 4
+    assert summary["snapshot"]["snapshot_id"] == "snapshot_1"
+    assert summary["next_action"] == "plan"
+    assert "geometry_refs" not in output
+    assert "operations" not in output
+    assert "properties" in discovery["features"][0]
+
+
+def test_plan_and_start_tool_results_keep_control_data_not_full_snapshots(monkeypatch):
+    from tools import dfm_tool
+
+    class FakeService:
+        def analysis(self, action, **params):
+            if action == "plan":
+                return {
+                    "ok": True,
+                    "project_id": "dfm_1",
+                    "plan": {
+                        "plan_id": "plan_1", "phase": "analysis", "status": "ready",
+                        "scope_id": "rules", "scope_version": "v1",
+                        "operations": [{"geometry": "face" * 30_000}],
+                        "rule_bindings": [{"check_id": "C_WALL", "rule_id": "R_WALL"}],
+                        "regions": [{"geometry_refs": ["face" * 30_000]}],
+                    },
+                    "capability": {"status": "available", "reason": "ready",
+                                   "details": {"operations": ["face" * 30_000]}},
+                }
+            return {
+                "ok": True,
+                "project_id": "dfm_1",
+                "run": {
+                    "run_id": "run_1", "plan_id": "plan_1", "analyzer_key": "occt_cpp",
+                    "status": "succeeded" if action == "result" else "queued",
+                    "plan_snapshot": {"geometry": "face" * 30_000},
+                    "artifacts": [{"artifact_id": "report_html", "kind": "report_html",
+                                   "path": "C:/report.html"}] if action == "result" else [],
+                },
+            }
+
+    monkeypatch.setattr(dfm_tool, "get_dfm_service", lambda: FakeService())
+    planned = dfm_tool._call("analysis", {"action": "plan", "project_id": "dfm_1"})
+    started = dfm_tool._call(
+        "analysis", {"action": "start", "project_id": "dfm_1", "plan_id": "plan_1"}
+    )
+    finished = dfm_tool._call(
+        "analysis", {"action": "result", "project_id": "dfm_1", "run_id": "run_1"}
+    )
+
+    assert len(planned) < 10_000
+    assert len(started) < 10_000
+    assert json.loads(planned)["plan"]["check_ids"] == ["C_WALL"]
+    assert json.loads(planned)["next_action"] == "start"
+    assert json.loads(started)["run"]["run_id"] == "run_1"
+    assert json.loads(started)["next_action"] == "report_context"
+    assert json.loads(finished)["next_action"] == "complete"
+    assert json.loads(finished)["run"]["artifacts"][0]["path"] == "C:/report.html"
+    assert "geometry_refs" not in planned
+    assert "plan_snapshot" not in started
+
+
+def test_project_status_tool_exposes_state_without_persisted_geometry(monkeypatch):
+    from tools import dfm_tool
+
+    class FakeService:
+        def project(self, action, **params):
+            assert action == "status"
+            return {
+                "ok": True,
+                "project": {
+                    "project_id": "dfm_1", "name": "bracket", "process": "injection",
+                    "input_mode": "step", "revision": 3,
+                    "inputs": [{"input_id": "input_1", "kind": "step", "sha256": "abc"}],
+                    "facts": [{"name": "model_units", "value": "mm", "status": "confirmed"}],
+                    "open_clarifications": [],
+                    "discovery_snapshots": [{"snapshot_id": "snapshot_1"}],
+                    "plans": [{"regions": ["face" * 30_000]}],
+                    "runs": [{"run_id": "run_1", "status": "running"}],
+                    "findings": [{"finding_id": "finding_1"}],
+                    "features": [{"properties": "face" * 30_000}],
+                },
+                "ontology": {"snapshot_id": "ontology_1"},
+                "capabilities": {"occt_cpp": {"status": "available",
+                                               "details": {"raw": "face" * 30_000}}},
+                "process_capabilities": {},
+            }
+
+    monkeypatch.setattr(dfm_tool, "get_dfm_service", lambda: FakeService())
+    output = dfm_tool._call("project", {"action": "status", "project_id": "dfm_1"})
+    summary = json.loads(output)
+
+    assert len(output) < 10_000
+    assert summary["project"]["discovery_snapshot_id"] == "snapshot_1"
+    assert summary["project"]["finding_count"] == 1
+    assert summary["capabilities"]["occt_cpp"] == {"status": "available"}
+    assert "geometry" not in output
 
 
 def test_dfm_start_schema_requires_explicit_planned_id():

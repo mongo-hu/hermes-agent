@@ -1,4 +1,6 @@
 from dataclasses import replace
+import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,17 +14,20 @@ from tools.dfm.analyzers.registry import AnalyzerRegistry
 from tools.dfm.analyzers.step import StepAnalyzer
 from tools.dfm.config import DFMConfig
 from tools.dfm.errors import DFMError
-from tools.dfm.processes.base import FactRequirement
+from tools.dfm.processes.base import FactRequirement, ProcessPlan
 from tools.dfm.service import DFMService
 from tools.dfm.feature_recognition.occt_cpp import OCCTCppFeatureRecognitionProvider
 from tools.dfm.contracts import (
     ClarificationRecord,
     Capability,
     CapabilityStatus,
+    FactRecord,
     FeatureRecord,
     GeometryRef,
     ObservationRecord,
+    PlanOperation,
     RegionRecord,
+    RuleBinding,
 )
 from tools.dfm.processes.occt_injection import geometry_binding_index
 
@@ -90,7 +95,7 @@ def test_project_actions_create_add_input_status_confirm_and_list(service):
 
     assert added["input"]["kind"] == "step"
     assert {item["clarification_id"] for item in added["open_clarifications"]} == {
-        "clarification_process",
+        "clarification_process", "clarification_model_units", "clarification_pull_dir",
     }
     assert confirmed["fact"]["status"] == "confirmed"
     assert status["project"]["input_mode"] == "step"
@@ -103,11 +108,120 @@ def test_project_actions_create_add_input_status_confirm_and_list(service):
     assert {
         item["clarification_id"] for item in status["project"]["open_clarifications"]
     } == {
-        "clarification_process",
+        "clarification_process", "clarification_model_units", "clarification_pull_dir",
     }
     assert status["capabilities"]["step"]["status"] == "dependency_missing"
     assert status["ontology"]["snapshot_id"] == dfm.ontology_store.identity().snapshot_id
     assert listed["projects"][0]["project_id"] == created["project_id"]
+
+
+def test_interactive_dfm_fact_requires_real_response(service, monkeypatch):
+    from tools.clarify_tool import clarify_tool
+    from tools.dfm_tool import _call
+
+    dfm, temp = service
+    created = dfm.project("create", name="Interactive facts")
+    project_id = created["project_id"]
+    source = temp / "interactive.step"
+    source.write_bytes(STEP_PAYLOAD)
+    dfm.project("add_input", project_id=project_id, path=str(source))
+    monkeypatch.setattr("tools.dfm.service.get_dfm_service", lambda: dfm)
+
+    rejected = json.loads(_call("project", {
+        "action": "confirm_fact", "project_id": project_id,
+        "fact_name": "process", "fact_value": "injection",
+    }))
+    assert rejected["ok"] is False
+    assert not any(item["name"] == "process" for item in dfm.project("status", project_id=project_id)["project"]["facts"])
+
+    invalid_answer = json.loads(clarify_tool(
+        "请确认工艺", callback=lambda *_: "unsupported_process",
+        dfm_project_id=project_id, dfm_fact_name="process",
+    ))
+    assert invalid_answer["ok"] is False
+    assert not any(item["name"] == "process" for item in dfm.project("status", project_id=project_id)["project"]["facts"])
+
+    seen = []
+
+    def answer(question, choices):
+        seen.extend(choices)
+        assert not any(item["name"] == "process" for item in dfm.project("status", project_id=project_id)["project"]["facts"])
+        return "注塑成型"
+
+    result = json.loads(clarify_tool(
+        "请确认工艺", callback=answer,
+        dfm_project_id=project_id, dfm_fact_name="process",
+    ))
+    assert seen == ["压铸", "注塑成型"]
+    assert result["dfm_fact"]["value"] == "injection"
+    assert any(item["name"] == "process" for item in dfm.project("status", project_id=project_id)["project"]["facts"])
+
+    repeated = json.loads(clarify_tool(
+        "请确认工艺", callback=lambda *_: "injection",
+        dfm_project_id=project_id, dfm_fact_name="process",
+    ))
+    assert "error" in repeated
+
+
+def test_dfm_questions_require_explicit_project_and_factor_binding(service, monkeypatch):
+    from tools.clarify_tool import clarify_tool
+    from tools.dfm_tool import _call
+
+    dfm, temp = service
+    project_id = dfm.project("create", name="Single process question")["project_id"]
+    source = temp / "single-question.step"
+    source.write_bytes(STEP_PAYLOAD)
+    dfm.project("add_input", project_id=project_id, path=str(source))
+    monkeypatch.setattr("tools.dfm.service.get_dfm_service", lambda: dfm)
+    monkeypatch.setattr("tools.dfm_tool.get_dfm_service", lambda: dfm)
+    _call("project", {"action": "status", "project_id": project_id},
+          session_id="dfm-single-question")
+
+    shown = []
+
+    def assert_unbound_is_not_shown(expected_name):
+        result = json.loads(clarify_tool(
+            "Unbound Agent question", choices=["irrelevant"],
+            callback=lambda question, options: shown.append((question, options)),
+            session_id="dfm-single-question",
+        ))
+        assert result["code"] == "dfm_fact_binding_required"
+        assert result["dfm_project_id"] == project_id
+        assert result["dfm_fact_name"] == expected_name
+        assert not shown
+
+    def answer_bound(name, answer):
+        result = json.loads(clarify_tool(
+            f"Confirm {name}", choices=["irrelevant"],
+            callback=lambda question, options: shown.append((question, options)) or answer,
+            dfm_project_id=project_id, dfm_fact_name=name,
+            session_id="dfm-single-question",
+        ))
+        assert result["dfm_fact"]["name"] == name
+        return result
+
+    assert_unbound_is_not_shown("process")
+    process = answer_bound("process", "注塑成型")
+    assert process["dfm_fact"]["value"] == "injection"
+    assert process["next_action"] == "clarify"
+    assert len(shown[0][1]) == 2
+    for name, answer in (("model_units", "mm"), ("pull_dir", "+Z")):
+        startup_answer = answer_bound(name, answer)
+    assert startup_answer["next_action"] == "discover"
+    assert len(shown) == 3
+    assert dfm.project("status", project_id=project_id)["project"]["open_clarifications"] == []
+
+    discovered = dfm.analysis("discover", project_id=project_id)
+    assert [item["clarification_id"] for item in discovered["open_clarifications"]] == [
+        "clarification_material"
+    ]
+    shown.clear()
+    assert_unbound_is_not_shown("material")
+    material = answer_bound("material", "ABS")
+    assert material["dfm_fact"]["name"] == "material"
+    assert material["next_action"] == "plan"
+    assert len(shown) == 1
+    assert dfm.project("status", project_id=project_id)["project"]["open_clarifications"] == []
 
 
 def test_requested_process_is_routing_state_until_confirmed_as_a_fact(service):
@@ -125,7 +239,7 @@ def test_requested_process_is_routing_state_until_confirmed_as_a_fact(service):
 
     assert [
         item["clarification_id"] for item in added["open_clarifications"]
-    ] == ["clarification_process"]
+    ] == ["clarification_process", "clarification_model_units", "clarification_pull_dir"]
     assert not any(item["name"] == "process" for item in status["facts"])
 
 
@@ -151,14 +265,15 @@ def test_discovery_asks_startup_facts_before_feature_scoped_rule_facts(service):
 
     assert blocked["ok"] is True
     assert [item["clarification_id"] for item in blocked["clarifications"]] == [
-        "clarification_process"
+        "clarification_process", "clarification_model_units", "clarification_pull_dir"
     ]
-    dfm.project(
+    confirmed_process = dfm.project(
         "confirm_fact",
         project_id=project_id,
         fact_name="process",
         fact_value="injection",
     )
+    assert confirmed_process["next_action"] == "clarify"
     blocked = dfm.analysis("discover", project_id=project_id)
 
     assert {item["clarification_id"] for item in blocked["clarifications"]} == {
@@ -166,12 +281,13 @@ def test_discovery_asks_startup_facts_before_feature_scoped_rule_facts(service):
         "clarification_pull_dir",
     }
     for name, value in {"model_units": "mm", "pull_dir": "Z+"}.items():
-        dfm.project(
+        confirmed = dfm.project(
             "confirm_fact",
             project_id=project_id,
             fact_name=name,
             fact_value=value,
         )
+    assert confirmed["next_action"] == "discover"
 
     discovered = dfm.analysis("discover", project_id=project_id)
     status = dfm.project("status", project_id=project_id)["project"]
@@ -182,6 +298,67 @@ def test_discovery_asks_startup_facts_before_feature_scoped_rule_facts(service):
     assert next(
         item["value"] for item in status["facts"] if item["name"] == "pull_dir"
     ) == [0.0, 0.0, 1.0]
+    confirmed_material = dfm.project(
+        "confirm_fact",
+        project_id=project_id,
+        fact_name="material",
+        fact_value="ABS",
+    )
+    assert confirmed_material["next_action"] == "plan"
+
+
+def test_published_factor_choices_are_asked_and_validated(service):
+    dfm, temp = service
+    package_path = Path(__file__).parents[3] / "tools/dfm/scopes/injection/ontology_snapshot_v2.json"
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    material = next(
+        item for item in package["concepts"] if item["concept_id"] == "factor.material"
+    )
+    material["data_schema"]["enum"] = ["ABS", "PC"]
+    package["factor_options"].append({
+        "factor_id": "factor.material",
+        "option_code": "PC",
+        "name_zh": "PC",
+        "value": "PC",
+        "sort_order": 20,
+        "status": "active",
+    })
+    unhashed = {key: value for key, value in package.items() if key != "content_sha256"}
+    package["content_sha256"] = hashlib.sha256(
+        json.dumps(unhashed, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    dfm.ontology_store.install_package(package)
+
+    project_id = dfm.project("create", name="Published factor choices")["project_id"]
+    source = temp / "part.step"
+    source.write_bytes(STEP_PAYLOAD)
+    dfm.project("add_input", project_id=project_id, path=str(source))
+    for name, value in {"process": "injection", "model_units": "mm", "pull_dir": "+Z"}.items():
+        dfm.project("confirm_fact", project_id=project_id, fact_name=name, fact_value=value)
+    discovered = dfm.analysis("discover", project_id=project_id)
+    question = next(
+        item["question"] for item in discovered["open_clarifications"]
+        if item["clarification_id"] == "clarification_material"
+    )
+    assert question == "What resin/material grade will be used for this part?"
+    assert dfm.clarification_choices("injection", "material") == ("ABS", "PC")
+
+    with pytest.raises(DFMError) as exc_info:
+        dfm.project("confirm_fact", project_id=project_id, fact_name="material", fact_value="glass_fiber")
+    assert exc_info.value.code == "fact_invalid"
+    assert exc_info.value.details["allowed_values"] == ["ABS", "PC"]
+
+    # Older projects may already contain a confirmed value outside the publication.
+    dfm._store(project_id).update(lambda current: replace(
+        current,
+        facts=[*current.facts, FactRecord("fact_legacy", "material", "glass_fiber", "user", "confirmed")],
+    ))
+    reopened = dfm.project("status", project_id=project_id)["project"]["open_clarifications"]
+    assert any(item["clarification_id"] == "clarification_material" for item in reopened)
+
+    dfm.project("confirm_fact", project_id=project_id, fact_name="material", fact_value="PC")
+    status = dfm.project("status", project_id=project_id)["project"]
+    assert not any(item["clarification_id"] == "clarification_material" for item in status["open_clarifications"])
 
 
 def test_ontology_status_reads_installed_workspace_store(service):
@@ -500,7 +677,7 @@ def test_plan_is_persisted_but_unavailable_production_start_fails_explicitly(ser
     assert blocked["status"] == "clarification_required"
     assert blocked["next_action"] == "clarify"
     assert [item["clarification_id"] for item in blocked["clarifications"]] == [
-        "clarification_process"
+        "clarification_process", "clarification_model_units", "clarification_pull_dir"
     ]
     confirm_step_facts(dfm, project_id)
     awaiting_discovery = dfm.analysis("plan", project_id=project_id)
@@ -656,6 +833,79 @@ def test_occt_plan_stops_when_no_supported_rule_is_applicable(service, monkeypat
     assert fallback["next_action"] == "complete"
     manifest = dfm.project("status", project_id=project_id)["project"]
     assert all(item["phase"] == "discovery" for item in manifest["plans"])
+
+
+def test_region_binding_ignores_targets_for_inapplicable_rules(service, monkeypatch):
+    dfm, _ = service
+    feature = SimpleNamespace(feature_id="feature.main_wall", kind="main_wall")
+    region = SimpleNamespace(
+        region_id="region.main_wall.wall",
+        role="wall",
+        input_sha256="input-sha",
+        content_sha256="a" * 64,
+    )
+    draft_metric = "injection.geometry.main_wall.draft"
+    transition_metric = "injection.geometry.main_wall.transition"
+    monkeypatch.setattr(
+        dfm.discovery,
+        "analysis_targets",
+        lambda _manifest, _snapshot: [
+            {
+                "feature": feature,
+                "region": region,
+                "metric_id": draft_metric,
+                "operand_anchors": {("C_WALL_DRAFT", "actual"): [feature.feature_id]},
+            },
+            {
+                "feature": feature,
+                "region": region,
+                "metric_id": transition_metric,
+                "operand_anchors": {
+                    ("C_WALL_THK_TRANSITION", "actual"): [feature.feature_id]
+                },
+            },
+        ],
+    )
+    plan = ProcessPlan(
+        process="injection",
+        adapter_version="test",
+        scope_id="test",
+        scope_version="1",
+        rules={},
+        operations=[
+            PlanOperation(
+                "measure_main_wall_draft",
+                "measure_main_wall_draft",
+                metric_ids=[draft_metric],
+            )
+        ],
+        accepted_inputs=set(),
+        rule_bindings=[
+            RuleBinding(
+                binding_id="binding.C_WALL_DRAFT.R_WALL_DRAFT",
+                operation_id="measure_main_wall_draft",
+                metric_id=draft_metric,
+                quantity_id="outer_draft_angle_deg",
+                rule_id="R_WALL_DRAFT",
+                operator="GTE",
+                aggregation="identity",
+                check_id="C_WALL_DRAFT",
+            )
+        ],
+        binding_selectors={
+            "binding.C_WALL_DRAFT.R_WALL_DRAFT": {"actual": {"operand_text": "outer wall"}}
+        },
+    )
+
+    bound = dfm._bind_discovery_scope(plan, None, None)
+
+    assert [item.metric_ids for item in bound.operations] == [[draft_metric]]
+    assert len(bound.rule_bindings) == 1
+    assert bound.rule_bindings[0].region_refs == [region.region_id]
+    with pytest.raises(DFMError) as exc_info:
+        dfm._bind_discovery_scope(replace(plan, operations=[]), None, None)
+    assert exc_info.value.code == "analysis_target_unsupported"
+    assert exc_info.value.details["metric_id"] == draft_metric
 
 
 def test_input_or_confirmed_fact_invalidates_prior_plan(service):
@@ -890,7 +1140,7 @@ def test_die_casting_plan_uses_its_own_facts_scope_and_operations(service):
     blocked = dfm.analysis("discover", project_id=project_id)
 
     assert [item["clarification_id"] for item in blocked["clarifications"]] == [
-        "clarification_process"
+        "clarification_process", "clarification_model_units", "clarification_pull_dir"
     ]
     dfm.project(
         "confirm_fact",
@@ -901,13 +1151,19 @@ def test_die_casting_plan_uses_its_own_facts_scope_and_operations(service):
     blocked = dfm.analysis("discover", project_id=project_id)
 
     assert [item["clarification_id"] for item in blocked["clarifications"]] == [
-        "clarification_model_units"
+        "clarification_model_units", "clarification_pull_dir"
     ]
     dfm.project(
         "confirm_fact",
         project_id=project_id,
         fact_name="model_units",
         fact_value="mm",
+    )
+    dfm.project(
+        "confirm_fact",
+        project_id=project_id,
+        fact_name="pull_dir",
+        fact_value="+Z",
     )
     discovery = dfm.analysis("discover", project_id=project_id)
     result = dfm.analysis("plan", project_id=project_id)

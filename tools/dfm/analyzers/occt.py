@@ -844,7 +844,10 @@ class OcctAnalyzer:
                 "error": {"code", "message"},
             }
             optional_fields_by_type = {
-                "progress": {"processed_faces", "total_faces", "elapsed_seconds"},
+                "progress": {
+                    "processed_faces", "total_faces", "elapsed_seconds",
+                    "measured_feature_count", "unavailable_features",
+                },
                 "artifact": set(),
                 "completed": set(),
                 "error": set(),

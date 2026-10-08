@@ -379,6 +379,37 @@ class LocalOntologyStore:
                 current["question"] = requirement["question"]
         return tuple(merged[key] for key in sorted(merged))
 
+    def fact_enum_values(self, process: str, fact_name: str) -> tuple[Any, ...]:
+        """Return published choices for a closed, user-confirmed factor."""
+
+        if self.identity().process != process:
+            return ()
+        with self._connect() as connection:
+            factors = connection.execute(
+                "SELECT concept_id, properties_json, data_schema_json "
+                "FROM ontology_concept WHERE concept_type = 'factor' AND status = 'active'"
+            ).fetchall()
+            for factor in factors:
+                properties = _load_json(factor["properties_json"], {})
+                if str(properties.get("runtime_key") or factor["concept_id"]) != fact_name:
+                    continue
+                schema = _load_json(factor["data_schema_json"], {})
+                enum = schema.get("enum") if isinstance(schema, dict) else None
+                if not isinstance(enum, list):
+                    return ()
+                rows = connection.execute(
+                    "SELECT value_json FROM factor_option "
+                    "WHERE factor_id = ? AND status = 'active' "
+                    "ORDER BY sort_order, option_code",
+                    (factor["concept_id"],),
+                ).fetchall()
+                values = [_load_json(row["value_json"], None) for row in rows] or enum
+                return tuple(
+                    value for index, value in enumerate(values)
+                    if value not in values[:index]
+                )
+        return ()
+
     def factor_definitions(self, process: str) -> tuple[dict[str, Any], ...]:
         """Return published Factor schemas and source policies for Fact Resolver."""
 
@@ -750,6 +781,8 @@ class LocalOntologyStore:
                         version=str(selected["version"]),
                         severity=str(selected["severity"] or "unclassified"),
                         severity_rationale=(selected["severity_rationale"] if "severity_rationale" in selected.keys() else None),
+                        name=selected["name"],
+                        recommendation_template=selected["recommendation_template"],
                     )
                     bindings.append(binding)
                     selectors[binding.binding_id] = binding_selectors

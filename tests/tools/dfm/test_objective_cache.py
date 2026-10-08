@@ -1,5 +1,6 @@
 import hashlib
 import json
+from dataclasses import replace
 
 from tools.dfm.contracts import (
     ArtifactRecord,
@@ -61,6 +62,18 @@ def test_operation_fingerprint_ignores_hermes_rule_but_tracks_geometry_arguments
     assert baseline["geometry.load"] == changed_pull["geometry.load"]
     assert baseline["geometry.topology"] == changed_pull["geometry.topology"]
     assert baseline["geometry.draft"] != changed_pull["geometry.draft"]
+
+
+def test_operation_fingerprint_resolves_dependencies_out_of_plan_order():
+    plan = _plan()
+    shuffled = replace(plan, operations=list(reversed(plan.operations)))
+    common = {
+        "input_sha256": "a" * 64,
+        "analyzer_key": "step",
+        "analyzer_version": "worker-2",
+    }
+
+    assert operation_fingerprints(shuffled, **common) == operation_fingerprints(plan, **common)
 
 
 def test_cache_restores_objective_checkpoint_into_new_run(tmp_path):

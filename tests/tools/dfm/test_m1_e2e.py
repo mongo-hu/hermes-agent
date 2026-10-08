@@ -59,8 +59,9 @@ def test_m1_real_tool_vertical_slice(tmp_path):
             registry, "dfm_analysis", {"action": "discover", "project_id": project_id}
         )
         assert discovery["features"][0]["kind"] == "ordinary_part"
-        discovery_feature_refs = set(discovery["snapshot"]["feature_refs"])
-        discovery_region_refs = set(discovery["snapshot"]["region_refs"])
+        assert discovery["features_omitted"] == discovery["regions_omitted"] == 0
+        discovery_feature_refs = {item["feature_id"] for item in discovery["features"]}
+        discovery_region_refs = {item["region_id"] for item in discovery["regions"]}
         plan = _dispatch(
             registry, "dfm_analysis", {"action": "plan", "project_id": project_id}
         )
@@ -102,7 +103,7 @@ def test_m1_real_tool_vertical_slice(tmp_path):
             {"action": "result", "project_id": project_id, "run_id": run_id},
         )
         assert result["run"]["status"] == "succeeded", result["run"]
-        assert result["run"]["plan_snapshot"] == plan["plan"]
+        assert result["run"]["plan_id"] == plan["plan"]["plan_id"]
         assert {item["kind"] for item in result["run"]["artifacts"]} >= {
             "report_json",
             "report_markdown",
@@ -168,11 +169,10 @@ def test_m1_real_tool_vertical_slice(tmp_path):
         project_status = _dispatch(
             registry, "dfm_project", {"action": "status", "project_id": project_id}
         )
-        findings = project_status["project"]["findings"]
         failed_evaluations = [
             item for item in evaluation_payload["evaluations"] if item["outcome"] == "fail"
         ]
-        assert len(findings) == len(failed_evaluations)
+        assert project_status["project"]["finding_count"] == len(failed_evaluations)
         evidence_artifact = next(
             item
             for item in result["run"]["artifacts"]

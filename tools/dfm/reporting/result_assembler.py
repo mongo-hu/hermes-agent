@@ -94,6 +94,7 @@ def materialize_result_reports(
         )
         metric_id = str(evaluation.get("metric_id") or "dfm")
         check_id = str(evaluation.get("check_id") or "")
+        rule = plan.rules.get(str(evaluation.get("rule_id") or ""))
         issue_type_id, issue_type_label = classify_issue_type(check_id, metric_id)
         issues.append(
             {
@@ -102,9 +103,10 @@ def materialize_result_reports(
                 "check_id": check_id,
                 "issue_type_id": issue_type_id,
                 "issue_type_label": issue_type_label,
-                "title": str(evaluation.get("rule_id") or "DFM rule").replace(
-                    "_", " "
-                ).title(),
+                "title": (
+                    rule.name if rule and rule.name
+                    else str(evaluation.get("rule_id") or "DFM rule").replace("_", " ").title()
+                ),
                 "severity": str(evaluation.get("severity") or "unclassified"),
                 "severity_rationale": evaluation.get("severity_rationale"),
                 "message": (
@@ -113,6 +115,7 @@ def materialize_result_reports(
                 ),
                 "metric": {
                     "actual": evaluation.get("actual"),
+                    "actual_unit": evaluation.get("actual_unit"),
                     "expected": evaluation.get("expected"),
                     "operator": evaluation.get("operator"),
                     "rule_id": evaluation.get("rule_id"),
@@ -130,7 +133,9 @@ def materialize_result_reports(
                 "image": images[0] if images else None,
                 "feature_refs": feature_refs,
                 "region_refs": region_refs,
-                "recommendation": "Correct the highlighted geometry and rerun the same plan.",
+                "recommendation": (
+                    rule.recommendation_template if rule else None
+                ),
             }
         )
 

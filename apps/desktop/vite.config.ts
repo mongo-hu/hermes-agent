@@ -56,6 +56,8 @@ export default defineConfig({
     }
   },
   resolve: {
+    // Ignore stale JS emitted beside TS sources by earlier local builds.
+    extensions: ['.mts', '.ts', '.tsx', '.mjs', '.js', '.jsx', '.json'],
     alias: {
       '@': path.resolve(__dirname, './src'),
       '@hermes/shared': path.resolve(__dirname, '../shared/src'),

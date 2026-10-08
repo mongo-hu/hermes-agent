@@ -48,6 +48,20 @@ def test_wall_thickness_face_progress_round_trips():
     assert parse_worker_event(json.dumps(event.to_dict())) == event
 
 
+def test_geometry_measurement_progress_round_trips():
+    event = WorkerEvent(
+        1,
+        "progress",
+        stage="measure_screw_boss_wall",
+        percent=60,
+        measured_feature_count=1,
+        unavailable_features=[],
+        contract_version=GEOMETRY_EVENT_CONTRACT,
+    )
+
+    assert parse_worker_event(json.dumps(event.to_dict())) == event
+
+
 @pytest.mark.parametrize(
     "details",
     [

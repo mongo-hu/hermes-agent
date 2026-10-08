@@ -1,6 +1,6 @@
 import json
 
-from tools.dfm.contracts import ArtifactRecord, PlanRecord
+from tools.dfm.contracts import ArtifactRecord, EffectiveRule, PlanRecord
 from tools.dfm.reporting import result_assembler
 
 
@@ -29,6 +29,7 @@ def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path):
                     "rule_hash": "b" * 64,
                     "operator": ">=",
                     "actual": 0.5,
+                    "actual_unit": "degree",
                     "expected": 1.0,
                     "outcome": "fail",
                     "severity": "warning",
@@ -91,6 +92,15 @@ def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path):
         process="injection",
         scope_id="injection.wall-draft",
         scope_version="1.0.0",
+        rules={
+            "min_draft_deg": EffectiveRule(
+                value=1.0,
+                unit="degree",
+                source="ontology:test/min_draft_deg",
+                name="主体壁－拔模角",
+                recommendation_template="增加主体壁拔模角并复核出模方向。",
+            )
+        },
     )
     generated = result_assembler.materialize_result_reports(
         tmp_path, run_id, plan, artifacts
@@ -101,6 +111,9 @@ def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path):
     assert len(report["issues"]) == 1
     assert report["issues"][0]["images"] == ["evidence_001.png"]
     assert report["issues"][0]["metric"]["backend"] == "pythonocc_demo"
+    assert report["issues"][0]["metric"]["actual_unit"] == "degree"
+    assert report["issues"][0]["title"] == "主体壁－拔模角"
+    assert report["issues"][0]["recommendation"] == "增加主体壁拔模角并复核出模方向。"
     assert report["issues"][0]["metric"]["certified"] is False
     assert report["issues"][0]["severity"] == "warning"
     assert report["issues"][0]["severity_rationale"] == "Draft angle affects release."

@@ -37,8 +37,26 @@ def operation_fingerprints(
     """Fingerprint every operation with its resolved dependency inputs."""
 
     fingerprints: dict[str, str] = {}
-    for operation in plan.operations:
-        fingerprints[operation.operation_id] = _digest(
+    operations = {item.operation_id: item for item in plan.operations}
+    visiting: set[str] = set()
+
+    def fingerprint(operation_id: str) -> str:
+        if operation_id in fingerprints:
+            return fingerprints[operation_id]
+        operation = operations.get(operation_id)
+        if operation is None or operation_id in visiting:
+            raise DFMError(
+                "objective_cache_invalid",
+                "An objective operation has a missing or cyclic dependency.",
+                {"operation_id": operation_id},
+            )
+        visiting.add(operation_id)
+        dependencies = {
+            dependency: fingerprint(dependency)
+            for dependency in operation.depends_on
+        }
+        visiting.remove(operation_id)
+        fingerprints[operation_id] = _digest(
             {
                 "objective_schema_version": OBJECTIVE_SCHEMA_VERSION,
                 "analyzer_key": analyzer_key,
@@ -46,12 +64,13 @@ def operation_fingerprints(
                 "input_sha256": input_sha256,
                 "process": plan.process,
                 "operation": operation.to_dict(),
-                "dependencies": {
-                    dependency: fingerprints[dependency]
-                    for dependency in operation.depends_on
-                },
+                "dependencies": dependencies,
             }
         )
+        return fingerprints[operation_id]
+
+    for operation in plan.operations:
+        fingerprint(operation.operation_id)
     return fingerprints
 
 

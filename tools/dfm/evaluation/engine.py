@@ -39,6 +39,7 @@ _CRITERION_OPERATORS = {
     "GT": ">", "GTE": ">=", "LT": "<", "LTE": "<=",
     "EQ": "==", "NE": "!=", "BETWEEN": "between",
 }
+_COMPARISON_TOLERANCE = 1e-12
 
 
 @dataclass(frozen=True)
@@ -729,7 +730,17 @@ class EvaluationEngine:
                     {"binding_id": binding_id},
                 )
             try:
-                return bool(lower <= actual <= upper)
+                lower_ok = lower <= actual or math.isclose(
+                    lower, actual,
+                    rel_tol=_COMPARISON_TOLERANCE,
+                    abs_tol=_COMPARISON_TOLERANCE,
+                )
+                upper_ok = actual <= upper or math.isclose(
+                    actual, upper,
+                    rel_tol=_COMPARISON_TOLERANCE,
+                    abs_tol=_COMPARISON_TOLERANCE,
+                )
+                return bool(lower_ok and upper_ok)
             except TypeError as exc:
                 raise DFMError(
                     "evaluation_value_invalid",
@@ -744,6 +755,21 @@ class EvaluationEngine:
                 {"binding_id": binding_id, "operator": operation_name},
             )
         try:
+            if operation_name in {">=", "<=", "==", "!="} and all(
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(float(value))
+                for value in (actual, expected)
+            ):
+                close = math.isclose(
+                    actual, expected,
+                    rel_tol=_COMPARISON_TOLERANCE,
+                    abs_tol=_COMPARISON_TOLERANCE,
+                )
+                if operation_name == "!=":
+                    return not close
+                if close:
+                    return True
             return bool(comparison(actual, expected))
         except (TypeError, ValueError) as exc:
             raise DFMError(

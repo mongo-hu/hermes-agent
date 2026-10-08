@@ -2,9 +2,9 @@
 
 import argparse
 import base64
+import html as html_lib
 import json
 import os
-import re
 from pathlib import Path
 
 from ...issue_types import classify_issue_type, summarize_issue_types
@@ -59,6 +59,48 @@ def require_nullable_text(parent, key, location):
     return value
 
 
+def normalize_editorial_content(llm):
+    """Validate Agent copy before queuing and accept plain-text list entries."""
+    if not isinstance(llm, dict) or llm.get("schema_version") != "dfm-html-llm/v1":
+        raise ContractError("llm.schema_version must be dfm-html-llm/v1.")
+    part = require_object(llm, "part", "llm")
+    require_text(part, "name", "llm.part")
+    require_nullable_text(part, "general_tolerance", "llm.part")
+    require_nullable_text(part, "technical_note", "llm.part")
+    conclusion = require_object(llm, "conclusion", "llm")
+    require_text(conclusion, "assessment_level", "llm.conclusion")
+    require_text(conclusion, "summary", "llm.conclusion")
+
+    normalized_conclusion = dict(conclusion)
+    for section, label in (("risks", "风险"), ("actions", "建议")):
+        normalized_items = []
+        for index, item in enumerate(require_list(conclusion, section, "llm.conclusion")):
+            location = f"llm.conclusion.{section}[{index}]"
+            if isinstance(item, str):
+                if not item.strip():
+                    raise ContractError(f"{location} must be non-empty text or an object.")
+                item = {"title": f"{label} {index + 1}", "description": item}
+            if not isinstance(item, dict):
+                raise ContractError(f"{location} must be non-empty text or an object.")
+            require_text(item, "title", location)
+            require_text(item, "description", location)
+            normalized_items.append(item)
+        normalized_conclusion[section] = normalized_items
+
+    seen_ids = set()
+    for index, item in enumerate(require_list(llm, "issues", "llm")):
+        location = f"llm.issues[{index}]"
+        if not isinstance(item, dict):
+            raise ContractError(f"{location} must be an object.")
+        issue_id = require_text(item, "issue_id", location)
+        require_text(item, "title", location)
+        require_text(item, "description", location)
+        if issue_id in seen_ids:
+            raise ContractError(f"Duplicate llm issue_id: {issue_id}")
+        seen_ids.add(issue_id)
+    return {**llm, "conclusion": normalized_conclusion}
+
+
 def resolve_file(raw_path, base_dir, label):
     path = Path(raw_path)
     if not path.is_absolute():
@@ -81,28 +123,14 @@ def resolve_directory(raw_path, base_dir, label):
 
 def normalize_contracts(llm_path, runtime_path):
     """Validate both schemas and expose the variables consumed by the V6 template."""
-    llm = load_single_jsonl(llm_path, "LLM JSONL")
+    llm = normalize_editorial_content(load_single_jsonl(llm_path, "LLM JSONL"))
     runtime = load_single_jsonl(runtime_path, "runtime JSONL")
-    if llm.get("schema_version") != "dfm-html-llm/v1":
-        raise ContractError("llm.schema_version must be dfm-html-llm/v1.")
     if runtime.get("schema_version") != "dfm-html-runtime/v1":
         raise ContractError("runtime.schema_version must be dfm-html-runtime/v1.")
 
-    part = require_object(llm, "part", "llm")
-    require_text(part, "name", "llm.part")
-    require_nullable_text(part, "general_tolerance", "llm.part")
-    require_nullable_text(part, "technical_note", "llm.part")
-    conclusion = require_object(llm, "conclusion", "llm")
-    require_text(conclusion, "assessment_level", "llm.conclusion")
-    require_text(conclusion, "summary", "llm.conclusion")
-    for section in ("risks", "actions"):
-        for index, item in enumerate(require_list(conclusion, section, "llm.conclusion")):
-            location = f"llm.conclusion.{section}[{index}]"
-            if not isinstance(item, dict):
-                raise ContractError(f"{location} must be an object.")
-            require_text(item, "title", location)
-            require_text(item, "description", location)
-    issues_copy = require_list(llm, "issues", "llm")
+    part = llm["part"]
+    conclusion = llm["conclusion"]
+    issues_copy = llm["issues"]
 
     display = require_object(runtime, "display", "runtime")
     require_text(display, "process", "runtime.display")
@@ -129,8 +157,32 @@ def normalize_contracts(llm_path, runtime_path):
             raise ContractError(f"runtime.report.stats.{key} must be a non-negative integer.")
     model_metrics = require_list(runtime, "model_metrics", "runtime")
     resources = require_object(runtime, "resources", "runtime")
-    scalar_fields = require_object(resources, "scalar_fields", "runtime.resources")
     base_dir = Path(runtime_path).resolve().parent
+    if "field_catalog" in resources:
+        field_catalog = require_list(resources, "field_catalog", "runtime.resources")
+    else:
+        scalar_fields = require_object(resources, "scalar_fields", "runtime.resources")
+        field_catalog = [
+            {"id": key, "metric_id": key, "quantity_id": "", "unit": "", "path": value}
+            for key, value in scalar_fields.items()
+        ]
+    resolved_fields = []
+    field_ids = set()
+    for index, field in enumerate(field_catalog):
+        location = f"runtime.resources.field_catalog[{index}]"
+        if not isinstance(field, dict):
+            raise ContractError(f"{location} must be an object.")
+        field_id = require_text(field, "id", location)
+        if field_id in field_ids:
+            raise ContractError(f"Duplicate HTML scalar field id: {field_id}")
+        field_ids.add(field_id)
+        resolved_fields.append({
+            "id": field_id,
+            "metric_id": str(field.get("metric_id") or ""),
+            "quantity_id": str(field.get("quantity_id") or ""),
+            "unit": str(field.get("unit") or ""),
+            "path": resolve_file(require_text(field, "path", location), base_dir, f"{location}.path"),
+        })
     resolved = {
         "evidence_root": resolve_directory(
             require_text(resources, "evidence_root", "runtime.resources"),
@@ -142,16 +194,7 @@ def normalize_contracts(llm_path, runtime_path):
             base_dir,
             "runtime.resources.scene_path",
         ),
-        "thickness_path": resolve_file(
-            require_text(scalar_fields, "thickness", "runtime.resources.scalar_fields"),
-            base_dir,
-            "runtime.resources.scalar_fields.thickness",
-        ),
-        "draft_path": resolve_file(
-            require_text(scalar_fields, "draft", "runtime.resources.scalar_fields"),
-            base_dir,
-            "runtime.resources.scalar_fields.draft",
-        ),
+        "field_catalog": resolved_fields,
         "evidence_geometry_path": resolve_file(
             require_text(resources, "evidence_geometry_path", "runtime.resources"),
             base_dir,
@@ -175,14 +218,8 @@ def normalize_contracts(llm_path, runtime_path):
     )
 
     copy_by_id = {}
-    for index, item in enumerate(issues_copy):
-        if not isinstance(item, dict):
-            raise ContractError(f"llm.issues[{index}] must be an object.")
-        issue_id = require_text(item, "issue_id", f"llm.issues[{index}]")
-        require_text(item, "title", f"llm.issues[{index}]")
-        require_text(item, "description", f"llm.issues[{index}]")
-        if issue_id in copy_by_id:
-            raise ContractError(f"Duplicate llm issue_id: {issue_id}")
+    for item in issues_copy:
+        issue_id = item["issue_id"]
         copy_by_id[issue_id] = {
             "human_title": item["title"],
             "translated_message": item["description"],
@@ -216,7 +253,7 @@ def normalize_contracts(llm_path, runtime_path):
             ):
                 if key not in metric:
                     raise ContractError(f"{location}.metric.{key} is required.")
-            if metric["operator"] not in {">=", "<=", ">", "<", "=="}:
+            if metric["operator"] not in {">=", "<=", ">", "<", "==", "!=", "between"}:
                 raise ContractError(f"{location}.metric.operator is invalid.")
             if not isinstance(metric["measurement_ids"], list):
                 raise ContractError(f"{location}.metric.measurement_ids must be an array.")
@@ -274,7 +311,6 @@ def normalize_contracts(llm_path, runtime_path):
     for issue_id, issue in runtime_by_id.items():
         if issue.get("images") or issue.get("image"):
             continue
-        copy = copy_by_id[issue_id]
         metadata = global_metadata_by_id[issue_id]
         issue_type_id, issue_type_label = classify_issue_type(
             issue.get("check_id") or issue.get("issue_type_id"), issue.get("code")
@@ -282,10 +318,10 @@ def normalize_contracts(llm_path, runtime_path):
         global_issues.append(
             {
                 "original_id": metadata["source_issue_id"],
-                "title": copy["human_title"],
+                "title": issue.get("title") or issue.get("check_id") or issue_id,
                 "issue_type_id": issue_type_id,
                 "issue_type_label": issue_type_label,
-                "description": copy["translated_message"],
+                "description": _metric_summary(issue),
             }
         )
 
@@ -342,10 +378,76 @@ def inch2px(inches):
     return inches * 96
 
 def compact_number(value, digits=3):
+    if isinstance(value, dict) and {"lower", "upper"} <= set(value):
+        return f"{compact_number(value['lower'], digits)}–{compact_number(value['upper'], digits)}"
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return f"{compact_number(value[0], digits)}–{compact_number(value[1], digits)}"
     if not isinstance(value, (int, float)):
         return value
+    if value != 0 and abs(value) < 10 ** (-digits):
+        return f"{value:.3g}"
     text = f"{value:.{digits}f}".rstrip('0').rstrip('.')
     return text if text else "0"
+
+
+def _metric_unit(metric):
+    """Use the evaluated expression unit, never an operand measurement unit."""
+    unit = metric.get("actual_unit")
+    if not unit:
+        unit = next(
+            (
+                item.get("unit")
+                for item in metric.get("criterion_results", [])
+                if isinstance(item, dict) and item.get("outcome") == "fail"
+            ),
+            None,
+        )
+    return {"degree": "°", "ratio": "倍"}.get(unit, unit or "")
+
+
+def _metric_expected(metric):
+    expected = metric.get("expected")
+    if metric.get("operator") == "between" and isinstance(expected, dict):
+        return f"[{compact_number(expected.get('lower'))}, {compact_number(expected.get('upper'))}]"
+    return str(compact_number(expected))
+
+
+def _metric_summary(issue):
+    metric = issue.get("metric")
+    if not isinstance(metric, dict):
+        return str(issue.get("message") or "未提供结构化判定结果。")
+    operator = {">=": "≥", "<=": "≤", "==": "=", "between": "∈"}.get(
+        metric.get("operator"), metric.get("operator") or ""
+    )
+    unit = _metric_unit(metric)
+    suffix = f" {unit}" if unit else ""
+    text = (
+        f"规则判定未通过：实测 {compact_number(metric.get('actual'))}{suffix}；"
+        f"规则要求 {operator} {_metric_expected(metric)}{suffix}。"
+    )
+    indeterminate = sum(
+        item.get("outcome") == "indeterminate"
+        for item in metric.get("criterion_results", [])
+        if isinstance(item, dict)
+    )
+    if indeterminate:
+        text += f"另有 {indeterminate} 项子判据无法判定，详见完整溯源。"
+    return text
+
+
+def _issue_recommendation(issue):
+    """Prefer the published rule's advice; use its threshold when none exists."""
+    recommendation = str(issue.get("recommendation") or "").strip()
+    if recommendation and recommendation != "Correct the highlighted geometry and rerun the same plan.":
+        return recommendation
+    metric = issue.get("metric") or {}
+    check = str(issue.get("title") or issue.get("check_id") or issue.get("code") or "该检查项")
+    unit = _metric_unit(metric)
+    operator = {">=": "≥", "<=": "≤", "==": "=", "between": "介于"}.get(
+        metric.get("operator"), metric.get("operator") or ""
+    )
+    suffix = f" {unit}" if unit else ""
+    return f"复核{check}的对应区域，将指标调整至规则要求：{operator} {_metric_expected(metric)}{suffix}。"
 
 def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_dir=DEFAULT_VENDOR_DIR):
     contract = normalize_contracts(llm_jsonl_path, runtime_jsonl_path)
@@ -389,22 +491,33 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
             }
 
     scene_path = resources["scene_path"]
-    thickness_path = resources["thickness_path"]
-    draft_path = resources["draft_path"]
+    field_catalog = resources["field_catalog"]
+    scalar_field_data = []
+    for field in field_catalog:
+        with open(field["path"], "r", encoding="utf-8") as source:
+            payload = json.load(source)
+        scalar_field_data.append({
+            "id": field["id"],
+            "metric_id": field["metric_id"],
+            "quantity_id": field["quantity_id"],
+            "unit": field["unit"],
+            "samples": [
+                {"sample_id": sample.get("sample_id"), "value": sample.get("value")}
+                for sample in payload.get("samples", []) if isinstance(sample, dict)
+            ],
+            "cells": [
+                {"triangle_ref": cell.get("triangle_ref"), "sample_ids": cell.get("sample_ids", [])}
+                for cell in payload.get("cells", []) if isinstance(cell, dict)
+            ],
+        })
+    scalar_fields_json = json.dumps(scalar_field_data, ensure_ascii=False).replace("</", "<\\/")
     obs_part_name = part.get("name")
     obs_tolerance = part.get("general_tolerance")
     obs_note = part.get("technical_note")
 
     scene_data_str = "{}"
-    thickness_data_str = "{}"
-    draft_data_str = "{}"
-
     with open(scene_path, 'r', encoding='utf-8') as f:
         scene_data_str = f.read()
-    with open(thickness_path, 'r', encoding='utf-8') as f:
-        thickness_data_str = f.read()
-    with open(draft_path, 'r', encoding='utf-8') as f:
-        draft_data_str = f.read()
 
     # Fetch traceability info
     ontology_path = resources["rule_library_path"]
@@ -444,14 +557,10 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         code = str(issue.get("code") or "")
         metric = issue.get("metric") if isinstance(issue.get("metric"), dict) else {}
         measurement_ids = metric.get("measurement_ids") if isinstance(metric.get("measurement_ids"), list) else []
-        unit = ""
-        if measurement_ids:
-            if "_mm-" in measurement_ids[0]: unit = "mm"
-            elif "_deg-" in measurement_ids[0]: unit = "°"
+        unit = _metric_unit(metric)
         image_names = list(issue.get("images") or []) if isinstance(issue.get("images"), list) else []
         if issue.get("image") and issue.get("image") not in image_names:
             image_names.append(issue.get("image"))
-        issue_insight = insights.get("issues", {}).get(issue_id, {})
         issue_type_id, issue_type_label = classify_issue_type(
             issue.get("check_id") or issue.get("issue_type_id"), code
         )
@@ -471,15 +580,17 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
                 triangle_refs.append(ref)
         issue_ui_data[issue_id] = {
             "id": issue_id,
-            "title": issue_insight.get("human_title") or issue.get("title") or code or "DFM 问题",
+            "title": issue.get("title") or code or "DFM 问题",
             "code": code,
             "issue_type_id": issue_type_id,
             "issue_type_label": issue_type_label,
-            "mode": ("thickness" if "thickness" in code.lower() else
-                     "draft" if "draft" in code.lower() else "issues"),
+            "mode": next(
+                (field["id"] for field in scalar_field_data if field["metric_id"] == code),
+                "issues",
+            ),
             "triangle_refs": triangle_refs,
             "actual": compact_number(metric.get("actual", "N/A")),
-            "expected": compact_number(metric.get("expected", "N/A")),
+            "expected": _metric_expected(metric),
             "operator": metric.get("operator", ""),
             "unit": unit,
             "rule_id": metric.get("rule_id", ""),
@@ -1081,7 +1192,18 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
     )
 
     html += f'<div class="webgl-wrapper" style="left:{inch2px(0.65)}px; top:{inch2px(1.48)}px; width:{inch2px(8.35)}px; height:{inch2px(5.38)}px;">'
-    html += f'<div class="glass-panel"><button class="glass-btn active" onclick="activateSummary3D(\'issues\')">问题定位</button><button class="glass-btn" onclick="activateSummary3D(\'thickness\')">壁厚场</button><button class="glass-btn" onclick="activateSummary3D(\'draft\')">拔模场</button></div>'
+    field_options = ''.join(
+        f'<option value="{html_lib.escape(field["id"], quote=True)}">'
+        f'{html_lib.escape(" / ".join(part for part in (field["metric_id"], field["quantity_id"]) if part) or field["id"])}'
+        f'{html_lib.escape(" (" + field["unit"] + ")" if field["unit"] else "")}</option>'
+        for field in field_catalog
+    )
+    field_selector = (
+        f'<select id="scalarFieldSelect" class="glass-btn" style="max-width:70%;min-width:0" onchange="activateSummary3D(this.value)">'
+        f'<option value="issues">选择 OCCT 几何量</option>{field_options}</select>'
+        if field_catalog else ''
+    )
+    html += f'<div class="glass-panel"><button class="glass-btn active" onclick="activateSummary3D(\'issues\')">问题定位</button>{field_selector}</div>'
     html += '<div id="activeModeLabel" class="cover-model-label">FAILED CHECKS · GEOMETRY EVIDENCE</div>'
     html += '<div id="modelIssueCallout" class="model-issue-callout"><div class="callout-title"></div><div class="callout-metric"></div></div>'
     html += f'<div class="legend"><div class="legend-item"><div class="legend-color" style="background:#F21F12"></div><span class="legend-text">未通过判定区域</span></div><div class="legend-item"><div class="legend-color" style="background:#9AA6B2"></div><span class="legend-text">半透明结构外壳</span></div></div>'
@@ -1098,10 +1220,11 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
     html += f'<div class="element section-eyebrow" style="left:{inch2px(9.5)}px; top:{inch2px(1.74)}px;">问题导航</div>\n'
     html += add_text("重点缺陷", 9.48, 1.98, 2.75, 0.32, size=14, bold=True)
     issue_nav_html = f'<div class="element issue-nav-list" style="left:{inch2px(9.48)}px; top:{inch2px(2.38)}px; width:{inch2px(2.85)}px; height:{inch2px(1.64)}px; overflow-y:auto; padding-right:3px;">'
-    for nav_issue in list(issue_ui_data.values())[:4]:
+    for nav_issue in issue_ui_data.values():
         nav_id = nav_issue["id"]
-        nav_operator = {">=": "≥", "<=": "≤", ">": ">", "<": "<", "==": "="}.get(nav_issue["operator"], nav_issue["operator"])
-        nav_metric = f'实测 {nav_issue["actual"]} {nav_issue["unit"]} · 要求 {nav_operator} {nav_issue["expected"]} {nav_issue["unit"]}'
+        nav_operator = {">=": "≥", "<=": "≤", "==": "=", "between": "∈"}.get(nav_issue["operator"], nav_issue["operator"])
+        nav_unit = f' {nav_issue["unit"]}' if nav_issue["unit"] else ''
+        nav_metric = f'实测 {nav_issue["actual"]}{nav_unit} · 要求 {nav_operator} {nav_issue["expected"]}{nav_unit}'
         issue_nav_html += f'''
         <div class="issue-nav-card" data-issue-nav="{nav_id}">
             <button class="issue-nav-select" aria-pressed="false" onclick="selectIssueFromSummary('{nav_id}', true)">
@@ -1109,7 +1232,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
                 <div style="margin-top:4px; color:#D92D20; font-size:8pt; font-weight:700;">{nav_metric}</div>
             </button>
             <div class="issue-nav-actions">
-                <button onclick="event.stopPropagation(); goToEvidence('{nav_id}')">查看证据</button>
+                <button onclick="event.stopPropagation(); goToEvidence('{nav_id}')">查看问题</button>
                 <button onclick="event.stopPropagation(); openTraceDrawer('{nav_id}')">完整溯源</button>
             </div>
         </div>
@@ -1166,10 +1289,10 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
     html += add_footer(2)
     html += '</div>\n'
 
-    # --- SLIDES 4+: FINDINGS ---
+    # --- SLIDES 4+: EVERY FAILED CHECK (screenshots are optional) ---
     page = 3
-    evidence_issue_ids = [str(item.get("id") or "DFM") for item in issues_with_evidence]
-    for issue_index, issue in enumerate(issues_with_evidence):
+    issue_ids = [str(item.get("id") or "DFM") for item in issues]
+    for issue_index, issue in enumerate(issues):
         issue_type_id, issue_type_label = classify_issue_type(
             issue.get("check_id") or issue.get("issue_type_id"),
             issue.get("code"),
@@ -1196,12 +1319,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         html += f'<div class="slide finding-slide" id="issue-{issue_id}" data-issue-id="{issue_id}">\n'
         html += add_shape(0, 0, 13.333, 7.5, "F7F8FA", radius=False)
         html += f'<div class="page-ghost">{page:02d}</div>\n'
-        # Use LLM insights if available
-        issue_insights = insights.get("issues", {}).get(issue_id, {})
-        if issue_insights.get("human_title"):
-            title = issue_insights.get("human_title")
-
-        html += add_title(title, str(issue.get("code") or ""))
+        html += add_title(html_lib.escape(title), html_lib.escape(str(issue.get("code") or "")))
         html += f'''<div class="element finding-toolbar" style="right:{inch2px(0.67)}px; top:{inch2px(0.36)}px;">
             <button class="evidence-return" onclick="returnToSummary()">← 分析摘要</button>
             <div class="rules-tooltip">
@@ -1212,7 +1330,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
                     <li>每个问题最多 3 张证据图</li>
                     <li>固定顺序：正视、剖视、斜视</li>
                     <li>检测指标直接来自分析 JSON</li>
-                    <li>无证据的问题保留在 JSON/MD</li>
+                    <li>无截图的问题仍有独立问题页与结构化溯源</li>
                 </ul>
                 </div>
             </div>
@@ -1223,9 +1341,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         html += f'<div class="element finding-accent" style="left:{inch2px(0.7)}px; top:{inch2px(1.35)}px; width:{inch2px(0.055)}px; height:{inch2px(5.45)}px; background:#{color};"></div>\n'
         html += f'<div class="element section-eyebrow" style="left:{inch2px(1.0)}px; top:{inch2px(1.58)}px;">问题 {page - 2:02d} · 诊断</div>\n'
         html += add_text("问题说明", 1.0, 1.82, 1.6, 0.35, size=16, bold=True)
-        message = str(insights.get("issues", {}).get(issue_id, {}).get("translated_message", issue.get("message", "未提供问题说明")))
-        if "draft" in str(issue.get("code", "")).lower():
-            message = re.sub(r'(\d+(?:\.\d+)?)\s*mm\b', r'\1°', message)
+        message = html_lib.escape(_metric_summary(issue))
         html += f'<div class="element" style="left:{inch2px(1.0)}px; top:{inch2px(2.2)}px; width:{inch2px(2.66)}px; height:{inch2px(1.03)}px; overflow-y:auto; overflow-x:hidden; word-break:break-word; font-size:11pt; color:#344054; line-height:1.5;">{message}</div>\n'
 
         html += add_text("检测指标", 1.0, 3.45, 1.6, 0.35, size=16, bold=True)
@@ -1235,16 +1351,12 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         actual = metric.get("actual", "N/A")
         expected = metric.get("expected", "N/A")
         op = metric.get("operator", "")
-        op_display = {">=": "≥", "<=": "≤", "==": "="}.get(op, op)
+        op_display = {">=": "≥", "<=": "≤", "==": "=", "between": "∈"}.get(op, op)
 
-        if isinstance(actual, (int, float)): actual = round(actual, 3)
-        if isinstance(expected, (int, float)): expected = round(expected, 3)
+        if isinstance(actual, (int, float)): actual = compact_number(actual)
+        expected = compact_number(expected)
 
-        unit = ""
-        m_ids = metric.get("measurement_ids", [])
-        if m_ids and len(m_ids) > 0:
-            if "_mm-" in m_ids[0]: unit = "mm"
-            elif "_deg-" in m_ids[0]: unit = "°"
+        unit = _metric_unit(metric)
 
         metrics_html = f'<div class="element" style="left:{inch2px(1.08)}px; top:{inch2px(4.0)}px; width:{inch2px(2.5)}px; display:flex; flex-direction:column; gap:8px; font-family:\'Segoe UI\', system-ui, sans-serif;">'
         if actual != "N/A" or expected != "N/A":
@@ -1323,13 +1435,18 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
                 btn_y = 1.50
                 html += f'<button onclick="openGallery(\'{issue_id}\')" class="element gallery-button" style="left:{inch2px(btn_x)}px; top:{inch2px(btn_y)}px; width:{inch2px(btn_w)}px; height:{inch2px(btn_h)}px; font-size:9pt; font-weight:bold; color:white; border:1px solid rgba(255,255,255,.18); cursor:pointer; backdrop-filter:blur(8px); box-shadow:0 4px 10px rgba(0,0,0,.22);">全部证据 · {len(all_imgs)}</button>\n'
 
-        previous_issue_id = evidence_issue_ids[issue_index - 1] if issue_index > 0 else None
-        next_issue_id = evidence_issue_ids[issue_index + 1] if issue_index + 1 < len(evidence_issue_ids) else None
+        else:
+            html += add_shape(evidence_x, 1.35, evidence_w, 5.45, "FFFFFF")
+            html += add_text("本项未生成截图证据", evidence_x + 0.35, 2.25, evidence_w - 0.7, 0.5, size=18, bold=True)
+            html += add_text("结构化测量、判定阈值及模型区域仍可在完整溯源中核对。", evidence_x + 0.35, 2.87, evidence_w - 0.7, 0.7, size=12)
+
+        previous_issue_id = issue_ids[issue_index - 1] if issue_index > 0 else None
+        next_issue_id = issue_ids[issue_index + 1] if issue_index + 1 < len(issue_ids) else None
         previous_action = f'onclick="goToEvidence(\'{previous_issue_id}\')"' if previous_issue_id else 'disabled'
         next_action = f'onclick="goToEvidence(\'{next_issue_id}\')"' if next_issue_id else 'disabled'
         html += f'''<div class="element finding-cycle" style="left:{inch2px(1.0)}px; top:{inch2px(6.31)}px; width:{inch2px(2.66)}px;">
             <button {previous_action}>‹ 上一问题</button>
-            <span>{issue_index + 1} / {len(evidence_issue_ids)}</span>
+            <span>{issue_index + 1} / {len(issue_ids)}</span>
             <button {next_action}>下一问题 ›</button>
         </div>\n'''
 
@@ -1337,29 +1454,38 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         html += '</div>\n'
         page += 1
 
-    # --- FINAL SLIDE: AI SUMMARY (AI 综合评估报告) ---
-    global_insights = insights.get("global", {})
-    assessment_level = global_insights.get("assessment_level", "AI 综合评估")
+    # --- FINAL SLIDE: SUMMARY GROUNDED IN THE EVALUATED RUN ---
+    assessment_level = "存在未通过项" if issues else "未发现未通过项"
     html += '<div class="slide conclusion-slide" id="report-conclusion">\n'
     html += add_shape(0, 0, 13.333, 7.5, "F7F8FA", radius=False)
     html += f'<div class="page-ghost">{page:02d}</div>\n'
     html += '<div class="element section-eyebrow" style="left:66px; top:31px;">评估与行动计划</div>\n'
     html += add_text("综合评估与优化建议", 0.65, 0.49, 9.3, 0.55, size=26, bold=True, valign="top")
-    html += add_text("基于全局拓扑、缺陷分布与证据结果的智能解读", 0.67, 1.02, 9.4, 0.3, size=10, color="667085")
+    html += add_text("依据本次 OCCT 测量与规则评估结果", 0.67, 1.02, 9.4, 0.3, size=10, color="667085")
     html += f'<div class="element risk-level-pill" style="right:188px; top:49px; padding:8px 14px; color:#B42318; background:#FEF3F2; border:1px solid #FECDCA; font-size:10pt; font-weight:800;">{assessment_level}</div>\n'
 
-    # Full Width AI Summary Content
+    # Do not let unverified prose override the engine's failed-check verdicts.
     html += f'<div class="element conclusion-shell" style="left:{inch2px(0.65)}px; top:{inch2px(1.45)}px; width:{inch2px(12.0)}px; height:{inch2px(5.35)}px;"></div>\n'
 
-    summary_paragraph = global_insights.get("summary_paragraph", "等待 AI 分析...")
-
-    core_risks_html = ""
-    for risk in global_insights.get("core_risks", []):
-        core_risks_html += f'<li style="margin-bottom:8px;"><strong>{risk.get("title")}</strong>：{risk.get("description")}</li>'
-
-    optimization_roadmap_html = ""
-    for opt in global_insights.get("optimization_roadmap", []):
-        optimization_roadmap_html += f'<li style="margin-bottom:8px;"><strong>{opt.get("title")}</strong>：{opt.get("description")}</li>'
+    summary_paragraph = (
+        f"本次共完成 {stats.get('measurement_count', 0)} 项几何测量、"
+        f"{stats.get('evaluation_count', 0)} 项规则评估，"
+        f"其中 {len(issues)} 项未通过。每个问题页均列出本次实测值、单位、"
+        "规则阈值和对应的模型溯源；无截图不代表没有测量结果。"
+    )
+    core_risks_html = "".join(
+        f'<li style="margin-bottom:8px;"><strong>{html_lib.escape(str(issue.get("title") or issue.get("check_id") or issue.get("code") or "DFM"))}</strong>：'
+        f'{html_lib.escape(_metric_summary(issue))}</li>'
+        for issue in issues
+    )
+    optimization_roadmap_html = "".join(
+        f'<li style="margin-bottom:8px;"><strong>{html_lib.escape(str(issue.get("title") or issue.get("check_id") or "DFM"))}</strong>：'
+        f'{html_lib.escape(_issue_recommendation(issue))}</li>'
+        for issue in issues
+    )
+    if not issues:
+        core_risks_html = '<li>本次规则评估未发现不合格项。</li>'
+        optimization_roadmap_html = '<li>保留本次报告与模型，按工程变更情况重新评估。</li>'
 
     llm_mock_text = f'''
 <div class="conclusion-summary">
@@ -1368,11 +1494,11 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
 </div>
 <div class="conclusion-grid">
     <section class="conclusion-card">
-        <h3>核心风险点</h3>
+        <h3>未通过的检查</h3>
         <ul>{core_risks_html}</ul>
     </section>
     <section class="conclusion-card">
-        <h3>建议行动路线</h3>
+        <h3>下一步</h3>
         <ul>{optimization_roadmap_html}</ul>
     </section>
 </div>
@@ -1393,7 +1519,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         engine_ver = issues[0]["metric"].get("algorithm_version", "Unknown")
 
     # Tiny Horizontal Footer for System Notes
-    notes_text = f"注：共识别 {len(issues)} 个问题，其中 {len(issues_with_evidence)} 个提供可视证据 ｜ 阈值与判定来自 dfm_report.json ｜ AI 结论请结合工程经验复核"
+    notes_text = f"注：共识别 {len(issues)} 个问题，其中 {len(issues_with_evidence)} 个提供截图 ｜ 数值、单位与判定来自 dfm_report.json"
     trace_text = f"溯源快照 ｜ 引擎：{engine_ver} ｜ CAD 哈希：{input_sha256}"
 
     html += f'<div class="element notes-band" style="left:{inch2px(0.94)}px; top:{inch2px(6.34)}px; width:{inch2px(11.45)}px; height:{inch2px(0.38)}px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; padding-top:7px;">'
@@ -1554,8 +1680,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         }});
 
         const sceneData = {scene_data_str};
-        const thicknessData = {thickness_data_str};
-        const draftData = {draft_data_str};
+        const scalarFields = {scalar_fields_json};
         const ISSUE_UI_MAP = {json.dumps(issue_ui_data, ensure_ascii=False)};
 
         // Embedded PDF Base64 string
@@ -1598,8 +1723,8 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
             return values;
         }}
 
-        const thicknessMap = fieldValuesByTriangle(thicknessData);
-        const draftMap = fieldValuesByTriangle(draftData);
+        const fieldMaps = Object.fromEntries(scalarFields.map(field => [field.id, fieldValuesByTriangle(field)]));
+        const fieldLabels = Object.fromEntries(scalarFields.map(field => [field.id, [field.metric_id, field.quantity_id].filter(Boolean).join(' / ')]));
 
         let heatmapMesh = null; // Store reference to the summary mesh for switching
 
@@ -1658,7 +1783,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
 
         function applyColorsToGeometry(geometry, mode, animated = true) {{
             const colors = [];
-            const fieldValues = mode === 'thickness' ? thicknessMap : mode === 'draft' ? draftMap : {{}};
+            const fieldValues = fieldMaps[mode] || {{}};
             let minimum = Infinity;
             let maximum = -Infinity;
             for (const value of Object.values(fieldValues)) {{
@@ -1932,7 +2057,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
             globalCamera.aspect = reference.clientWidth / reference.clientHeight;
             globalCamera.updateProjectionMatrix();
             containers.forEach((container) => {{
-                const posterMode = ['issues', 'thickness', 'draft'].includes(container.dataset.mode) ? container.dataset.mode : null;
+                const posterMode = container.dataset.mode === 'issues' || fieldMaps[container.dataset.mode] ? container.dataset.mode : null;
                 applyColorsToGeometry(globalMeshGroup.children[0].geometry, posterMode, false);
                 globalRenderer.render(globalScene, globalCamera);
                 try {{ container.style.backgroundImage = `url(${{globalRenderer.domElement.toDataURL('image/png')}})`; }} catch (error) {{}}
@@ -1962,7 +2087,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
                 globalControls.autoRotateSpeed = 0.26;
                 globalControls.enableZoom = true;
                 globalControls.enablePan = true;
-            }} else if (mode === 'issues' || mode === 'thickness' || mode === 'draft') {{
+            }} else if (mode === 'issues' || fieldMaps[mode]) {{
                 applyColorsToGeometry(globalMeshGroup.children[0].geometry, currentDefectMode || mode);
                 globalControls.autoRotate = true;
                 globalControls.autoRotateSpeed = 0.42;
@@ -2002,15 +2127,14 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
             }}
             document.querySelectorAll('.glass-btn').forEach(btn => btn.classList.remove('active'));
             const modeLabel = document.getElementById('activeModeLabel');
+            const fieldSelect = document.getElementById('scalarFieldSelect');
             if (mode === 'issues') {{
                 document.querySelectorAll('.glass-btn')[0]?.classList.add('active');
+                if (fieldSelect) fieldSelect.value = 'issues';
                 if (modeLabel) modeLabel.textContent = 'FAILED CHECKS · GEOMETRY EVIDENCE';
-            }} else if (mode === 'thickness') {{
-                document.querySelectorAll('.glass-btn')[1]?.classList.add('active');
-                if (modeLabel) modeLabel.textContent = 'WALL THICKNESS · DEFECT ISOLATION';
             }} else {{
-                document.querySelectorAll('.glass-btn')[2]?.classList.add('active');
-                if (modeLabel) modeLabel.textContent = 'DRAFT ANGLE · DEFECT ISOLATION';
+                if (fieldSelect) fieldSelect.value = mode;
+                if (modeLabel) modeLabel.textContent = fieldLabels[mode] || mode;
             }}
             if (!globalMeshGroup) return;
             if (bringIntoView) {{
@@ -2265,16 +2389,16 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         function getMetricName(item) {{
             if (item.mode === 'thickness') return '最小壁厚';
             if (item.mode === 'draft') return '拔模角';
-            return '检测值';
+            return fieldLabels[item.mode] || '检测值';
         }}
 
         function getOperatorLabel(operator) {{
-            return {{'>=':'≥','<=':'≤','==':'='}}[operator] || operator || '';
+            return {{'>=':'≥','<=':'≤','==':'=','between':'∈'}}[operator] || operator || '';
         }}
 
         function getRequirementText(item) {{
             const metricName = getMetricName(item);
-            const opText = {{'>=':'不得低于','>':'必须高于','<=':'不得高于','<':'必须低于','==':'应等于'}}[item.operator] || `应满足 ${{item.operator || '阈值'}}`;
+            const opText = {{'>=':'不得低于','>':'必须高于','<=':'不得高于','<':'必须低于','==':'应等于','between':'应在范围'}}[item.operator] || `应满足 ${{item.operator || '阈值'}}`;
             return `${{metricName}}${{opText}} ${{item.expected}} ${{item.unit}}。这是该问题被判定为不合格的直接标准。`;
         }}
 

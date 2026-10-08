@@ -14,6 +14,7 @@ from .base import FactRequirement, ProcessPlan
 
 class DieCastingProcessAdapter:
     key = "die_casting"
+    display_name_zh = "压铸"
     version = "die-casting-v1"
 
     def __init__(self, scope_path: Path | None = None) -> None:

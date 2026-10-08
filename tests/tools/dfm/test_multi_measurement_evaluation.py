@@ -16,6 +16,15 @@ from tools.dfm.errors import DFMError
 from tools.dfm.evaluation import EvaluationEngine
 
 
+def test_inclusive_comparisons_ignore_only_floating_point_noise():
+    compare = EvaluationEngine._compare
+    assert compare(">=", 0.4999999999999054, 0.5, binding_id="draft")
+    assert not compare(">=", 0.499999, 0.5, binding_id="draft")
+    assert compare("between", 0.19999999999995, {"lower": 0.2, "upper": 0.25}, binding_id="fillet")
+    assert not compare("between", 0.199, {"lower": 0.2, "upper": 0.25}, binding_id="fillet")
+    assert not compare(">", 0.5, 0.5, binding_id="strict")
+
+
 METRIC_ID = "injection.geometry.wall_thickness"
 QUANTITY_ID = "thickness_mm"
 
@@ -261,7 +270,7 @@ def test_or_of_and_groups_use_three_state_rule_semantics(
     groups = [
         [{
             "criterion_id": "boss_min",
-            "expression": {"operand": "boss_wall_thickness"},
+            "expression": {"operand": "screw_boss_wall_thickness"},
             "comparator": "GTE",
             "threshold": 2.0,
             "result_unit": "mm",

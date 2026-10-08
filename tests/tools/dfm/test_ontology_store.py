@@ -165,6 +165,9 @@ def test_ontology_compiler_emits_existing_generic_rule_contract():
         if item.check_id == "check.main_wall_minimum_thickness"
     )
     assert compiled.rules[wall.rule_id].value == 1.2
+    published_wall = next(rule for rule in _package()["rules"] if rule["rule_id"] == wall.rule_id)
+    assert compiled.rules[wall.rule_id].name == published_wall["name"]
+    assert compiled.rules[wall.rule_id].recommendation_template == published_wall["recommendation_template"]
     assert wall.metric_id == "injection.geometry.wall_thickness"
     assert wall.expression == {"operand": "actual"}
     assert compiled.binding_selectors[wall.binding_id]["actual"] == {

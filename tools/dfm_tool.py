@@ -1,14 +1,215 @@
 """Thin Hermes registration adapter for the built-in DFM capability."""
 
 import json
+from collections import Counter
 
 from tools.dfm.errors import DFMError
 from tools.dfm.service import get_dfm_service
 from tools.registry import registry
 
 
+_session_projects: dict[str, str] = {}
+_TOOL_PREVIEW_LIMIT = 50
+
+
+def _project_status_summary(result: dict) -> dict:
+    project = result["project"]
+    snapshots = project.get("discovery_snapshots", [])
+    inputs = project.get("inputs", [])
+    facts = project.get("facts", [])
+    plans = project.get("plans", [])
+    runs = project.get("runs", [])
+    return {
+        "ok": True,
+        "project_id": project["project_id"],
+        "project": {
+            key: project[key]
+            for key in ("project_id", "name", "process", "input_mode", "revision")
+            if key in project
+        } | {
+            "inputs": [
+                {key: item[key] for key in ("input_id", "kind", "source_name", "sha256") if key in item}
+                for item in inputs[-_TOOL_PREVIEW_LIMIT:]
+            ],
+            "input_count": len(inputs),
+            "inputs_omitted": max(0, len(inputs) - _TOOL_PREVIEW_LIMIT),
+            "facts": [
+                {key: item[key] for key in ("name", "value", "status") if key in item}
+                for item in facts[-_TOOL_PREVIEW_LIMIT:]
+            ],
+            "fact_count": len(facts),
+            "facts_omitted": max(0, len(facts) - _TOOL_PREVIEW_LIMIT),
+            "open_clarifications": project.get("open_clarifications", []),
+            "discovery_snapshot_id": snapshots[-1]["snapshot_id"] if snapshots else None,
+            "plan_count": len(plans),
+            "latest_plan": next(
+                (
+                    {key: item[key] for key in ("plan_id", "phase", "status") if key in item}
+                    for item in reversed(plans)
+                ),
+                None,
+            ),
+            "run_count": len(runs),
+            "finding_count": len(project.get("findings", [])),
+            "artifact_count": len(project.get("artifacts", [])),
+            "latest_run": next(
+                (
+                    {key: item[key] for key in ("run_id", "status", "plan_id") if key in item}
+                    for item in reversed(runs)
+                ),
+                None,
+            ),
+        },
+        "ontology": result.get("ontology"),
+        "capabilities": {
+            key: {field: item[field] for field in ("status", "reason", "error_code") if field in item}
+            for key, item in result.get("capabilities", {}).items()
+        },
+        "process_capabilities": {
+            key: {field: item[field] for field in ("status", "reason", "error_code") if field in item}
+            for key, item in result.get("process_capabilities", {}).items()
+        },
+    }
+
+
+def _discovery_tool_summary(result: dict) -> dict:
+    """Expose discovery coverage without repeating persisted geometry details."""
+
+    features = result["features"]
+    regions = result["regions"]
+    snapshot = result["snapshot"]
+    plan = result["plan"]
+    capability = result["capability"]
+    return {
+        "ok": True,
+        "project_id": result["project_id"],
+        "phase": "discovery",
+        "plan": {
+            key: plan[key]
+            for key in ("plan_id", "status", "phase", "scope_id", "scope_version")
+            if key in plan
+        },
+        "snapshot": {
+            key: snapshot[key]
+            for key in ("snapshot_id", "status", "content_sha256", "provider_versions")
+            if key in snapshot
+        },
+        "feature_count": len(features),
+        "feature_counts": dict(Counter(item["kind"] for item in features)),
+        "features": [
+            {key: item[key] for key in ("feature_id", "kind", "status") if key in item}
+            for item in features[:_TOOL_PREVIEW_LIMIT]
+        ],
+        "features_omitted": max(0, len(features) - _TOOL_PREVIEW_LIMIT),
+        "region_count": len(regions),
+        "region_counts": dict(
+            Counter(item.get("role") or item.get("semantic_label") or "unknown" for item in regions)
+        ),
+        "regions": [
+            {key: item[key] for key in ("region_id", "role", "semantic_label") if key in item}
+            for item in regions[:_TOOL_PREVIEW_LIMIT]
+        ],
+        "regions_omitted": max(0, len(regions) - _TOOL_PREVIEW_LIMIT),
+        "observation_status_counts": dict(
+            Counter(item["status"] for item in result["observations"])
+        ),
+        "fusion_link_status_counts": dict(
+            Counter(item["status"] for item in result["fusion_links"])
+        ),
+        "capability": {
+            key: capability[key] for key in ("status", "providers") if key in capability
+        },
+        "drawing_discovery": {
+            "status": result["drawing_discovery"].get("status")
+        },
+        "open_clarifications": result["open_clarifications"],
+        "next_action": "clarify" if result["open_clarifications"] else "plan",
+    }
+
+
+def _plan_tool_summary(result: dict) -> dict:
+    plan = result["plan"]
+    bindings = plan["rule_bindings"]
+    check_ids = sorted({item["check_id"] for item in bindings})
+    rule_ids = sorted({item["rule_id"] for item in bindings})
+    capability = result["capability"]
+    return {
+        "ok": True,
+        "project_id": result["project_id"],
+        "plan": {
+            key: plan[key]
+            for key in (
+                "plan_id", "phase", "status", "process", "scope_id", "scope_version",
+                "ontology_snapshot_id", "discovery_snapshot_refs", "analyzer_keys",
+                "input_hashes",
+            )
+            if key in plan
+        } | {
+            "operation_count": len(plan["operations"]),
+            "rule_binding_count": len(bindings),
+            "check_ids": check_ids[:_TOOL_PREVIEW_LIMIT],
+            "check_ids_omitted": max(0, len(check_ids) - _TOOL_PREVIEW_LIMIT),
+            "rule_ids": rule_ids[:_TOOL_PREVIEW_LIMIT],
+            "rule_ids_omitted": max(0, len(rule_ids) - _TOOL_PREVIEW_LIMIT),
+        },
+        "capability": {
+            key: capability[key]
+            for key in ("analyzer_key", "status", "reason", "error_code")
+            if key in capability
+        },
+        "next_action": (
+            "start"
+            if plan["status"] == "ready" and capability["status"] == "available"
+            else "stop"
+        ),
+    }
+
+
+def _run_tool_summary(result: dict, action: str) -> dict:
+    run = result["run"]
+    status = run["status"]
+    if status == "succeeded":
+        next_action = "complete" if action == "result" else "result"
+    elif status in {"failed", "blocked", "cancelled"}:
+        next_action = "complete"
+    elif run.get("analyzer_key") in {"occt_cpp", "step"}:
+        next_action = "report_context"
+    else:
+        next_action = "status"
+    return {
+        "ok": True,
+        "project_id": result["project_id"],
+        "run": {
+            key: run[key]
+            for key in (
+                "run_id", "plan_id", "analyzer_key", "status", "stage",
+                "progress_percent", "error",
+            )
+            if key in run
+        } | {
+            "artifacts": [
+                {key: item[key] for key in ("artifact_id", "kind", "path") if key in item}
+                for item in run.get("artifacts", [])
+            ],
+            "diagnostics": run.get("diagnostics", {}),
+        },
+        "next_action": next_action,
+        **({"wait_seconds": 60} if next_action == "report_context" else {}),
+    }
+
+
+def active_dfm_project_id(session_id: str | None) -> str | None:
+    """Return the project used by this conversation's DFM tool calls."""
+    return _session_projects.get(session_id) if session_id else None
+
+
 def _call(kind: str, args: dict, **context) -> str:
     try:
+        if kind == "project" and args.get("action") == "confirm_fact":
+            raise DFMError(
+                "user_action_required",
+                "Use the interactive DFM clarification flow; only its user response can confirm a DFM fact.",
+            )
         if kind == "analysis" and args.get("action") == "cancel":
             raise DFMError(
                 "user_action_required",
@@ -30,6 +231,23 @@ def _call(kind: str, args: dict, **context) -> str:
             if kind == "project"
             else service.analysis(args.get("action", ""), **params)
         )
+        session_id = context.get("session_id")
+        project_id = (
+            result.get("project_id") or args.get("project_id")
+            if isinstance(result, dict) and result.get("ok") is True else None
+        )
+        if isinstance(session_id, str) and isinstance(project_id, str):
+            _session_projects[session_id] = project_id
+        if kind == "project" and args.get("action") == "status" and isinstance(result, dict) and "project" in result:
+            result = _project_status_summary(result)
+        if kind == "analysis" and isinstance(result, dict):
+            action = args.get("action")
+            if action == "discover" and "snapshot" in result:
+                result = _discovery_tool_summary(result)
+            elif action == "plan" and "plan" in result:
+                result = _plan_tool_summary(result)
+            elif action in {"start", "status", "result"} and "run" in result:
+                result = _run_tool_summary(result, action)
         return json.dumps(result, ensure_ascii=False)
     except DFMError as exc:
         return json.dumps(exc.to_dict(), ensure_ascii=False)
@@ -37,7 +255,7 @@ def _call(kind: str, args: dict, **context) -> str:
 
 DFM_PROJECT_SCHEMA = {
     "name": "dfm_project",
-    "description": "Manage durable DFM projects and the installed workspace ontology. Use sync_ontology when the user explicitly asks to pull or refresh the latest publication; use ontology_status to report the installed publication. Never determine the installed version from bundled source files or use shell commands for ontology synchronization. Create projects without inferring a process: process is confirmed only through confirm_fact after the user answers its clarification. Register STEP, Parasolid x_t, or drawing inputs. STEP registration may also produce an OCCT 3D preview when dfm-geometry is available. Use status before analysis to inspect format, the project's ontology identity, and process capabilities. confirm_fact may be called only after the user explicitly answers a clarification; never infer engineering facts from geometry.",
+    "description": "Manage durable DFM projects and the installed workspace ontology. Use sync_ontology only when the user asks. Create projects without inferring a process. Every open DFM clarification must be answered through the interactive DFM clarification flow with dfm_project_id and dfm_fact_name; it fetches all published options and confirms the user's answer atomically. The Agent cannot call confirm_fact directly. Register STEP, Parasolid x_t, or drawing inputs. Status returns a bounded project summary; do not use it to poll an active analysis run. Never infer engineering facts from geometry.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -47,7 +265,6 @@ DFM_PROJECT_SCHEMA = {
                     "create",
                     "add_input",
                     "status",
-                    "confirm_fact",
                     "list",
                     "ontology_status",
                     "sync_ontology",
@@ -59,13 +276,6 @@ DFM_PROJECT_SCHEMA = {
                 "type": "string",
                 "description": "Local path or Desktop @file: reference",
             },
-            "fact_name": {
-                "type": "string",
-                "description": "Startup names are process, model_units, and pull_dir. After discovery, use the canonical factor name returned by an open clarification. Use only the user's explicit answer.",
-            },
-            "fact_value": {
-                "description": "The user's explicit answer; never a model-inferred value."
-            },
             "idempotency_key": {"type": "string"},
         },
         "required": ["action"],
@@ -74,7 +284,7 @@ DFM_PROJECT_SCHEMA = {
 
 DFM_ANALYSIS_SCHEMA = {
     "name": "dfm_analysis",
-    "description": "Run the DFM workflow. Drawing OCR is deterministic; use drawing_context and the current Hermes model once to organize every explicit drawing fact into validated drawing observations. Use fusion_context and submit_fusion_links for Agent semantic proposals that the service checks against geometry IDs. An HTML-capable STEP run (PDF drawing optional) remains reporting (not succeeded) after deterministic analysis; call report_context to obtain the complete Runtime, then author dfm-html-llm/v1 and call render_html. render_html queues background rendering and returns immediately; wait for succeeded status or its completion notification before calling result. Only a validated report.html completes the run. Do not reinterpret OCR during reporting. The external OCCT C++ analyzer is integrated as experimental; PythonOCC remains the reference STEP backend and NX/Parasolid remains optional. Unavailable analyzers fail explicitly; never infer engineering findings from that status.",
+    "description": "Run the DFM workflow. Discovery, plan, start, status, and result return bounded control summaries; follow next_action and use feature_counts for exact discovery counts. Features and regions are previews with explicit omitted counts. Drawing OCR is deterministic; use drawing_context and the current Hermes model once to organize every explicit drawing fact into validated drawing observations. Use fusion_context and submit_fusion_links for Agent semantic proposals that the service checks against geometry IDs. An HTML-capable STEP run (PDF drawing optional) remains reporting (not succeeded) after deterministic analysis; call report_context to obtain the complete Runtime and required_issue_ids, then author dfm-html-llm/v1 with exactly those issue IDs and call render_html. render_html validates IDs before queuing background rendering; wait for succeeded status or its completion notification before calling result. Only a validated report.html completes the run. Do not reinterpret OCR during reporting. The external OCCT C++ analyzer is integrated as experimental; PythonOCC remains the reference STEP backend and NX/Parasolid remains optional. Unavailable analyzers fail explicitly; never infer engineering findings from that status.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -108,7 +318,7 @@ DFM_ANALYSIS_SCHEMA = {
                 "type": "number",
                 "minimum": 0,
                 "maximum": 60,
-                "description": "For action=report_context, wait up to this many seconds for deterministic analysis to reach report editing. The returned Runtime is inline; never use terminal/read-file to obtain it.",
+                "description": "For action=report_context, wait up to this many seconds for deterministic analysis to reach report editing. The complete Runtime and exact required_issue_ids are inline; never use terminal/read-file to obtain them.",
             },
             "input_id": {
                 "type": "string",
@@ -236,7 +446,11 @@ DFM_ANALYSIS_SCHEMA = {
                             "type": "object",
                             "additionalProperties": False,
                             "properties": {
-                                "issue_id": {"type": "string", "minLength": 1},
+                                "issue_id": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Copy exactly one ID from report_context.required_issue_ids; provide every required ID once and no other IDs.",
+                                },
                                 "title": {"type": "string", "minLength": 1},
                                 "description": {"type": "string", "minLength": 1},
                             },

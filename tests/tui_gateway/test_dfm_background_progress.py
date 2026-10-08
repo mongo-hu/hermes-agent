@@ -1,5 +1,8 @@
 from queue import Queue
 from types import SimpleNamespace
+from contextlib import nullcontext
+import json
+import threading
 
 import pytest
 
@@ -182,3 +185,59 @@ def test_dfm_report_ready_notification_is_skipped_after_report_succeeds(monkeypa
     run.artifacts.append(SimpleNamespace(kind="report_html"))
     completed = {**event, "type": "dfm_report_complete"}
     assert server._dfm_report_notification_is_current(completed)
+
+
+def test_completed_report_is_presented_from_artifacts_without_llm_turn(tmp_path, monkeypatch, server):
+    from tools.dfm import service as service_module
+    from tools.process_registry import process_registry
+
+    report_path = tmp_path / "dfm_report.json"
+    html_path = tmp_path / "report.html"
+    report_path.write_text(json.dumps({"run_id": "run-1", "issues": [{"id": "issue-1"}]}), encoding="utf-8")
+    html_path.write_text("<html></html>", encoding="utf-8")
+    artifacts = [
+        {"kind": "report_json", "path": str(report_path)},
+        {"kind": "report_html", "path": str(html_path)},
+    ]
+    monkeypatch.setattr(
+        service_module,
+        "get_dfm_service",
+        lambda: SimpleNamespace(analysis=lambda *_args, **_kwargs: {"run": {"artifacts": artifacts}}),
+    )
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(server, "_session_db", lambda _session: nullcontext(None))
+    monkeypatch.setattr(server, "_dfm_report_notification_is_current", lambda _evt: True)
+    monkeypatch.setattr(server, "_run_prompt_submit", lambda *_args: pytest.fail("completion must not call the LLM"))
+    stop = threading.Event()
+    emitted = []
+
+    def emit(event, sid, payload=None):
+        emitted.append((event, sid, payload))
+        if event == "message.complete":
+            stop.set()
+
+    monkeypatch.setattr(server, "_emit", emit)
+    queue = Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", queue)
+    event = {
+        "type": "dfm_report_complete",
+        "project_id": "project-1",
+        "run_id": "run-1",
+        "session_key": "conversation-1",
+        "origin_ui_session_id": "session-1",
+    }
+    queue.put(event)
+    session = {
+        "session_key": "conversation-1",
+        "history_lock": threading.RLock(),
+        "history": [{"role": "assistant", "content": "报告生成中。"}],
+        "running": False,
+        "_finalized": False,
+    }
+    server._notification_poller_loop(stop, "session-1", session)
+
+    assert [entry["role"] for entry in session["history"]] == ["assistant", "user", "assistant"]
+    assert "1 项未通过" in session["history"][-1]["content"]
+    assert str(html_path) in session["history"][-1]["content"]
+    assert any(item[0] == "message.complete" for item in emitted)
+    assert session["running"] is False

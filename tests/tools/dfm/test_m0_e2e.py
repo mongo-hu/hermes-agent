@@ -106,9 +106,9 @@ def test_production_step_intake_rejects_fake_content_without_fake_results(tmp_pa
     assert added["ok"] is False
     assert added["error"]["code"] == "step_format_invalid"
     assert status["project"]["input_mode"] is None
-    assert final_status["project"]["runs"] == []
-    assert final_status["project"]["findings"] == []
-    assert final_status["project"]["artifacts"] == []
+    assert final_status["project"]["run_count"] == 0
+    assert final_status["project"]["finding_count"] == 0
+    assert final_status["project"]["artifact_count"] == 0
     assert schemas_after == enabled_definitions
 
 

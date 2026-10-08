@@ -35,6 +35,21 @@ from tools.dfm.geometry.snapshot_hash import render_mesh_content_sha256
 from tools.dfm.runtime.process import ProcessResult
 
 
+def test_occt_progress_accepts_published_feature_measurement_fields():
+    payload = {
+        "schema_version": 1,
+        "contract_version": GEOMETRY_EVENT_CONTRACT,
+        "type": "progress",
+        "stage": "measure_screw_boss_wall",
+        "percent": 60,
+        "measured_feature_count": 1,
+        "unavailable_features": [],
+    }
+    OcctAnalyzer._validate_jsonl_stdout(
+        json.dumps(payload), [WorkerEvent.from_dict(payload)]
+    )
+
+
 OPERATION_PAIRS = (
     ("geometry.preflight", "geometry_preflight"),
     ("topology.index", "index_topology"),

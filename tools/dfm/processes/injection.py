@@ -24,6 +24,7 @@ _TRUSTED_SOURCES = {"project_fact", "user_confirmed"}
 
 class InjectionProcessAdapter:
     key = "injection"
+    display_name_zh = "注塑成型"
     version = "injection-ontology-runtime-v1"
 
     def __init__(

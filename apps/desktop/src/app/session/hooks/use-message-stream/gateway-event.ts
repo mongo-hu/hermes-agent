@@ -363,7 +363,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             prev.map(s => (s.id === storedId || s._lineage_root_id === storedId ? { ...s, title: nextTitle } : s))
           )
         }
-      } else if (event.type === 'tool.start' || event.type === 'tool.progress' || event.type === 'tool.generating') {
+      } else if (event.type === 'tool.start' || event.type === 'tool.progress') {
+        // tool.generating has no call ID; tool.start is the first event that can own a row.
         if (!sessionId) {
           return
         }

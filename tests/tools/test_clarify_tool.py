@@ -78,6 +78,130 @@ class TestClarifyToolChoicesValidation:
 
         assert len(choices_passed) == MAX_CHOICES
 
+    def test_dfm_choices_are_complete_and_come_from_ontology(self, monkeypatch):
+        from types import SimpleNamespace
+
+        published = [f"option-{index}" for index in range(12)]
+        confirmed = []
+
+        class FakeService:
+            config = SimpleNamespace(default_process="injection")
+
+            @staticmethod
+            def clarification_choices(_process, _name):
+                return published
+
+            @staticmethod
+            def _canonical_fact_name(name):
+                return name
+
+            @staticmethod
+            def project(action, **kwargs):
+                if action == "status":
+                    return {"project": {"process": "injection", "open_clarifications": [
+                        {"clarification_id": "clarification_mat_family", "question": "材料类别？"},
+                    ]}}
+                confirmed.append(kwargs)
+                return {"fact": {"name": kwargs["fact_name"], "value": kwargs["fact_value"]}}
+
+        monkeypatch.setattr("tools.dfm.service.get_dfm_service", FakeService)
+        result = json.loads(clarify_tool(
+            "材料类别？", choices=["wrong"],
+            callback=lambda _question, options: options[-1],
+            dfm_project_id="dfm_test", dfm_fact_name="mat_family",
+        ))
+        assert result["choices_offered"] == published
+        assert result["user_response"] == published[-1]
+        assert confirmed[0]["fact_value"] == published[-1]
+
+    def test_dfm_process_choices_use_engineering_names(self, monkeypatch):
+        from types import SimpleNamespace
+
+        confirmed = []
+
+        class FakeService:
+            config = SimpleNamespace(default_process="injection")
+
+            @staticmethod
+            def _canonical_fact_name(name):
+                return name
+
+            @staticmethod
+            def clarification_choices(_process, _name):
+                return ["压铸", "注塑成型"]
+
+            @staticmethod
+            def project(action, **kwargs):
+                if action == "status":
+                    return {"project": {"open_clarifications": [
+                        {"clarification_id": "clarification_process", "question": "请选择 DFM 分析工艺。"},
+                    ]}}
+                confirmed.append(kwargs)
+                return {"fact": {"name": "process", "value": "injection"}}
+
+        monkeypatch.setattr("tools.dfm.service.get_dfm_service", FakeService)
+        result = json.loads(clarify_tool(
+            "选择工艺", choices=["injection", "die_casting"],
+            callback=lambda _question, options: options[-1],
+            dfm_project_id="dfm_test", dfm_fact_name="process",
+        ))
+        assert result["choices_offered"] == ["压铸", "注塑成型"]
+        assert result["user_response"] == "注塑成型"
+        assert confirmed[0]["fact_value"] == "注塑成型"
+
+    def test_unbound_dfm_question_is_rejected_before_showing_ui(self, monkeypatch):
+        from tools import dfm_tool
+
+        monkeypatch.setattr(dfm_tool, "_session_projects", {"session-one": "dfm_test"})
+        pending = [{"clarification_id": "clarification_mat_additive_fill"}]
+
+        class FakeService:
+            @staticmethod
+            def project(action, **kwargs):
+                assert kwargs["project_id"] == "dfm_test"
+                assert action == "status"
+                return {"project": {"process": "injection", "open_clarifications": pending}}
+
+        monkeypatch.setattr("tools.dfm.service.get_dfm_service", FakeService)
+        shown = []
+        result = json.loads(clarify_tool(
+            "Material fill?", choices=["Unfilled", "GF"],
+            callback=lambda question, choices: shown.append((question, choices)) or "non-LGF",
+            session_id="session-one",
+        ))
+        assert shown == []
+        assert result["code"] == "dfm_fact_binding_required"
+        assert result["dfm_project_id"] == "dfm_test"
+        assert result["dfm_fact_name"] == "mat_additive_fill"
+
+        pending.clear()
+        ordinary = json.loads(clarify_tool(
+            "Another question", choices=["yes", "no"],
+            callback=lambda question, choices: shown.append((question, choices)) or "yes",
+            session_id="session-one",
+        ))
+        assert shown == [("Another question", ["yes", "no"])]
+        assert ordinary["user_response"] == "yes"
+        assert "dfm_fact" not in ordinary
+
+    def test_dfm_project_call_binds_its_session(self, monkeypatch):
+        from tools import dfm_tool
+
+        monkeypatch.setattr(dfm_tool, "_session_projects", {})
+
+        class FakeService:
+            @staticmethod
+            def project(action, **kwargs):
+                assert action == "create"
+                return {"ok": True, "project_id": "dfm_test"}
+
+        monkeypatch.setattr(dfm_tool, "get_dfm_service", FakeService)
+        result = json.loads(dfm_tool._call(
+            "project", {"action": "create", "name": "test"}, session_id="session-one",
+        ))
+        assert result["project_id"] == "dfm_test"
+        assert dfm_tool.active_dfm_project_id("session-one") == "dfm_test"
+
     def test_empty_choices_become_none(self):
         """Empty choices list should become None (open-ended)."""
         choices_received = ["marker"]

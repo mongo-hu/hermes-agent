@@ -11,6 +11,28 @@ export interface ViewerIssueTypeCount {
   label: string
 }
 
+export function formatViewerValue(value: unknown): string {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? String(Number(value.toPrecision(12))) : String(value)
+  }
+
+  if (Array.isArray(value) && value.length === 2) {
+    return `[${formatViewerValue(value[0])}, ${formatViewerValue(value[1])}]`
+  }
+
+  if (value && typeof value === 'object') {
+    const range = value as { lower?: unknown; upper?: unknown }
+
+    if (range.lower !== undefined && range.upper !== undefined) {
+      return `[${formatViewerValue(range.lower)}, ${formatViewerValue(range.upper)}]`
+    }
+
+    return JSON.stringify(value)
+  }
+
+  return String(value ?? '—')
+}
+
 export function classifyViewerIssueType(issue: IssueTypeSource): [string, string] {
   const checkId = issue.check_id?.trim() ?? ''
   const metricId = issue.metric_id?.trim() ?? ''
