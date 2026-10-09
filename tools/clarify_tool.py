@@ -72,8 +72,8 @@ def clarify_tool(
                   interaction. Signature: callback(question, choices) -> str.
                   Injected by the agent runner (cli.py / gateway).
         dfm_project_id: Optional project whose open factor is being answered.
-        dfm_fact_name: Canonical open DFM factor; startup options come from
-                       the DFM service and rule-factor options from ontology.
+        dfm_fact_name: Factor reference from the open DFM clarification
+                       (name or name@check_id); options come from ontology.
 
     Returns:
         JSON string with the user's response.
@@ -117,13 +117,21 @@ def clarify_tool(
         try:
             dfm_service = get_dfm_service()
             project = dfm_service.project("status", project_id=dfm_project_id)["project"]
-            fact_name = dfm_service._canonical_fact_name(dfm_fact_name)
+            def canonical_ref(value):
+                name, _, check_id = value.partition("@")
+                return dfm_service._canonical_fact_name(name), check_id.casefold()
+
+            requested_ref = canonical_ref(dfm_fact_name)
             pending = next((
                 item for item in project["open_clarifications"]
-                if item.get("clarification_id") == f"clarification_{fact_name}"
+                if canonical_ref(
+                    str(item.get("clarification_id") or "")
+                    .removeprefix("clarification_")
+                ) == requested_ref
             ), None)
             if pending is None:
                 return json.dumps({"error": "This DFM fact is not awaiting a user answer."})
+            fact_name = pending["clarification_id"].removeprefix("clarification_")
             question = pending["question"]
             choices = list(dfm_service.clarification_choices(
                 project.get("process") or dfm_service.config.default_process,
@@ -255,7 +263,7 @@ CLARIFY_SCHEMA = {
             },
             "dfm_fact_name": {
                 "type": "string",
-                "description": "Canonical DFM factor name from the open clarification.",
+                "description": "DFM factor reference from the open clarification (name or name@check_id).",
             },
         },
         "required": ["question"],

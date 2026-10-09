@@ -410,6 +410,53 @@ class LocalOntologyStore:
                 )
         return ()
 
+    def fact_check_choices(
+        self, process: str, fact_name: str, check_id: str
+    ) -> tuple[Any, ...]:
+        """Published answers that can select a released rule for one Check."""
+
+        if self.identity().process != process:
+            return ()
+        with self._connect() as connection:
+            factor = next(
+                (
+                    row for row in connection.execute(
+                        "SELECT concept_id, properties_json FROM ontology_concept "
+                        "WHERE concept_type = 'factor' AND status = 'active'"
+                    )
+                    if str(_load_json(row["properties_json"], {}).get("runtime_key")
+                           or row["concept_id"]) == fact_name
+                ),
+                None,
+            )
+            if factor is None:
+                return ()
+            rows = connection.execute(
+                "SELECT conditions_json FROM rule_version "
+                "WHERE check_id = ? AND status = 'released' ORDER BY priority DESC",
+                (check_id,),
+            ).fetchall()
+        values: list[Any] = []
+        for row in rows:
+            for condition in _load_json(row["conditions_json"], []):
+                if condition.get("factor_id") != factor["concept_id"]:
+                    continue
+                operator = condition.get("operator")
+                if operator == "EQ":
+                    choices = [condition.get("value")]
+                elif operator == "IN" and isinstance(condition.get("value"), list):
+                    choices = condition["value"]
+                else:
+                    choices = []
+                for value in choices:
+                    if value not in values:
+                        values.append(value)
+        published = self.fact_enum_values(process, fact_name)
+        return tuple(
+            [value for value in published if value in values]
+            + [value for value in values if value not in published]
+        )
+
     def factor_definitions(self, process: str) -> tuple[dict[str, Any], ...]:
         """Return published Factor schemas and source policies for Fact Resolver."""
 
@@ -683,6 +730,7 @@ class LocalOntologyStore:
         process: str,
         facts: Mapping[str, Any],
         operations: Sequence[PlanOperation],
+        scoped_facts: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> CompiledOntologyPlan:
         """Compile released ontology rows into the existing generic rule contract."""
 
@@ -734,11 +782,18 @@ class LocalOntologyStore:
             skipped: list[SkippedCheck] = []
             for check in checks:
                 check_id = str(check["concept_id"])
+                check_facts = dict(normalized_facts)
+                scoped_for_check = self._normalize_facts(
+                    (scoped_facts or {}).get(check_id, {})
+                )
+                for factor_id, runtime_key in factor_runtime_keys.items():
+                    if runtime_key in scoped_for_check:
+                        check_facts[factor_id] = scoped_for_check[runtime_key]
                 rules = connection.execute(
                     "SELECT * FROM rule_version WHERE check_id = ? AND status = 'released'",
                     (check_id,),
                 ).fetchall()
-                candidates, deferred = self._plan_rule_candidates(rules, normalized_facts, check_id)
+                candidates, deferred = self._plan_rule_candidates(rules, check_facts, check_id)
                 if not candidates:
                     continue
                 operand_rows = connection.execute(

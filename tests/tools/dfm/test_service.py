@@ -1,4 +1,5 @@
 from dataclasses import replace
+from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
@@ -359,6 +360,93 @@ def test_published_factor_choices_are_asked_and_validated(service):
     dfm.project("confirm_fact", project_id=project_id, fact_name="material", fact_value="PC")
     status = dfm.project("status", project_id=project_id)["project"]
     assert not any(item["clarification_id"] == "clarification_material" for item in status["open_clarifications"])
+
+
+def test_same_factor_can_be_answered_separately_for_two_checks(service, monkeypatch):
+    from tools.clarify_tool import clarify_tool
+
+    dfm, temp = service
+    package_path = Path(__file__).parent / "fixtures/ontology_legacy_v2.json"
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    factor = next(item for item in package["concepts"] if item["concept_id"] == "factor.material")
+    factor["properties"]["runtime_key"] = "mat_additive_fill"
+    factor["properties"].pop("default_value", None)
+    factor["data_schema"]["enum"] = ["非LGF", "未填充"]
+    package["factor_options"] = [
+        {**package["factor_options"][0], "option_code": value,
+         "name_zh": value, "value": value, "sort_order": index}
+        for index, value in enumerate(("非LGF", "未填充"), start=1)
+    ]
+    material_relation = next(
+        item for item in package["relations"]
+        if item["relation_id"] == "rel.check.wall.factor.material"
+    )
+    draft_relation = deepcopy(material_relation)
+    draft_relation["relation_id"] = "rel.check.draft.factor.material"
+    draft_relation["subject_id"] = "check.main_wall_minimum_draft"
+    draft_relation["qualifiers"]["required_by"] = [draft_relation["subject_id"]]
+    package["relations"].append(draft_relation)
+    for rule in package["rules"]:
+        if rule["rule_id"] == "R_INJ_MAIN_WALL_MIN_ABS":
+            rule["conditions"][0]["value"] = "非LGF"
+        if rule["rule_id"] == "R_INJ_MAIN_WALL_DRAFT_DEFAULT":
+            rule["conditions"] = [
+                {"factor_id": "factor.material", "operator": "EQ", "value": "未填充"}
+            ]
+    unhashed = {key: value for key, value in package.items() if key != "content_sha256"}
+    package["content_sha256"] = hashlib.sha256(
+        json.dumps(unhashed, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    dfm.ontology_store.install_package(package)
+    monkeypatch.setattr("tools.dfm.service.get_dfm_service", lambda: dfm)
+
+    project_id = dfm.project("create", name="Check-scoped fill")["project_id"]
+    source = temp / "scoped.step"
+    source.write_bytes(STEP_PAYLOAD)
+    dfm.project("add_input", project_id=project_id, path=str(source))
+    for name, value in (("process", "injection"), ("model_units", "mm"), ("pull_dir", "+Z")):
+        dfm.project("confirm_fact", project_id=project_id, fact_name=name, fact_value=value)
+    discovered = dfm.analysis("discover", project_id=project_id)
+    clarifications = discovered["open_clarifications"]
+    assert {item["clarification_id"] for item in clarifications} == {
+        "clarification_mat_additive_fill@check.main_wall_minimum_thickness",
+        "clarification_mat_additive_fill@check.main_wall_minimum_draft",
+    }
+    with pytest.raises(DFMError) as invalid:
+        dfm.project(
+            "confirm_fact", project_id=project_id,
+            fact_name="mat_additive_fill@check.main_wall_minimum_thickness",
+            fact_value="未填充",
+        )
+    assert invalid.value.code == "fact_invalid"
+    for check_id, expected in (
+        ("check.main_wall_minimum_thickness", "非LGF"),
+        ("check.main_wall_minimum_draft", "未填充"),
+    ):
+        result = json.loads(clarify_tool(
+            "ignored", callback=lambda _question, choices: expected,
+            dfm_project_id=project_id,
+            dfm_fact_name=f"mat_additive_fill@{check_id}",
+        ))
+        assert result["choices_offered"] == [expected]
+        assert result["dfm_fact"]["check_id"] == check_id
+    project = dfm.project("status", project_id=project_id)["project"]
+    assert project["open_clarifications"] == []
+    assert {
+        (item["check_id"], item["value"])
+        for item in project["facts"] if item["name"] == "mat_additive_fill"
+    } == {
+        ("check.main_wall_minimum_thickness", "非LGF"),
+        ("check.main_wall_minimum_draft", "未填充"),
+    }
+    for check_id, expected in (
+        ("check.main_wall_minimum_thickness", "非LGF"),
+        ("check.main_wall_minimum_draft", "未填充"),
+    ):
+        context = dfm.analysis("context", project_id=project_id, check_id=check_id)
+        assert context["confirmed_facts"]["mat_additive_fill"]["value"] == expected
+    plan = dfm.analysis("plan", project_id=project_id)["plan"]
+    assert {"R_INJ_MAIN_WALL_MIN_ABS", "R_INJ_MAIN_WALL_DRAFT_DEFAULT"} <= set(plan["rules"])
 
 
 def test_ontology_status_reads_installed_workspace_store(service):

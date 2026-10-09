@@ -243,6 +243,8 @@ def compile_occt_injection_plan(
     context: AnalyzerContext,
     raw_parameters: Mapping[str, Any],
     capability: Mapping[str, Any] | None,
+    *,
+    scoped_facts: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> ProcessPlan:
     """Reuse remote rules/facts while replacing only the geometry calculators."""
 
@@ -251,6 +253,7 @@ def compile_occt_injection_plan(
         context,
         raw_parameters,
         operations_override=operations,
+        **({"scoped_facts": scoped_facts} if scoped_facts else {}),
     )
 
     def resolved_argument(name: str, default: Any = None) -> ResolvedArgument:

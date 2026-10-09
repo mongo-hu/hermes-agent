@@ -101,6 +101,9 @@ class DFMService:
         ("pull_dir", "请确认主出模方向。", ("+X", "-X", "+Y", "-Y", "+Z", "-Z")),
     )
     _DISCOVERY_FACT_NAMES = frozenset(name for name, _, _ in _STARTUP_FACTS)
+    # The published fill factor has different answer vocabularies for wall and
+    # screw-boss Checks. Its confirmed answer is therefore scoped to a Check.
+    _CHECK_SCOPED_FACTS = {"injection": frozenset({"mat_additive_fill"})}
     _PROCESS_ALIASES = {
         "injection": "injection",
         "injection_molding": "injection",
@@ -305,6 +308,11 @@ class DFMService:
             str(fact_name or "").strip().lower().replace("-", "_").replace(" ", "_")
         )
         return DFMService._FACT_ALIASES.get(normalized, normalized)
+
+    @classmethod
+    def _fact_reference(cls, raw: str) -> tuple[str, str | None]:
+        name, separator, check_id = str(raw or "").partition("@")
+        return cls._canonical_fact_name(name), check_id.strip() if separator else None
 
     @staticmethod
     def _normalize_fact_value(fact_name: str, raw_value: Any) -> Any:
@@ -533,7 +541,9 @@ class DFMService:
                 for item in items
             }
             confirmed = [
-                item for item in facts if item.name == name and item.status == "confirmed"
+                item for item in facts
+                if item.name == name and item.check_id is None
+                and item.status == "confirmed"
             ]
             confirmed_values = {
                 json.dumps(item.value, ensure_ascii=False, sort_keys=True)
@@ -544,7 +554,8 @@ class DFMService:
                     observations[index] = replace(observation, status="conflict")
                 facts = [
                     replace(item, status="conflict")
-                    if item.name == name and item.status == "confirmed"
+                    if item.name == name and item.check_id is None
+                    and item.status == "confirmed"
                     else item
                     for item in facts
                 ]
@@ -1424,7 +1435,8 @@ class DFMService:
 
         def apply(current: ProjectManifest) -> ProjectManifest:
             confirmed = {
-                item.name: item for item in current.facts if item.status == "confirmed"
+                item.name: item for item in current.facts
+                if item.status == "confirmed" and item.check_id is None
             }
             facts = list(current.facts)
             observations = []
@@ -1567,7 +1579,12 @@ class DFMService:
         confirmed = {
             self._canonical_fact_name(fact.name): fact.value
             for fact in manifest.facts
-            if fact.status == "confirmed"
+            if fact.status == "confirmed" and fact.check_id is None
+        }
+        confirmed_by_check = {
+            (self._canonical_fact_name(fact.name), fact.check_id): fact.value
+            for fact in manifest.facts
+            if fact.status == "confirmed" and fact.check_id is not None
         }
         existing = {item.clarification_id: item for item in manifest.clarifications}
         if phase == "discovery":
@@ -1605,6 +1622,7 @@ class DFMService:
                 manifest, snapshot
             )
         result = []
+        scoped_result = []
         for requirement in requirements:
             name = self._canonical_fact_name(requirement.name)
             required_in_phase = requirement.phase == phase
@@ -1621,6 +1639,35 @@ class DFMService:
                 )
             if phase != "all" and not required_in_phase:
                 continue
+            if (
+                phase == "analysis"
+                and name in self._CHECK_SCOPED_FACTS.get(adapter.key, ())
+            ):
+                for check_id in requirement.check_ids:
+                    if check_id not in applicable_check_ids:
+                        continue
+                    choices = self.ontology_store.fact_check_choices(
+                        adapter.key, name, check_id
+                    )
+                    if not choices or (
+                        name in confirmed and confirmed[name] in choices
+                    ) or (
+                        (name, check_id) in confirmed_by_check
+                        and confirmed_by_check[(name, check_id)] in choices
+                    ):
+                        continue
+                    check_name = self.ontology_store.check_context(check_id)[
+                        "check"
+                    ]["name_zh"]
+                    clarification_id = f"clarification_{name}@{check_id}"
+                    item = existing.get(clarification_id)
+                    question = f"{check_name}：{requirement.question}"
+                    scoped_result.append(
+                        replace(item, question=question, status="open", answer=None)
+                        if item is not None
+                        else ClarificationRecord(clarification_id, question, "open")
+                    )
+                continue
             choices = self.ontology_store.fact_enum_values(adapter.key, name)
             if name in confirmed and (not choices or confirmed[name] in choices):
                 continue
@@ -1632,12 +1679,18 @@ class DFMService:
                 if item is not None
                 else ClarificationRecord(clarification_id, question, "open")
             )
-        return result
+        return [*result, *scoped_result]
 
     def clarification_choices(self, process: str, fact_name: str) -> tuple[Any, ...]:
         """User-facing options for one pending factor."""
 
-        name = self._canonical_fact_name(fact_name)
+        name, check_id = self._fact_reference(fact_name)
+        if check_id:
+            if name not in self._CHECK_SCOPED_FACTS.get(process, ()):
+                return ()
+            return self.ontology_store.fact_check_choices(
+                process, name, check_id
+            )
         if name == "process":
             return tuple(
                 getattr(self.process_registry.get(key), "display_name_zh", key)
@@ -1654,17 +1707,24 @@ class DFMService:
 
         def reconcile(current: ProjectManifest) -> ProjectManifest:
             confirmed = {
-                self._canonical_fact_name(fact.name): fact
+                (self._canonical_fact_name(fact.name), fact.check_id): fact
                 for fact in current.facts
                 if fact.status == "confirmed"
             }
             changed = False
             rows = []
             for item in current.clarifications:
-                canonical = self._canonical_fact_name(
+                name, check_id = self._fact_reference(
                     item.clarification_id.removeprefix("clarification_")
                 )
-                fact = confirmed.get(canonical)
+                fact = confirmed.get((name, check_id))
+                if fact is None and check_id:
+                    global_fact = confirmed.get((name, None))
+                    if global_fact is not None and global_fact.value in self.clarification_choices(
+                        current.process or self.config.default_process,
+                        f"{name}@{check_id}",
+                    ):
+                        fact = global_fact
                 if fact is not None and item.status != "answered":
                     item = replace(item, status="answered", answer=fact.value)
                     changed = True
@@ -2450,21 +2510,47 @@ class DFMService:
                 ),
             }
         if action == "confirm_fact":
-            name = self._canonical_fact_name(str(params.get("fact_name") or ""))
+            name, check_id = self._fact_reference(str(params.get("fact_name") or ""))
             if not name:
                 raise DFMError("fact_invalid", "fact_name is required.")
 
             raw_value = params.get("fact_value")
             normalized_value = self._normalize_fact_value(name, raw_value)
             if name == "process":
+                if check_id:
+                    raise DFMError("fact_invalid", "process cannot be check-scoped.")
                 self.process_registry.get(normalized_value)
             else:
                 manifest = self._store(project_id).load()
+                process = str(manifest.process or self.config.default_process)
+                snapshot = next(
+                    (item for item in reversed(manifest.discovery_snapshots)
+                     if item.status == "frozen"),
+                    None,
+                )
+                if check_id and (
+                    name not in self._CHECK_SCOPED_FACTS.get(process, ())
+                    or snapshot is None
+                    or check_id not in self._applicable_analysis_check_ids(
+                        manifest, snapshot
+                    )
+                ):
+                    raise DFMError(
+                        "fact_invalid",
+                        "This factor is not required by the discovered Check.",
+                        {"fact_name": name, "check_id": check_id},
+                    )
                 choices = (
                     () if name == "pull_dir" else self.clarification_choices(
-                        str(manifest.process or self.config.default_process), name
+                        process, f"{name}@{check_id}" if check_id else name
                     )
                 )
+                if check_id and not choices:
+                    raise DFMError(
+                        "fact_invalid",
+                        "The discovered Check has no published choices for this factor.",
+                        {"fact_name": name, "check_id": check_id},
+                    )
                 if choices:
                     if isinstance(normalized_value, str):
                         normalized_value = normalized_value.strip()
@@ -2476,7 +2562,8 @@ class DFMService:
                         )
 
             fact = FactRecord(
-                f"fact_{uuid4().hex[:16]}", name, normalized_value, "user", "confirmed"
+                f"fact_{uuid4().hex[:16]}", name, normalized_value, "user", "confirmed",
+                check_id=check_id,
             )
 
             def confirm(current: ProjectManifest) -> ProjectManifest:
@@ -2498,7 +2585,7 @@ class DFMService:
                     facts=[*current.facts, fact],
                     observations=[
                         replace(item, status="confirmed_by_user")
-                        if self._observation_factor_name(item) == name
+                        if check_id is None and self._observation_factor_name(item) == name
                         and item.value == normalized_value
                         and item.status in {"candidate", "needs_confirmation", "conflict"}
                         else item
@@ -2519,7 +2606,10 @@ class DFMService:
                     ),
                     clarifications=[
                         replace(item, status="answered", answer=fact.value)
-                        if item.clarification_id == f"clarification_{name}"
+                        if item.clarification_id == (
+                            f"clarification_{name}@{check_id}" if check_id
+                            else f"clarification_{name}"
+                        )
                         else item
                         for item in current.clarifications
                     ],
@@ -2616,8 +2706,16 @@ class DFMService:
                     "source_ref": f"fact:{item.fact_id}",
                 }
                 for item in manifest.facts
-                if item.status == "confirmed"
+                if item.status == "confirmed" and item.check_id is None
             }
+            confirmed_facts.update({
+                item.name: {
+                    "value": item.value,
+                    "source_ref": f"fact:{item.fact_id}",
+                }
+                for item in manifest.facts
+                if item.status == "confirmed" and item.check_id == check_id
+            })
             return {
                 "ok": True,
                 "project_id": project_id,
@@ -2884,16 +2982,26 @@ class DFMService:
                     }
                     for fact in manifest.facts
                     if fact.status == "confirmed"
+                    and fact.check_id is None
                     and fact.name in defaults.accepted_inputs
                 }
+                scoped_facts: dict[str, dict[str, Any]] = {}
+                for fact in manifest.facts:
+                    if fact.status == "confirmed" and fact.check_id is not None:
+                        scoped_facts.setdefault(fact.check_id, {})[fact.name] = fact.value
+                scoped_kwargs = {"scoped_facts": scoped_facts} if scoped_facts else {}
                 process_plan = (
                     compile_occt_injection_plan(
                         adapter,
                         context,
                         raw_parameters,
                         self.occt_geometry_capability,
+                        **scoped_kwargs,
                     )
                     if str(analyzer_key) == "occt_cpp" and process == "injection"
+                    else adapter.compile(
+                        context, raw_parameters, **scoped_kwargs
+                    ) if process == "injection"
                     else adapter.compile(context, raw_parameters)
                 )
                 process_plan = self._bind_discovery_scope(

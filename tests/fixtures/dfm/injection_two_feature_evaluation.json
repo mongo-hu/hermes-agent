@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "source_workbook": "D:/item/模具项目/Rule_base/V2.2.2.xlsx",
+  "runtime_rule_set": "RS_INJECTION_MOLDING_BASE@V1.0.8",
+  "scope": ["main_wall", "screw_boss"],
+  "interpretation": {
+    "factor_conditions": "Conditions in one rule are AND; values inside an IN condition are OR.",
+    "fact_scope": "The same F_MAT_ADDITIVE_FILL may be answered separately for each check_id; project-wide facts remain shared.",
+    "combination": "Expand main_wall.thickness x main_wall.draft and screw_boss.wall_thickness x screw_boss.hole_depth x screw_boss.thin_steel. Geometric prerequisites are evaluated after rule selection.",
+    "result": "A selected rule is not a pass: its measurements must satisfy every criterion in one acceptance group.",
+    "not_specified": "* and — in the workbook are not user answers."
+  },
+  "startup": {
+    "process": "injection",
+    "model_units": ["mm", "inch"],
+    "pull_dir": ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
+  },
+  "main_wall": {
+    "shared_facts": {
+      "F_PROC_BASE": "热塑性注塑",
+      "F_PROC_AUX": "常规",
+      "F_PROC_MULTI_MAT": "单材料"
+    },
+    "thickness": [
+      {"case_id": "MW_THK_001", "F_MAT_FAMILY": ["ABS"], "F_MAT_ADDITIVE_FILL": "非LGF", "rule_id": "R_WALL_THK_RANGE_001", "excel_row": 6},
+      {"case_id": "MW_THK_002", "F_MAT_FAMILY": ["POM"], "F_MAT_ADDITIVE_FILL": "非LGF", "rule_id": "R_WALL_THK_RANGE_002", "excel_row": 7},
+      {"case_id": "MW_THK_003", "F_MAT_FAMILY": ["PMMA"], "F_MAT_ADDITIVE_FILL": "非LGF", "rule_id": "R_WALL_THK_RANGE_003", "excel_row": 8},
+      {"case_id": "MW_THK_004", "F_MAT_FAMILY": ["LCP"], "F_MAT_ADDITIVE_FILL": "非LGF", "rule_id": "R_WALL_THK_RANGE_004", "excel_row": 9},
+      {"case_id": "MW_THK_005", "F_MAT_FAMILY": ["PA"], "F_MAT_ADDITIVE_FILL": "非LGF", "rule_id": "R_WALL_THK_RANGE_005", "excel_row": 10},
+      {"case_id": "MW_THK_006", "F_MAT_FAMILY": ["PC"], "F_MAT_ADDITIVE_FILL": "非LGF", "rule_id": "R_WALL_THK_RANGE_006", "excel_row": 11},
+      {"case_id": "MW_THK_007", "F_MAT_FAMILY": ["PBT", "PET"], "F_MAT_ADDITIVE_FILL": "非LGF", "rule_id": "R_WALL_THK_RANGE_007", "excel_row": 12},
+      {"case_id": "MW_THK_008", "F_MAT_FAMILY": ["PE"], "F_MAT_ADDITIVE_FILL": "非LGF", "rule_id": "R_WALL_THK_RANGE_008", "excel_row": 13},
+      {"case_id": "MW_THK_009", "F_MAT_FAMILY": ["PPS"], "F_MAT_ADDITIVE_FILL": "非LGF", "rule_id": "R_WALL_THK_RANGE_009", "excel_row": 14},
+      {"case_id": "MW_THK_010", "F_MAT_FAMILY": ["PP"], "F_MAT_ADDITIVE_FILL": "非LGF", "rule_id": "R_WALL_THK_RANGE_010", "excel_row": 15},
+      {"case_id": "MW_THK_011", "F_MAT_FAMILY": ["PS"], "F_MAT_ADDITIVE_FILL": "非LGF", "rule_id": "R_WALL_THK_RANGE_011", "excel_row": 16},
+      {"case_id": "MW_THK_012", "F_MAT_FAMILY": ["ABS", "POM", "PMMA", "LCP", "PA", "PC", "PBT", "PET", "PE", "PPS", "PP", "PS", "TPE&TPU"], "F_MAT_ADDITIVE_FILL": "LGF", "rule_id": "R_WALL_THK_RANGE_012", "excel_row": 17}
+    ],
+    "draft": [
+      {"case_id": "MW_DRAFT_SMOOTH", "F_APPR_REGION_REQ": "非外观", "F_SURF_FINISH_REQ": "光面", "F_MAT_FAMILY": "*", "rule_ids": ["R_WALL_DRAFT_001", "R_WALL_DRAFT_002"], "excel_rows": [6, 7]},
+      {"case_id": "MW_DRAFT_LIGHT", "F_APPR_REGION_REQ": "外观", "F_SURF_FINISH_REQ": "轻纹理", "F_MAT_FAMILY": "*", "rule_ids": ["R_WALL_DRAFT_003"], "excel_rows": [8]},
+      {"case_id": "MW_DRAFT_HEAVY", "F_APPR_REGION_REQ": "外观", "F_SURF_FINISH_REQ": "重纹理", "F_MAT_FAMILY": "*", "rule_ids": ["R_WALL_DRAFT_004"], "excel_rows": [9]},
+      {"case_id": "MW_DRAFT_GLOSS", "F_APPR_REGION_REQ": "外观", "F_SURF_FINISH_REQ": "高光", "F_MAT_FAMILY": "PMMA", "rule_ids": ["R_WALL_DRAFT_005"], "excel_rows": [10]}
+    ],
+    "geometry": [
+      {"rule_id": "R_WALL_THK_TRANSITION_001", "excel_sheet": "13_规则库_主体壁_壁厚过渡", "excel_row": 6, "requires": ["G_WALL_TRANS_DT > 0"], "pass": "G_WALL_TRANS_LEN / G_WALL_TRANS_DT >= 3"},
+      {"rule_id": "R_WALL_THK_TRANSITION_002", "excel_sheet": "13_规则库_主体壁_壁厚过渡", "excel_row": 7, "requires": ["G_WALL_TRANS_DT > 0"], "pass": "G_WALL_STEP_COUNT == 0"},
+      {"rule_id": "R_WALL_FILLET_001", "excel_sheet": "14_规则库_主体壁_圆角", "excel_row": 6, "requires": ["G_WALL_FILLET_REF_T > 0"], "pass": "G_WALL_IN_FILLET_R / G_WALL_FILLET_REF_T >= 0.5"}
+    ],
+    "no_match_examples": [
+      {"F_PROC_BASE": "热固性注塑", "expected_absent_checks": ["C_WALL_THK_RANGE", "C_WALL_DRAFT", "C_WALL_THK_TRANSITION", "C_WALL_FILLET"]},
+      {"F_PROC_AUX": "发泡", "expected_absent_checks": ["C_WALL_THK_RANGE", "C_WALL_THK_TRANSITION", "C_WALL_FILLET"]},
+      {"F_PROC_MULTI_MAT": "嵌件", "expected_absent_checks": ["C_WALL_THK_RANGE", "C_WALL_THK_TRANSITION", "C_WALL_FILLET"]},
+      {"F_APPR_REGION_REQ": "外观", "F_SURF_FINISH_REQ": "光面", "expected_absent_checks": ["C_WALL_DRAFT"]},
+      {"F_APPR_REGION_REQ": "外观", "F_SURF_FINISH_REQ": "高光", "F_MAT_FAMILY": "ABS", "expected_absent_checks": ["C_WALL_DRAFT"]}
+    ]
+  },
+  "screw_boss": {
+    "shared_facts": {
+      "F_PROC_BASE": "热塑性注塑",
+      "F_PROC_AUX": "常规"
+    },
+    "wall_thickness": [
+      {"case_id": "SB_WALL_001", "F_APPR_REGION_REQ": "非外观", "F_MAT_FAMILY": "ABS", "F_MAT_ADDITIVE_FILL": "未填充", "rule_id": "R_SCREW_BOSS_WALL_THK_001", "excel_row": 6},
+      {"case_id": "SB_WALL_002", "F_APPR_REGION_REQ": "外观", "F_MAT_FAMILY": "ABS", "F_MAT_ADDITIVE_FILL": "未填充", "rule_id": "R_SCREW_BOSS_WALL_THK_002", "excel_row": 7},
+      {"case_id": "SB_WALL_003", "F_APPR_REGION_REQ": "非外观", "F_MAT_FAMILY": "PC", "F_MAT_ADDITIVE_FILL": "未填充", "rule_id": "R_SCREW_BOSS_WALL_THK_003", "excel_row": 8},
+      {"case_id": "SB_WALL_004", "F_APPR_REGION_REQ": "外观", "F_MAT_FAMILY": "PC", "F_MAT_ADDITIVE_FILL": "未填充", "rule_id": "R_SCREW_BOSS_WALL_THK_004", "excel_row": 9},
+      {"case_id": "SB_WALL_005", "F_APPR_REGION_REQ": "非外观", "F_MAT_FAMILY": "PP", "F_MAT_ADDITIVE_FILL": "TD20、EPDM+TD10", "rule_id": "R_SCREW_BOSS_WALL_THK_005", "excel_row": 10},
+      {"case_id": "SB_WALL_006", "F_APPR_REGION_REQ": "外观", "F_MAT_FAMILY": "PP", "F_MAT_ADDITIVE_FILL": "TD20、EPDM+TD10", "rule_id": "R_SCREW_BOSS_WALL_THK_006", "excel_row": 11},
+      {"case_id": "SB_WALL_007", "F_APPR_REGION_REQ": "非外观", "F_MAT_FAMILY": "PP", "F_MAT_ADDITIVE_FILL": "GF、LGF", "rule_id": "R_SCREW_BOSS_WALL_THK_007", "excel_row": 12},
+      {"case_id": "SB_WALL_008", "F_APPR_REGION_REQ": "非外观", "F_MAT_FAMILY": "POM", "F_MAT_ADDITIVE_FILL": "未填充", "rule_id": "R_SCREW_BOSS_WALL_THK_008", "excel_row": 13}
+    ],
+    "hole_depth": [
+      {"case_id": "SB_HOLE_LT5_PASS", "diameter_mm": 4.999, "depth_mm": 9.998, "expected_rule_id": "R_SCREW_BOSS_HOLE_DEPTH_001", "expected": "pass", "excel_row": 6},
+      {"case_id": "SB_HOLE_LT5_FAIL", "diameter_mm": 4.999, "depth_mm": 10.003, "expected_rule_id": "R_SCREW_BOSS_HOLE_DEPTH_001", "expected": "fail", "excel_row": 6},
+      {"case_id": "SB_HOLE_GTE5_PASS", "diameter_mm": 5.0, "depth_mm": 20.0, "expected_rule_id": "R_SCREW_BOSS_HOLE_DEPTH_002", "expected": "pass", "excel_row": 7},
+      {"case_id": "SB_HOLE_GTE5_FAIL", "diameter_mm": 5.0, "depth_mm": 20.005, "expected_rule_id": "R_SCREW_BOSS_HOLE_DEPTH_002", "expected": "fail", "excel_row": 7}
+    ],
+    "bottom_thickness": [
+      {"case_id": "SB_BOTTOM_NON_APPEARANCE", "F_APPR_REGION_REQ": "非外观", "F_MAT_FAMILY": "*", "rule_id": "R_SCREW_BOSS_BOTTOM_THK_001", "excel_row": 6},
+      {"case_id": "SB_BOTTOM_APPEARANCE_ABS_PC_PMMA", "F_APPR_REGION_REQ": "外观", "F_MAT_FAMILY": ["ABS", "PC", "PMMA"], "rule_id": "R_SCREW_BOSS_BOTTOM_THK_002", "excel_row": 7},
+      {"case_id": "SB_BOTTOM_APPEARANCE_PP", "F_APPR_REGION_REQ": "外观", "F_MAT_FAMILY": ["PP"], "rule_id": "R_SCREW_BOSS_BOTTOM_THK_003", "excel_row": 8}
+    ],
+    "draft": [
+      {"rule_id": "R_SCREW_BOSS_DRAFT_001", "geometric_id": "G_SCREW_BOSS_DRAFT_OUT", "min_degrees": 0.5, "excel_row": 6},
+      {"rule_id": "R_SCREW_BOSS_DRAFT_002", "geometric_id": "G_SCREW_BOSS_DRAFT_IN", "min_degrees": 0.25, "excel_row": 7}
+    ],
+    "fillet": [
+      {"F_APPR_REGION_REQ": "非外观", "rule_id": "R_SCREW_BOSS_FILLET_001", "geometric_id": "G_SCREW_BOSS_FILLET_TOP_R", "ratio_inclusive": [0.2, 0.25], "excel_row": 6},
+      {"F_APPR_REGION_REQ": "非外观", "rule_id": "R_SCREW_BOSS_FILLET_002", "geometric_id": "G_SCREW_BOSS_FILLET_BOTTOM_R", "ratio_inclusive": [0.2, 0.3], "excel_row": 7},
+      {"F_APPR_REGION_REQ": "外观", "rule_id": "R_SCREW_BOSS_FILLET_003", "geometric_id": "G_SCREW_BOSS_FILLET_BOTTOM_R", "ratio_inclusive": [0.05, 0.1], "excel_row": 8}
+    ],
+    "thin_steel": [
+      {"F_TOOL_STEEL_TYPE": "预硬钢", "rule_id": "R_SCREW_BOSS_THIN_STEEL_001", "max_height_over_thickness_exclusive": 3, "min_thickness_mm": 1.2, "excel_row": 6},
+      {"F_TOOL_STEEL_TYPE": "淬火硬钢", "rule_id": "R_SCREW_BOSS_THIN_STEEL_002", "max_height_over_thickness_exclusive": 3, "min_thickness_mm": 1.5, "excel_row": 9}
+    ],
+    "no_match_examples": [
+      {"F_PROC_AUX": "发泡", "expected_absent_checks": ["C_SCREW_BOSS_WALL_THK"]},
+      {"F_APPR_REGION_REQ": "外观", "F_MAT_FAMILY": "POM", "F_MAT_ADDITIVE_FILL": "未填充", "expected_absent_checks": ["C_SCREW_BOSS_WALL_THK", "C_SCREW_BOSS_BOTTOM_THK"]},
+      {"F_APPR_REGION_REQ": "外观", "F_MAT_FAMILY": "PP", "F_MAT_ADDITIVE_FILL": "GF、LGF", "expected_absent_checks": ["C_SCREW_BOSS_WALL_THK"]}
+    ]
+  },
+  "cross_feature_cases": [
+    {"case_id": "ABS_NON_LGF_UNFILLED", "F_MAT_FAMILY": "ABS", "check_facts": {"C_WALL_THK_RANGE": {"F_MAT_ADDITIVE_FILL": "非LGF"}, "C_SCREW_BOSS_WALL_THK": {"F_MAT_ADDITIVE_FILL": "未填充"}}, "F_APPR_REGION_REQ": "非外观", "F_SURF_FINISH_REQ": "光面", "expected_present_rule_ids": ["R_WALL_THK_RANGE_001", "R_SCREW_BOSS_WALL_THK_001", "R_WALL_DRAFT_001", "R_WALL_FILLET_001", "R_SCREW_BOSS_BOTTOM_THK_001"]},
+    {"case_id": "PP_NON_LGF_COMPOUND", "F_MAT_FAMILY": "PP", "check_facts": {"C_WALL_THK_RANGE": {"F_MAT_ADDITIVE_FILL": "非LGF"}, "C_SCREW_BOSS_WALL_THK": {"F_MAT_ADDITIVE_FILL": "TD20、EPDM+TD10"}}, "F_APPR_REGION_REQ": "外观", "F_SURF_FINISH_REQ": "轻纹理", "expected_present_rule_ids": ["R_WALL_THK_RANGE_010", "R_SCREW_BOSS_WALL_THK_006", "R_SCREW_BOSS_BOTTOM_THK_003", "R_WALL_DRAFT_003"]},
+    {"case_id": "PP_LGF_GF_LGF", "F_MAT_FAMILY": "PP", "check_facts": {"C_WALL_THK_RANGE": {"F_MAT_ADDITIVE_FILL": "LGF"}, "C_SCREW_BOSS_WALL_THK": {"F_MAT_ADDITIVE_FILL": "GF、LGF"}}, "F_APPR_REGION_REQ": "非外观", "F_SURF_FINISH_REQ": "光面", "expected_present_rule_ids": ["R_WALL_THK_RANGE_012", "R_SCREW_BOSS_WALL_THK_007"]}
+  ],
+  "known_contract_gaps": [
+    {"id": "MISSING_HOLE_DEPTH_GE5", "excel_rule_id": "R_SCREW_BOSS_HOLE_DEPTH_002", "excel_sheet": "04_规则库_螺钉柱_孔芯深度", "excel_row": 7, "runtime_package": "absent"}
+  ]
+}

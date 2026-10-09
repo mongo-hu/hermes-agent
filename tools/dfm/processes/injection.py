@@ -120,6 +120,7 @@ class InjectionProcessAdapter:
         raw_parameters: Mapping[str, Any],
         *,
         operations_override: Sequence[PlanOperation] | None = None,
+        scoped_facts: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> ProcessPlan:
         scope = self._load_scope()
         defaults = scope["parameters"]
@@ -173,7 +174,9 @@ class InjectionProcessAdapter:
             if operations_override is not None
             else [PlanOperation.from_dict(item) for item in scope["operations"]]
         )
-        compiled = self.ontology_store.compile(self.key, ontology_facts, operations)
+        compiled = self.ontology_store.compile(
+            self.key, ontology_facts, operations, scoped_facts=scoped_facts
+        )
         enriched_operations = []
         for operation in operations:
             arguments = dict(operation.arguments)
