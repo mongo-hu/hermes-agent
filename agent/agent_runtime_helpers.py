@@ -2280,6 +2280,10 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                     callback=agent.clarify_callback,
                     dfm_project_id=next_args.get("dfm_project_id"),
                     dfm_fact_name=next_args.get("dfm_fact_name"),
+                    dfm_discovery_review=bool(
+                        next_args.get("dfm_discovery_review", False)
+                    ),
+                    session_id=getattr(agent, "session_id", None),
                 ),
                 next_args,
             )

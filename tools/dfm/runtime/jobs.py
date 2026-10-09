@@ -443,7 +443,7 @@ class JobManager:
                         context.project_dir,
                         run_id,
                         checked,
-                        max_images=self.config.max_evidence_findings,
+                        max_findings=self.config.max_evidence_findings,
                     )
                     checked.extend(
                         self._validate_artifact(context.project_dir, item)

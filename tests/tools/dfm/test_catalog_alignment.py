@@ -168,7 +168,11 @@ def measurement(value, unit="mm"):
 
 
 def test_agent_preserves_schema_2_contract_during_rollout():
-    agent = json.loads((ROOT / "tools/dfm/schemas/ontology_snapshot.schema.json").read_text(encoding="utf-8"))
+    agent = json.loads(
+        (ROOT / "tools/dfm/schemas/ontology_snapshot.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
     Draft202012Validator(agent).validate(payload())
 
 
@@ -205,7 +209,11 @@ def test_bundled_package_content_hash_is_valid_without_rewriting():
 
 @pytest.mark.parametrize(
     "actual,outcome,failed",
-    [(1.5, "pass", []), (1.0, "fail", ["wall_minimum"]), (2.5, "fail", ["wall_maximum"])],
+    [
+        (1.5, "pass", []),
+        (1.0, "fail", ["wall_minimum"]),
+        (2.5, "fail", ["wall_maximum"]),
+    ],
 )
 def test_schema_3_conjunction_compiles_and_evaluates_once(actual, outcome, failed):
     value = composite_payload()
@@ -215,7 +223,9 @@ def test_schema_3_conjunction_compiles_and_evaluates_once(actual, outcome, faile
     assert "expression" not in context_rule
     context = store.check_context("check.main_wall_minimum_thickness")
     assert "properties_json" in context["check"]
-    operand_context = next(row for row in context["relations"] if row["predicate"] == "USES_OPERAND")
+    operand_context = next(
+        row for row in context["relations"] if row["predicate"] == "USES_OPERAND"
+    )
     assert "qualifiers_json" in operand_context
     assert "properties_json" in operand_context["object"]
     assert "value_json" in context["factor_options"][0]
@@ -231,7 +241,11 @@ def test_schema_3_conjunction_compiles_and_evaluates_once(actual, outcome, faile
     assert evaluation.outcome == outcome
     assert evaluation.severity == "medium"
     assert evaluation.severity_rationale == value["rules"][0]["severity_rationale"]
-    assert [item["criterion_id"] for item in evaluation.criterion_results if item["outcome"] == "fail"] == failed
+    assert [
+        item["criterion_id"]
+        for item in evaluation.criterion_results
+        if item["outcome"] == "fail"
+    ] == failed
     assert len(evaluation.criterion_results) == 2
 
 
@@ -241,7 +255,9 @@ def test_schema_3_missing_measurement_is_not_a_pass():
     evaluations, _ = EvaluationEngine().evaluate([], plan(compiled))
     assert len(evaluations) == 1
     assert evaluations[0].outcome == "indeterminate"
-    assert all(item["outcome"] == "indeterminate" for item in evaluations[0].criterion_results)
+    assert all(
+        item["outcome"] == "indeterminate" for item in evaluations[0].criterion_results
+    )
 
 
 def test_schema_3_rule_hash_is_independent_of_the_failed_criterion():
@@ -265,7 +281,10 @@ def test_schema_4_or_of_and_groups_install_compile_and_evaluate(actual, outcome)
     compiled = store.compile("injection", {"material": "ABS"}, operations())
     binding = compiled.rule_bindings[0]
 
-    assert binding.acceptance_criteria_json == value["rules"][0]["acceptance_criteria_json"]
+    assert (
+        binding.acceptance_criteria_json
+        == value["rules"][0]["acceptance_criteria_json"]
+    )
     evaluations, _ = EvaluationEngine().evaluate([measurement(actual)], plan(compiled))
 
     assert evaluations[0].outcome == outcome
@@ -285,7 +304,8 @@ def test_schema_3_rejects_schema_4_grouped_criteria():
 def test_schema_3_compiler_collects_operands_from_every_criterion():
     value = composite_payload()
     original = next(
-        relation for relation in value["relations"]
+        relation
+        for relation in value["relations"]
         if relation["predicate"] == "USES_OPERAND"
         and relation["subject_id"] == "check.main_wall_minimum_thickness"
     )
@@ -309,17 +329,36 @@ def test_schema_3_compiler_collects_operands_from_every_criterion():
     assert len(compiled.rule_bindings) == 1
     binding = compiled.rule_bindings[0]
     assert {operand.alias for operand in binding.measurement_operands()} == {
-        "actual", "adjacent_main_wall_thickness",
+        "actual",
+        "adjacent_main_wall_thickness",
     }
     assert binding.acceptance_criteria_json[1]["expression"]["op"] == "divide"
 
 
-@pytest.mark.parametrize("change", ["geometric_condition", "duplicate_criterion", "legacy_expression", "legacy_json_field", "legacy_concept_field", "legacy_relation_field", "legacy_option_field", "warning_severity", "unit_mismatch"])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "geometric_condition",
+        "duplicate_criterion",
+        "legacy_expression",
+        "legacy_json_field",
+        "legacy_concept_field",
+        "legacy_relation_field",
+        "legacy_option_field",
+        "warning_severity",
+        "unit_mismatch",
+    ],
+)
 def test_schema_3_rejects_invalid_new_rule_contract(change):
     value = composite_payload()
     rule = value["rules"][0]
     if change == "geometric_condition":
-        rule["conditions_json"].append({"geometric_id": "actual", "operator": "LT", "value": 5, "unit": "mm"})
+        rule["conditions_json"].append({
+            "geometric_id": "actual",
+            "operator": "LT",
+            "value": 5,
+            "unit": "mm",
+        })
     elif change == "duplicate_criterion":
         rule["acceptance_criteria_json"][1]["criterion_id"] = "wall_minimum"
     elif change == "legacy_expression":
@@ -375,9 +414,9 @@ def test_schema_3_installs_unresolved_geometric_metadata_and_skips_it():
     assert len(result.skipped_checks) > 0
     assert any(sc.reason == "feature_not_found" for sc in result.skipped_checks)
     assert store.analysis_target_specs("injection") == ()
-    assert [
-        item["name"] for item in store.fact_requirements("injection")
-    ] == ["model_units"]
+    assert [item["name"] for item in store.fact_requirements("injection")] == [
+        "model_units"
+    ]
 
 
 def test_geometric_id_capability_binding_ignores_empty_legacy_fields():
@@ -701,20 +740,44 @@ def test_geometric_id_capability_uses_declared_region_not_operand_text():
 
     manifest, snapshot = discovered("main_wall", "wall")
     targets = resolve_catalog_targets(
-        [{
-            "check_id": "C_WALL",
-            "alias": "actual",
-            "metric_id": METRIC,
-            "feature_kinds": ["main_wall"],
-            "region_role": "wall",
-            "operand_text": "text that carries no executable geometry meaning",
-        }],
+        [
+            {
+                "check_id": "C_WALL",
+                "alias": "actual",
+                "metric_id": METRIC,
+                "feature_kinds": ["main_wall"],
+                "region_role": "wall",
+                "operand_text": "text that carries no executable geometry meaning",
+            }
+        ],
         manifest,
         snapshot,
     )
 
     assert len(targets) == 1
     assert targets[0]["region"].region_id == "region.1"
+
+
+def test_missing_declared_region_makes_feature_check_unsupported_not_ambiguous():
+    from tools.dfm.ontology.targets import resolve_catalog_targets
+
+    manifest, snapshot = discovered("main_wall", "wall")
+    targets = resolve_catalog_targets(
+        [
+            {
+                "check_id": "C_WALL_TRANSITION",
+                "alias": "actual",
+                "metric_id": METRIC,
+                "feature_kinds": ["main_wall"],
+                "region_role": "transition",
+                "operand_text": "transition",
+            }
+        ],
+        manifest,
+        snapshot,
+    )
+
+    assert targets == []
 
 
 def test_adjacent_wall_requires_explicit_local_link_and_stays_on_same_input():

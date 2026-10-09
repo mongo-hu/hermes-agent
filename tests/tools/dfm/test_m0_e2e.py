@@ -171,7 +171,13 @@ def test_injected_analyzer_vertical_slice_returns_desktop_compatible_artifact(tm
                 fact_name=name,
                 fact_value=value,
             )
-        service.analysis("discover", project_id=project_id)
+        discovery = service.analysis("discover", project_id=project_id)
+        if discovery.get("status") == "discovery_review_required":
+            service.analysis(
+                "confirm_discovery",
+                project_id=project_id,
+                expected_revision=discovery["revision"],
+            )
         plan = service.analysis("plan", project_id=project_id)
         started = service.analysis(
             "start",

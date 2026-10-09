@@ -19,6 +19,7 @@ from tools.dfm.processes.base import FactRequirement, ProcessPlan
 from tools.dfm.service import DFMService
 from tools.dfm.feature_recognition.occt_cpp import OCCTCppFeatureRecognitionProvider
 from tools.dfm.contracts import (
+    ArtifactRecord,
     ClarificationRecord,
     Capability,
     CapabilityStatus,
@@ -29,6 +30,7 @@ from tools.dfm.contracts import (
     PlanOperation,
     RegionRecord,
     RuleBinding,
+    RuleOperand,
 )
 from tools.dfm.processes.occt_injection import geometry_binding_index
 
@@ -96,7 +98,9 @@ def test_project_actions_create_add_input_status_confirm_and_list(service):
 
     assert added["input"]["kind"] == "step"
     assert {item["clarification_id"] for item in added["open_clarifications"]} == {
-        "clarification_process", "clarification_model_units", "clarification_pull_dir",
+        "clarification_process",
+        "clarification_model_units",
+        "clarification_pull_dir",
     }
     assert confirmed["fact"]["status"] == "confirmed"
     assert status["project"]["input_mode"] == "step"
@@ -109,10 +113,14 @@ def test_project_actions_create_add_input_status_confirm_and_list(service):
     assert {
         item["clarification_id"] for item in status["project"]["open_clarifications"]
     } == {
-        "clarification_process", "clarification_model_units", "clarification_pull_dir",
+        "clarification_process",
+        "clarification_model_units",
+        "clarification_pull_dir",
     }
     assert status["capabilities"]["step"]["status"] == "dependency_missing"
-    assert status["ontology"]["snapshot_id"] == dfm.ontology_store.identity().snapshot_id
+    assert (
+        status["ontology"]["snapshot_id"] == dfm.ontology_store.identity().snapshot_id
+    )
     assert listed["projects"][0]["project_id"] == created["project_id"]
 
 
@@ -128,43 +136,76 @@ def test_interactive_dfm_fact_requires_real_response(service, monkeypatch):
     dfm.project("add_input", project_id=project_id, path=str(source))
     monkeypatch.setattr("tools.dfm.service.get_dfm_service", lambda: dfm)
 
-    rejected = json.loads(_call("project", {
-        "action": "confirm_fact", "project_id": project_id,
-        "fact_name": "process", "fact_value": "injection",
-    }))
+    rejected = json.loads(
+        _call(
+            "project",
+            {
+                "action": "confirm_fact",
+                "project_id": project_id,
+                "fact_name": "process",
+                "fact_value": "injection",
+            },
+        )
+    )
     assert rejected["ok"] is False
-    assert not any(item["name"] == "process" for item in dfm.project("status", project_id=project_id)["project"]["facts"])
+    assert not any(
+        item["name"] == "process"
+        for item in dfm.project("status", project_id=project_id)["project"]["facts"]
+    )
 
-    invalid_answer = json.loads(clarify_tool(
-        "请确认工艺", callback=lambda *_: "unsupported_process",
-        dfm_project_id=project_id, dfm_fact_name="process",
-    ))
+    invalid_answer = json.loads(
+        clarify_tool(
+            "请确认工艺",
+            callback=lambda *_: "unsupported_process",
+            dfm_project_id=project_id,
+            dfm_fact_name="process",
+        )
+    )
     assert invalid_answer["ok"] is False
-    assert not any(item["name"] == "process" for item in dfm.project("status", project_id=project_id)["project"]["facts"])
+    assert not any(
+        item["name"] == "process"
+        for item in dfm.project("status", project_id=project_id)["project"]["facts"]
+    )
 
     seen = []
 
     def answer(question, choices):
         seen.extend(choices)
-        assert not any(item["name"] == "process" for item in dfm.project("status", project_id=project_id)["project"]["facts"])
+        assert not any(
+            item["name"] == "process"
+            for item in dfm.project("status", project_id=project_id)["project"]["facts"]
+        )
         return "注塑成型"
 
-    result = json.loads(clarify_tool(
-        "请确认工艺", callback=answer,
-        dfm_project_id=project_id, dfm_fact_name="process",
-    ))
+    result = json.loads(
+        clarify_tool(
+            "请确认工艺",
+            callback=answer,
+            dfm_project_id=project_id,
+            dfm_fact_name="process",
+        )
+    )
     assert seen == ["压铸", "注塑成型"]
     assert result["dfm_fact"]["value"] == "injection"
-    assert any(item["name"] == "process" for item in dfm.project("status", project_id=project_id)["project"]["facts"])
+    assert any(
+        item["name"] == "process"
+        for item in dfm.project("status", project_id=project_id)["project"]["facts"]
+    )
 
-    repeated = json.loads(clarify_tool(
-        "请确认工艺", callback=lambda *_: "injection",
-        dfm_project_id=project_id, dfm_fact_name="process",
-    ))
+    repeated = json.loads(
+        clarify_tool(
+            "请确认工艺",
+            callback=lambda *_: "injection",
+            dfm_project_id=project_id,
+            dfm_fact_name="process",
+        )
+    )
     assert "error" in repeated
 
 
-def test_dfm_questions_require_explicit_project_and_factor_binding(service, monkeypatch):
+def test_dfm_questions_bind_the_active_project_and_next_factor(
+    service, monkeypatch
+):
     from tools.clarify_tool import clarify_tool
     from tools.dfm_tool import _call
 
@@ -175,34 +216,46 @@ def test_dfm_questions_require_explicit_project_and_factor_binding(service, monk
     dfm.project("add_input", project_id=project_id, path=str(source))
     monkeypatch.setattr("tools.dfm.service.get_dfm_service", lambda: dfm)
     monkeypatch.setattr("tools.dfm_tool.get_dfm_service", lambda: dfm)
-    _call("project", {"action": "status", "project_id": project_id},
-          session_id="dfm-single-question")
+    _call(
+        "project",
+        {"action": "status", "project_id": project_id},
+        session_id="dfm-single-question",
+    )
 
     shown = []
 
-    def assert_unbound_is_not_shown(expected_name):
-        result = json.loads(clarify_tool(
-            "Unbound Agent question", choices=["irrelevant"],
-            callback=lambda question, options: shown.append((question, options)),
-            session_id="dfm-single-question",
-        ))
-        assert result["code"] == "dfm_fact_binding_required"
-        assert result["dfm_project_id"] == project_id
-        assert result["dfm_fact_name"] == expected_name
-        assert not shown
+    def answer_next(expected_name, answer=None):
+        result = json.loads(
+            clarify_tool(
+                "Unbound Agent question",
+                choices=["irrelevant"],
+                callback=lambda question, options: (
+                    shown.append((question, options))
+                    or (answer if answer is not None else options[-1])
+                ),
+                session_id="dfm-single-question",
+            )
+        )
+        assert result["dfm_fact"]["name"] == expected_name
+        return result
 
     def answer_bound(name, answer):
-        result = json.loads(clarify_tool(
-            f"Confirm {name}", choices=["irrelevant"],
-            callback=lambda question, options: shown.append((question, options)) or answer,
-            dfm_project_id=project_id, dfm_fact_name=name,
-            session_id="dfm-single-question",
-        ))
+        result = json.loads(
+            clarify_tool(
+                f"Confirm {name}",
+                choices=["irrelevant"],
+                callback=lambda question, options: (
+                    shown.append((question, options)) or answer
+                ),
+                dfm_project_id=project_id,
+                dfm_fact_name=name,
+                session_id="dfm-single-question",
+            )
+        )
         assert result["dfm_fact"]["name"] == name
         return result
 
-    assert_unbound_is_not_shown("process")
-    process = answer_bound("process", "注塑成型")
+    process = answer_next("process")
     assert process["dfm_fact"]["value"] == "injection"
     assert process["next_action"] == "clarify"
     assert len(shown[0][1]) == 2
@@ -210,19 +263,24 @@ def test_dfm_questions_require_explicit_project_and_factor_binding(service, monk
         startup_answer = answer_bound(name, answer)
     assert startup_answer["next_action"] == "discover"
     assert len(shown) == 3
-    assert dfm.project("status", project_id=project_id)["project"]["open_clarifications"] == []
+    assert (
+        dfm.project("status", project_id=project_id)["project"]["open_clarifications"]
+        == []
+    )
 
     discovered = dfm.analysis("discover", project_id=project_id)
     assert [item["clarification_id"] for item in discovered["open_clarifications"]] == [
         "clarification_material"
     ]
     shown.clear()
-    assert_unbound_is_not_shown("material")
-    material = answer_bound("material", "ABS")
+    material = answer_next("material", "ABS")
     assert material["dfm_fact"]["name"] == "material"
     assert material["next_action"] == "plan"
     assert len(shown) == 1
-    assert dfm.project("status", project_id=project_id)["project"]["open_clarifications"] == []
+    assert (
+        dfm.project("status", project_id=project_id)["project"]["open_clarifications"]
+        == []
+    )
 
 
 def test_requested_process_is_routing_state_until_confirmed_as_a_fact(service):
@@ -238,9 +296,11 @@ def test_requested_process_is_routing_state_until_confirmed_as_a_fact(service):
     )
     status = dfm.project("status", project_id=created["project_id"])["project"]
 
-    assert [
-        item["clarification_id"] for item in added["open_clarifications"]
-    ] == ["clarification_process", "clarification_model_units", "clarification_pull_dir"]
+    assert [item["clarification_id"] for item in added["open_clarifications"]] == [
+        "clarification_process",
+        "clarification_model_units",
+        "clarification_pull_dir",
+    ]
     assert not any(item["name"] == "process" for item in status["facts"])
 
 
@@ -266,7 +326,9 @@ def test_discovery_asks_startup_facts_before_feature_scoped_rule_facts(service):
 
     assert blocked["ok"] is True
     assert [item["clarification_id"] for item in blocked["clarifications"]] == [
-        "clarification_process", "clarification_model_units", "clarification_pull_dir"
+        "clarification_process",
+        "clarification_model_units",
+        "clarification_pull_dir",
     ]
     confirmed_process = dfm.project(
         "confirm_fact",
@@ -293,9 +355,9 @@ def test_discovery_asks_startup_facts_before_feature_scoped_rule_facts(service):
     discovered = dfm.analysis("discover", project_id=project_id)
     status = dfm.project("status", project_id=project_id)["project"]
 
-    assert [
-        item["clarification_id"] for item in discovered["open_clarifications"]
-    ] == ["clarification_material"]
+    assert [item["clarification_id"] for item in discovered["open_clarifications"]] == [
+        "clarification_material"
+    ]
     assert next(
         item["value"] for item in status["facts"] if item["name"] == "pull_dir"
     ) == [0.0, 0.0, 1.0]
@@ -308,9 +370,191 @@ def test_discovery_asks_startup_facts_before_feature_scoped_rule_facts(service):
     assert confirmed_material["next_action"] == "plan"
 
 
+def test_discovery_review_edits_regions_before_confirmation(service, monkeypatch):
+    from tools.clarify_tool import clarify_tool
+
+    dfm, temp = service
+    project_id = dfm.project("create", name="Editable discovery")["project_id"]
+    source = temp / "editable.step"
+    source.write_bytes(STEP_PAYLOAD)
+    dfm.project("add_input", project_id=project_id, path=str(source))
+    confirm_step_facts(dfm, project_id)
+    manifest = dfm._store(project_id).load()
+    input_sha256 = manifest.inputs[0].sha256
+    artifact_dir = (
+        dfm.workspace.project_dir(project_id)
+        / "artifacts"
+        / "geometry_discovery"
+        / input_sha256[:16]
+    )
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    refs = [
+        GeometryRef("face", index, input_sha256, "topology-1", f"face-{index}")
+        for index in (1, 2, 3)
+    ]
+    (artifact_dir / "topology_map.json").write_text(
+        json.dumps({
+            "schema_version": 2,
+            "faces": [{"geometry_ref": item.to_dict()} for item in refs],
+        }),
+        encoding="utf-8",
+    )
+    (artifact_dir / "render_scene.json").write_text(
+        json.dumps({"schema_version": 2, "primitives": []}), encoding="utf-8"
+    )
+    topology_artifact = ArtifactRecord(
+        "artifact.discovery.topology",
+        "topology_map",
+        (artifact_dir / "topology_map.json")
+        .relative_to(dfm.workspace.project_dir(project_id))
+        .as_posix(),
+        "application/json",
+        "now",
+    )
+    scene_artifact = ArtifactRecord(
+        "artifact.discovery.scene",
+        "render_scene",
+        (artifact_dir / "render_scene.json")
+        .relative_to(dfm.workspace.project_dir(project_id))
+        .as_posix(),
+        "application/json",
+        "now",
+    )
+    feature = FeatureRecord(
+        "feature.main-wall.1",
+        "main_wall",
+        ["recognizer:test"],
+        0.9,
+        input_sha256=input_sha256,
+        region_refs=["region.main-wall.1", "region.main-wall.transition"],
+    )
+    region = RegionRecord(
+        "region.main-wall.1",
+        input_sha256,
+        "model",
+        "topology_refs",
+        "main_wall",
+        ["recognizer:test"],
+        "1",
+        "b" * 64,
+        geometry_refs=[refs[0]],
+        role="wall",
+        feature_refs=[feature.feature_id],
+    )
+    transition_region = RegionRecord(
+        "region.main-wall.transition",
+        input_sha256,
+        "model",
+        "topology_refs",
+        "main_wall_transition",
+        ["recognizer:test"],
+        "1",
+        "c" * 64,
+        geometry_refs=[refs[1]],
+        role="transition",
+        feature_refs=[feature.feature_id],
+    )
+    manifest = dfm._store(project_id).update(
+        lambda current: replace(
+            current,
+            features=[feature],
+            regions=[region, transition_region],
+            artifacts=[*current.artifacts, topology_artifact, scene_artifact],
+            capabilities={
+                **current.capabilities,
+                "geometry_discovery": {
+                    "inputs": {
+                        input_sha256: {
+                            "artifact_refs": [
+                                topology_artifact.artifact_id,
+                                scene_artifact.artifact_id,
+                            ]
+                        }
+                    }
+                },
+                "discovery_review": {"status": "pending"},
+            },
+        )
+    )
+    dfm._store(project_id).update(
+        lambda current: replace(current, updated_at="unrelated-update"),
+        expected_revision=manifest.revision,
+    )
+
+    edited = dfm.analysis(
+        "update_feature_geometry",
+        project_id=project_id,
+        feature_id=feature.feature_id,
+        face_indices=[1, 3],
+        expected_revision=manifest.revision,
+    )
+    saved = dfm._store(project_id).load()
+    saved_region = next(
+        item for item in saved.regions if item.region_id == region.region_id
+    )
+    assert edited["face_indices"] == [1, 3]
+    assert [item.index for item in saved_region.geometry_refs] == [1, 3]
+    saved_feature = next(
+        item for item in saved.features if item.feature_id == feature.feature_id
+    )
+    assert saved_feature.region_refs == [region.region_id]
+    assert saved_feature.properties["manual_face_additions"] == [3]
+    assert saved_feature.properties["manual_face_removals"] == [2]
+    assert saved_feature.properties["unavailable_region_roles"] == ["transition"]
+
+    restored = dfm.analysis(
+        "update_feature_geometry",
+        project_id=project_id,
+        feature_id=feature.feature_id,
+        face_indices=[1, 2, 3],
+        expected_revision=edited["revision"],
+    )
+    saved = dfm._store(project_id).load()
+    saved_feature = next(
+        item for item in saved.features if item.feature_id == feature.feature_id
+    )
+    assert transition_region.region_id in saved_feature.region_refs
+    assert saved_feature.properties["manual_face_additions"] == [3]
+    assert saved_feature.properties["manual_face_removals"] == []
+    assert saved_feature.properties["unavailable_region_roles"] == []
+    assert restored["revision"] == saved.revision
+    blocked = dfm.analysis("plan", project_id=project_id)
+    assert blocked["status"] == "discovery_review_required"
+
+    monkeypatch.setattr("tools.dfm.service.get_dfm_service", lambda: dfm)
+    shown = []
+    response = json.loads(
+        clarify_tool(
+            "ignored",
+            callback=lambda question, choices: (
+                shown.append((question, choices)) or "确认最终特征区域并继续"
+            ),
+            dfm_project_id=project_id,
+            dfm_discovery_review=True,
+        )
+    )
+    confirmed = response["dfm_discovery_review"]
+    final = dfm._store(project_id).load()
+    assert shown == [
+        (
+            "请在右侧三维模型中核对识别到的特征区域；如需调整，请先编辑并保存，然后继续。",
+            ["确认最终特征区域并继续"],
+        )
+    ]
+    assert confirmed["status"] == "discovery_confirmed"
+    assert final.capabilities["discovery_review"]["status"] == "confirmed"
+    assert (
+        final.capabilities["discovery_review"]["snapshot_id"]
+        == confirmed["snapshot"]["snapshot_id"]
+    )
+
+
 def test_published_factor_choices_are_asked_and_validated(service):
     dfm, temp = service
-    package_path = Path(__file__).parents[3] / "tools/dfm/scopes/injection/ontology_snapshot_v2.json"
+    package_path = (
+        Path(__file__).parents[3]
+        / "tools/dfm/scopes/injection/ontology_snapshot_v2.json"
+    )
     package = json.loads(package_path.read_text(encoding="utf-8"))
     material = next(
         item for item in package["concepts"] if item["concept_id"] == "factor.material"
@@ -326,7 +570,9 @@ def test_published_factor_choices_are_asked_and_validated(service):
     })
     unhashed = {key: value for key, value in package.items() if key != "content_sha256"}
     package["content_sha256"] = hashlib.sha256(
-        json.dumps(unhashed, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(
+            unhashed, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
     ).hexdigest()
     dfm.ontology_store.install_package(package)
 
@@ -334,32 +580,60 @@ def test_published_factor_choices_are_asked_and_validated(service):
     source = temp / "part.step"
     source.write_bytes(STEP_PAYLOAD)
     dfm.project("add_input", project_id=project_id, path=str(source))
-    for name, value in {"process": "injection", "model_units": "mm", "pull_dir": "+Z"}.items():
-        dfm.project("confirm_fact", project_id=project_id, fact_name=name, fact_value=value)
+    for name, value in {
+        "process": "injection",
+        "model_units": "mm",
+        "pull_dir": "+Z",
+    }.items():
+        dfm.project(
+            "confirm_fact", project_id=project_id, fact_name=name, fact_value=value
+        )
     discovered = dfm.analysis("discover", project_id=project_id)
     question = next(
-        item["question"] for item in discovered["open_clarifications"]
+        item["question"]
+        for item in discovered["open_clarifications"]
         if item["clarification_id"] == "clarification_material"
     )
     assert question == "What resin/material grade will be used for this part?"
     assert dfm.clarification_choices("injection", "material") == ("ABS", "PC")
 
     with pytest.raises(DFMError) as exc_info:
-        dfm.project("confirm_fact", project_id=project_id, fact_name="material", fact_value="glass_fiber")
+        dfm.project(
+            "confirm_fact",
+            project_id=project_id,
+            fact_name="material",
+            fact_value="glass_fiber",
+        )
     assert exc_info.value.code == "fact_invalid"
     assert exc_info.value.details["allowed_values"] == ["ABS", "PC"]
 
     # Older projects may already contain a confirmed value outside the publication.
-    dfm._store(project_id).update(lambda current: replace(
-        current,
-        facts=[*current.facts, FactRecord("fact_legacy", "material", "glass_fiber", "user", "confirmed")],
-    ))
-    reopened = dfm.project("status", project_id=project_id)["project"]["open_clarifications"]
-    assert any(item["clarification_id"] == "clarification_material" for item in reopened)
+    dfm._store(project_id).update(
+        lambda current: replace(
+            current,
+            facts=[
+                *current.facts,
+                FactRecord(
+                    "fact_legacy", "material", "glass_fiber", "user", "confirmed"
+                ),
+            ],
+        )
+    )
+    reopened = dfm.project("status", project_id=project_id)["project"][
+        "open_clarifications"
+    ]
+    assert any(
+        item["clarification_id"] == "clarification_material" for item in reopened
+    )
 
-    dfm.project("confirm_fact", project_id=project_id, fact_name="material", fact_value="PC")
+    dfm.project(
+        "confirm_fact", project_id=project_id, fact_name="material", fact_value="PC"
+    )
     status = dfm.project("status", project_id=project_id)["project"]
-    assert not any(item["clarification_id"] == "clarification_material" for item in status["open_clarifications"])
+    assert not any(
+        item["clarification_id"] == "clarification_material"
+        for item in status["open_clarifications"]
+    )
 
 
 def test_same_factor_can_be_answered_separately_for_two_checks(service, monkeypatch):
@@ -368,17 +642,25 @@ def test_same_factor_can_be_answered_separately_for_two_checks(service, monkeypa
     dfm, temp = service
     package_path = Path(__file__).parent / "fixtures/ontology_legacy_v2.json"
     package = json.loads(package_path.read_text(encoding="utf-8"))
-    factor = next(item for item in package["concepts"] if item["concept_id"] == "factor.material")
+    factor = next(
+        item for item in package["concepts"] if item["concept_id"] == "factor.material"
+    )
     factor["properties"]["runtime_key"] = "mat_additive_fill"
     factor["properties"].pop("default_value", None)
     factor["data_schema"]["enum"] = ["非LGF", "未填充"]
     package["factor_options"] = [
-        {**package["factor_options"][0], "option_code": value,
-         "name_zh": value, "value": value, "sort_order": index}
+        {
+            **package["factor_options"][0],
+            "option_code": value,
+            "name_zh": value,
+            "value": value,
+            "sort_order": index,
+        }
         for index, value in enumerate(("非LGF", "未填充"), start=1)
     ]
     material_relation = next(
-        item for item in package["relations"]
+        item
+        for item in package["relations"]
         if item["relation_id"] == "rel.check.wall.factor.material"
     )
     draft_relation = deepcopy(material_relation)
@@ -395,7 +677,9 @@ def test_same_factor_can_be_answered_separately_for_two_checks(service, monkeypa
             ]
     unhashed = {key: value for key, value in package.items() if key != "content_sha256"}
     package["content_sha256"] = hashlib.sha256(
-        json.dumps(unhashed, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(
+            unhashed, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
     ).hexdigest()
     dfm.ontology_store.install_package(package)
     monkeypatch.setattr("tools.dfm.service.get_dfm_service", lambda: dfm)
@@ -404,8 +688,14 @@ def test_same_factor_can_be_answered_separately_for_two_checks(service, monkeypa
     source = temp / "scoped.step"
     source.write_bytes(STEP_PAYLOAD)
     dfm.project("add_input", project_id=project_id, path=str(source))
-    for name, value in (("process", "injection"), ("model_units", "mm"), ("pull_dir", "+Z")):
-        dfm.project("confirm_fact", project_id=project_id, fact_name=name, fact_value=value)
+    for name, value in (
+        ("process", "injection"),
+        ("model_units", "mm"),
+        ("pull_dir", "+Z"),
+    ):
+        dfm.project(
+            "confirm_fact", project_id=project_id, fact_name=name, fact_value=value
+        )
     discovered = dfm.analysis("discover", project_id=project_id)
     clarifications = discovered["open_clarifications"]
     assert {item["clarification_id"] for item in clarifications} == {
@@ -414,7 +704,8 @@ def test_same_factor_can_be_answered_separately_for_two_checks(service, monkeypa
     }
     with pytest.raises(DFMError) as invalid:
         dfm.project(
-            "confirm_fact", project_id=project_id,
+            "confirm_fact",
+            project_id=project_id,
             fact_name="mat_additive_fill@check.main_wall_minimum_thickness",
             fact_value="未填充",
         )
@@ -423,18 +714,22 @@ def test_same_factor_can_be_answered_separately_for_two_checks(service, monkeypa
         ("check.main_wall_minimum_thickness", "非LGF"),
         ("check.main_wall_minimum_draft", "未填充"),
     ):
-        result = json.loads(clarify_tool(
-            "ignored", callback=lambda _question, choices: expected,
-            dfm_project_id=project_id,
-            dfm_fact_name=f"mat_additive_fill@{check_id}",
-        ))
+        result = json.loads(
+            clarify_tool(
+                "ignored",
+                callback=lambda _question, choices: expected,
+                dfm_project_id=project_id,
+                dfm_fact_name=f"clarification_mat_additive_fill@{check_id}",
+            )
+        )
         assert result["choices_offered"] == [expected]
         assert result["dfm_fact"]["check_id"] == check_id
     project = dfm.project("status", project_id=project_id)["project"]
     assert project["open_clarifications"] == []
     assert {
         (item["check_id"], item["value"])
-        for item in project["facts"] if item["name"] == "mat_additive_fill"
+        for item in project["facts"]
+        if item["name"] == "mat_additive_fill"
     } == {
         ("check.main_wall_minimum_thickness", "非LGF"),
         ("check.main_wall_minimum_draft", "未填充"),
@@ -446,7 +741,9 @@ def test_same_factor_can_be_answered_separately_for_two_checks(service, monkeypa
         context = dfm.analysis("context", project_id=project_id, check_id=check_id)
         assert context["confirmed_facts"]["mat_additive_fill"]["value"] == expected
     plan = dfm.analysis("plan", project_id=project_id)["plan"]
-    assert {"R_INJ_MAIN_WALL_MIN_ABS", "R_INJ_MAIN_WALL_DRAFT_DEFAULT"} <= set(plan["rules"])
+    assert {"R_INJ_MAIN_WALL_MIN_ABS", "R_INJ_MAIN_WALL_DRAFT_DEFAULT"} <= set(
+        plan["rules"]
+    )
 
 
 def test_ontology_status_reads_installed_workspace_store(service):
@@ -462,7 +759,9 @@ def test_ontology_status_reads_installed_workspace_store(service):
     }
 
 
-def test_sync_ontology_uses_configured_synchronizer_and_returns_installed_identity(service):
+def test_sync_ontology_uses_configured_synchronizer_and_returns_installed_identity(
+    service,
+):
     dfm, _temp = service
     expected_identity = dfm.ontology_store.identity().to_dict()
 
@@ -765,7 +1064,9 @@ def test_plan_is_persisted_but_unavailable_production_start_fails_explicitly(ser
     assert blocked["status"] == "clarification_required"
     assert blocked["next_action"] == "clarify"
     assert [item["clarification_id"] for item in blocked["clarifications"]] == [
-        "clarification_process", "clarification_model_units", "clarification_pull_dir"
+        "clarification_process",
+        "clarification_model_units",
+        "clarification_pull_dir",
     ]
     confirm_step_facts(dfm, project_id)
     awaiting_discovery = dfm.analysis("plan", project_id=project_id)
@@ -795,7 +1096,10 @@ def test_plan_is_persisted_but_unavailable_production_start_fails_explicitly(ser
     assert plan["plan"]["process"] == "injection"
     assert plan["plan"]["scope_id"] == "injection.default"
     assert plan["plan"]["scope_version"] == dfm.ontology_store.identity().scope_version
-    assert plan["plan"]["ontology_snapshot_id"] == dfm.ontology_store.identity().snapshot_id
+    assert (
+        plan["plan"]["ontology_snapshot_id"]
+        == dfm.ontology_store.identity().snapshot_id
+    )
     assert len(plan["plan"]["ontology_snapshot_sha256"]) == 64
     assert plan["plan"]["input_ids"] == [plan["plan"]["input_ids"][0]]
     assert set(plan["plan"]["input_hashes"].values()) == {added["input"]["sha256"]}
@@ -803,7 +1107,9 @@ def test_plan_is_persisted_but_unavailable_production_start_fails_explicitly(ser
     assert draft_rule["value"] == 1.0
     assert draft_rule["unit"] == "degree"
     assert draft_rule["version"] == "1.0.0"
-    assert draft_rule["source"].startswith(f"ontology:{plan['plan']['ontology_snapshot_id']}/")
+    assert draft_rule["source"].startswith(
+        f"ontology:{plan['plan']['ontology_snapshot_id']}/"
+    )
     assert plan["capability"]["status"] == "dependency_missing"
     with pytest.raises(DFMError) as exc_info:
         dfm.analysis("start", project_id=project_id, plan_id=plan["plan"]["plan_id"])
@@ -981,7 +1287,9 @@ def test_region_binding_ignores_targets_for_inapplicable_rules(service, monkeypa
             )
         ],
         binding_selectors={
-            "binding.C_WALL_DRAFT.R_WALL_DRAFT": {"actual": {"operand_text": "outer wall"}}
+            "binding.C_WALL_DRAFT.R_WALL_DRAFT": {
+                "actual": {"operand_text": "outer wall"}
+            }
         },
     )
 
@@ -994,6 +1302,88 @@ def test_region_binding_ignores_targets_for_inapplicable_rules(service, monkeypa
         dfm._bind_discovery_scope(replace(plan, operations=[]), None, None)
     assert exc_info.value.code == "analysis_target_unsupported"
     assert exc_info.value.details["metric_id"] == draft_metric
+
+
+def test_region_binding_skips_feature_when_secondary_semantic_region_is_missing(
+    service, monkeypatch
+):
+    dfm, _ = service
+    feature = SimpleNamespace(feature_id="feature.screw_boss", kind="screw_boss")
+    body_region = SimpleNamespace(
+        region_id="region.screw_boss.body",
+        role="body",
+        input_sha256="input-sha",
+        content_sha256="a" * 64,
+    )
+    body_metric = "injection.geometry.screw_boss.wall_thickness"
+    fillet_metric = "injection.geometry.screw_boss.fillet"
+    monkeypatch.setattr(
+        dfm.discovery,
+        "analysis_targets",
+        lambda _manifest, _snapshot: [
+            {
+                "feature": feature,
+                "region": body_region,
+                "metric_id": body_metric,
+                "operand_anchors": {
+                    ("C_SCREW_BOSS_FILLET", "wall"): [feature.feature_id]
+                },
+            }
+        ],
+    )
+    binding_id = "binding.C_SCREW_BOSS_FILLET.R_SCREW_BOSS_FILLET"
+    plan = ProcessPlan(
+        process="injection",
+        adapter_version="test",
+        scope_id="test",
+        scope_version="1",
+        rules={},
+        operations=[
+            PlanOperation(
+                "measure_screw_boss_wall",
+                "measure_screw_boss_wall",
+                metric_ids=[body_metric],
+            ),
+            PlanOperation(
+                "measure_screw_boss_fillet",
+                "measure_screw_boss_fillet",
+                metric_ids=[fillet_metric],
+            ),
+        ],
+        accepted_inputs=set(),
+        rule_bindings=[
+            RuleBinding(
+                binding_id=binding_id,
+                operation_id="measure_screw_boss_wall",
+                metric_id=body_metric,
+                quantity_id="wall_thickness",
+                rule_id="R_SCREW_BOSS_FILLET",
+                operator="GTE",
+                aggregation="identity",
+                check_id="C_SCREW_BOSS_FILLET",
+                operand_alias="wall",
+                additional_operands=[
+                    RuleOperand(
+                        alias="bottom_fillet",
+                        operation_id="measure_screw_boss_fillet",
+                        metric_id=fillet_metric,
+                        quantity_id="radius",
+                    )
+                ],
+            )
+        ],
+        binding_selectors={
+            binding_id: {
+                "wall": {"operand_text": "boss wall"},
+                "bottom_fillet": {"operand_text": "boss bottom fillet"},
+            }
+        },
+    )
+
+    bound = dfm._bind_discovery_scope(plan, None, None)
+
+    assert bound.rule_bindings == []
+    assert bound.operations == []
 
 
 def test_input_or_confirmed_fact_invalidates_prior_plan(service):
@@ -1228,7 +1618,9 @@ def test_die_casting_plan_uses_its_own_facts_scope_and_operations(service):
     blocked = dfm.analysis("discover", project_id=project_id)
 
     assert [item["clarification_id"] for item in blocked["clarifications"]] == [
-        "clarification_process", "clarification_model_units", "clarification_pull_dir"
+        "clarification_process",
+        "clarification_model_units",
+        "clarification_pull_dir",
     ]
     dfm.project(
         "confirm_fact",
@@ -1239,7 +1631,8 @@ def test_die_casting_plan_uses_its_own_facts_scope_and_operations(service):
     blocked = dfm.analysis("discover", project_id=project_id)
 
     assert [item["clarification_id"] for item in blocked["clarifications"]] == [
-        "clarification_model_units", "clarification_pull_dir"
+        "clarification_model_units",
+        "clarification_pull_dir",
     ]
     dfm.project(
         "confirm_fact",

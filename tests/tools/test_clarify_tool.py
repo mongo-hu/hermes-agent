@@ -3,6 +3,7 @@
 import json
 from typing import List, Optional
 
+import pytest
 
 from tools.clarify_tool import (
     clarify_tool,
@@ -108,7 +109,8 @@ class TestClarifyToolChoicesValidation:
         result = json.loads(clarify_tool(
             "材料类别？", choices=["wrong"],
             callback=lambda _question, options: options[-1],
-            dfm_project_id="dfm_test", dfm_fact_name="mat_family",
+            dfm_project_id="dfm_test",
+            dfm_fact_name="clarification_mat_family",
         ))
         assert result["choices_offered"] == published
         assert result["user_response"] == published[-1]
@@ -149,18 +151,50 @@ class TestClarifyToolChoicesValidation:
         assert result["user_response"] == "注塑成型"
         assert confirmed[0]["fact_value"] == "注塑成型"
 
-    def test_unbound_dfm_question_is_rejected_before_showing_ui(self, monkeypatch):
+    def test_unbound_dfm_question_binds_next_open_factor_before_showing_ui(
+        self, monkeypatch
+    ):
         from tools import dfm_tool
+        from types import SimpleNamespace
 
         monkeypatch.setattr(dfm_tool, "_session_projects", {"session-one": "dfm_test"})
-        pending = [{"clarification_id": "clarification_mat_additive_fill"}]
+        pending = [{
+            "clarification_id": "clarification_mat_additive_fill",
+            "question": "Material fill?",
+        }]
+        confirmed = []
 
         class FakeService:
+            config = SimpleNamespace(default_process="injection")
+
+            @staticmethod
+            def _canonical_fact_name(name):
+                return name
+
+            @staticmethod
+            def clarification_choices(_process, _name):
+                return ["Unfilled", "GF"]
+
             @staticmethod
             def project(action, **kwargs):
                 assert kwargs["project_id"] == "dfm_test"
-                assert action == "status"
-                return {"project": {"process": "injection", "open_clarifications": pending}}
+                if action == "status":
+                    return {
+                        "project": {
+                            "process": "injection",
+                            "open_clarifications": pending,
+                        }
+                    }
+                assert action == "confirm_fact"
+                confirmed.append(kwargs)
+                pending.clear()
+                return {
+                    "fact": {
+                        "name": kwargs["fact_name"],
+                        "value": kwargs["fact_value"],
+                    },
+                    "next_action": "discover",
+                }
 
         monkeypatch.setattr("tools.dfm.service.get_dfm_service", FakeService)
         shown = []
@@ -169,12 +203,15 @@ class TestClarifyToolChoicesValidation:
             callback=lambda question, choices: shown.append((question, choices)) or "non-LGF",
             session_id="session-one",
         ))
-        assert shown == []
-        assert result["code"] == "dfm_fact_binding_required"
-        assert result["dfm_project_id"] == "dfm_test"
-        assert result["dfm_fact_name"] == "mat_additive_fill"
+        assert shown == [("Material fill?", ["Unfilled", "GF"])]
+        assert result["dfm_fact"] == {
+            "name": "mat_additive_fill",
+            "value": "non-LGF",
+        }
+        assert confirmed[0]["fact_name"] == "mat_additive_fill"
+        assert confirmed[0]["fact_value"] == "non-LGF"
 
-        pending.clear()
+        shown.clear()
         ordinary = json.loads(clarify_tool(
             "Another question", choices=["yes", "no"],
             callback=lambda question, choices: shown.append((question, choices)) or "yes",
@@ -183,6 +220,50 @@ class TestClarifyToolChoicesValidation:
         assert shown == [("Another question", ["yes", "no"])]
         assert ordinary["user_response"] == "yes"
         assert "dfm_fact" not in ordinary
+
+    @pytest.mark.parametrize("requested_review", [False, True])
+    def test_unbound_question_binds_pending_discovery_review_once(
+        self, monkeypatch, requested_review
+    ):
+        from tools import dfm_tool
+
+        monkeypatch.setattr(dfm_tool, "_session_projects", {"session-one": "dfm_test"})
+        confirmed = []
+
+        class FakeService:
+            @staticmethod
+            def project(action, **kwargs):
+                assert action == "status"
+                assert kwargs["project_id"] == "dfm_test"
+                return {"project": {
+                    "capabilities": {"discovery_review": {"status": "pending"}},
+                    "open_clarifications": [],
+                }}
+
+            @staticmethod
+            def analysis(action, **kwargs):
+                assert action == "confirm_discovery"
+                confirmed.append(kwargs["project_id"])
+                return {
+                    "status": "discovery_confirmed",
+                    "next_action": "plan",
+                    "viewer_manifest": "dfm_viewer.json",
+                }
+
+        monkeypatch.setattr("tools.dfm.service.get_dfm_service", FakeService)
+        shown = []
+        result = json.loads(clarify_tool(
+            "" if requested_review else "Agent-authored duplicate prompt",
+            callback=lambda question, choices: shown.append((question, choices))
+            or choices[0],
+            dfm_discovery_review=requested_review,
+            session_id="session-one",
+        ))
+
+        assert len(shown) == 1
+        assert confirmed == ["dfm_test"]
+        assert result["dfm_discovery_review"]["status"] == "discovery_confirmed"
+        assert result["next_action"] == "plan"
 
     def test_dfm_project_call_binds_its_session(self, monkeypatch):
         from tools import dfm_tool
@@ -365,9 +446,9 @@ class TestClarifySchema:
         assert "description" in CLARIFY_SCHEMA
         assert len(CLARIFY_SCHEMA["description"]) > 50
 
-    def test_schema_question_required(self):
-        """Question parameter should be required."""
-        assert "question" in CLARIFY_SCHEMA["parameters"]["required"]
+    def test_schema_question_optional_for_bound_dfm(self):
+        """Bound DFM prompts may omit their tool-owned question text."""
+        assert "question" not in CLARIFY_SCHEMA["parameters"]["required"]
 
     def test_schema_choices_optional(self):
         """Choices parameter should be optional."""

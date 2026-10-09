@@ -26,11 +26,14 @@ from .contracts import (
     ArtifactRecord,
     ClarificationRecord,
     FactRecord,
+    FeatureRecord,
+    GeometryRef,
     InputRecord,
     ObservationRecord,
     PlanOperation,
     PlanRecord,
     ProjectManifest,
+    RegionRecord,
     RunRecord,
     RunStatus,
 )
@@ -51,7 +54,10 @@ from .processes.occt_injection import (
 from .reporting.html import render_html_report
 from .reporting.html.template import ContractError, normalize_editorial_content
 from .runtime.jobs import JobManager
-from .viewer import materialize_preview_manifest
+from .viewer import (
+    materialize_discovery_viewer_manifest,
+    materialize_preview_manifest,
+)
 
 
 def _utc_now() -> str:
@@ -277,9 +283,7 @@ class DFMService:
                 run_id=run_id,
                 plan=plan,
             )
-            artifacts = self.registry.get("occt_cpp").run(
-                context, CancellationToken()
-            )
+            artifacts = self.registry.get("occt_cpp").run(context, CancellationToken())
             viewer = materialize_preview_manifest(
                 context.project_dir,
                 run_id,
@@ -320,11 +324,7 @@ class DFMService:
 
         if fact_name == "process":
             key = (
-                str(raw_value or "")
-                .strip()
-                .lower()
-                .replace("-", "_")
-                .replace(" ", "_")
+                str(raw_value or "").strip().lower().replace("-", "_").replace(" ", "_")
             )
             if key not in DFMService._PROCESS_ALIASES:
                 raise DFMError(
@@ -398,16 +398,24 @@ class DFMService:
         expected = schema.get("type")
         type_checks = {
             "string": lambda item: isinstance(item, str),
-            "number": lambda item: isinstance(item, (int, float))
-            and not isinstance(item, bool)
-            and math.isfinite(float(item)),
-            "integer": lambda item: isinstance(item, int) and not isinstance(item, bool),
+            "number": lambda item: (
+                isinstance(item, (int, float))
+                and not isinstance(item, bool)
+                and math.isfinite(float(item))
+            ),
+            "integer": lambda item: (
+                isinstance(item, int) and not isinstance(item, bool)
+            ),
             "boolean": lambda item: isinstance(item, bool),
             "array": lambda item: isinstance(item, list),
             "object": lambda item: isinstance(item, dict),
             "null": lambda item: item is None,
         }
-        if isinstance(expected, str) and expected in type_checks and not type_checks[expected](value):
+        if (
+            isinstance(expected, str)
+            and expected in type_checks
+            and not type_checks[expected](value)
+        ):
             return False
         if isinstance(expected, list) and not any(
             type_checks[item](value) for item in expected if item in type_checks
@@ -484,22 +492,16 @@ class DFMService:
             )
             allowed_sources = set(policy["allowed_sources"])
             aliased_source = self._FACT_SOURCE_ALIASES.get(source, source)
-            policy_source = (
-                source
-                if source in allowed_sources
-                else aliased_source
-            )
+            policy_source = source if source in allowed_sources else aliased_source
             evidence_refs = list(
-                dict.fromkeys(
-                    [
-                        *observation.source_refs,
-                        *(
-                            provenance.get("evidence_refs", [])
-                            if isinstance(provenance.get("evidence_refs", []), list)
-                            else []
-                        ),
-                    ]
-                )
+                dict.fromkeys([
+                    *observation.source_refs,
+                    *(
+                        provenance.get("evidence_refs", [])
+                        if isinstance(provenance.get("evidence_refs", []), list)
+                        else []
+                    ),
+                ])
             )
             status = None
             if policy_source not in allowed_sources:
@@ -525,9 +527,12 @@ class DFMService:
             ):
                 status = "rejected_evidence"
             elif policy_source in policy["auto_accept_sources"]:
-                candidates.setdefault(name, []).append(
-                    (index, observation, source, evidence_refs)
-                )
+                candidates.setdefault(name, []).append((
+                    index,
+                    observation,
+                    source,
+                    evidence_refs,
+                ))
             else:
                 status = "needs_confirmation"
                 needs_confirmation[name] = definition["question"]
@@ -541,8 +546,10 @@ class DFMService:
                 for item in items
             }
             confirmed = [
-                item for item in facts
-                if item.name == name and item.check_id is None
+                item
+                for item in facts
+                if item.name == name
+                and item.check_id is None
                 and item.status == "confirmed"
             ]
             confirmed_values = {
@@ -554,7 +561,8 @@ class DFMService:
                     observations[index] = replace(observation, status="conflict")
                 facts = [
                     replace(item, status="conflict")
-                    if item.name == name and item.check_id is None
+                    if item.name == name
+                    and item.check_id is None
                     and item.status == "confirmed"
                     else item
                     for item in facts
@@ -1158,6 +1166,344 @@ class DFMService:
             expected_revision=current.revision,
         )
 
+    @staticmethod
+    def _region_content_sha256(region: RegionRecord) -> str:
+        payload = region.to_dict()
+        payload.pop("content_sha256", None)
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+
+    def _discovery_topology_faces(
+        self, manifest: ProjectManifest, input_sha256: str
+    ) -> dict[int, GeometryRef]:
+        metadata = (
+            manifest.capabilities
+            .get("geometry_discovery", {})
+            .get("inputs", {})
+            .get(input_sha256, {})
+        )
+        artifact_ids = set(metadata.get("artifact_refs", []))
+        topology = next(
+            (
+                item
+                for item in manifest.artifacts
+                if item.artifact_id in artifact_ids and item.kind == "topology_map"
+            ),
+            None,
+        )
+        if topology is None:
+            raise DFMError(
+                "discovery_topology_missing",
+                "The Discovery topology map is not available for region editing.",
+            )
+        try:
+            payload = json.loads(
+                (
+                    self.workspace.project_dir(manifest.project_id)
+                    / topology.relative_path
+                ).read_text(encoding="utf-8")
+            )
+            refs = [
+                GeometryRef.from_dict(item["geometry_ref"])
+                for item in payload.get("faces", [])
+                if isinstance(item, dict) and isinstance(item.get("geometry_ref"), dict)
+            ]
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise DFMError(
+                "discovery_topology_invalid",
+                "The Discovery topology map cannot be used for region editing.",
+            ) from exc
+        return {
+            item.index: item
+            for item in refs
+            if item.kind == "face" and item.input_sha256 == input_sha256
+        }
+
+    def _update_discovery_feature_geometry(
+        self,
+        project_id: str,
+        feature_id: object,
+        face_indices: object,
+        expected_revision: object,
+    ) -> dict[str, Any]:
+        if isinstance(expected_revision, bool) or not isinstance(
+            expected_revision, int
+        ):
+            raise DFMError(
+                "manifest_revision_required",
+                "Feature editing requires the current project revision.",
+            )
+        if not isinstance(face_indices, list) or not face_indices:
+            raise DFMError(
+                "feature_geometry_invalid",
+                "A feature must contain at least one face.",
+            )
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 1
+            for value in face_indices
+        ):
+            raise DFMError(
+                "feature_geometry_invalid",
+                "Feature face indices must be positive integers.",
+            )
+        selected_indices = sorted(set(face_indices))
+        store = self._store(project_id)
+        manifest = store.load()
+        review = manifest.capabilities.get("discovery_review", {})
+        if review.get("status") != "pending":
+            raise DFMError(
+                "discovery_review_closed",
+                "Feature regions can only be edited before Discovery is confirmed.",
+            )
+        if any(item.phase == "analysis" for item in manifest.plans):
+            raise DFMError(
+                "discovery_review_closed",
+                "Feature regions cannot be edited after an analysis plan exists.",
+            )
+        feature = next(
+            (item for item in manifest.features if item.feature_id == feature_id), None
+        )
+        if feature is None or feature.kind == "ordinary_part":
+            raise DFMError(
+                "feature_missing", "The editable Discovery feature was not found."
+            )
+        topology_faces = self._discovery_topology_faces(manifest, feature.input_sha256)
+        unknown = [index for index in selected_indices if index not in topology_faces]
+        if unknown:
+            raise DFMError(
+                "feature_geometry_invalid",
+                "One or more selected faces do not belong to this model snapshot.",
+                {"face_indices": unknown},
+            )
+        selected = [topology_faces[index] for index in selected_indices]
+        selected_keys = {
+            (item.kind, item.index, item.input_sha256) for item in selected
+        }
+        active_region_ids = set(feature.region_refs)
+        feature_regions = [
+            item
+            for item in manifest.regions
+            if feature.feature_id in item.feature_refs
+            and item.input_sha256 == feature.input_sha256
+        ]
+        primary_role = "wall" if feature.kind == "main_wall" else "body"
+        if not any(item.role == primary_role for item in feature_regions):
+            primary_role = feature_regions[0].role if feature_regions else ""
+        if not primary_role:
+            raise DFMError(
+                "feature_region_missing",
+                "The Discovery feature has no editable semantic region.",
+            )
+
+        updated_regions: list[RegionRecord] = []
+        kept_region_ids: list[str] = []
+        unavailable_roles: set[str] = set()
+        for region in feature_regions:
+            next_refs = (
+                selected
+                if region.role == primary_role
+                else [
+                    ref
+                    for ref in region.geometry_refs
+                    if (ref.kind, ref.index, ref.input_sha256) in selected_keys
+                ]
+            )
+            if not next_refs:
+                unavailable_roles.add(region.role)
+                continue
+            updated = replace(region, geometry_refs=next_refs)
+            updated = replace(
+                updated, content_sha256=self._region_content_sha256(updated)
+            )
+            updated_regions.append(updated)
+            kept_region_ids.append(updated.region_id)
+
+        original_indices = feature.properties.get("region_review_original_face_indices")
+        if not isinstance(original_indices, list) or any(
+            isinstance(value, bool) or not isinstance(value, int)
+            for value in original_indices
+        ):
+            original_indices = sorted({
+                ref.index
+                for region in feature_regions
+                if region.region_id in active_region_ids
+                for ref in region.geometry_refs
+            })
+        original_index_set = set(original_indices)
+        updated_feature = replace(
+            feature,
+            region_refs=kept_region_ids,
+            status="confirmed",
+            properties={
+                **feature.properties,
+                "region_review": "user_confirmed",
+                "region_review_original_face_indices": original_indices,
+                "manual_face_additions": sorted(
+                    set(selected_indices) - original_index_set
+                ),
+                "manual_face_removals": sorted(
+                    original_index_set - set(selected_indices)
+                ),
+                "unavailable_region_roles": sorted(unavailable_roles),
+            },
+        )
+        region_updates = {item.region_id: item for item in updated_regions}
+        regions = [
+            region_updates.get(item.region_id, item) for item in manifest.regions
+        ]
+        features = [
+            updated_feature if item.feature_id == feature.feature_id else item
+            for item in manifest.features
+        ]
+        regions = self.discovery._partition_ordinary_regions(
+            features, regions, manifest.process or "injection"
+        )
+
+        def apply(current: ProjectManifest) -> ProjectManifest:
+            capabilities = dict(current.capabilities)
+            current_review = dict(capabilities.get("discovery_review", {}))
+            edited = set(current_review.get("edited_feature_ids", []))
+            edited.add(feature.feature_id)
+            current_review["edited_feature_ids"] = sorted(edited)
+            capabilities["discovery_review"] = current_review
+            return replace(
+                current,
+                features=features,
+                regions=regions,
+                capabilities=capabilities,
+                updated_at=_utc_now(),
+            )
+
+        # The viewer revision proves which Discovery payload the edit started
+        # from, but unrelated project updates (for example tool retries) must
+        # not invalidate a face selection. Apply against the latest manifest
+        # we validated above; a true concurrent write after this load still
+        # fails atomically and can be retried.
+        updated_manifest = store.update(apply, expected_revision=manifest.revision)
+        viewer_path = materialize_discovery_viewer_manifest(
+            self.workspace.project_dir(project_id),
+            updated_manifest,
+            review_status="pending",
+        )
+        return {
+            "ok": True,
+            "project_id": project_id,
+            "feature_id": feature.feature_id,
+            "face_indices": selected_indices,
+            "revision": updated_manifest.revision,
+            "viewer_manifest": str(viewer_path) if viewer_path else None,
+        }
+
+    def _confirm_discovery(
+        self, project_id: str, expected_revision: object
+    ) -> dict[str, Any]:
+        if expected_revision is not None and (
+            isinstance(expected_revision, bool)
+            or not isinstance(expected_revision, int)
+        ):
+            raise DFMError(
+                "manifest_revision_required",
+                "Discovery confirmation received an invalid project revision.",
+            )
+        store = self._store(project_id)
+        manifest = store.load()
+        revision = (
+            expected_revision
+            if isinstance(expected_revision, int)
+            else manifest.revision
+        )
+        review = manifest.capabilities.get("discovery_review", {})
+        if review.get("status") != "pending":
+            raise DFMError(
+                "discovery_review_closed", "Discovery is not awaiting confirmation."
+            )
+        discovered, snapshot = self.discovery.freeze(manifest)
+
+        def apply(current: ProjectManifest) -> ProjectManifest:
+            capabilities = dict(discovered.capabilities)
+            capabilities["discovery_review"] = {
+                **dict(review),
+                "status": "confirmed",
+                "snapshot_id": snapshot.snapshot_id,
+                "confirmed_at": _utc_now(),
+            }
+            return replace(
+                current,
+                features=discovered.features,
+                regions=discovered.regions,
+                observations=discovered.observations,
+                fusion_links=discovered.fusion_links,
+                discovery_snapshots=discovered.discovery_snapshots,
+                artifacts=discovered.artifacts,
+                capabilities=capabilities,
+                updated_at=_utc_now(),
+            )
+
+        confirmed = store.update(apply, expected_revision=revision)
+        confirmed = self._ensure_clarifications(project_id, phase="analysis")
+        viewer_path = materialize_discovery_viewer_manifest(
+            self.workspace.project_dir(project_id),
+            confirmed,
+            review_status="confirmed",
+        )
+        open_clarifications = self._open_clarifications(confirmed, phase="analysis")
+        return {
+            "ok": True,
+            "project_id": project_id,
+            "status": "discovery_confirmed",
+            "phase": "discovery",
+            "snapshot": snapshot.to_dict(),
+            "revision": confirmed.revision,
+            "viewer_manifest": str(viewer_path) if viewer_path else None,
+            "requires_user_response": bool(open_clarifications),
+            "next_action": "clarify" if open_clarifications else "plan",
+            "open_clarifications": [item.to_dict() for item in open_clarifications],
+        }
+
+    def _discovery_response(
+        self,
+        manifest: ProjectManifest,
+        snapshot,
+        discovery_plan: PlanRecord,
+        **control: Any,
+    ) -> dict[str, Any]:
+        result = {
+            "ok": True,
+            "project_id": manifest.project_id,
+            "phase": "discovery",
+            "plan": discovery_plan.to_dict(),
+            "snapshot": snapshot.to_dict(),
+            "features": [
+                item.to_dict()
+                for item in manifest.features
+                if item.feature_id in snapshot.feature_refs
+            ],
+            "regions": [
+                item.to_dict()
+                for item in manifest.regions
+                if item.region_id in snapshot.region_refs
+            ],
+            "observations": [
+                item.to_dict()
+                for item in manifest.observations
+                if item.observation_id in snapshot.observation_refs
+            ],
+            "fusion_links": [
+                item.to_dict()
+                for item in manifest.fusion_links
+                if item.fusion_link_id in snapshot.fusion_link_refs
+            ],
+            "capability": self.discovery.capability(),
+            "drawing_discovery": manifest.capabilities.get("drawing_discovery", {}),
+            "open_clarifications": [
+                item.to_dict()
+                for item in self._open_clarifications(manifest, phase="analysis")
+            ],
+        }
+        result.update(control)
+        return result
+
     def _fusion_review_required(self, manifest: ProjectManifest) -> bool:
         if not any(
             item.kind in {"step", "parasolid"} for item in self._active_inputs(manifest)
@@ -1435,7 +1781,8 @@ class DFMService:
 
         def apply(current: ProjectManifest) -> ProjectManifest:
             confirmed = {
-                item.name: item for item in current.facts
+                item.name: item
+                for item in current.facts
                 if item.status == "confirmed" and item.check_id is None
             }
             facts = list(current.facts)
@@ -1446,9 +1793,7 @@ class DFMService:
                     observations.append(observation)
                     continue
                 policy = policies.get(observation.kind)
-                if not policy or "DWG" not in set(
-                    policy.get("allowed_sources", [])
-                ):
+                if not policy or "DWG" not in set(policy.get("allowed_sources", [])):
                     observations.append(observation)
                     continue
                 existing = confirmed.get(observation.kind)
@@ -1470,8 +1815,7 @@ class DFMService:
                     if (
                         evidence_ok
                         and confidence_ok
-                        and "DWG"
-                        in set(policy.get("auto_accept_sources", []))
+                        and "DWG" in set(policy.get("auto_accept_sources", []))
                     ):
                         identity = (
                             f"{observation.kind}:{observation.value}:"
@@ -1639,9 +1983,8 @@ class DFMService:
                 )
             if phase != "all" and not required_in_phase:
                 continue
-            if (
-                phase == "analysis"
-                and name in self._CHECK_SCOPED_FACTS.get(adapter.key, ())
+            if phase == "analysis" and name in self._CHECK_SCOPED_FACTS.get(
+                adapter.key, ()
             ):
                 for check_id in requirement.check_ids:
                     if check_id not in applicable_check_ids:
@@ -1649,16 +1992,18 @@ class DFMService:
                     choices = self.ontology_store.fact_check_choices(
                         adapter.key, name, check_id
                     )
-                    if not choices or (
-                        name in confirmed and confirmed[name] in choices
-                    ) or (
-                        (name, check_id) in confirmed_by_check
-                        and confirmed_by_check[(name, check_id)] in choices
+                    if (
+                        not choices
+                        or (name in confirmed and confirmed[name] in choices)
+                        or (
+                            (name, check_id) in confirmed_by_check
+                            and confirmed_by_check[(name, check_id)] in choices
+                        )
                     ):
                         continue
-                    check_name = self.ontology_store.check_context(check_id)[
-                        "check"
-                    ]["name_zh"]
+                    check_name = self.ontology_store.check_context(check_id)["check"][
+                        "name_zh"
+                    ]
                     clarification_id = f"clarification_{name}@{check_id}"
                     item = existing.get(clarification_id)
                     question = f"{check_name}：{requirement.question}"
@@ -1688,9 +2033,7 @@ class DFMService:
         if check_id:
             if name not in self._CHECK_SCOPED_FACTS.get(process, ()):
                 return ()
-            return self.ontology_store.fact_check_choices(
-                process, name, check_id
-            )
+            return self.ontology_store.fact_check_choices(process, name, check_id)
         if name == "process":
             return tuple(
                 getattr(self.process_registry.get(key), "display_name_zh", key)
@@ -1720,9 +2063,13 @@ class DFMService:
                 fact = confirmed.get((name, check_id))
                 if fact is None and check_id:
                     global_fact = confirmed.get((name, None))
-                    if global_fact is not None and global_fact.value in self.clarification_choices(
-                        current.process or self.config.default_process,
-                        f"{name}@{check_id}",
+                    if (
+                        global_fact is not None
+                        and global_fact.value
+                        in self.clarification_choices(
+                            current.process or self.config.default_process,
+                            f"{name}@{check_id}",
+                        )
                     ):
                         fact = global_fact
                 if fact is not None and item.status != "answered":
@@ -1883,21 +2230,31 @@ class DFMService:
                 target
                 for target in targets
                 if target["metric_id"] == binding.metric_id
-                and matches(target, primary_selector, binding.check_id, binding.operand_alias)
+                and matches(
+                    target, primary_selector, binding.check_id, binding.operand_alias
+                )
             ]
             for primary_target in primary_targets:
                 primary_operation = operation_by_target[
                     (binding.metric_id, primary_target["region"].region_id)
                 ]
                 additional_operands = []
+                complete = True
                 for operand in binding.additional_operands:
                     selector = selector_map.get(operand.alias, {})
                     candidates = [
                         target
                         for target in targets
                         if target["metric_id"] == operand.metric_id
-                        and target["region"].input_sha256 == primary_target["region"].input_sha256
-                        and matches(target, selector, binding.check_id, operand.alias, primary_target["feature"].feature_id)
+                        and target["region"].input_sha256
+                        == primary_target["region"].input_sha256
+                        and matches(
+                            target,
+                            selector,
+                            binding.check_id,
+                            operand.alias,
+                            primary_target["feature"].feature_id,
+                        )
                     ]
                     same_feature = [
                         target
@@ -1909,6 +2266,12 @@ class DFMService:
                         selected = same_feature[0]
                     elif len(candidates) == 1:
                         selected = candidates[0]
+                    elif not candidates:
+                        # Manual Discovery review can remove a semantic region.
+                        # Skip only this Feature-scoped rule binding; zero
+                        # candidates is unsupported scope, not ambiguity.
+                        complete = False
+                        break
                     else:
                         raise DFMError(
                             "analysis_operand_ambiguous",
@@ -1932,6 +2295,8 @@ class DFMService:
                             region_refs=[selected["region"].region_id],
                         )
                     )
+                if not complete:
+                    continue
                 suffix = primary_target["region"].content_sha256[:12]
                 binding_id = (
                     binding.binding_id
@@ -1948,6 +2313,17 @@ class DFMService:
                         additional_operands=additional_operands,
                     )
                 )
+        referenced_operation_ids = {
+            operand.operation_id
+            for binding in bindings
+            for operand in binding.measurement_operands()
+        }
+        operations = [
+            operation
+            for operation in operations
+            if not operation.metric_ids
+            or operation.operation_id in referenced_operation_ids
+        ]
         return replace(
             process_plan,
             operations=operations,
@@ -1965,7 +2341,9 @@ class DFMService:
             None,
         )
 
-    def _resolve_process(self, manifest: ProjectManifest, requested: object = None) -> str:
+    def _resolve_process(
+        self, manifest: ProjectManifest, requested: object = None
+    ) -> str:
         requested_value = str(requested or "").strip()
         if requested_value:
             try:
@@ -2100,7 +2478,11 @@ class DFMService:
 
         if run.status is RunStatus.SUCCEEDED:
             html_artifact = next(
-                (item for item in reversed(run.artifacts) if item.kind == "report_html"),
+                (
+                    item
+                    for item in reversed(run.artifacts)
+                    if item.kind == "report_html"
+                ),
                 None,
             )
             if html_artifact is not None:
@@ -2246,7 +2628,9 @@ class DFMService:
                 {"required_issue_ids": required_ids},
             )
         submitted_ids = [issue["issue_id"] for issue in submitted_issues]
-        if len(submitted_ids) != len(set(submitted_ids)) or set(submitted_ids) != set(required_ids):
+        if len(submitted_ids) != len(set(submitted_ids)) or set(submitted_ids) != set(
+            required_ids
+        ):
             raise DFMError(
                 "report_content_invalid",
                 "llm_content issue IDs must exactly match report_context.required_issue_ids.",
@@ -2420,8 +2804,7 @@ class DFMService:
                         if html_report is not None
                         else None
                     ),
-                    is_error=updated.status
-                    in {RunStatus.FAILED, RunStatus.BLOCKED},
+                    is_error=updated.status in {RunStatus.FAILED, RunStatus.BLOCKED},
                 )
             except Exception:
                 return
@@ -2457,9 +2840,7 @@ class DFMService:
             )
             requested_process = str(params.get("process") or "").strip()
             if requested_process:
-                requested_process = self._resolve_process(
-                    manifest, requested_process
-                )
+                requested_process = self._resolve_process(manifest, requested_process)
                 manifest = self._select_process(
                     manifest.project_id, requested_process, "requested"
                 )
@@ -2524,16 +2905,18 @@ class DFMService:
                 manifest = self._store(project_id).load()
                 process = str(manifest.process or self.config.default_process)
                 snapshot = next(
-                    (item for item in reversed(manifest.discovery_snapshots)
-                     if item.status == "frozen"),
+                    (
+                        item
+                        for item in reversed(manifest.discovery_snapshots)
+                        if item.status == "frozen"
+                    ),
                     None,
                 )
                 if check_id and (
                     name not in self._CHECK_SCOPED_FACTS.get(process, ())
                     or snapshot is None
-                    or check_id not in self._applicable_analysis_check_ids(
-                        manifest, snapshot
-                    )
+                    or check_id
+                    not in self._applicable_analysis_check_ids(manifest, snapshot)
                 ):
                     raise DFMError(
                         "fact_invalid",
@@ -2541,7 +2924,9 @@ class DFMService:
                         {"fact_name": name, "check_id": check_id},
                     )
                 choices = (
-                    () if name == "pull_dir" else self.clarification_choices(
+                    ()
+                    if name == "pull_dir"
+                    else self.clarification_choices(
                         process, f"{name}@{check_id}" if check_id else name
                     )
                 )
@@ -2558,11 +2943,19 @@ class DFMService:
                         raise DFMError(
                             "fact_invalid",
                             "Fact value is not a published option for this factor.",
-                            {"fact_name": name, "value": raw_value, "allowed_values": list(choices)},
+                            {
+                                "fact_name": name,
+                                "value": raw_value,
+                                "allowed_values": list(choices),
+                            },
                         )
 
             fact = FactRecord(
-                f"fact_{uuid4().hex[:16]}", name, normalized_value, "user", "confirmed",
+                f"fact_{uuid4().hex[:16]}",
+                name,
+                normalized_value,
+                "user",
+                "confirmed",
                 check_id=check_id,
             )
 
@@ -2585,9 +2978,11 @@ class DFMService:
                     facts=[*current.facts, fact],
                     observations=[
                         replace(item, status="confirmed_by_user")
-                        if check_id is None and self._observation_factor_name(item) == name
+                        if check_id is None
+                        and self._observation_factor_name(item) == name
                         and item.value == normalized_value
-                        and item.status in {"candidate", "needs_confirmation", "conflict"}
+                        and item.status
+                        in {"candidate", "needs_confirmation", "conflict"}
                         else item
                         for item in current.observations
                     ],
@@ -2606,8 +3001,10 @@ class DFMService:
                     ),
                     clarifications=[
                         replace(item, status="answered", answer=fact.value)
-                        if item.clarification_id == (
-                            f"clarification_{name}@{check_id}" if check_id
+                        if item.clarification_id
+                        == (
+                            f"clarification_{name}@{check_id}"
+                            if check_id
                             else f"clarification_{name}"
                         )
                         else item
@@ -2653,12 +3050,22 @@ class DFMService:
         raise DFMError("action_invalid", f"Unsupported dfm_project action: {action}")
 
     def analysis(self, action: str, **params: Any) -> dict[str, Any]:
-        if (
-            self.ontology_synchronizer is not None
-            and action not in {"status", "cancel", "result"}
-        ):
+        if self.ontology_synchronizer is not None and action not in {
+            "status",
+            "cancel",
+            "result",
+        }:
             self.ontology_synchronizer.ensure_current_not_revoked()
         project_id = params.get("project_id") or ""
+        if action == "update_feature_geometry":
+            return self._update_discovery_feature_geometry(
+                project_id,
+                params.get("feature_id"),
+                params.get("face_indices"),
+                params.get("expected_revision"),
+            )
+        if action == "confirm_discovery":
+            return self._confirm_discovery(project_id, params.get("expected_revision"))
         if action == "drawing_context":
             return self._drawing_context(
                 project_id,
@@ -2729,9 +3136,7 @@ class DFMService:
             resolved = self._resolve_factor_observations(manifest)
             if resolved is not manifest:
                 manifest = store.update(lambda _current: resolved)
-            requested_process = self._resolve_process(
-                manifest, params.get("process")
-            )
+            requested_process = self._resolve_process(manifest, params.get("process"))
             if params.get("process") and manifest.process != requested_process:
                 manifest = self._select_process(
                     project_id, requested_process, "requested"
@@ -2872,40 +3277,58 @@ class DFMService:
                     updated_at=_utc_now(),
                 )
             )
-            self._ensure_clarifications(project_id, phase="analysis")
-            return {
-                "ok": True,
-                "project_id": project_id,
-                "phase": "discovery",
-                "plan": discovery_plan.to_dict(),
-                "snapshot": snapshot.to_dict(),
-                "features": [
-                    item.to_dict()
-                    for item in manifest.features
-                    if item.feature_id in snapshot.feature_refs
-                ],
-                "regions": [
-                    item.to_dict()
-                    for item in manifest.regions
-                    if item.region_id in snapshot.region_refs
-                ],
-                "observations": [
-                    item.to_dict()
-                    for item in manifest.observations
-                    if item.observation_id in snapshot.observation_refs
-                ],
-                "fusion_links": [
-                    item.to_dict()
-                    for item in manifest.fusion_links
-                    if item.fusion_link_id in snapshot.fusion_link_refs
-                ],
-                "capability": self.discovery.capability(),
-                "drawing_discovery": manifest.capabilities.get("drawing_discovery", {}),
-                "open_clarifications": [
-                    item.to_dict()
-                    for item in self._open_clarifications(manifest, phase="analysis")
-                ],
-            }
+            review = manifest.capabilities.get("discovery_review", {})
+            review_confirmed = (
+                review.get("status") == "confirmed"
+                and review.get("snapshot_id") == snapshot.snapshot_id
+            )
+            viewer_path = materialize_discovery_viewer_manifest(
+                self.workspace.project_dir(project_id),
+                manifest,
+                review_status="confirmed" if review_confirmed else "pending",
+            )
+            editable_features = any(
+                item.kind != "ordinary_part"
+                and item.feature_id in snapshot.feature_refs
+                for item in manifest.features
+            )
+            if not review_confirmed and viewer_path is not None and editable_features:
+                review_payload = {
+                    "status": "pending",
+                    "snapshot_id": snapshot.snapshot_id,
+                    "viewer_manifest": str(viewer_path) if viewer_path else None,
+                    "edited_feature_ids": list(review.get("edited_feature_ids", [])),
+                }
+                if review != review_payload:
+                    manifest = store.update(
+                        lambda current: replace(
+                            current,
+                            capabilities={
+                                **current.capabilities,
+                                "discovery_review": review_payload,
+                            },
+                            updated_at=_utc_now(),
+                        ),
+                        expected_revision=manifest.revision,
+                    )
+                viewer_path = materialize_discovery_viewer_manifest(
+                    self.workspace.project_dir(project_id),
+                    manifest,
+                    review_status="pending",
+                )
+                return self._discovery_response(
+                    manifest,
+                    snapshot,
+                    discovery_plan,
+                    status="discovery_review_required",
+                    requires_user_response=True,
+                    next_action="confirm_discovery",
+                    revision=manifest.revision,
+                    viewer_manifest=str(viewer_path) if viewer_path else None,
+                    open_clarifications=[],
+                )
+            manifest = self._ensure_clarifications(project_id, phase="analysis")
+            return self._discovery_response(manifest, snapshot, discovery_plan)
         if action == "plan":
             store = self._store(project_id)
             manifest = self._reconcile_clarifications(project_id)
@@ -2916,9 +3339,7 @@ class DFMService:
             analyzer_key = self._objective_analyzer_key(
                 manifest, params.get("analyzer_key")
             )
-            requested_process = self._resolve_process(
-                manifest, params.get("process")
-            )
+            requested_process = self._resolve_process(manifest, params.get("process"))
             if manifest.process != requested_process:
                 manifest = self._select_process(
                     project_id,
@@ -2942,6 +3363,18 @@ class DFMService:
                         item.to_dict() for item in discovery_clarifications
                     ],
                 }
+            review = manifest.capabilities.get("discovery_review", {})
+            if review.get("status") == "pending":
+                return {
+                    "ok": True,
+                    "project_id": project_id,
+                    "status": "discovery_review_required",
+                    "phase": "discovery",
+                    "requires_user_response": True,
+                    "next_action": "confirm_discovery",
+                    "revision": manifest.revision,
+                    "viewer_manifest": review.get("viewer_manifest"),
+                }
             manifest = self._ensure_clarifications(project_id, phase="analysis")
             discovery_snapshot = self._latest_discovery_snapshot(manifest)
             if discovery_snapshot is None:
@@ -2952,6 +3385,20 @@ class DFMService:
                     "phase": "discovery",
                     "requires_user_response": False,
                     "next_action": "discover",
+                }
+            if (
+                review.get("status") == "confirmed"
+                and review.get("snapshot_id") != discovery_snapshot.snapshot_id
+            ):
+                return {
+                    "ok": True,
+                    "project_id": project_id,
+                    "status": "discovery_review_required",
+                    "phase": "discovery",
+                    "requires_user_response": True,
+                    "next_action": "confirm_discovery",
+                    "revision": manifest.revision,
+                    "viewer_manifest": review.get("viewer_manifest"),
                 }
             open_clarifications = self._open_clarifications(
                 manifest, requested_process, phase="analysis"
@@ -2988,7 +3435,9 @@ class DFMService:
                 scoped_facts: dict[str, dict[str, Any]] = {}
                 for fact in manifest.facts:
                     if fact.status == "confirmed" and fact.check_id is not None:
-                        scoped_facts.setdefault(fact.check_id, {})[fact.name] = fact.value
+                        scoped_facts.setdefault(fact.check_id, {})[fact.name] = (
+                            fact.value
+                        )
                 scoped_kwargs = {"scoped_facts": scoped_facts} if scoped_facts else {}
                 process_plan = (
                     compile_occt_injection_plan(
@@ -2999,9 +3448,8 @@ class DFMService:
                         **scoped_kwargs,
                     )
                     if str(analyzer_key) == "occt_cpp" and process == "injection"
-                    else adapter.compile(
-                        context, raw_parameters, **scoped_kwargs
-                    ) if process == "injection"
+                    else adapter.compile(context, raw_parameters, **scoped_kwargs)
+                    if process == "injection"
                     else adapter.compile(context, raw_parameters)
                 )
                 process_plan = self._bind_discovery_scope(
@@ -3140,7 +3588,9 @@ class DFMService:
                     {"action": "start"},
                 )
             manifest = self._store(project_id).load()
-            plan = next((item for item in manifest.plans if item.plan_id == plan_id), None)
+            plan = next(
+                (item for item in manifest.plans if item.plan_id == plan_id), None
+            )
             if plan is None:
                 raise DFMError(
                     "plan_not_found",

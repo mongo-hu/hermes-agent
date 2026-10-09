@@ -74,7 +74,9 @@ interface ViewerManifest {
   issues: ViewerIssue[]
   scene_path: string
   scope_id: string
-  status?: 'completed' | 'preview'
+  project_revision?: number
+  review_status?: 'confirmed' | 'pending'
+  status?: 'completed' | 'discovery' | 'preview'
   topology_path: string
   verification_level: string
 }
@@ -133,6 +135,7 @@ function ModelCanvas({
   fitRequest,
   onFacePick,
   pickedFaceIndex,
+  selectedFaceIndices,
   topologyFaces
 }: {
   activeFeature: ViewerFeature | null
@@ -141,6 +144,7 @@ function ModelCanvas({
   fitRequest: number
   onFacePick: (faceIndex: number) => void
   pickedFaceIndex: number | null
+  selectedFaceIndices?: Set<number> | null
   topologyFaces: TopologyFace[]
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -162,7 +166,10 @@ function ModelCanvas({
     [activeIssue, issuePositions]
   )
 
-  const featureFaces = useMemo(() => resolveGeometryRefFaceIndices(activeFeature?.geometry_refs), [activeFeature])
+  const featureFaces = useMemo(
+    () => selectedFaceIndices ?? resolveGeometryRefFaceIndices(activeFeature?.geometry_refs),
+    [activeFeature, selectedFaceIndices]
+  )
 
   useEffect(() => {
     onFacePickRef.current = onFacePick
@@ -531,6 +538,11 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
   const [activeIssueId, setActiveIssueId] = useState<string | null>(null)
   const [activeFeatureId, setActiveFeatureId] = useState<string | null>(null)
   const [pickedFaceIndex, setPickedFaceIndex] = useState<number | null>(null)
+  const [editingFeatureId, setEditingFeatureId] = useState<string | null>(null)
+  const [draftFaceIndices, setDraftFaceIndices] = useState<Set<number> | null>(null)
+  const [projectRevision, setProjectRevision] = useState<number | null>(null)
+  const [savingFeature, setSavingFeature] = useState(false)
+  const [reviewError, setReviewError] = useState('')
   const [error, setError] = useState('')
   const [reloadRequest, setReloadRequest] = useState(0)
   const [fitRequest, setFitRequest] = useState(0)
@@ -547,6 +559,9 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
         setPickedFaceIndex(null)
         setActiveIssueId(null)
         setActiveFeatureId(null)
+        setEditingFeatureId(null)
+        setDraftFaceIndices(null)
+        setReviewError('')
         const nextManifest = await readJson<ViewerManifest>(target.manifestPath)
 
         if (nextManifest.contract_version !== 'hermes.dfm.viewer/v2') {
@@ -569,6 +584,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
         }
 
         setManifest(nextManifest)
+        setProjectRevision(nextManifest.project_revision ?? null)
         setScene(nextScene)
         setTopologyFaces(topology.faces)
         const initialIssueId = nextManifest.issues[0]?.evaluation_id ?? null
@@ -622,6 +638,23 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
   const handleFacePick = useCallback(
     (faceIndex: number) => {
       setPickedFaceIndex(faceIndex)
+
+      if (editingFeatureId) {
+        setDraftFaceIndices(current => {
+          const next = new Set(current ?? [])
+
+          if (next.has(faceIndex)) {
+            next.delete(faceIndex)
+          } else {
+            next.add(faceIndex)
+          }
+
+          return next
+        })
+
+        return
+      }
+
       const matchingIssue = manifest?.issues.find(issue => issueFacesById.get(issue.evaluation_id)?.has(faceIndex))
 
       if (matchingIssue) {
@@ -638,7 +671,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
       setActiveIssueId(null)
       setActiveFeatureId(matchingFeature?.feature_id ?? null)
     },
-    [featureFacesById, issueFacesById, manifest]
+    [editingFeatureId, featureFacesById, issueFacesById, manifest]
   )
 
   const handleIssueSelect = useCallback(
@@ -661,7 +694,76 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
     [featureFacesById]
   )
 
+  const startFeatureEdit = useCallback(
+    (feature: ViewerFeature) => {
+      handleFeatureSelect(feature)
+      setEditingFeatureId(feature.feature_id)
+      setDraftFaceIndices(new Set(featureFacesById.get(feature.feature_id) ?? []))
+      setReviewError('')
+    },
+    [featureFacesById, handleFeatureSelect]
+  )
+
+  const cancelFeatureEdit = useCallback(() => {
+    setEditingFeatureId(null)
+    setDraftFaceIndices(null)
+    setReviewError('')
+  }, [])
+
+  const saveFeatureEdit = useCallback(async () => {
+    if (!editingFeatureId || !draftFaceIndices?.size || !target.projectId || projectRevision == null) {
+      setReviewError('特征区域至少需要保留一个面。')
+
+      return
+    }
+
+    setSavingFeature(true)
+    setReviewError('')
+
+    try {
+      const faceIndices = Array.from(draftFaceIndices).sort((left, right) => left - right)
+
+      const result = await window.hermesDesktop.api<{ revision: number }>({
+        path: `/api/dfm/projects/${encodeURIComponent(target.projectId)}/discovery/features/${encodeURIComponent(editingFeatureId)}`,
+        method: 'PATCH',
+        body: { expected_revision: projectRevision, face_indices: faceIndices }
+      })
+
+      const refsByIndex = new Map(topologyFaces.map(face => [face.geometry_ref.index, face.geometry_ref] as const))
+
+      setManifest(current =>
+        current
+          ? {
+              ...current,
+              project_revision: result.revision,
+              features: current.features?.map(feature =>
+                feature.feature_id === editingFeatureId
+                  ? {
+                      ...feature,
+                      geometry_refs: faceIndices.flatMap(index => {
+                        const ref = refsByIndex.get(index)
+
+                        return ref ? [ref] : []
+                      })
+                    }
+                  : feature
+              )
+            }
+          : current
+      )
+      setProjectRevision(result.revision)
+      setEditingFeatureId(null)
+      setDraftFaceIndices(null)
+    } catch (cause) {
+      setReviewError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setSavingFeature(false)
+    }
+  }, [draftFaceIndices, editingFeatureId, projectRevision, target.projectId, topologyFaces])
+
   const status = manifest?.status ?? target.status
+  const discoveryReviewPending = status === 'discovery' && manifest?.review_status !== 'confirmed'
+  const canEditDiscovery = discoveryReviewPending && Boolean(target.projectId)
 
   if (error) {
     return (
@@ -718,12 +820,20 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
           )}
           <span
             className={`rounded-full px-2 py-1 text-[11px] ${
-              status === 'preview' ? 'bg-sky-500/15 text-sky-200' : 'bg-red-500/15 text-red-200'
+              status === 'preview'
+                ? 'bg-sky-500/15 text-sky-200'
+                : status === 'discovery'
+                  ? 'bg-amber-500/15 text-amber-200'
+                  : 'bg-red-500/15 text-red-200'
             }`}
           >
             {status === 'preview'
               ? '预览'
-              : manifest.issue_count + ' 问题 · ' + (manifest.features?.length ?? 0) + ' 特征'}
+              : status === 'discovery'
+                ? (manifest.review_status === 'confirmed' ? '已确认 · ' : '待确认 · ') +
+                  (manifest.features?.length ?? 0) +
+                  ' 特征'
+                : manifest.issue_count + ' 问题 · ' + (manifest.features?.length ?? 0) + ' 特征'}
           </span>
         </div>
       </header>
@@ -743,10 +853,13 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
             fitRequest={fitRequest}
             onFacePick={handleFacePick}
             pickedFaceIndex={pickedFaceIndex}
+            selectedFaceIndices={editingFeatureId ? draftFaceIndices : null}
             topologyFaces={topologyFaces}
           />
           <div className="pointer-events-none absolute bottom-2 left-2 rounded-md bg-black/55 px-2 py-1 text-[10px] text-slate-300 backdrop-blur">
-            左键旋转 · 滚轮缩放 · 右键平移 · 单击选择面
+            {editingFeatureId
+              ? '单击面切换选中 · 右键平移 · 滚轮缩放'
+              : '左键旋转 · 滚轮缩放 · 右键平移 · 单击选择面'}
           </div>
           {pickedFaceIndex != null && (
             <div className="pointer-events-none absolute right-2 top-2 rounded-md border border-cyan-300/20 bg-black/60 px-2 py-1 text-[10px] text-cyan-100 backdrop-blur">
@@ -759,7 +872,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
             embedded ? 'border-t border-white/10' : 'border-l border-white/10'
           }`}
         >
-          <section className="min-h-0 overflow-y-auto pr-1">
+          <section className="order-2 min-h-0 overflow-y-auto border-t border-white/10 pr-1 pt-2">
             <div className="mb-2 flex items-center justify-between">
               <h2 className="text-xs font-semibold text-red-100">问题分类与明细</h2>
               <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] text-red-200">
@@ -823,13 +936,18 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
               </div>
             )}
           </section>
-          <section className="min-h-0 overflow-y-auto border-t border-white/10 pr-1 pt-2">
+          <section className="order-1 min-h-0 overflow-y-auto pr-1">
             <div className="mb-2 flex items-center justify-between">
               <h2 className="text-xs font-semibold text-amber-100">特征点</h2>
               <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] text-amber-200">
                 {manifest.features?.length ?? 0}
               </span>
             </div>
+            {reviewError && (
+              <div className="mb-2 rounded-md border border-red-400/25 bg-red-500/10 px-2 py-1.5 text-[10px] text-red-100">
+                {reviewError}
+              </div>
+            )}
             {(manifest.features?.length ?? 0) === 0 ? (
               <div className="rounded-lg border border-amber-400/20 bg-amber-400/10 p-3 text-xs leading-5 text-amber-100">
                 {status === 'preview'
@@ -840,25 +958,33 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
               <div className="grid gap-2">
                 {manifest.features?.map((feature, index) => {
                   const selected = feature.feature_id === activeFeatureId
-                  const refs = feature.geometry_refs.map(ref => ref.kind + ' #' + ref.index).join('、') || '无拓扑引用'
+                  const editing = feature.feature_id === editingFeatureId
+
+                  const visibleRefs = editing
+                    ? Array.from(draftFaceIndices ?? []).sort((left, right) => left - right)
+                    : feature.geometry_refs.map(ref => ref.index)
+
+                  const refs = visibleRefs.map(indexValue => 'face #' + indexValue).join('、') || '无拓扑引用'
 
                   const confidence =
                     typeof feature.confidence === 'number' ? Math.round(feature.confidence * 100) + '%' : '—'
 
                   return (
-                    <button
-                      aria-pressed={selected}
+                    <div
                       className={
-                        'w-full rounded-lg border p-2.5 text-left transition ' +
+                        'flex w-full items-start gap-2 rounded-lg border p-2.5 text-left transition ' +
                         (selected
                           ? 'border-amber-400/70 bg-amber-500/18 shadow-[0_0_0_1px_rgba(251,191,36,0.12)]'
                           : 'border-white/10 bg-white/[0.035] hover:border-white/20 hover:bg-white/[0.07]')
                       }
                       key={feature.feature_id}
-                      onClick={() => handleFeatureSelect(feature)}
-                      type="button"
                     >
-                      <div className="flex items-start gap-2">
+                      <button
+                        aria-pressed={selected}
+                        className="flex min-w-0 flex-1 items-start gap-2 text-left"
+                        onClick={() => handleFeatureSelect(feature)}
+                        type="button"
+                      >
                         <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-amber-500/20 text-[10px] text-amber-100">
                           {index + 1}
                         </span>
@@ -878,8 +1004,41 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
                             置信度 {confidence} · {refs}
                           </p>
                         </div>
-                      </div>
-                    </button>
+                      </button>
+                      {canEditDiscovery && (
+                        <div className="flex shrink-0 gap-1">
+                          {editing ? (
+                            <>
+                              <button
+                                className="rounded bg-amber-400/20 px-1.5 py-1 text-[10px] text-amber-100 hover:bg-amber-400/30 disabled:opacity-50"
+                                disabled={savingFeature || !draftFaceIndices?.size}
+                                onClick={() => void saveFeatureEdit()}
+                                type="button"
+                              >
+                                {savingFeature ? '保存中…' : '保存'}
+                              </button>
+                              <button
+                                className="rounded bg-white/5 px-1.5 py-1 text-[10px] text-slate-300 hover:bg-white/10 disabled:opacity-50"
+                                disabled={savingFeature}
+                                onClick={cancelFeatureEdit}
+                                type="button"
+                              >
+                                取消
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              className="rounded bg-white/5 px-1.5 py-1 text-[10px] text-slate-300 hover:bg-white/10 disabled:opacity-50"
+                              disabled={Boolean(editingFeatureId) || savingFeature}
+                              onClick={() => startFeatureEdit(feature)}
+                              type="button"
+                            >
+                              编辑
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   )
                 })}
               </div>

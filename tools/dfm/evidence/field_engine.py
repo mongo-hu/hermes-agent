@@ -47,7 +47,7 @@ def _utc_now() -> str:
 class FieldEvidenceEngine:
     """Render precise evidence from any backend's objective scalar fields."""
 
-    version = "hermes-field-evidence-v5"
+    version = "hermes-field-evidence-v6"
 
     def materialize(
         self,
@@ -55,7 +55,7 @@ class FieldEvidenceEngine:
         run_id: str,
         artifacts: list[ArtifactRecord],
         *,
-        max_images: int = 12,
+        max_findings: int = 12,
     ) -> list[ArtifactRecord]:
         by_kind = {item.kind: item for item in artifacts}
         measurements_artifact = by_kind.get("measurements")
@@ -82,19 +82,13 @@ class FieldEvidenceEngine:
         for evaluation in evaluations_payload.get("evaluations", []):
             if not isinstance(evaluation, dict) or evaluation.get("outcome") != "fail":
                 continue
-            # A scalar field can only be thresholded with the direct rule that
-            # produced it. Composite expressions (for example boss/main-wall
-            # thickness ratios) need a dedicated renderer for their numerator
-            # and denominator regions; applying the derived threshold to each
-            # raw field sample would create false evidence.
             expression = evaluation.get("expression")
-            if expression is not None and not (
+            direct_expression = expression is None or (
                 isinstance(expression, dict)
                 and set(expression) == {"operand"}
                 and isinstance(expression.get("operand"), str)
                 and expression["operand"] in (evaluation.get("operand_values") or {})
-            ):
-                continue
+            )
             comparison = _OPERATORS.get(str(evaluation.get("operator") or ""))
             if comparison is None:
                 raise DFMError(
@@ -106,6 +100,7 @@ class FieldEvidenceEngine:
                 for item in evaluation.get("measurement_ids", [])
                 if item in measurements
             ]
+            composite_fields: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
             for measurement in linked:
                 for field_ref in measurement.get("field_refs", []):
                     field_artifact = artifact_by_id.get(str(field_ref))
@@ -128,16 +123,21 @@ class FieldEvidenceEngine:
                         project_dir,
                         artifact_by_id[str(field.get("scene_ref") or "")],
                     )
-                    patches.extend(
-                        self._failed_patches(
-                            evaluation,
-                            measurement,
-                            field_ref=str(field_ref),
-                            field=field,
-                            scene=scene,
-                            comparison=comparison,
+                    if direct_expression:
+                        patches.extend(
+                            self._failed_patches(
+                                evaluation,
+                                measurement,
+                                field_ref=str(field_ref),
+                                field=field,
+                                scene=scene,
+                                comparison=comparison,
+                            )
                         )
-                    )
+                    else:
+                        composite_fields.append((measurement, str(field_ref), field))
+            if composite_fields:
+                patches.extend(self._composite_patches(evaluation, composite_fields))
 
         output_dir = project_dir / "runs" / run_id / "artifacts"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -174,16 +174,14 @@ class FieldEvidenceEngine:
             if isinstance(item, dict)
         }
         image_index = 0
-        image_limit = max(0, max_images)
-        patch_limit = math.ceil(image_limit / _VIEWS_PER_PATCH)
-        selected_patches = _select_representative_patches(patches, patch_limit)
+        selected_patches = _select_representative_patches_by_evaluation(
+            patches, max(0, max_findings)
+        )
         for patch in selected_patches:
             scene_artifact = artifact_by_id[patch["scene_ref"]]
             scene = _read_json(project_dir, scene_artifact)
             evaluation = evaluation_by_id[patch["evaluation_id"]]
             for view in _adaptive_views(scene, patch, pull_direction):
-                if image_index >= image_limit:
-                    break
                 image_index += 1
                 image_id = f"artifact_{run_id}_evidence_{image_index}"
                 image_path = output_dir / f"evidence_{image_index:03d}.png"
@@ -523,6 +521,108 @@ class FieldEvidenceEngine:
                 },
             })
         return results
+
+    @staticmethod
+    def _composite_patches(
+        evaluation: dict[str, Any],
+        fields: list[tuple[dict[str, Any], str, dict[str, Any]]],
+    ) -> list[dict[str, Any]]:
+        """Locate a failed composite result without thresholding its raw operands."""
+        grouped: dict[
+            tuple[str, str, str, str],
+            list[tuple[dict[str, Any], str, dict[str, Any]]],
+        ] = {}
+        for item in fields:
+            field = item[2]
+            key = (
+                str(field.get("scene_ref") or ""),
+                str(field.get("topology_map_ref") or ""),
+                str(field.get("topology_snapshot_ref") or ""),
+                str(field.get("render_mesh_snapshot_ref") or ""),
+            )
+            grouped.setdefault(key, []).append(item)
+
+        patches: list[dict[str, Any]] = []
+        for group_index, (refs, operands) in enumerate(grouped.items(), start=1):
+            points: list[list[float]] = []
+            normals: list[Any] = []
+            geometry_values: list[dict[str, Any]] = []
+            triangle_values: list[dict[str, Any]] = []
+            measurement_ids: set[str] = set()
+            region_refs: set[str] = set()
+            feature_refs: set[str] = set()
+            sample_ids: list[str] = []
+            cell_ids: list[str] = []
+            field_refs: list[str] = []
+            for measurement, field_ref, field in operands:
+                field_refs.append(field_ref)
+                measurement_ids.add(str(measurement.get("measurement_id") or ""))
+                region_refs.update(
+                    str(item) for item in measurement.get("region_refs", [])
+                )
+                feature_refs.update(
+                    str(item) for item in measurement.get("feature_refs", [])
+                )
+                geometry_values.extend(
+                    item
+                    for item in measurement.get("geometry_refs", [])
+                    if isinstance(item, dict)
+                )
+                for sample in field.get("samples", []):
+                    if not isinstance(sample, dict):
+                        continue
+                    point = sample.get("point")
+                    if isinstance(point, list) and len(point) == 3:
+                        points.append([float(value) for value in point])
+                    normals.append(sample.get("surface_normal"))
+                    if isinstance(sample.get("geometry_ref"), dict):
+                        geometry_values.append(sample["geometry_ref"])
+                    if sample.get("sample_id"):
+                        sample_ids.append(f"{field_ref}:{sample['sample_id']}")
+                for cell in field.get("cells", []):
+                    if not isinstance(cell, dict):
+                        continue
+                    if isinstance(cell.get("geometry_ref"), dict):
+                        geometry_values.append(cell["geometry_ref"])
+                    if isinstance(cell.get("triangle_ref"), dict):
+                        triangle_values.append(cell["triangle_ref"])
+                    if cell.get("cell_id"):
+                        cell_ids.append(f"{field_ref}:{cell['cell_id']}")
+
+            if not points:
+                continue
+            stable = hashlib.sha256(
+                (
+                    f"{evaluation.get('evaluation_id')}:composite:{group_index}:"
+                    + ":".join(sorted(field_refs))
+                ).encode("utf-8")
+            ).hexdigest()[:16]
+            patches.append({
+                "patch_id": f"patch_{stable}",
+                "evaluation_id": str(evaluation.get("evaluation_id") or ""),
+                "measurement_ids": sorted(item for item in measurement_ids if item),
+                "field_ref": sorted(field_refs)[0],
+                "scene_ref": refs[0],
+                "topology_map_ref": refs[1],
+                "topology_snapshot_ref": refs[2],
+                "render_mesh_snapshot_ref": refs[3],
+                "geometry_refs": _unique_dicts(geometry_values),
+                "region_refs": sorted(region_refs),
+                "feature_refs": sorted(feature_refs),
+                "sample_ids": sorted(sample_ids),
+                "cell_ids": sorted(cell_ids),
+                "triangle_refs": _unique_dicts(triangle_values),
+                "focus_point": [
+                    sum(point[axis] for point in points) / len(points)
+                    for axis in range(3)
+                ],
+                "surface_normal": _average_direction(normals),
+                "bounds": {
+                    "minimum": [min(point[axis] for point in points) for axis in range(3)],
+                    "maximum": [max(point[axis] for point in points) for axis in range(3)],
+                },
+            })
+        return patches
 
     @staticmethod
     def _render(
@@ -1088,11 +1188,11 @@ class FieldEvidenceEngine:
         )
 
 
-def _select_representative_patches(
-    patches: list[dict[str, Any]], limit: int
+def _select_representative_patches_by_evaluation(
+    patches: list[dict[str, Any]], max_findings: int
 ) -> list[dict[str, Any]]:
-    """Select large patches fairly so one failed metric cannot starve another."""
-    if limit <= 0:
+    """Select one representative patch for each failed evaluation."""
+    if max_findings <= 0:
         return []
     grouped: dict[str, list[dict[str, Any]]] = {}
     for patch in patches:
@@ -1107,16 +1207,9 @@ def _select_representative_patches(
             ),
             reverse=True,
         )
-    selected: list[dict[str, Any]] = []
-    while len(selected) < limit:
-        added = False
-        for candidates in grouped.values():
-            if candidates and len(selected) < limit:
-                selected.append(candidates.pop(0))
-                added = True
-        if not added:
-            break
-    return selected
+    return [candidates[0] for candidates in grouped.values() if candidates][
+        :max_findings
+    ]
 
 
 def _field_pull_direction(

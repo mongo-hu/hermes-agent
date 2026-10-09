@@ -92,7 +92,7 @@ def test_failed_scalar_field_renders_precise_evidence_and_finding(tmp_path):
     artifacts = _write_pipeline_inputs(tmp_path)
 
     generated = FieldEvidenceEngine().materialize(
-        tmp_path, "run_1", artifacts, max_images=4
+        tmp_path, "run_1", artifacts, max_findings=4
     )
     all_artifacts = [*artifacts, *generated]
 
@@ -165,6 +165,52 @@ def test_failed_scalar_field_renders_precise_evidence_and_finding(tmp_path):
     ]
     assert finding.measurement_ids == ["measurement_draft_fixed_half_min"]
     assert finding.feature_refs == ["feature.screw_boss.003"]
+
+
+def test_evidence_is_allocated_per_failed_evaluation(tmp_path):
+    artifacts = _write_pipeline_inputs(tmp_path)
+    evaluations_path = tmp_path / "evaluations.json"
+    payload = json.loads(evaluations_path.read_text(encoding="utf-8"))
+    composite = dict(payload["evaluations"][0])
+    composite.update({
+        "evaluation_id": "evaluation-composite-ratio",
+        "operator": ">=",
+        "expected": 0.75,
+        "actual": 0.4,
+        "expression": {
+            "op": "divide",
+            "args": [{"operand": "actual"}, {"operand": "reference"}],
+        },
+        "operand_values": {
+            "actual": {
+                "value": 1.2,
+                "unit": "degree",
+                "measurement_ids": ["measurement_draft_fixed_half_min"],
+            },
+            "reference": {
+                "value": 3.0,
+                "unit": "degree",
+                "measurement_ids": ["measurement_draft_fixed_half_min"],
+            },
+        },
+    })
+    payload["evaluations"].append(composite)
+    evaluations_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    generated = FieldEvidenceEngine().materialize(
+        tmp_path, "run_1", artifacts, max_findings=2
+    )
+
+    assert len([item for item in generated if item.kind == "evidence_image"]) == 6
+    records_artifact = next(
+        item for item in generated if item.kind == "evidence_records"
+    )
+    records = json.loads(
+        (tmp_path / records_artifact.relative_path).read_text(encoding="utf-8")
+    )["records"]
+    evaluation_ids = [item["evaluation_ids"][0] for item in records]
+    assert evaluation_ids.count("evaluation-measurement_draft_fixed_half_min") == 3
+    assert evaluation_ids.count("evaluation-composite-ratio") == 3
 
 
 def test_field_evidence_rejects_cross_run_scene(tmp_path):

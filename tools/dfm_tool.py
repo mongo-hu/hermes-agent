@@ -80,9 +80,10 @@ def _discovery_tool_summary(result: dict) -> dict:
     snapshot = result["snapshot"]
     plan = result["plan"]
     capability = result["capability"]
-    return {
+    summary = {
         "ok": True,
         "project_id": result["project_id"],
+        "status": result.get("status", "completed"),
         "phase": "discovery",
         "plan": {
             key: plan[key]
@@ -123,8 +124,18 @@ def _discovery_tool_summary(result: dict) -> dict:
             "status": result["drawing_discovery"].get("status")
         },
         "open_clarifications": result["open_clarifications"],
-        "next_action": "clarify" if result["open_clarifications"] else "plan",
+        "next_action": result.get("next_action")
+        or ("clarify" if result["open_clarifications"] else "plan"),
     }
+    if result.get("status") == "discovery_review_required":
+        summary.update(
+            {
+                "requires_user_response": True,
+                "revision": result.get("revision"),
+                "viewer_manifest": result.get("viewer_manifest"),
+            }
+        )
+    return summary
 
 
 def _plan_tool_summary(result: dict) -> dict:
@@ -284,7 +295,7 @@ DFM_PROJECT_SCHEMA = {
 
 DFM_ANALYSIS_SCHEMA = {
     "name": "dfm_analysis",
-    "description": "Run the DFM workflow. Discovery, plan, start, status, and result return bounded control summaries; follow next_action and use feature_counts for exact discovery counts. Features and regions are previews with explicit omitted counts. Drawing OCR is deterministic; use drawing_context and the current Hermes model once to organize every explicit drawing fact into validated drawing observations. Use fusion_context and submit_fusion_links for Agent semantic proposals that the service checks against geometry IDs. An HTML-capable STEP run (PDF drawing optional) remains reporting (not succeeded) after deterministic analysis; call report_context to obtain the complete Runtime and required_issue_ids, then author dfm-html-llm/v1 with exactly those issue IDs and call render_html. render_html validates IDs before queuing background rendering; wait for succeeded status or its completion notification before calling result. Only a validated report.html completes the run. Do not reinterpret OCR during reporting. The external OCCT C++ analyzer is integrated as experimental; PythonOCC remains the reference STEP backend and NX/Parasolid remains optional. Unavailable analyzers fail explicitly; never infer engineering findings from that status.",
+    "description": "Run the DFM workflow. Discovery, plan, start, status, and result return bounded control summaries; follow next_action and use feature_counts for exact discovery counts. Features and regions are previews with explicit omitted counts. When discover returns discovery_review_required, the 3D viewer is editable: call clarify with the project_id and dfm_discovery_review=true. That bound question confirms the latest saved regions atomically; then follow its next_action. Drawing OCR is deterministic; use drawing_context and the current Hermes model once to organize every explicit drawing fact into validated drawing observations. Use fusion_context and submit_fusion_links for Agent semantic proposals that the service checks against geometry IDs. An HTML-capable STEP run (PDF drawing optional) remains reporting (not succeeded) after deterministic analysis; call report_context to obtain the complete Runtime and required_issue_ids, then author dfm-html-llm/v1 with exactly those issue IDs and call render_html. render_html validates IDs before queuing background rendering; wait for succeeded status or its completion notification before calling result. Only a validated report.html completes the run. Do not reinterpret OCR during reporting. The external OCCT C++ analyzer is integrated as experimental; PythonOCC remains the reference STEP backend and NX/Parasolid remains optional. Unavailable analyzers fail explicitly; never infer engineering findings from that status.",
     "parameters": {
         "type": "object",
         "properties": {

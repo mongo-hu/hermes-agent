@@ -413,6 +413,8 @@ def test_mixed_input_uses_agent_observation_and_fusion_submission_flow(tmp_path)
         }
         assert len(discovery["fusion_links"]) == 1
         assert discovery["drawing_discovery"]["status"] == "completed"
+        if discovery.get("status") == "discovery_review_required":
+            service.analysis("confirm_discovery", project_id=project_id)
 
         for fact_name, fact_value in {
             "material": "ABS",

@@ -77,6 +77,12 @@ def test_real_occt_injection_vertical_slice(tmp_path):
         assert main_wall_region["geometry_refs"]
         assert ordinary_region["mode"] == "topology_complement"
         assert ordinary_region["excluded_geometry_refs"] == main_wall_region["geometry_refs"]
+        if discovery.get("status") == "discovery_review_required":
+            service.analysis(
+                "confirm_discovery",
+                project_id=project_id,
+                expected_revision=discovery["revision"],
+            )
         plan = service.analysis(
             "plan",
             project_id=project_id,

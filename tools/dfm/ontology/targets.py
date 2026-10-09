@@ -48,12 +48,18 @@ def _select_regions(spec, anchor, features, regions):
         item
         for item in regions
         if anchor.feature_id in item.feature_refs
+        and item.region_id in anchor.region_refs
         and item.input_sha256 == anchor.input_sha256
     ]
     capability_role = spec.get("region_role")
     if capability_role:
         selected = [item for item in candidates if item.role == capability_role]
-        if len(selected) != 1:
+        if not selected:
+            # A reviewed Feature may intentionally no longer expose this semantic
+            # region.  That makes the Check unsupported for this Feature; it is
+            # not an ambiguous geometry binding.
+            return []
+        if len(selected) > 1:
             _scope_error(
                 spec,
                 anchor,

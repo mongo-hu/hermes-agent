@@ -64,7 +64,9 @@ class DiscoveryEngine:
         self.ontology_store = ontology_store
         self.drawing_provider_version = drawing_provider_version
         self.fusion_provider_version = fusion_provider_version
-        self.geometry_provider = geometry_provider or OCCTCppFeatureRecognitionProvider()
+        self.geometry_provider = (
+            geometry_provider or OCCTCppFeatureRecognitionProvider()
+        )
         self.geometry_providers = (self.geometry_provider,)
 
     @staticmethod
@@ -138,10 +140,11 @@ class DiscoveryEngine:
                     if item.status == "confirmed"
                 }
                 resolved_facts.setdefault(
-                    "process", ResolvedArgument(
+                    "process",
+                    ResolvedArgument(
                         value=manifest.process or "injection",
                         source_ref="project:process",
-                    )
+                    ),
                 )
                 result = self.geometry_provider.recognize(
                     input_record,
@@ -152,7 +155,8 @@ class DiscoveryEngine:
                 replaced_feature_ids = {item.feature_id for item in result.features}
                 replaced_region_ids = {item.region_id for item in result.regions}
                 features = [
-                    item for item in features
+                    item
+                    for item in features
                     if item.feature_id not in replaced_feature_ids
                     and not (
                         item.input_sha256 == input_record.sha256
@@ -160,11 +164,14 @@ class DiscoveryEngine:
                     )
                 ] + result.features
                 regions = [
-                    item for item in regions
+                    item
+                    for item in regions
                     if item.region_id not in replaced_region_ids
                     and not (
                         item.input_sha256 == input_record.sha256
-                        and any(ref in replaced_feature_ids for ref in item.feature_refs)
+                        and any(
+                            ref in replaced_feature_ids for ref in item.feature_refs
+                        )
                     )
                 ] + result.regions
                 artifact_ids = {item.artifact_id for item in result.artifacts}
@@ -180,9 +187,10 @@ class DiscoveryEngine:
                     "geometry_snapshot_ref": result.geometry_snapshot_ref,
                     "artifact_refs": [item.artifact_id for item in result.artifacts],
                 }
-        discovery_state.update(
-            {"status": provider_capability.get("status"), "inputs": by_input}
-        )
+        discovery_state.update({
+            "status": provider_capability.get("status"),
+            "inputs": by_input,
+        })
         capabilities["geometry_discovery"] = discovery_state
         feature_ids = {item.feature_id for item in features}
         region_ids = {item.region_id for item in regions}
@@ -266,10 +274,17 @@ class DiscoveryEngine:
         """Turn whole-model fallback into the complement of concrete feature faces."""
 
         feature_by_id = {item.feature_id: item for item in features}
-        specs = self.ontology_store.analysis_target_specs(process) if self.ontology_store else ()
+        specs = (
+            self.ontology_store.analysis_target_specs(process)
+            if self.ontology_store
+            else ()
+        )
         catalog_region_ids = None
         if specs and "operand_text" in specs[0]:
-            catalog_region_ids = {item["region"].region_id for item in resolve_catalog_scopes(specs, features, regions)}
+            catalog_region_ids = {
+                item["region"].region_id
+                for item in resolve_catalog_scopes(specs, features, regions)
+            }
         metric_bindings = {
             (item["feature_kind"], item["region_role"])
             for item in self._metric_bindings(process)
@@ -345,7 +360,9 @@ class DiscoveryEngine:
         """Resolve one non-overlapping region target for each supported metric."""
 
         if self.ontology_store is not None:
-            specs = self.ontology_store.analysis_target_specs(manifest.process or "injection")
+            specs = self.ontology_store.analysis_target_specs(
+                manifest.process or "injection"
+            )
             if specs and "operand_text" in specs[0]:
                 return resolve_catalog_targets(specs, manifest, snapshot)
         features = {
@@ -355,7 +372,8 @@ class DiscoveryEngine:
         }
         bindings = self._metric_bindings(manifest.process or "injection")
         main_wall_inputs = {
-            item.input_sha256 for item in features.values()
+            item.input_sha256
+            for item in features.values()
             if item.kind == "main_wall" and item.status in {"confirmed", "detected"}
         }
         targets: list[dict[str, Any]] = []
@@ -364,7 +382,9 @@ class DiscoveryEngine:
             if region.region_id not in snapshot.region_refs:
                 continue
             matching_features = [
-                features[ref] for ref in region.feature_refs if ref in features
+                features[ref]
+                for ref in region.feature_refs
+                if ref in features and region.region_id in features[ref].region_refs
             ]
             if len(matching_features) != 1:
                 raise DFMError(
@@ -427,11 +447,11 @@ class DiscoveryEngine:
             if published:
                 combined = [dict(item) for item in published]
                 keys = {
-                    (item["feature_kind"], item["region_role"])
-                    for item in combined
+                    (item["feature_kind"], item["region_role"]) for item in combined
                 }
                 combined.extend(
-                    item for item in catalog_bindings
+                    item
+                    for item in catalog_bindings
                     if item.get("status") in {"available", "released"}
                     and (item["feature_kind"], item["region_role"]) not in keys
                 )
@@ -484,9 +504,16 @@ class DiscoveryEngine:
             "fusion_link_refs": [item.fusion_link_id for item in fusion_links],
             "provider_versions": self.provider_versions(),
         }
+        if any(
+            item.properties.get("region_review") == "user_confirmed"
+            for item in features
+        ):
+            identity["region_content_sha256"] = {
+                item.region_id: item.content_sha256 for item in regions
+            }
         content_sha256 = _content_hash(identity)
-        discovery_inputs = (
-            refreshed.capabilities.get("geometry_discovery", {}).get("inputs", {})
+        discovery_inputs = refreshed.capabilities.get("geometry_discovery", {}).get(
+            "inputs", {}
         )
         geometry_metadata = (
             discovery_inputs.get(active[0].sha256, {}) if len(active) == 1 else {}

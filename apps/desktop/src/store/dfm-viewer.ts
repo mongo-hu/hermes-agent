@@ -8,7 +8,7 @@ export interface DfmViewerTarget {
   manifestPath: string
   projectId?: string
   runId?: string
-  status: 'completed' | 'preview'
+  status: 'completed' | 'discovery' | 'preview'
 }
 
 type DfmViewerTargets = Record<string, DfmViewerTarget>

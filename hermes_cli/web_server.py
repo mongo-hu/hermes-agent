@@ -10021,6 +10021,42 @@ async def get_logs(
 
 
 # ---------------------------------------------------------------------------
+# DFM Discovery review endpoint
+# ---------------------------------------------------------------------------
+
+class DFMFeatureGeometryRequest(BaseModel):
+    face_indices: List[int]
+    expected_revision: int
+
+
+def _raise_dfm_http_error(exc: Exception) -> None:
+    from tools.dfm.errors import DFMError
+
+    if not isinstance(exc, DFMError):
+        raise exc
+    status_code = 409 if exc.code == "manifest_conflict" else 400
+    raise HTTPException(status_code=status_code, detail=exc.to_dict()["error"])
+
+
+@app.patch("/api/dfm/projects/{project_id}/discovery/features/{feature_id}")
+def update_dfm_discovery_feature(
+    project_id: str, feature_id: str, request: DFMFeatureGeometryRequest
+):
+    from tools.dfm.service import get_dfm_service
+
+    try:
+        return get_dfm_service().analysis(
+            "update_feature_geometry",
+            project_id=project_id,
+            feature_id=feature_id,
+            face_indices=request.face_indices,
+            expected_revision=request.expected_revision,
+        )
+    except Exception as exc:
+        _raise_dfm_http_error(exc)
+
+
+# ---------------------------------------------------------------------------
 # Cron job management endpoints
 # ---------------------------------------------------------------------------
 

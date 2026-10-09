@@ -1298,6 +1298,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     callback=agent.clarify_callback,
                     dfm_project_id=next_args.get("dfm_project_id"),
                     dfm_fact_name=next_args.get("dfm_fact_name"),
+                    dfm_discovery_review=bool(
+                        next_args.get("dfm_discovery_review", False)
+                    ),
                     session_id=getattr(agent, "session_id", None),
                 )
             function_result, function_args = _run_agent_tool_execution_middleware(

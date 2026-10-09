@@ -59,6 +59,7 @@ def clarify_tool(
     callback: Optional[Callable] = None,
     dfm_project_id: Optional[str] = None,
     dfm_fact_name: Optional[str] = None,
+    dfm_discovery_review: bool = False,
     session_id: Optional[str] = None,
 ) -> str:
     """
@@ -74,14 +75,19 @@ def clarify_tool(
         dfm_project_id: Optional project whose open factor is being answered.
         dfm_fact_name: Factor reference from the open DFM clarification
                        (name or name@check_id); options come from ontology.
+        dfm_discovery_review: Bind the fixed question to an editable Discovery
+                              review and confirm it after the user continues.
 
     Returns:
         JSON string with the user's response.
     """
-    if not question or not question.strip():
-        return tool_error("Question text is required.")
-
-    question = question.strip()
+    question = question.strip() if isinstance(question, str) else ""
+    if isinstance(dfm_fact_name, str):
+        # DFM responses expose ``clarification_id`` while the clarify binding
+        # uses a factor reference. Accept either representation at this API
+        # boundary so callers cannot create invisible failed question rows by
+        # forwarding the response identifier verbatim.
+        dfm_fact_name = dfm_fact_name.strip().removeprefix("clarification_")
 
     dfm_service = None
     if not dfm_project_id and not dfm_fact_name and session_id:
@@ -98,17 +104,46 @@ def clarify_tool(
             except DFMError:
                 active_project = None
             if active_project is not None:
+                discovery_review = (
+                    active_project.get("capabilities", {})
+                    .get("discovery_review", {})
+                )
+                if discovery_review.get("status") == "pending":
+                    # Discovery owns the next user interaction. Bind the first
+                    # clarify call here so an unbound Agent question cannot be
+                    # rendered once and then repeated as a DFM review question.
+                    dfm_project_id = active_project_id
+                    dfm_discovery_review = True
                 open_facts = active_project["open_clarifications"]
-                if open_facts:
-                    # A DFM answer must be attributed to a specific project
-                    # and factor before any UI question is shown.
-                    return json.dumps({
-                        "error": "DFM clarification requires dfm_project_id and dfm_fact_name.",
-                        "code": "dfm_fact_binding_required",
-                        "dfm_project_id": active_project_id,
-                        "dfm_fact_name": open_facts[0]["clarification_id"].removeprefix("clarification_"),
-                    }, ensure_ascii=False)
-    if dfm_project_id or dfm_fact_name:
+                if open_facts and not dfm_discovery_review:
+                    # The active DFM workflow owns the next interaction. Bind
+                    # before rendering so a model-authored generic clarify
+                    # cannot create completed-but-never-shown question rows.
+                    dfm_project_id = active_project_id
+                    dfm_fact_name = open_facts[0][
+                        "clarification_id"
+                    ].removeprefix("clarification_")
+    if not question and not (
+        dfm_discovery_review or (dfm_project_id and dfm_fact_name)
+    ):
+        return tool_error("Question text is required.")
+    if dfm_discovery_review:
+        if not dfm_project_id:
+            return json.dumps({"error": "dfm_project_id is required for Discovery review."})
+        from tools.dfm.errors import DFMError
+        from tools.dfm.service import get_dfm_service
+
+        try:
+            dfm_service = get_dfm_service()
+            project = dfm_service.project("status", project_id=dfm_project_id)["project"]
+            review = project.get("capabilities", {}).get("discovery_review", {})
+            if review.get("status") != "pending":
+                return json.dumps({"error": "This DFM Discovery review is not pending."})
+            question = "请在右侧三维模型中核对识别到的特征区域；如需调整，请先编辑并保存，然后继续。"
+            choices = ["确认最终特征区域并继续"]
+        except DFMError as exc:
+            return json.dumps(exc.to_dict(), ensure_ascii=False)
+    elif dfm_project_id or dfm_fact_name:
         if not dfm_project_id or not dfm_fact_name:
             return json.dumps({"error": "Both dfm_project_id and dfm_fact_name are required."})
         from tools.dfm.errors import DFMError
@@ -169,7 +204,25 @@ def clarify_tool(
             ensure_ascii=False,
         )
 
-    if dfm_service is not None:
+    if dfm_discovery_review:
+        if str(user_response).strip() != "确认最终特征区域并继续":
+            return json.dumps(
+                {
+                    "question": question,
+                    "choices_offered": choices,
+                    "user_response": str(user_response).strip(),
+                    "error": "The final Discovery regions were not confirmed.",
+                },
+                ensure_ascii=False,
+            )
+        try:
+            discovery_review = dfm_service.analysis(
+                "confirm_discovery", project_id=dfm_project_id
+            )
+        except DFMError as exc:
+            return json.dumps(exc.to_dict(), ensure_ascii=False)
+        confirmed = None
+    elif dfm_service is not None:
         if not str(user_response).strip():
             return json.dumps({"error": "The user did not answer the DFM fact."})
         try:
@@ -192,6 +245,14 @@ def clarify_tool(
         **(
             {"next_action": confirmed["next_action"]}
             if confirmed is not None and "next_action" in confirmed else {}
+        ),
+        **(
+            {
+                "dfm_discovery_review": discovery_review,
+                "next_action": discovery_review["next_action"],
+            }
+            if dfm_discovery_review
+            else {}
         ),
     }, ensure_ascii=False)
 
@@ -229,10 +290,13 @@ CLARIFY_SCHEMA = {
         "commands (the terminal tool handles that). Prefer making a reasonable "
         "default choice yourself when the decision is low-stakes. For a DFM "
         "open clarification, provide dfm_project_id and dfm_fact_name and omit "
-        "choices. An unbound question during an active DFM clarification is "
-        "rejected without showing it to the user. The tool fetches every "
+        "choices. If those bindings are omitted in a session with one active "
+        "DFM project, the tool binds the next open factor before rendering. "
+        "The tool fetches every "
         "published option and records the user's answer without a separate "
-        "confirmation call."
+        "confirmation call. For status=discovery_review_required, provide "
+        "dfm_project_id and dfm_discovery_review=true; the tool owns the fixed "
+        "confirmation wording and atomically confirms the latest saved regions."
     ),
     "parameters": {
         "type": "object",
@@ -240,9 +304,10 @@ CLARIFY_SCHEMA = {
             "question": {
                 "type": "string",
                 "description": (
-                    "The question itself, and ONLY the question (e.g. 'Which "
-                    "deployment target?'). Do NOT embed the answer options here "
-                    "— pass them as separate elements in `choices`."
+                    "The question text for an ordinary clarification. Omit it "
+                    "for a bound DFM factor or Discovery review because the "
+                    "tool loads the canonical question. Do not embed answer "
+                    "options here; pass them in `choices`."
                 ),
             },
             "choices": {
@@ -265,8 +330,12 @@ CLARIFY_SCHEMA = {
                 "type": "string",
                 "description": "DFM factor reference from the open clarification (name or name@check_id).",
             },
+            "dfm_discovery_review": {
+                "type": "boolean",
+                "description": "Bind this question to the pending editable DFM Discovery review.",
+            },
         },
-        "required": ["question"],
+        "required": [],
     },
 }
 
@@ -284,6 +353,7 @@ registry.register(
         callback=kw.get("callback"),
         dfm_project_id=args.get("dfm_project_id"),
         dfm_fact_name=args.get("dfm_fact_name"),
+        dfm_discovery_review=bool(args.get("dfm_discovery_review", False)),
         session_id=kw.get("session_id")),
     check_fn=check_clarify_requirements,
     emoji="❓",

@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .contracts import ArtifactRecord, PlanRecord
+from .contracts import ArtifactRecord, PlanRecord, ProjectManifest
 from .errors import DFMError
 from .issue_types import classify_issue_type, summarize_issue_types
 
@@ -245,3 +245,83 @@ def materialize_preview_manifest(
         "application/vnd.hermes.dfm-viewer+json",
         _utc_now(),
     )
+
+
+def materialize_discovery_viewer_manifest(
+    project_dir: Path,
+    manifest: ProjectManifest,
+    *,
+    review_status: str,
+) -> Path | None:
+    """Expose editable Discovery regions through the existing viewer contract."""
+
+    discovery_inputs = manifest.capabilities.get("geometry_discovery", {}).get(
+        "inputs", {}
+    )
+    if len(discovery_inputs) != 1:
+        return None
+    input_sha256, metadata = next(iter(discovery_inputs.items()))
+    artifact_ids = set(metadata.get("artifact_refs", []))
+    by_kind = {
+        item.kind: item for item in manifest.artifacts if item.artifact_id in artifact_ids
+    }
+    if not {"render_scene", "topology_map"}.issubset(by_kind):
+        return None
+
+    regions = {item.region_id: item for item in manifest.regions}
+    features: list[dict[str, Any]] = []
+    for feature in manifest.features:
+        if feature.input_sha256 != input_sha256 or feature.kind == "ordinary_part":
+            continue
+        refs: dict[tuple[str, int, str], dict[str, Any]] = {}
+        for region_id in feature.region_refs:
+            region = regions.get(region_id)
+            if region is None:
+                continue
+            for ref in region.geometry_refs:
+                refs[(ref.kind, ref.index, ref.input_sha256)] = ref.to_dict()
+        properties = feature.properties if isinstance(feature.properties, dict) else {}
+        features.append(
+            {
+                "feature_id": feature.feature_id,
+                "kind": feature.kind,
+                "subtype": str(properties.get("subtype") or ""),
+                "confidence": feature.confidence,
+                "geometry_refs": sorted(
+                    refs.values(), key=lambda item: (str(item["kind"]), int(item["index"]))
+                ),
+                "parameters": properties,
+                "method": str(properties.get("method") or feature.recognizer or ""),
+                "diagnostics": (
+                    properties.get("diagnostics")
+                    if isinstance(properties.get("diagnostics"), dict)
+                    else {}
+                ),
+            }
+        )
+
+    output_dir = project_dir / Path(by_kind["render_scene"].relative_path).parent
+    output_path = output_dir / "dfm_discovery_viewer.json"
+    payload = {
+        "schema_version": 2,
+        "contract_version": "hermes.dfm.viewer/v2",
+        "status": "discovery",
+        "review_status": review_status,
+        "project_revision": manifest.revision,
+        "input_sha256": input_sha256,
+        "process": manifest.process,
+        "scope_id": "discovery.feature-regions",
+        "verification_level": "experimental",
+        "scene_path": Path(by_kind["render_scene"].relative_path).name,
+        "topology_path": Path(by_kind["topology_map"].relative_path).name,
+        "measurements_path": None,
+        "issue_count": 0,
+        "issue_type_counts": [],
+        "issues": [],
+        "feature_count": len(features),
+        "features": features,
+    }
+    output_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return output_path

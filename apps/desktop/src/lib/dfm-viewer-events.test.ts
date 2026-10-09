@@ -42,6 +42,44 @@ describe('dfmViewerTargetFromToolComplete', () => {
     })
   })
 
+  it('opens editable Discovery regions before planning', () => {
+    const target = dfmViewerTargetFromToolComplete({
+      name: 'dfm_analysis',
+      result: {
+        project_id: 'dfm_1',
+        status: 'discovery_review_required',
+        viewer_manifest: 'C:\\hermes\\discovery\\dfm_discovery_viewer.json'
+      }
+    })
+
+    expect(target).toEqual({
+      manifestPath: 'C:\\hermes\\discovery\\dfm_discovery_viewer.json',
+      projectId: 'dfm_1',
+      runId: undefined,
+      status: 'discovery'
+    })
+  })
+
+  it('refreshes Discovery regions after the bound confirmation question', () => {
+    const target = dfmViewerTargetFromToolComplete({
+      name: 'clarify',
+      result: {
+        dfm_discovery_review: {
+          project_id: 'dfm_1',
+          status: 'discovery_confirmed',
+          viewer_manifest: 'C:\\hermes\\discovery\\dfm_discovery_viewer.json'
+        }
+      }
+    })
+
+    expect(target).toEqual({
+      manifestPath: 'C:\\hermes\\discovery\\dfm_discovery_viewer.json',
+      projectId: 'dfm_1',
+      runId: undefined,
+      status: 'discovery'
+    })
+  })
+
   it('opens the completed manifest from a successful run result', () => {
     const target = dfmViewerTargetFromToolComplete({
       name: 'dfm_analysis',

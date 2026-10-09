@@ -31,13 +31,14 @@ function stringField(...values: unknown[]): string {
 }
 
 export function dfmViewerTargetFromToolComplete(payload?: GatewayEventPayload): DfmViewerTarget | null {
-  if (payload?.name !== 'dfm_project' && payload?.name !== 'dfm_analysis') {
+  if (payload?.name !== 'dfm_project' && payload?.name !== 'dfm_analysis' && payload?.name !== 'clarify') {
     return null
   }
 
   const result = record(payload.result)
   const preview = record(result.preview)
   const run = record(result.run)
+  const discoveryReview = record(result.dfm_discovery_review)
 
   const viewerArtifact = Array.isArray(run.artifacts)
     ? run.artifacts.map(record).find(artifact => artifact.kind === 'dfm_viewer')
@@ -46,6 +47,7 @@ export function dfmViewerTargetFromToolComplete(payload?: GatewayEventPayload): 
   const manifestPath = stringField(
     payload.viewer_manifest,
     result.viewer_manifest,
+    discoveryReview.viewer_manifest,
     viewerArtifact?.path,
     preview.viewer_manifest
   )
@@ -54,21 +56,26 @@ export function dfmViewerTargetFromToolComplete(payload?: GatewayEventPayload): 
     return null
   }
 
-  const completed = payload.name === 'dfm_analysis'
+  const discovery =
+    (payload.name === 'dfm_analysis' &&
+      (result.status === 'discovery_review_required' || result.status === 'discovery_confirmed')) ||
+    (payload.name === 'clarify' && discoveryReview.status === 'discovery_confirmed')
+
+  const completed = payload.name === 'dfm_analysis' && !discovery
 
   if (completed && stringField(run.status, result.status, payload.status) !== 'succeeded') {
     return null
   }
 
-  if (!completed && preview.status !== 'ready') {
+  if (!completed && !discovery && preview.status !== 'ready') {
     return null
   }
 
   return {
     manifestPath,
-    projectId: stringField(payload.project_id, result.project_id) || undefined,
+    projectId: stringField(payload.project_id, result.project_id, discoveryReview.project_id) || undefined,
     runId: stringField(payload.run_id, result.run_id, run.run_id, preview.run_id) || undefined,
-    status: completed ? 'completed' : 'preview'
+    status: discovery ? 'discovery' : completed ? 'completed' : 'preview'
   }
 }
 
