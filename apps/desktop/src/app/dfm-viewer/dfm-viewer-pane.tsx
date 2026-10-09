@@ -166,10 +166,12 @@ function ModelCanvas({
     [activeIssue, issuePositions]
   )
 
-  const featureFaces = useMemo(
-    () => selectedFaceIndices ?? resolveGeometryRefFaceIndices(activeFeature?.geometry_refs),
-    [activeFeature, selectedFaceIndices]
+  const originalFeatureFaces = useMemo(
+    () => resolveGeometryRefFaceIndices(activeFeature?.geometry_refs),
+    [activeFeature]
   )
+
+  const featureFaces = selectedFaceIndices ?? originalFeatureFaces
 
   useEffect(() => {
     onFacePickRef.current = onFacePick
@@ -422,11 +424,12 @@ function ModelCanvas({
         ? 1
         : featureFaces.has(faceIndex)
           ? 2
-          : pickedFaceIndex === faceIndex
+          : pickedFaceIndex === faceIndex &&
+              (selectedFaceIndices == null || originalFeatureFaces.has(faceIndex))
             ? 3
             : 0
     }
-  }, [featureFaces, pickedFaceIndex, problemFaces])
+  }, [featureFaces, originalFeatureFaces, pickedFaceIndex, problemFaces, selectedFaceIndices])
 
   useEffect(() => {
     const resources = resourcesRef.current
