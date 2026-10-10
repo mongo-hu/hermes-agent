@@ -2046,6 +2046,8 @@ export const zhHant = defineLocale({
     closeToRight: '關閉右側',
     closeAll: '全部關閉',
     closePane: '關閉預覽窗格',
+    dfmViewer: 'DFM 模型',
+    restoreDfmViewer: '重新開啟 DFM 模型',
     loading: '正在載入預覽',
     unavailable: '預覽不可用',
     opening: '開啟中...',

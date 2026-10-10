@@ -5,8 +5,10 @@ import type { NavigateFunction } from 'react-router-dom'
 import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
+import { dfmViewerTargetFromSessionMessages } from '@/lib/dfm-viewer-events'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { clearQueuedPrompts } from '@/store/composer-queue'
+import { restoreDfmViewer, showDfmViewer } from '@/store/dfm-viewer'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -43,7 +45,7 @@ import {
 } from '@/store/session'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { isWatchWindow } from '@/store/windows'
-import type { SessionCreateResponse, SessionResumeResponse, UsageStats } from '@/types/hermes'
+import type { SessionCreateResponse, SessionMessage, SessionResumeResponse, UsageStats } from '@/types/hermes'
 
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
@@ -391,6 +393,7 @@ export function useSessionActions({
           setCurrentCwd(cachedViewState.cwd)
           setCurrentBranch(cachedViewState.branch)
           setSessionStartedAt(Date.now())
+          restoreDfmViewer(storedSessionId)
 
           try {
             const usage = await requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
@@ -447,6 +450,14 @@ export function useSessionActions({
 
       let resumedRunning = false
 
+      const restoreDfmViewerFromMessages = (messages: SessionMessage[]) => {
+        const target = dfmViewerTargetFromSessionMessages(messages)
+
+        if (target) {
+          showDfmViewer(storedSessionId, target)
+        }
+      }
+
       try {
         const watchWindow = isWatchWindow()
         let localSnapshot = $messages.get()
@@ -480,6 +491,7 @@ export function useSessionActions({
             const storedMessages = await prefetchPromise
 
             if (isCurrentResume()) {
+              restoreDfmViewerFromMessages(storedMessages.messages)
               localSnapshot = preserveLocalAssistantErrors(toChatMessages(storedMessages.messages), $messages.get())
 
               if (!chatMessageArraysEquivalent($messages.get(), localSnapshot)) {
@@ -496,6 +508,8 @@ export function useSessionActions({
         if (!isCurrentResume()) {
           return
         }
+
+        restoreDfmViewerFromMessages(resumed.messages)
 
         const currentMessages = $messages.get()
 
@@ -552,6 +566,7 @@ export function useSessionActions({
           }),
           storedSessionId
         )
+        restoreDfmViewer(storedSessionId)
       } catch (err) {
         if (!isCurrentResume()) {
           return
@@ -574,6 +589,7 @@ export function useSessionActions({
             return
           }
 
+          restoreDfmViewerFromMessages(fallback.messages)
           setMessages(preserveLocalAssistantErrors(toChatMessages(fallback.messages), $messages.get()))
         } catch (e) {
           // Fallback also failed: nothing to paint. Leave whatever messages are

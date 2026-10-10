@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { dfmHtmlReportPathFromToolComplete, dfmViewerTargetFromToolComplete } from './dfm-viewer-events'
+import {
+  dfmHtmlReportPathFromToolComplete,
+  dfmViewerTargetFromSessionMessages,
+  dfmViewerTargetFromToolComplete
+} from './dfm-viewer-events'
 
 describe('dfmViewerTargetFromToolComplete', () => {
   it('opens an embedded preview after STEP registration', () => {
@@ -166,6 +170,54 @@ describe('dfmHtmlReportPathFromToolComplete', () => {
           run: { status: 'succeeded' }
         }
       })
+    ).toBeNull()
+  })
+})
+
+describe('dfmViewerTargetFromSessionMessages', () => {
+  it('restores the latest successful DFM viewer from persisted tool messages', () => {
+    const target = dfmViewerTargetFromSessionMessages([
+      { content: 'analyze this part', role: 'user' },
+      {
+        content: JSON.stringify({
+          project_id: 'dfm_old',
+          preview: {
+            run_id: 'preview_old',
+            status: 'ready',
+            viewer_manifest: 'C:\\hermes\\old\\dfm_viewer.json'
+          }
+        }),
+        role: 'tool',
+        tool_name: 'dfm_project'
+      },
+      {
+        content: JSON.stringify({
+          project_id: 'dfm_1',
+          run: {
+            artifacts: [{ kind: 'dfm_viewer', path: 'C:\\hermes\\runs\\run_1\\dfm_viewer.json' }],
+            run_id: 'run_1',
+            status: 'succeeded'
+          }
+        }),
+        role: 'tool',
+        tool_name: 'dfm_analysis'
+      }
+    ])
+
+    expect(target).toEqual({
+      manifestPath: 'C:\\hermes\\runs\\run_1\\dfm_viewer.json',
+      projectId: 'dfm_1',
+      runId: 'run_1',
+      status: 'completed'
+    })
+  })
+
+  it('returns null for a history without a usable DFM manifest', () => {
+    expect(
+      dfmViewerTargetFromSessionMessages([
+        { content: 'hello', role: 'user' },
+        { content: '{"status":"failed"}', role: 'tool', tool_name: 'dfm_analysis' }
+      ])
     ).toBeNull()
   })
 })

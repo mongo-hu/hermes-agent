@@ -2298,6 +2298,8 @@ export const zh: Translations = {
     closeToRight: '关闭右侧',
     closeAll: '全部关闭',
     closePane: '关闭预览面板',
+    dfmViewer: 'DFM 模型',
+    restoreDfmViewer: '重新打开 DFM 模型',
     loading: '正在加载预览',
     unavailable: '预览不可用',
     opening: '正在打开...',

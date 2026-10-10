@@ -2,6 +2,17 @@ import { describe, expect, it } from 'vitest'
 
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 
+import { isHtmlPreviewMediaPath } from './markdown-text'
+
+describe('isHtmlPreviewMediaPath', () => {
+  it('routes only HTML media files through the preview tab', () => {
+    expect(isHtmlPreviewMediaPath('D:\\results\\report.html')).toBe(true)
+    expect(isHtmlPreviewMediaPath('/results/report.HTM?revision=2')).toBe(true)
+    expect(isHtmlPreviewMediaPath('/results/report.json')).toBe(false)
+    expect(isHtmlPreviewMediaPath('/results/report.html.png')).toBe(false)
+  })
+})
+
 describe('preprocessMarkdown', () => {
   it('strips inline accidental triple-backtick starts', () => {
     const input = [

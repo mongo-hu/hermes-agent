@@ -1,4 +1,5 @@
 import type { DfmViewerTarget } from '@/store/dfm-viewer'
+import type { SessionMessage } from '@/types/hermes'
 
 import type { GatewayEventPayload } from './chat-messages'
 
@@ -84,6 +85,35 @@ export function dfmViewerTargetFromToolComplete(payload?: GatewayEventPayload): 
     runId: stringField(payload.run_id, result.run_id, run.run_id, preview.run_id) || undefined,
     status: discovery ? 'discovery' : completed ? 'completed' : 'preview'
   }
+}
+
+/**
+ * Recover the most recent usable DFM viewer from a persisted transcript.
+ *
+ * Live tool.complete events and stored tool messages carry the same result
+ * payload, so history restoration deliberately goes through the same parser as
+ * the live path. This keeps the viewer state derived from the session record
+ * instead of introducing a second, potentially stale persistence mechanism.
+ */
+export function dfmViewerTargetFromSessionMessages(messages: SessionMessage[]): DfmViewerTarget | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+
+    if (message.role !== 'tool') {
+      continue
+    }
+
+    const target = dfmViewerTargetFromToolComplete({
+      name: message.tool_name || message.name,
+      result: message.content ?? message.text ?? message.context
+    })
+
+    if (target) {
+      return target
+    }
+  }
+
+  return null
 }
 
 export function dfmHtmlReportPathFromToolComplete(payload?: GatewayEventPayload): string | null {

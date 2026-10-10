@@ -129,13 +129,18 @@ export function AppShell({
   // hardcoded in TitlebarControls. Pane-supplied tools (preview's group) render
   // in a separate cluster anchored further left.
   //
-  // Width math has to include the `gap-x-1` (0.25rem) between buttons:
-  // N buttons + (N - 1) inner gaps, plus one extra 0.25rem of breathing room
-  // between the pane-tool cluster and the system cluster so they don't sit
-  // flush against each other. Modeled as N gaps (N - 1 inner + 1 trailing)
-  // to keep the formula generic for any pane-tool count.
+  // Width math has to include each control's actual width plus the `gap-x-1`
+  // (0.25rem) between buttons. The final extra gap is breathing room between
+  // the pane-tool and system clusters.
   const SYSTEM_TOOL_COUNT = 4
-  const paneToolCount = titlebarTools?.filter(tool => !tool.hidden).length ?? 0
+
+  const visiblePaneTools = titlebarTools?.filter(tool => !tool.hidden) ?? []
+  const paneToolCount = visiblePaneTools.length
+
+  const paneToolsWidth = visiblePaneTools
+    .map(tool => tool.controlWidth || 'var(--titlebar-control-size)')
+    .join(' + ')
+
   const systemToolsWidth = `calc(${SYSTEM_TOOL_COUNT} * (var(--titlebar-control-size) + 0.25rem))`
 
   const fileBrowserWidth =
@@ -155,7 +160,7 @@ export function AppShell({
   // is enough.
   const titlebarToolsWidth =
     paneToolCount > 0
-      ? `calc(${previewToolbarGap} + ${paneToolCount} * (var(--titlebar-control-size) + 0.25rem))`
+      ? `calc(${previewToolbarGap} + ${paneToolsWidth} + ${paneToolCount} * 0.25rem)`
       : systemToolsWidth
 
   return (

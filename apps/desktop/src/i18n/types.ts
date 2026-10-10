@@ -1770,6 +1770,8 @@ export interface Translations {
     closeToRight: string
     closeAll: string
     closePane: string
+    dfmViewer: string
+    restoreDfmViewer: string
     loading: string
     unavailable: string
     opening: string

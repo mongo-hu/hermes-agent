@@ -28,6 +28,7 @@ export interface TitlebarTool {
   label: string
   active?: boolean
   className?: string
+  controlWidth?: string
   disabled?: boolean
   hidden?: boolean
   href?: string
@@ -35,6 +36,7 @@ export interface TitlebarTool {
   onSelect?: () => void
   title?: string
   to?: string
+  visibleLabel?: string
 }
 
 export type TitlebarToolSide = 'left' | 'right'
@@ -212,9 +214,11 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
             href={tool.href}
             onPointerDown={event => event.stopPropagation()}
             rel="noreferrer"
+            style={tool.controlWidth ? { width: tool.controlWidth } : undefined}
             target="_blank"
           >
             {tool.icon}
+            {tool.visibleLabel && <span>{tool.visibleLabel}</span>}
           </a>
         </Button>
       </Tip>
@@ -237,10 +241,12 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
         }}
         onPointerDown={event => event.stopPropagation()}
         size="icon-titlebar"
+        style={tool.controlWidth ? { width: tool.controlWidth } : undefined}
         type="button"
         variant="ghost"
       >
         {tool.icon}
+        {tool.visibleLabel && <span>{tool.visibleLabel}</span>}
       </Button>
     </Tip>
   )

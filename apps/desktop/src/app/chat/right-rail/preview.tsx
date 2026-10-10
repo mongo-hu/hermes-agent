@@ -15,7 +15,12 @@ import { Tip } from '@/components/ui/tooltip'
 import { translateNow, useI18n } from '@/i18n'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
-import { $dfmViewerTarget, type DfmViewerTarget } from '@/store/dfm-viewer'
+import {
+  $dfmViewerTarget,
+  $recoverableDfmViewerTarget,
+  type DfmViewerTarget,
+  restoreDfmViewer
+} from '@/store/dfm-viewer'
 import {
   $panesFlipped,
   $rightRailActiveTabId,
@@ -42,6 +47,7 @@ export const PREVIEW_RAIL_MIN_WIDTH = '18rem'
 export const PREVIEW_RAIL_MAX_WIDTH = '38rem'
 
 const INTRINSIC = `clamp(${PREVIEW_RAIL_MIN_WIDTH}, 36vw, 32rem)`
+const DFM_RESTORE_TITLEBAR_GROUP_ID = 'dfm-viewer-restore'
 
 // Track for <Pane id="preview">. Folds the intrinsic clamp with a min-floor
 // against --chat-min-width so the chat surface never gets squeezed below it.
@@ -78,6 +84,37 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
   const previewTarget = useStore($previewTarget)
   const dirtyPreviewUrls = useStore($dirtyPreviewUrls)
   const dfmViewerTarget = useStore($dfmViewerTarget)
+  const recoverableDfmViewerTarget = useStore($recoverableDfmViewerTarget)
+
+  useEffect(() => {
+    if (!setTitlebarToolGroup) {
+      return
+    }
+
+    setTitlebarToolGroup(
+      DFM_RESTORE_TITLEBAR_GROUP_ID,
+      !dfmViewerTarget && recoverableDfmViewerTarget
+        ? [
+            {
+              controlWidth: '5rem',
+              icon: <Codicon name="open-preview" />,
+              id: 'restore-dfm-viewer',
+              label: t.preview.restoreDfmViewer,
+              onSelect: () => restoreDfmViewer(),
+              visibleLabel: t.preview.dfmViewer
+            }
+          ]
+        : []
+    )
+
+    return () => setTitlebarToolGroup(DFM_RESTORE_TITLEBAR_GROUP_ID, [])
+  }, [
+    dfmViewerTarget,
+    recoverableDfmViewerTarget,
+    setTitlebarToolGroup,
+    t.preview.dfmViewer,
+    t.preview.restoreDfmViewer
+  ])
 
   const tabs = useMemo<readonly RailTab[]>(
     () => [
@@ -137,7 +174,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
                 <ContextMenuTrigger asChild>
                   <div
                     className={cn(
-                      'group/tab relative flex h-full min-w-0 max-w-48 shrink-0 items-center text-[0.6875rem] font-medium [-webkit-app-region:no-drag] last:border-r last:border-(--ui-stroke-quaternary)',
+                      'group/tab relative flex h-full min-w-[4.5rem] max-w-48 shrink-0 items-center text-[0.6875rem] font-medium [-webkit-app-region:no-drag] last:border-r last:border-(--ui-stroke-quaternary)',
                       active
                         ? 'bg-(--ui-editor-surface-background) text-foreground [--tab-bg:var(--ui-editor-surface-background)]'
                         : 'border-r border-(--ui-stroke-quaternary) text-(--ui-text-tertiary) [--tab-bg:var(--ui-sidebar-surface-background)] hover:bg-(--chrome-action-hover) hover:text-foreground'
@@ -165,7 +202,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
                     <Tip label={tab.target?.path || tab.target?.url || tab.label}>
                       <button
                         aria-selected={active}
-                        className="flex h-full min-w-0 max-w-full items-center overflow-hidden pl-3 pr-2 text-left outline-none"
+                        className="flex h-full min-w-0 max-w-full flex-1 items-center overflow-hidden pl-3 pr-7 text-left outline-none"
                         onClick={() => selectRightRailTab(tab.id)}
                         role="tab"
                         type="button"

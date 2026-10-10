@@ -292,10 +292,25 @@ function childrenToText(children: unknown): string {
   return ''
 }
 
+export function isHtmlPreviewMediaPath(path: string): boolean {
+  return /\.html?(?:$|[?#])/i.test(path)
+}
+
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
   const mediaPath = mediaPathFromMarkdownHref(href)
 
   if (mediaPath) {
+    if (isHtmlPreviewMediaPath(mediaPath)) {
+      return (
+        <PreviewAttachment
+          label={childrenToText(children) || `Open ${mediaName(mediaPath)}`}
+          source="explicit-link"
+          target={mediaPath}
+          variant="link"
+        />
+      )
+    }
+
     return <MediaAttachment path={mediaPath} />
   }
 

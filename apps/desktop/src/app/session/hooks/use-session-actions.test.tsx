@@ -5,6 +5,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getSessionMessages, type SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $dfmViewerTargets, clearDfmViewers } from '@/store/dfm-viewer'
+import { $rightRailActiveTabId, PREVIEW_PANE_ID, RIGHT_RAIL_DFM_TAB_ID } from '@/store/layout'
+import { $paneOpen } from '@/store/panes'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
 import {
   $activeSessionId,
@@ -208,6 +211,7 @@ function ResumeHarness({
 describe('resumeSession failure recovery', () => {
   afterEach(() => {
     cleanup()
+    clearDfmViewers()
     setActiveSessionId(null)
     setResumeFailedSessionId(null)
     setMessages([])
@@ -275,6 +279,46 @@ describe('resumeSession failure recovery', () => {
     expect($resumeFailedSessionId.get()).toBeNull()
     // The fallback transcript is visible.
     expect($messages.get().length).toBeGreaterThan(0)
+  })
+
+  it('restores and opens the session DFM viewer from historical tool results', async () => {
+    const dfmMessages = [
+      { content: 'analyze this part', role: 'user', timestamp: 1 },
+      {
+        content: JSON.stringify({
+          project_id: 'dfm_1',
+          run: {
+            artifacts: [{ kind: 'dfm_viewer', path: 'C:\\hermes\\runs\\run_1\\dfm_viewer.json' }],
+            run_id: 'run_1',
+            status: 'succeeded'
+          }
+        }),
+        role: 'tool',
+        timestamp: 2,
+        tool_name: 'dfm_analysis'
+      }
+    ]
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return { session_id: 'runtime-1', resumed: params?.session_id, messages: dfmMessages, info: {} } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: dfmMessages, session_id: 'stored-1' } as never)
+
+    await runResume(requestGateway)
+
+    expect($dfmViewerTargets.get()['stored-1']).toEqual({
+      manifestPath: 'C:\\hermes\\runs\\run_1\\dfm_viewer.json',
+      projectId: 'dfm_1',
+      runId: 'run_1',
+      status: 'completed'
+    })
+    expect($rightRailActiveTabId.get()).toBe(RIGHT_RAIL_DFM_TAB_ID)
+    expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(true)
   })
 
   it('does NOT throw out of the fallback when REST also fails (no unhandled rejection)', async () => {

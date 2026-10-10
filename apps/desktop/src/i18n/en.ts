@@ -2130,6 +2130,8 @@ export const en: Translations = {
     closeToRight: 'Close to the right',
     closeAll: 'Close all',
     closePane: 'Close preview pane',
+    dfmViewer: 'DFM model',
+    restoreDfmViewer: 'Reopen DFM model',
     loading: 'Loading preview',
     unavailable: 'Preview unavailable',
     opening: 'Opening...',

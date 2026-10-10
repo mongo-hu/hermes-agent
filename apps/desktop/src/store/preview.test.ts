@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { $dfmViewerTarget, clearDfmViewers, showDfmViewer } from './dfm-viewer'
+import {
+  $dfmViewerTarget,
+  $dfmViewerTargets,
+  $recoverableDfmViewerTarget,
+  clearDfmViewers,
+  restoreDfmViewer,
+  showDfmViewer
+} from './dfm-viewer'
 import { $rightRailActiveTabId, PREVIEW_PANE_ID, RIGHT_RAIL_DFM_TAB_ID, RIGHT_RAIL_PREVIEW_TAB_ID } from './layout'
 import { $paneOpen } from './panes'
 import {
@@ -165,6 +172,33 @@ describe('preview store', () => {
     closeActiveRightRailTab()
 
     expect($dfmViewerTarget.get()).toBeNull()
+    expect($recoverableDfmViewerTarget.get()?.projectId).toBe('dfm_1')
     expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(false)
+
+    expect(restoreDfmViewer()).toBe(true)
+    expect($dfmViewerTarget.get()?.projectId).toBe('dfm_1')
+    expect($rightRailActiveTabId.get()).toBe(RIGHT_RAIL_DFM_TAB_ID)
+    expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(true)
+  })
+
+  it('canonicalizes a live DFM target to the persisted session id', () => {
+    $activeSessionId.set('runtime-session')
+    $selectedStoredSessionId.set('stored-session')
+
+    showDfmViewer('runtime-session', {
+      manifestPath: 'C:\\dfm\\dfm_viewer.json',
+      projectId: 'dfm_1',
+      status: 'completed'
+    })
+
+    expect($dfmViewerTargets.get()['stored-session']?.projectId).toBe('dfm_1')
+    expect($dfmViewerTargets.get()['runtime-session']).toBeUndefined()
+
+    closeActiveRightRailTab()
+    expect($dfmViewerTarget.get()).toBeNull()
+    expect($recoverableDfmViewerTarget.get()?.projectId).toBe('dfm_1')
+
+    expect(restoreDfmViewer()).toBe(true)
+    expect($dfmViewerTarget.get()?.projectId).toBe('dfm_1')
   })
 })
