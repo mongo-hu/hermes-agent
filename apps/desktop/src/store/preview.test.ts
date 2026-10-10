@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { $dfmViewerTarget, showDfmViewer } from './dfm-viewer'
+import { $dfmViewerTarget, clearDfmViewers, showDfmViewer } from './dfm-viewer'
 import { $rightRailActiveTabId, PREVIEW_PANE_ID, RIGHT_RAIL_DFM_TAB_ID, RIGHT_RAIL_PREVIEW_TAB_ID } from './layout'
 import { $paneOpen } from './panes'
 import {
@@ -43,6 +43,7 @@ describe('preview store', () => {
     $selectedStoredSessionId.set(null)
     window.localStorage.clear()
     clearSessionPreviewRegistry()
+    clearDfmViewers()
   })
 
   afterEach(() => {
@@ -51,6 +52,7 @@ describe('preview store', () => {
     $selectedStoredSessionId.set(null)
     window.localStorage.clear()
     clearSessionPreviewRegistry()
+    clearDfmViewers()
   })
 
   it('does not notify status subscribers for restart progress text', () => {

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $dfmViewerTargets, clearDfmViewers, showDfmViewer } from '@/store/dfm-viewer'
 import type { RpcEvent } from '@/types/hermes'
 
 import { useMessageStream } from './index'
@@ -17,6 +18,7 @@ function Harness() {
   const activeSessionIdRef = useRef<string | null>(sessionId)
   const sessionStateByRuntimeIdRef = useRef(states)
   const queryClientRef = useRef(new QueryClient())
+
   const stream = useMessageStream({
     activeSessionIdRef,
     hydrateFromStoredSession: vi.fn(async () => undefined),
@@ -26,7 +28,9 @@ function Harness() {
     sessionStateByRuntimeIdRef,
     updateSessionState: (id, updater) => {
       const next = updater(states.get(id) ?? createClientSessionState())
+
       states.set(id, next)
+
       return next
     }
   })
@@ -42,6 +46,7 @@ afterEach(() => {
   cleanup()
   states.clear()
   handleEvent = null
+  clearDfmViewers()
   vi.restoreAllMocks()
 })
 
@@ -67,7 +72,50 @@ describe('desktop tool lifecycle', () => {
     const toolParts = states
       .get(sessionId)
       ?.messages.flatMap(message => message.parts.filter(part => part.type === 'tool-call'))
+
     expect(toolParts).toHaveLength(1)
     expect(toolParts?.[0]).toMatchObject({ toolCallId: 'call-1', result: { feature_counts: { main_wall: 1 } } })
+  })
+
+  it('advances the in-place Discovery manifest revision after its bound confirmation', async () => {
+    render(<Harness />)
+    await waitFor(() => expect(handleEvent).not.toBeNull())
+
+    showDfmViewer(
+      sessionId,
+      {
+        manifestPath: 'C:\\dfm\\discovery_viewer.json',
+        projectId: 'dfm_1',
+        revision: 17,
+        status: 'discovery'
+      },
+      { activate: false }
+    )
+    act(() => {
+      handleEvent!({
+        payload: {
+          name: 'clarify',
+          result: {
+            dfm_discovery_review: {
+              project_id: 'dfm_1',
+              revision: 20,
+              status: 'discovery_confirmed',
+              viewer_manifest: 'C:\\dfm\\discovery_viewer.json'
+            }
+          },
+          tool_id: 'confirm-discovery'
+        },
+        session_id: sessionId,
+        type: 'tool.complete'
+      })
+    })
+
+    expect($dfmViewerTargets.get()[sessionId]).toEqual({
+      manifestPath: 'C:\\dfm\\discovery_viewer.json',
+      projectId: 'dfm_1',
+      revision: 20,
+      runId: undefined,
+      status: 'discovery'
+    })
   })
 })

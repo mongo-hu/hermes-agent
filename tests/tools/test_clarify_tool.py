@@ -208,6 +208,11 @@ class TestClarifyToolChoicesValidation:
             "name": "mat_additive_fill",
             "value": "non-LGF",
         }
+        assert result["continuation_required"] is True
+        assert result["next_call"] == {
+            "tool": "dfm_analysis",
+            "arguments": {"action": "discover", "project_id": "dfm_test"},
+        }
         assert confirmed[0]["fact_name"] == "mat_additive_fill"
         assert confirmed[0]["fact_value"] == "non-LGF"
 
@@ -220,6 +225,62 @@ class TestClarifyToolChoicesValidation:
         assert shown == [("Another question", ["yes", "no"])]
         assert ordinary["user_response"] == "yes"
         assert "dfm_fact" not in ordinary
+
+    def test_dfm_answer_returns_exact_next_clarification_call(self, monkeypatch):
+        from types import SimpleNamespace
+
+        pending = [
+            {"clarification_id": "clarification_first", "question": "First?"},
+            {"clarification_id": "clarification_second", "question": "Second?"},
+        ]
+
+        class FakeService:
+            config = SimpleNamespace(default_process="injection")
+
+            @staticmethod
+            def _canonical_fact_name(name):
+                return name
+
+            @staticmethod
+            def clarification_choices(_process, _name):
+                return ["yes", "no"]
+
+            @staticmethod
+            def project(action, **kwargs):
+                if action == "status":
+                    return {
+                        "project": {
+                            "process": "injection",
+                            "open_clarifications": pending,
+                        }
+                    }
+                assert action == "confirm_fact"
+                pending.pop(0)
+                return {
+                    "fact": {"name": "first", "value": kwargs["fact_value"]},
+                    "next_action": "clarify",
+                }
+
+        monkeypatch.setattr("tools.dfm.service.get_dfm_service", FakeService)
+
+        result = json.loads(
+            clarify_tool(
+                "",
+                callback=lambda _question, _choices: "yes",
+                dfm_project_id="dfm_test",
+                dfm_fact_name="first",
+            )
+        )
+
+        assert result["continuation_required"] is True
+        assert result["next_call"] == {
+            "tool": "clarify",
+            "arguments": {
+                "dfm_project_id": "dfm_test",
+                "dfm_fact_name": "second",
+            },
+        }
+        assert "Do not end the turn" in result["instruction"]
 
     @pytest.mark.parametrize("requested_review", [False, True])
     def test_unbound_question_binds_pending_discovery_review_once(

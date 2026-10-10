@@ -30,6 +30,10 @@ function stringField(...values: unknown[]): string {
   return ''
 }
 
+function numberField(...values: unknown[]): number | undefined {
+  return values.find((value): value is number => typeof value === 'number' && Number.isFinite(value))
+}
+
 export function dfmViewerTargetFromToolComplete(payload?: GatewayEventPayload): DfmViewerTarget | null {
   if (payload?.name !== 'dfm_project' && payload?.name !== 'dfm_analysis' && payload?.name !== 'clarify') {
     return null
@@ -71,9 +75,12 @@ export function dfmViewerTargetFromToolComplete(payload?: GatewayEventPayload): 
     return null
   }
 
+  const revision = numberField(discoveryReview.revision, result.revision)
+
   return {
     manifestPath,
     projectId: stringField(payload.project_id, result.project_id, discoveryReview.project_id) || undefined,
+    ...(revision !== undefined ? { revision } : {}),
     runId: stringField(payload.run_id, result.run_id, run.run_id, preview.run_id) || undefined,
     status: discovery ? 'discovery' : completed ? 'completed' : 'preview'
   }

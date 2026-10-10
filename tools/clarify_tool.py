@@ -20,6 +20,56 @@ from typing import List, Optional, Callable
 MAX_CHOICES = 4
 
 
+def _dfm_continuation(service, project_id: str, next_action: object) -> dict:
+    """Make an unfinished DFM workflow explicit in the tool result.
+
+    ``next_action`` alone proved too easy for models to paraphrase as an
+    optional status update.  Returning the exact next tool call makes the
+    workflow contract machine-readable and prevents an unnecessary
+    "continue?" turn between required engineering questions.
+    """
+
+    if next_action == "clarify":
+        from tools.dfm.errors import DFMError
+
+        try:
+            project = service.project("status", project_id=project_id)["project"]
+            pending = project.get("open_clarifications", [])
+        except (DFMError, KeyError, TypeError):
+            pending = []
+        if pending:
+            fact_name = str(pending[0].get("clarification_id") or "").removeprefix(
+                "clarification_"
+            )
+            return {
+                "continuation_required": True,
+                "next_call": {
+                    "tool": "clarify",
+                    "arguments": {
+                        "dfm_project_id": project_id,
+                        "dfm_fact_name": fact_name,
+                    },
+                },
+                "instruction": (
+                    "Ask this next DFM question now. Do not end the turn or ask "
+                    "whether the user wants to continue."
+                ),
+            }
+    if next_action in {"discover", "plan"}:
+        return {
+            "continuation_required": True,
+            "next_call": {
+                "tool": "dfm_analysis",
+                "arguments": {"action": next_action, "project_id": project_id},
+            },
+            "instruction": (
+                "Continue the requested DFM analysis now. Do not end the turn "
+                "or ask whether the user wants to continue."
+            ),
+        }
+    return {}
+
+
 def _flatten_choice(c) -> str:
     """Coerce a single choice into its user-facing display string.
 
@@ -237,6 +287,19 @@ def clarify_tool(
     else:
         confirmed = None
 
+    next_action = (
+        discovery_review.get("next_action")
+        if dfm_discovery_review
+        else confirmed.get("next_action")
+        if confirmed is not None
+        else None
+    )
+    continuation = (
+        _dfm_continuation(dfm_service, dfm_project_id, next_action)
+        if dfm_service is not None and dfm_project_id and next_action
+        else {}
+    )
+
     return json.dumps({
         "question": question,
         "choices_offered": choices,
@@ -254,6 +317,7 @@ def clarify_tool(
             if dfm_discovery_review
             else {}
         ),
+        **continuation,
     }, ensure_ascii=False)
 
 
@@ -294,7 +358,9 @@ CLARIFY_SCHEMA = {
         "DFM project, the tool binds the next open factor before rendering. "
         "The tool fetches every "
         "published option and records the user's answer without a separate "
-        "confirmation call. For status=discovery_review_required, provide "
+        "confirmation call. When its result has continuation_required=true, "
+        "execute next_call immediately; do not end the turn or ask whether "
+        "the user wants to continue. For status=discovery_review_required, provide "
         "dfm_project_id and dfm_discovery_review=true; the tool owns the fixed "
         "confirmation wording and atomically confirms the latest saved regions."
     ),

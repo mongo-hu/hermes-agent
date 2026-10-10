@@ -38,7 +38,12 @@ import {
   resolveTriangleRefPositions,
   type TopologyFace
 } from './dfm-viewer-geometry'
-import { classifyViewerIssueType, formatViewerValue, summarizeViewerIssueTypes, type ViewerIssueTypeCount } from './dfm-viewer-issues'
+import {
+  classifyViewerIssueType,
+  formatViewerValue,
+  summarizeViewerIssueTypes,
+  type ViewerIssueTypeCount
+} from './dfm-viewer-issues'
 
 interface ViewerIssue {
   actual: unknown
@@ -424,8 +429,7 @@ function ModelCanvas({
         ? 1
         : featureFaces.has(faceIndex)
           ? 2
-          : pickedFaceIndex === faceIndex &&
-              (selectedFaceIndices == null || originalFeatureFaces.has(faceIndex))
+          : pickedFaceIndex === faceIndex && (selectedFaceIndices == null || originalFeatureFaces.has(faceIndex))
             ? 3
             : 0
     }
@@ -605,7 +609,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
     return () => {
       cancelled = true
     }
-  }, [reloadRequest, target])
+  }, [reloadRequest, target.manifestPath, target.revision, target.status])
 
   const activeIssue = manifest?.issues.find(issue => issue.evaluation_id === activeIssueId) ?? null
   const activeFeature = manifest?.features?.find(feature => feature.feature_id === activeFeatureId) ?? null
@@ -867,9 +871,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
             topologyFaces={topologyFaces}
           />
           <div className="pointer-events-none absolute bottom-2 left-2 rounded-md bg-black/55 px-2 py-1 text-[10px] text-slate-300 backdrop-blur">
-            {editingFeatureId
-              ? '单击面切换选中 · 右键平移 · 滚轮缩放'
-              : '左键旋转 · 滚轮缩放 · 右键平移 · 单击选择面'}
+            {editingFeatureId ? '单击面切换选中 · 右键平移 · 滚轮缩放' : '左键旋转 · 滚轮缩放 · 右键平移 · 单击选择面'}
           </div>
           {pickedFaceIndex != null && (
             <div className="pointer-events-none absolute right-2 top-2 rounded-md border border-cyan-300/20 bg-black/60 px-2 py-1 text-[10px] text-cyan-100 backdrop-blur">
@@ -935,7 +937,9 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
                           <p className="mt-1 text-[11px] text-red-200">{issueTypeLabel}</p>
                           <p className="mt-0.5 text-[10px] text-slate-500">{issue.check_id || issue.metric_id}</p>
                           <p className="mt-1.5 text-[11px] text-slate-300">
-                            未满足：实际 {formatViewerValue(issue.actual)} {issue.operator === 'between' ? '∈' : issue.operator} 目标 {formatViewerValue(issue.expected)}
+                            未满足：实际 {formatViewerValue(issue.actual)}{' '}
+                            {issue.operator === 'between' ? '∈' : issue.operator} 目标{' '}
+                            {formatViewerValue(issue.expected)}
                           </p>
                           <p className="mt-1 break-words text-[10px] text-slate-500">{refs}</p>
                         </div>

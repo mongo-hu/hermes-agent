@@ -7,6 +7,7 @@ import { $activeSessionId, $selectedStoredSessionId } from './session'
 export interface DfmViewerTarget {
   manifestPath: string
   projectId?: string
+  revision?: number
   runId?: string
   status: 'completed' | 'discovery' | 'preview'
 }

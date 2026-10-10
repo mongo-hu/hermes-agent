@@ -56,7 +56,9 @@ export default defineConfig({
     }
   },
   resolve: {
-    // Ignore stale JS emitted beside TS sources by earlier local builds.
+    // Prefer source modules if an older checkout left ignored JS beside TS.
+    // tsconfig.json prevents new adjacent output; this ordering also keeps a
+    // dirty pre-fix worktree from shadowing the files under active development.
     extensions: ['.mts', '.ts', '.tsx', '.mjs', '.js', '.jsx', '.json'],
     alias: {
       '@': path.resolve(__dirname, './src'),

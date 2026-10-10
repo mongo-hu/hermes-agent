@@ -10,6 +10,7 @@ from tools.registry import registry
 
 _session_projects: dict[str, str] = {}
 _TOOL_PREVIEW_LIMIT = 50
+_ACTIVE_RUN_STATUSES = {"queued", "running", "reporting"}
 
 
 def _project_status_summary(result: dict) -> dict:
@@ -214,6 +215,38 @@ def active_dfm_project_id(session_id: str | None) -> str | None:
     return _session_projects.get(session_id) if session_id else None
 
 
+def _active_session_run(service, session_id: object) -> tuple[str, dict] | None:
+    """Return the current session's unfinished run, if one still exists.
+
+    This is a tool-boundary workflow lock, not project deduplication. A new
+    project is valid after the previous run reaches a terminal state, and a
+    separate desktop conversation has its own session binding.
+    """
+
+    if not isinstance(session_id, str):
+        return None
+    project_id = _session_projects.get(session_id)
+    if not project_id:
+        return None
+    try:
+        status = service.project("status", project_id=project_id)
+    except DFMError:
+        # The in-memory binding can outlive a deleted test/development
+        # workspace. Do not prevent a legitimate replacement project.
+        _session_projects.pop(session_id, None)
+        return None
+    project = status.get("project", {}) if isinstance(status, dict) else {}
+    runs = project.get("runs", []) if isinstance(project, dict) else []
+    return next(
+        (
+            (project_id, run)
+            for run in reversed(runs)
+            if isinstance(run, dict) and run.get("status") in _ACTIVE_RUN_STATUSES
+        ),
+        None,
+    )
+
+
 def _call(kind: str, args: dict, **context) -> str:
     try:
         if kind == "project" and args.get("action") == "confirm_fact":
@@ -227,6 +260,30 @@ def _call(kind: str, args: dict, **context) -> str:
                 "DFM cancellation is reserved for an explicit user-interface action; the Agent cannot cancel a run.",
             )
         service = get_dfm_service()
+        session_id = context.get("session_id")
+        if kind == "project" and args.get("action") == "create":
+            active = _active_session_run(service, session_id)
+            if active is not None:
+                project_id, run = active
+                analyzer_key = run.get("analyzer_key")
+                next_action = (
+                    "report_context"
+                    if analyzer_key in {"occt_cpp", "step"}
+                    else "status"
+                )
+                raise DFMError(
+                    "dfm_run_active",
+                    "This conversation already has an unfinished DFM run. "
+                    "Continue that exact run; do not create another project, "
+                    "add the input again, or restart clarification.",
+                    {
+                        "project_id": project_id,
+                        "run_id": run.get("run_id"),
+                        "status": run.get("status"),
+                        "next_action": next_action,
+                        **({"wait_seconds": 60} if next_action == "report_context" else {}),
+                    },
+                )
         params = {key: value for key, value in args.items() if key != "action"}
         if kind == "project" and args.get("action") == "add_input":
             from tools.terminal_tool import resolve_task_overrides
@@ -242,7 +299,6 @@ def _call(kind: str, args: dict, **context) -> str:
             if kind == "project"
             else service.analysis(args.get("action", ""), **params)
         )
-        session_id = context.get("session_id")
         project_id = (
             result.get("project_id") or args.get("project_id")
             if isinstance(result, dict) and result.get("ok") is True else None
@@ -266,7 +322,7 @@ def _call(kind: str, args: dict, **context) -> str:
 
 DFM_PROJECT_SCHEMA = {
     "name": "dfm_project",
-    "description": "Manage durable DFM projects and the installed workspace ontology. Use sync_ontology only when the user asks. Create projects without inferring a process. Every open DFM clarification must be answered through the interactive DFM clarification flow with dfm_project_id and dfm_fact_name; it fetches all published options and confirms the user's answer atomically. The Agent cannot call confirm_fact directly. Register STEP, Parasolid x_t, or drawing inputs. Status returns a bounded project summary; do not use it to poll an active analysis run. Never infer engineering facts from geometry.",
+    "description": "Manage durable DFM projects and the installed workspace ontology. Use sync_ontology only when the user asks. Create projects without inferring a process. A conversation may have only one unfinished DFM run: create is rejected with dfm_run_active while that run is queued, running, or reporting; continue the exact project_id/run_id and next_action from the error instead of recreating the project, adding the input again, or restarting clarification. Every open DFM clarification must be answered through the interactive DFM clarification flow with dfm_project_id and dfm_fact_name; it fetches all published options and confirms the user's answer atomically. The Agent cannot call confirm_fact directly. Register STEP, Parasolid x_t, or drawing inputs. Status returns a bounded project summary; do not use it to poll an active analysis run. Never infer engineering facts from geometry.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -295,7 +351,7 @@ DFM_PROJECT_SCHEMA = {
 
 DFM_ANALYSIS_SCHEMA = {
     "name": "dfm_analysis",
-    "description": "Run the DFM workflow. Discovery, plan, start, status, and result return bounded control summaries; follow next_action and use feature_counts for exact discovery counts. Features and regions are previews with explicit omitted counts. When discover returns discovery_review_required, the 3D viewer is editable: call clarify with the project_id and dfm_discovery_review=true. That bound question confirms the latest saved regions atomically; then follow its next_action. Drawing OCR is deterministic; use drawing_context and the current Hermes model once to organize every explicit drawing fact into validated drawing observations. Use fusion_context and submit_fusion_links for Agent semantic proposals that the service checks against geometry IDs. An HTML-capable STEP run (PDF drawing optional) remains reporting (not succeeded) after deterministic analysis; call report_context to obtain the complete Runtime and required_issue_ids, then author dfm-html-llm/v1 with exactly those issue IDs and call render_html. render_html validates IDs before queuing background rendering; wait for succeeded status or its completion notification before calling result. Only a validated report.html completes the run. Do not reinterpret OCR during reporting. The external OCCT C++ analyzer is integrated as experimental; PythonOCC remains the reference STEP backend and NX/Parasolid remains optional. Unavailable analyzers fail explicitly; never infer engineering findings from that status.",
+    "description": "Run the DFM workflow. Discovery, plan, start, status, and result return bounded control summaries; follow next_action and use feature_counts for exact discovery counts. If report_context returns ready=false, call report_context again with the same project_id/run_id (or wait for its background notification); never create a new project, add the input again, or restart clarification while the run is unfinished. Features and regions are previews with explicit omitted counts. When discover returns discovery_review_required, the 3D viewer is editable: call clarify with the project_id and dfm_discovery_review=true. That bound question confirms the latest saved regions atomically; then follow its next_action. Drawing OCR is deterministic; use drawing_context and the current Hermes model once to organize every explicit drawing fact into validated drawing observations. Use fusion_context and submit_fusion_links for Agent semantic proposals that the service checks against geometry IDs. An HTML-capable STEP run (PDF drawing optional) remains reporting (not succeeded) after deterministic analysis; call report_context to obtain the complete Runtime and required_issue_ids, then author dfm-html-llm/v1 with exactly those issue IDs and call render_html. render_html validates IDs before queuing background rendering; wait for succeeded status or its completion notification before calling result. Only a validated report.html completes the run. Do not reinterpret OCR during reporting. The external OCCT C++ analyzer is integrated as experimental; PythonOCC remains the reference STEP backend and NX/Parasolid remains optional. Unavailable analyzers fail explicitly; never infer engineering findings from that status.",
     "parameters": {
         "type": "object",
         "properties": {

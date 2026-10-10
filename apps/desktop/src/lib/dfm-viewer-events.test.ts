@@ -47,6 +47,7 @@ describe('dfmViewerTargetFromToolComplete', () => {
       name: 'dfm_analysis',
       result: {
         project_id: 'dfm_1',
+        revision: 17,
         status: 'discovery_review_required',
         viewer_manifest: 'C:\\hermes\\discovery\\dfm_discovery_viewer.json'
       }
@@ -55,6 +56,7 @@ describe('dfmViewerTargetFromToolComplete', () => {
     expect(target).toEqual({
       manifestPath: 'C:\\hermes\\discovery\\dfm_discovery_viewer.json',
       projectId: 'dfm_1',
+      revision: 17,
       runId: undefined,
       status: 'discovery'
     })
@@ -66,6 +68,7 @@ describe('dfmViewerTargetFromToolComplete', () => {
       result: {
         dfm_discovery_review: {
           project_id: 'dfm_1',
+          revision: 20,
           status: 'discovery_confirmed',
           viewer_manifest: 'C:\\hermes\\discovery\\dfm_discovery_viewer.json'
         }
@@ -75,6 +78,7 @@ describe('dfmViewerTargetFromToolComplete', () => {
     expect(target).toEqual({
       manifestPath: 'C:\\hermes\\discovery\\dfm_discovery_viewer.json',
       projectId: 'dfm_1',
+      revision: 20,
       runId: undefined,
       status: 'discovery'
     })

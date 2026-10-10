@@ -143,6 +143,96 @@ def test_dfm_background_actions_receive_progress_context_without_schema_changes(
         assert captured["_tool_call_id"] == f"tool_{action}"
 
 
+def test_dfm_project_create_cannot_reenter_an_active_session_run(monkeypatch):
+    from tools import dfm_tool
+
+    monkeypatch.setattr(
+        dfm_tool, "_session_projects", {"session-one": "dfm_existing"}
+    )
+    calls = []
+
+    class FakeService:
+        def project(self, action, **params):
+            calls.append((action, params))
+            assert action == "status"
+            assert params == {"project_id": "dfm_existing"}
+            return {
+                "ok": True,
+                "project": {
+                    "runs": [
+                        {
+                            "run_id": "run_existing",
+                            "analyzer_key": "occt_cpp",
+                            "status": "running",
+                        }
+                    ]
+                },
+            }
+
+    monkeypatch.setattr(dfm_tool, "get_dfm_service", lambda: FakeService())
+
+    result = json.loads(
+        dfm_tool._call(
+            "project",
+            {"action": "create", "name": "duplicate"},
+            session_id="session-one",
+        )
+    )
+
+    assert result == {
+        "ok": False,
+        "error": {
+            "code": "dfm_run_active",
+            "message": (
+                "This conversation already has an unfinished DFM run. "
+                "Continue that exact run; do not create another project, "
+                "add the input again, or restart clarification."
+            ),
+            "details": {
+                "project_id": "dfm_existing",
+                "run_id": "run_existing",
+                "status": "running",
+                "next_action": "report_context",
+                "wait_seconds": 60,
+            },
+        },
+    }
+    assert calls == [("status", {"project_id": "dfm_existing"})]
+
+
+def test_dfm_project_create_is_allowed_after_session_run_finishes(monkeypatch):
+    from tools import dfm_tool
+
+    monkeypatch.setattr(
+        dfm_tool, "_session_projects", {"session-one": "dfm_finished"}
+    )
+
+    class FakeService:
+        def project(self, action, **params):
+            if action == "status":
+                return {
+                    "ok": True,
+                    "project": {"runs": [{"run_id": "run_1", "status": "succeeded"}]},
+                }
+            assert action == "create"
+            assert params == {"name": "next part"}
+            return {"ok": True, "project_id": "dfm_next", "project": {}}
+
+    monkeypatch.setattr(dfm_tool, "get_dfm_service", lambda: FakeService())
+
+    result = json.loads(
+        dfm_tool._call(
+            "project",
+            {"action": "create", "name": "next part"},
+            session_id="session-one",
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["project_id"] == "dfm_next"
+    assert dfm_tool.active_dfm_project_id("session-one") == "dfm_next"
+
+
 def test_discovery_tool_returns_bounded_counts_without_geometry_payload(monkeypatch):
     from tools import dfm_tool
 
