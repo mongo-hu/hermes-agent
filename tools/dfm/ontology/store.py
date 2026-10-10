@@ -411,21 +411,33 @@ class LocalOntologyStore:
         return ()
 
     def fact_check_choices(
-        self, process: str, fact_name: str, check_id: str
+        self,
+        process: str,
+        fact_name: str,
+        check_id: str,
+        facts: Mapping[str, Any] | None = None,
     ) -> tuple[Any, ...]:
-        """Published answers that can select a released rule for one Check."""
+        """Published answers still viable for one Check's confirmed facts."""
 
         if self.identity().process != process:
             return ()
         with self._connect() as connection:
+            factor_rows = connection.execute(
+                "SELECT concept_id, properties_json FROM ontology_concept "
+                "WHERE concept_type = 'factor' AND status = 'active'"
+            ).fetchall()
+            runtime_keys = {
+                str(row["concept_id"]): str(
+                    _load_json(row["properties_json"], {}).get("runtime_key")
+                    or row["concept_id"]
+                )
+                for row in factor_rows
+            }
             factor = next(
                 (
-                    row for row in connection.execute(
-                        "SELECT concept_id, properties_json FROM ontology_concept "
-                        "WHERE concept_type = 'factor' AND status = 'active'"
-                    )
-                    if str(_load_json(row["properties_json"], {}).get("runtime_key")
-                           or row["concept_id"]) == fact_name
+                    row
+                    for row in factor_rows
+                    if runtime_keys[str(row["concept_id"])] == fact_name
                 ),
                 None,
             )
@@ -436,10 +448,31 @@ class LocalOntologyStore:
                 "WHERE check_id = ? AND status = 'released' ORDER BY priority DESC",
                 (check_id,),
             ).fetchall()
+        provided = self._normalize_facts(facts or {})
+        known_facts = {
+            factor_id: provided[runtime_key]
+            for factor_id, runtime_key in runtime_keys.items()
+            if runtime_key in provided
+        }
+        known_facts.update({
+            factor_id: provided[factor_id]
+            for factor_id in runtime_keys
+            if factor_id in provided
+        })
+        target_factor_id = str(factor["concept_id"])
         values: list[Any] = []
         for row in rows:
-            for condition in _load_json(row["conditions_json"], []):
-                if condition.get("factor_id") != factor["concept_id"]:
+            conditions = _load_json(row["conditions_json"], [])
+            if any(
+                str(condition["factor_id"]) != target_factor_id
+                and str(condition["factor_id"]) in known_facts
+                and not self._condition_matches(condition, known_facts)
+                for condition in conditions
+                if "factor_id" in condition
+            ):
+                continue
+            for condition in conditions:
+                if str(condition.get("factor_id")) != target_factor_id:
                     continue
                 operator = condition.get("operator")
                 if operator == "EQ":

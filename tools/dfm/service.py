@@ -1989,8 +1989,17 @@ class DFMService:
                 for check_id in requirement.check_ids:
                     if check_id not in applicable_check_ids:
                         continue
+                    choice_facts = {
+                        **confirmed,
+                        **{
+                            fact_name: value
+                            for (fact_name, fact_check_id), value
+                            in confirmed_by_check.items()
+                            if fact_check_id == check_id
+                        },
+                    }
                     choices = self.ontology_store.fact_check_choices(
-                        adapter.key, name, check_id
+                        adapter.key, name, check_id, choice_facts
                     )
                     if (
                         not choices

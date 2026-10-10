@@ -117,6 +117,80 @@ def test_optional_factor_relation_does_not_block_analysis():
     assert "material" not in {item["name"] for item in requirements}
 
 
+def test_check_choices_exclude_rules_incompatible_with_confirmed_facts():
+    payload = _package()
+    fill_factor = deepcopy(next(
+        item for item in payload["concepts"]
+        if item["concept_id"] == "factor.material"
+    ))
+    fill_factor.update({
+        "concept_id": "factor.fill",
+        "name_zh": "材料填充",
+        "name_en": "Material fill",
+    })
+    fill_factor["properties"].update({
+        "runtime_key": "fill",
+        "question": "What fill is used?",
+    })
+    fill_factor["properties"].pop("default_value", None)
+    payload["concepts"].append(fill_factor)
+    payload["factor_options"].extend([
+        {
+            "factor_id": "factor.fill",
+            "option_code": value,
+            "name_zh": value,
+            "value": value,
+            "sort_order": index,
+            "status": "active",
+        }
+        for index, value in enumerate(("unfilled", "filled"), start=1)
+    ])
+    fill_relation = deepcopy(next(
+        item for item in payload["relations"]
+        if item["relation_id"] == "rel.check.wall.factor.material"
+    ))
+    fill_relation.update({
+        "relation_id": "rel.check.wall.factor.fill",
+        "object_id": "factor.fill",
+        "sort_order": 31,
+    })
+    payload["relations"].append(fill_relation)
+    abs_rule = next(
+        item for item in payload["rules"]
+        if item["rule_id"] == "R_INJ_MAIN_WALL_MIN_ABS"
+    )
+    abs_rule["conditions"].append({
+        "factor_id": "factor.fill",
+        "operator": "EQ",
+        "value": "unfilled",
+    })
+    pc_rule = deepcopy(abs_rule)
+    pc_rule.update({
+        "rule_version_id": "rule-version.main-wall-min-pc.1",
+        "rule_id": "R_INJ_MAIN_WALL_MIN_PC",
+    })
+    pc_rule["conditions"] = [
+        {"factor_id": "factor.material", "operator": "EQ", "value": "PC"},
+        {"factor_id": "factor.fill", "operator": "EQ", "value": "filled"},
+    ]
+    payload["rules"].append(pc_rule)
+    _rehash(payload)
+    store = LocalOntologyStore.from_package(payload)
+
+    assert store.fact_check_choices(
+        "injection",
+        "fill",
+        "check.main_wall_minimum_thickness",
+        {"material": "ABS"},
+    ) == ("unfilled",)
+    assert store.fact_check_choices(
+        "injection",
+        "fill",
+        "check.main_wall_minimum_thickness",
+        {"material": "PMMA"},
+    ) == ()
+
+
 def test_bundled_ontology_publication_matches_its_json_schema():
     schema_path = (
         Path(__file__).parents[3]
