@@ -605,7 +605,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
     return () => {
       cancelled = true
     }
-  }, [reloadRequest, target.manifestPath])
+  }, [reloadRequest, target])
 
   const activeIssue = manifest?.issues.find(issue => issue.evaluation_id === activeIssueId) ?? null
   const activeFeature = manifest?.features?.find(feature => feature.feature_id === activeFeatureId) ?? null
@@ -632,7 +632,14 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
 
   const issueTypeCounts = useMemo(() => {
     if (manifest?.issue_type_counts?.length) {
-      return manifest.issue_type_counts
+      return manifest.issue_type_counts.map(item => {
+        const [, label] = classifyViewerIssueType({
+          issue_type_id: item.issue_type_id,
+          issue_type_label: item.label
+        })
+
+        return { ...item, label }
+      })
     }
 
     return summarizeViewerIssueTypes(manifest?.issues ?? [])
