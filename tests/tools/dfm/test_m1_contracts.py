@@ -2,6 +2,7 @@ import pytest
 
 from tools.dfm.contracts import (
     EffectiveRule,
+    GeometryQuery,
     LocalObjectiveWorkerRequest,
     ObjectiveArtifactManifest,
     ObjectiveResultManifest,
@@ -148,3 +149,42 @@ def test_local_objective_worker_request_rejects_removed_schema_2_task():
 
     with pytest.raises(ValueError, match="Objective task identity is invalid"):
         LocalObjectiveWorkerRequest.from_dict(request)
+
+
+def test_snapshot_geometry_query_round_trip_has_no_region_or_operation_payload():
+    query = GeometryQuery(
+        snapshot_id="snapshot_A",
+        feature_id="BOSS_0007",
+        geometric_ids=[
+            "G_SCREW_BOSS_WALL_THK_MAX",
+            "G_SCREW_BOSS_WALL_REF_THK",
+        ],
+    )
+    payload = query.to_dict()
+    assert payload == {
+        "snapshot_id": "snapshot_A",
+        "feature_id": "BOSS_0007",
+        "geometric_ids": [
+            "G_SCREW_BOSS_WALL_THK_MAX",
+            "G_SCREW_BOSS_WALL_REF_THK",
+        ],
+    }
+    assert set(payload) == {
+        "snapshot_id",
+        "feature_id",
+        "geometric_ids",
+    }
+    assert GeometryQuery.from_dict(payload) == query
+
+    request = LocalObjectiveWorkerRequest(
+        schema_version=1,
+        backend_version="occt-dfm-geometry-1.10.1",
+        input_path="inputs/part.step",
+        output_dir="runs/run_1/artifacts",
+        task=query,
+        contract_version="dfm.geometry.request/v1",
+        snapshot_path="runs/run_1/objective_snapshot.json",
+    )
+    request_payload = request.to_dict()
+    assert request_payload["task"] == payload
+    assert LocalObjectiveWorkerRequest.from_dict(request_payload) == request

@@ -594,13 +594,17 @@ class RuleOperand:
     operation_id: str
     metric_id: str
     quantity_id: str
+    geometric_id: str = ""
     aggregation: str = "identity"
     feature_refs: list[str] = field(default_factory=list)
     region_refs: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
-        return asdict(self)
+        values = asdict(self)
+        if not self.geometric_id:
+            values.pop("geometric_id")
+        return values
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "RuleOperand":
@@ -614,6 +618,12 @@ class RuleOperand:
             raise DFMError(
                 "plan_rule_binding_invalid",
                 "Rule operands require non-empty stable identities.",
+            )
+        if self.geometric_id and not re.fullmatch(r"G_[A-Z0-9_]+", self.geometric_id):
+            raise DFMError(
+                "plan_rule_binding_invalid",
+                "Rule operand Geometric IDs must use the published stable identity.",
+                {"operand_alias": self.alias, "geometric_id": self.geometric_id},
             )
         if self.aggregation not in _RULE_AGGREGATIONS:
             raise DFMError(
@@ -646,6 +656,7 @@ class RuleBinding:
     rule_id: str
     operator: str
     aggregation: str
+    geometric_id: str = ""
     required_fact_names: list[str] = field(default_factory=list)
     feature_refs: list[str] = field(default_factory=list)
     region_refs: list[str] = field(default_factory=list)
@@ -666,6 +677,8 @@ class RuleBinding:
         }
         if self.rule_selection is None:
             values.pop("rule_selection")
+        if not self.geometric_id:
+            values.pop("geometric_id")
         return values
 
     @classmethod
@@ -686,6 +699,7 @@ class RuleBinding:
                 operation_id=self.operation_id,
                 metric_id=self.metric_id,
                 quantity_id=self.quantity_id,
+                geometric_id=self.geometric_id,
                 aggregation=self.aggregation,
                 feature_refs=self.feature_refs,
                 region_refs=self.region_refs,
@@ -1169,6 +1183,36 @@ class EvidenceRecord:
 
 
 @dataclass(frozen=True)
+class GeometryQuery:
+    """One feature-scoped calculation resolved from a frozen Discovery snapshot."""
+
+    snapshot_id: str
+    feature_id: str
+    geometric_ids: list[str]
+
+    def __post_init__(self) -> None:
+        if (
+            not self.snapshot_id
+            or not self.feature_id
+            or not self.geometric_ids
+            or len(self.geometric_ids) != len(set(self.geometric_ids))
+            or any(
+                not isinstance(value, str)
+                or re.fullmatch(r"G_[A-Z0-9_]+", value) is None
+                for value in self.geometric_ids
+            )
+        ):
+            raise ValueError("Geometry query identity is invalid.")
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "GeometryQuery":
+        return cls(**payload)
+
+
+@dataclass(frozen=True)
 class ObjectiveTaskRequest:
     """Backend-neutral objective geometry task; contains no rules or presentation policy."""
 
@@ -1232,8 +1276,9 @@ class LocalObjectiveWorkerRequest:
     backend_version: str
     input_path: str
     output_dir: str
-    task: ObjectiveTaskRequest
+    task: ObjectiveTaskRequest | GeometryQuery
     contract_version: str = ""
+    snapshot_path: str = ""
 
     def __post_init__(self) -> None:
         if (
@@ -1242,6 +1287,7 @@ class LocalObjectiveWorkerRequest:
             or not self.input_path
             or not self.output_dir
             or self.contract_version not in {"", GEOMETRY_REQUEST_CONTRACT}
+            or isinstance(self.task, GeometryQuery) != bool(self.snapshot_path)
         ):
             raise ValueError("Local objective worker envelope is invalid.")
 
@@ -1255,12 +1301,19 @@ class LocalObjectiveWorkerRequest:
         }
         if self.contract_version:
             payload["contract_version"] = self.contract_version
+        if self.snapshot_path:
+            payload["snapshot_path"] = self.snapshot_path
         return payload
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "LocalObjectiveWorkerRequest":
         values = dict(payload)
-        values["task"] = ObjectiveTaskRequest.from_dict(values["task"])
+        task = values["task"]
+        values["task"] = (
+            GeometryQuery.from_dict(task)
+            if values.get("snapshot_path")
+            else ObjectiveTaskRequest.from_dict(task)
+        )
         return cls(**values)
 
 

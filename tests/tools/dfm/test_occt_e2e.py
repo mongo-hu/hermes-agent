@@ -83,11 +83,19 @@ def test_real_occt_injection_vertical_slice(tmp_path):
                 project_id=project_id,
                 expected_revision=discovery["revision"],
             )
-        plan = service.analysis(
+        planning = service.analysis(
             "plan",
             project_id=project_id,
             analyzer_key="occt_cpp",
-        )["plan"]
+        )
+        if "plan" not in planning:
+            # The bootstrap publication predates the Geometric-ID rule package.
+            # OCCT must stop here rather than silently restoring metric-based work.
+            assert planning["status"] == "no_applicable_checks"
+            assert planning["reason_code"] == "no_applicable_supported_rules"
+            assert "G_WALL_THK_MIN" in planning["supported_geometric_ids"]
+            return
+        plan = planning["plan"]
         assert plan["scope_id"] == "injection.default"
         assert plan["ontology_snapshot_id"] == service.ontology_store.identity().snapshot_id
         wall_operations = [

@@ -10,6 +10,7 @@
     "operation_id": {"type": "string", "minLength": 1},
     "metric_id": {"type": "string", "minLength": 1},
     "quantity_id": {"type": "string", "minLength": 1},
+    "geometric_id": {"type": "string", "pattern": "^G_[A-Z0-9_]+$"},
     "rule_id": {"type": "string", "minLength": 1},
     "operator": {"enum": [">=", "<=", ">", "<", "==", "!=", "between"]},
     "aggregation": {"enum": ["minimum", "maximum", "mean", "median", "sum", "count", "identity"]},
@@ -110,6 +111,7 @@
         "operation_id": {"type": "string", "minLength": 1},
         "metric_id": {"type": "string", "minLength": 1},
         "quantity_id": {"type": "string", "minLength": 1},
+        "geometric_id": {"type": "string", "pattern": "^G_[A-Z0-9_]+$"},
         "aggregation": {"enum": ["minimum", "maximum", "mean", "median", "sum", "count", "identity"]},
         "feature_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
         "region_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}

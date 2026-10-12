@@ -194,11 +194,7 @@ class LocalOntologyStore:
     def configure_geometric_bindings(
         self, bindings: Mapping[str, Mapping[str, str]]
     ) -> None:
-        """Install the worker projection keyed only by ontology Geometric ID.
-
-        The publication's legacy worker_geometric_id/quantity_id fields remain
-        readable for older workers, but an explicit capability binding wins.
-        """
+        """Activate the fail-closed worker projection keyed by Geometric ID."""
 
         self._geometric_bindings = {
             str(concept_id): {
@@ -696,12 +692,10 @@ class LocalOntologyStore:
                 geometric_id = str(row["object_id"])
                 if (
                     self._geometric_binding_mode_configured
-                    and geometric_id.startswith("G_")
                     and geometric_id not in self._geometric_bindings
                 ):
-                    # Geometric-ID mode is fail-closed. An ontology concept
-                    # omitted by the runtime capability must not fall back to
-                    # empty legacy worker fields or create an analysis target.
+                    # A published Geometric ID omitted by the runtime
+                    # capability is not executable work.
                     continue
                 target = self._resolve_operand_target(
                     connection,
@@ -844,7 +838,11 @@ class LocalOntologyStore:
                     result = self._compile_binding(
                         connection, check_id, selected, operand_rows,
                         operations, factor_runtime_keys,
-                        geometric_bindings=self._geometric_bindings,
+                        geometric_bindings=(
+                            self._geometric_bindings
+                            if self._geometric_binding_mode_configured
+                            else None
+                        ),
                         deferred=deferred,
                     )
                     if result[0] is None:
@@ -1725,6 +1723,15 @@ class LocalOntologyStore:
             qualifiers = _load_json(row["qualifiers_json"], {})
             if qualifiers.get("alias") not in referenced:
                 continue
+            if (
+                geometric_bindings is not None
+                and str(row["object_id"]) not in geometric_bindings
+            ):
+                return None, {
+                    "check_id": check_id,
+                    "reason": "geometric_id_unsupported",
+                    "geometric_id": str(row["object_id"]),
+                }
             target = cls._resolve_operand_target(
                 connection, check_id, row, geometric_bindings
             )
@@ -1742,11 +1749,15 @@ class LocalOntologyStore:
                     "metric_id": metric_id,
                     "quantity_id": quantity_id,
                 }
+            geometric_id = str(target.get("geometric_id") or "")
             operand = RuleOperand(
                 alias=alias,
                 operation_id=operation.operation_id,
                 metric_id=metric_id,
                 quantity_id=quantity_id,
+                geometric_id=(
+                    geometric_id if geometric_id.startswith("G_") else ""
+                ),
                 aggregation=str(qualifiers.get("aggregation") or "identity"),
             )
             operand.validate()
@@ -1764,6 +1775,7 @@ class LocalOntologyStore:
             rule_id=str(rule["rule_id"]),
             operator=_COMPARATORS[str(rule["comparator"])],
             aggregation=primary.aggregation,
+            geometric_id=primary.geometric_id,
             required_fact_names=sorted({
                 factor_runtime_keys.get(str(item["factor_id"]), str(item["factor_id"]))
                 for item in conditions if "factor_id" in item
@@ -1804,7 +1816,6 @@ class LocalOntologyStore:
                 "metric_id": capability_binding["metric_id"],
                 "quantity_id": capability_binding["quantity_id"],
                 "geometric_id": geometric_id,
-                "operand_text": str(qualifiers.get("operand_text") or geometric_id),
                 "feature_kind": capability_binding["feature_kind"],
                 "feature_kinds": [capability_binding["feature_kind"]],
                 "region_role": capability_binding["region_role"],

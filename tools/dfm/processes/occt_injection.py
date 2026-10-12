@@ -41,13 +41,20 @@ def geometry_binding_index(scope: Mapping[str, Any]) -> dict[str, dict[str, str]
             "process_scope_invalid",
             "The OCCT geometry scope must disable legacy ontology binding fields.",
         )
+    if not isinstance(scope.get("geometric_bindings"), list) or not scope[
+        "geometric_bindings"
+    ]:
+        raise DFMError(
+            "process_scope_invalid",
+            "The OCCT geometry scope must publish executable Geometric-ID bindings.",
+        )
     operations = {
         str(item.get("operation_id")): item
         for item in scope.get("operations", [])
         if isinstance(item, Mapping) and item.get("operation_id")
     }
     result: dict[str, dict[str, str]] = {}
-    for raw in scope.get("geometric_bindings", []):
+    for raw in scope["geometric_bindings"]:
         if not isinstance(raw, Mapping):
             raise DFMError(
                 "process_scope_invalid",
@@ -126,10 +133,6 @@ def probe_occt_geometry_capability(
     if resolved is None:
         return None
     payload = probe_geometry_executable(resolved)
-    if not isinstance(payload.get("geometric_bindings"), list):
-        # An older executable can still serve publications that retain the
-        # legacy fields. It simply cannot activate Geometric-ID-only rows.
-        return None
     geometry_binding_index(payload)
     return payload
 

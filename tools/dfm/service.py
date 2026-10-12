@@ -193,7 +193,10 @@ class DFMService:
         self.occt_geometry_capability = probe_occt_geometry_capability(
             self.config.geometry_executable
         )
-        if self.occt_geometry_capability is not None:
+        if (
+            self.occt_geometry_capability is not None
+            and self.config.geometry_analyzer_key == "occt_cpp"
+        ):
             self.ontology_store.configure_geometric_bindings(
                 geometry_binding_index(self.occt_geometry_capability)
             )

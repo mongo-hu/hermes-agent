@@ -20,7 +20,9 @@ from ..contracts import (
     ArtifactRecord,
     Capability,
     CapabilityStatus,
+    GeometryQuery,
     LocalObjectiveWorkerRequest,
+    ObjectiveArtifactManifest,
     ObjectiveResultManifest,
     ObjectiveTaskRequest,
     WorkerEvent,
@@ -238,6 +240,10 @@ class OcctAnalyzer:
                             or payload.get("maturity") != "experimental"
                             or payload.get("objective_schema_version")
                             != OBJECTIVE_SCHEMA_VERSION
+                            or payload.get("binding_mode") != "geometric_id"
+                            or payload.get("legacy_binding_fields_active") is not False
+                            or not isinstance(payload.get("geometric_bindings"), list)
+                            or not payload["geometric_bindings"]
                             or payload.get("supported_processes") != ["injection"]
                             or payload.get("supported_formats") != ["step"]
                             or payload.get("supported_extensions") != [".step", ".stp"]
@@ -337,6 +343,376 @@ class OcctAnalyzer:
             },
         )
 
+    def _geometry_queries(
+        self,
+        context: AnalyzerContext,
+        *,
+        input_sha256: str,
+    ) -> tuple[list[GeometryQuery], dict[str, Any]]:
+        assert context.plan is not None
+        if len(context.plan.discovery_snapshot_refs) != 1:
+            raise DFMError(
+                "objective_task_invalid",
+                "OCCT calculation requires exactly one frozen Discovery snapshot.",
+            )
+        capability = self._probe() or {}
+        recipes = {
+            str(item.get("concept_id")): item.get("execution")
+            for item in capability.get("geometric_bindings", [])
+            if isinstance(item, dict)
+            and item.get("support_status") == "supported"
+            and isinstance(item.get("execution"), dict)
+        }
+        operations = {
+            operation.operation_id: operation
+            for operation in context.plan.operations
+        }
+        regions = {region.region_id: region for region in context.plan.regions}
+        ids_by_feature: dict[str, set[str]] = {}
+        execution_keys: set[tuple[str, str]] = set()
+        executions: list[dict[str, Any]] = []
+
+        for binding in context.plan.rule_bindings:
+            for operand in binding.measurement_operands():
+                if not operand.geometric_id or len(operand.feature_refs) != 1:
+                    raise DFMError(
+                        "objective_task_invalid",
+                        "Every OCCT rule operand must retain one published Geometric ID and one frozen Feature.",
+                        {"binding_id": binding.binding_id, "operand_alias": operand.alias},
+                    )
+                recipe = recipes.get(operand.geometric_id)
+                operation = operations.get(operand.operation_id)
+                if not isinstance(recipe, dict) or operation is None:
+                    raise DFMError(
+                        "unsupported_calculator",
+                        "The persisted Geometric ID has no executable OCCT recipe.",
+                        {"geometric_id": operand.geometric_id},
+                    )
+                measurement_id = str(
+                    recipe.get("measurement_operation_id") or ""
+                )
+                feature_id = operand.feature_refs[0]
+                if (
+                    not measurement_id
+                    or operation.calculator_id != measurement_id
+                    or operation.feature_refs != [feature_id]
+                    or len(operation.region_refs) != 1
+                ):
+                    raise DFMError(
+                        "objective_task_invalid",
+                        "The persisted OCCT operation does not match its Geometric-ID recipe.",
+                        {"operation_id": operand.operation_id, "geometric_id": operand.geometric_id},
+                    )
+                region_ref = operation.region_refs[0]
+                region = regions.get(region_ref)
+                if region is None or feature_id not in region.feature_refs:
+                    raise DFMError(
+                        "objective_task_invalid",
+                        "The persisted OCCT operation does not resolve inside its frozen Feature.",
+                        {"operation_id": operand.operation_id, "region_ref": region_ref},
+                    )
+                ids_by_feature.setdefault(feature_id, set()).add(
+                    operand.geometric_id
+                )
+                execution_key = (feature_id, operation.operation_id)
+                if execution_key not in execution_keys:
+                    execution_keys.add(execution_key)
+                    executions.append(
+                        {
+                            "feature_id": feature_id,
+                            "measurement_operation_id": measurement_id,
+                            "operation_id": operation.operation_id,
+                            "region_ref": region_ref,
+                            "arguments": {
+                                name: value.to_dict()
+                                for name, value in operation.arguments.items()
+                            },
+                            "algorithm_options": {
+                                name: value.to_dict()
+                                for name, value in operation.algorithm_options.items()
+                            },
+                        }
+                    )
+
+        if not ids_by_feature:
+            raise DFMError(
+                "objective_task_invalid",
+                "The OCCT analysis plan contains no Geometric-ID calculation work.",
+            )
+
+        features = []
+        for feature_id in sorted(ids_by_feature):
+            feature_regions = []
+            for region in sorted(regions.values(), key=lambda item: item.region_id):
+                if feature_id not in region.feature_refs:
+                    continue
+                face_indices = sorted(
+                    {
+                        reference.index
+                        for reference in region.geometry_refs
+                        if reference.kind == "face"
+                        and reference.input_sha256 == input_sha256
+                    }
+                )
+                if not face_indices:
+                    continue
+                feature_regions.append(
+                    {
+                        "region_id": region.region_id,
+                        "role": region.role,
+                        "content_sha256": region.content_sha256,
+                        "face_indices": face_indices,
+                    }
+                )
+            if not feature_regions:
+                raise DFMError(
+                    "objective_task_invalid",
+                    "A queried Feature has no frozen topology region.",
+                    {"feature_id": feature_id},
+                )
+            features.append(
+                {"feature_id": feature_id, "regions": feature_regions}
+            )
+
+        snapshot_id = context.plan.discovery_snapshot_refs[0]
+        queries = [
+            GeometryQuery(
+                snapshot_id=snapshot_id,
+                feature_id=feature_id,
+                geometric_ids=sorted(geometric_ids),
+            )
+            for feature_id, geometric_ids in sorted(ids_by_feature.items())
+        ]
+        return queries, {
+            "schema_version": 1,
+            "snapshot_id": snapshot_id,
+            "run_id": context.run_id,
+            "input_sha256": input_sha256,
+            "features": features,
+            "executions": executions,
+        }
+
+    def _merge_query_results(
+        self,
+        query_results: list[tuple[Path, ObjectiveResultManifest]],
+        output_dir: Path,
+        *,
+        run_id: str,
+        input_sha256: str,
+    ) -> ObjectiveResultManifest:
+        if not query_results:
+            raise DFMError(
+                "objective_result_invalid", "OCCT returned no query results."
+            )
+        output_dir.mkdir(parents=True, exist_ok=True)
+        common: dict[str, tuple[Path, ObjectiveArtifactManifest]] = {}
+        feature_documents: dict[str, dict[str, Any]] = {}
+        measurement_documents: list[dict[str, Any]] = []
+        scalar_sources: list[tuple[Path, ObjectiveArtifactManifest]] = []
+        feature_header: dict[str, Any] | None = None
+        measurement_header: dict[str, Any] | None = None
+
+        for query_dir, result in query_results:
+            if (
+                result.schema_version != OBJECTIVE_SCHEMA_VERSION
+                or result.contract_version != GEOMETRY_RESULT_CONTRACT
+                or result.producer_version != self.version
+                or result.run_id != run_id
+                or result.input_sha256 != input_sha256
+                or result.process != "injection"
+                or result.scope_id != GEOMETRY_SCOPE_ID
+                or result.scope_version != GEOMETRY_SCOPE_VERSION
+                or result.result_path != "engine_result.json"
+            ):
+                raise DFMError(
+                    "objective_result_invalid",
+                    "An OCCT query result has incompatible identity.",
+                )
+            kinds: dict[str, list[ObjectiveArtifactManifest]] = {}
+            for artifact in result.artifacts:
+                source = self._contained_file(query_dir, artifact.filename)
+                if (
+                    source.stat().st_size != artifact.size_bytes
+                    or self._sha256(source) != artifact.sha256
+                ):
+                    raise DFMError(
+                        "objective_artifact_invalid",
+                        "An OCCT query artifact does not match its manifest.",
+                        {"artifact_id": artifact.artifact_id},
+                    )
+                kinds.setdefault(artifact.kind, []).append(artifact)
+            if any(
+                len(kinds.get(kind, [])) != 1
+                for kind in (
+                    "preflight",
+                    "topology_map",
+                    "render_scene",
+                    "features",
+                    "measurements",
+                )
+            ) or set(kinds) - {
+                "preflight",
+                "topology_map",
+                "render_scene",
+                "features",
+                "measurements",
+                "scalar_field",
+            }:
+                raise DFMError(
+                    "objective_result_invalid",
+                    "An OCCT query result has an incomplete artifact set.",
+                )
+            for kind in ("preflight", "topology_map", "render_scene"):
+                artifact = kinds[kind][0]
+                common.setdefault(
+                    kind, (query_dir / artifact.filename, artifact)
+                )
+            features_path = query_dir / kinds["features"][0].filename
+            measurements_path = query_dir / kinds["measurements"][0].filename
+            try:
+                features_payload = json.loads(
+                    features_path.read_text(encoding="utf-8")
+                )
+                measurements_payload = json.loads(
+                    measurements_path.read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError) as exc:
+                raise DFMError(
+                    "objective_artifact_invalid",
+                    "An OCCT query artifact is not valid UTF-8 JSON.",
+                ) from exc
+            if feature_header is None:
+                feature_header = {
+                    key: value
+                    for key, value in features_payload.items()
+                    if key != "features"
+                }
+            if measurement_header is None:
+                measurement_header = {
+                    key: value
+                    for key, value in measurements_payload.items()
+                    if key != "measurements"
+                }
+            for feature in features_payload.get("features", []):
+                feature_id = str(feature.get("feature_id") or "")
+                if not feature_id:
+                    raise DFMError(
+                        "objective_artifact_invalid",
+                        "An OCCT feature result has no identity.",
+                    )
+                existing = feature_documents.get(feature_id)
+                quantity_results = feature.get("diagnostics", {}).get(
+                    "quantity_results"
+                )
+                if existing is None or quantity_results:
+                    feature_documents[feature_id] = feature
+            measurement_documents.extend(
+                measurements_payload.get("measurements", [])
+            )
+            scalar_sources.extend(
+                (query_dir / artifact.filename, artifact)
+                for artifact in kinds.get("scalar_field", [])
+            )
+
+        manifests: list[ObjectiveArtifactManifest] = []
+
+        def manifest(path: Path, artifact_id: str, kind: str) -> ObjectiveArtifactManifest:
+            return ObjectiveArtifactManifest(
+                artifact_id=artifact_id,
+                kind=kind,
+                filename=path.name,
+                media_type="application/json",
+                size_bytes=path.stat().st_size,
+                sha256=self._sha256(path),
+            )
+
+        for kind, filename in (
+            ("preflight", "preflight.json"),
+            ("topology_map", "topology_map.json"),
+            ("render_scene", "render_scene.json"),
+        ):
+            source, artifact = common[kind]
+            destination = output_dir / filename
+            shutil.copy2(source, destination)
+            manifests.append(manifest(destination, artifact.artifact_id, kind))
+
+        features_path = output_dir / "features.json"
+        features_path.write_text(
+            json.dumps(
+                {
+                    **(feature_header or {}),
+                    "features": [
+                        feature_documents[key]
+                        for key in sorted(feature_documents)
+                    ],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        manifests.append(manifest(features_path, "features", "features"))
+
+        measurement_ids = [
+            str(item.get("measurement_id") or "")
+            for item in measurement_documents
+        ]
+        if (
+            any(not value for value in measurement_ids)
+            or len(measurement_ids) != len(set(measurement_ids))
+        ):
+            raise DFMError(
+                "objective_result_invalid",
+                "OCCT query measurements do not have unique identities.",
+            )
+        measurements_path = output_dir / "measurements.json"
+        measurements_path.write_text(
+            json.dumps(
+                {
+                    **(measurement_header or {}),
+                    "measurements": measurement_documents,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        manifests.append(
+            manifest(measurements_path, "measurements", "measurements")
+        )
+
+        scalar_ids: set[str] = set()
+        for index, (source, artifact) in enumerate(scalar_sources, start=1):
+            if artifact.artifact_id in scalar_ids:
+                raise DFMError(
+                    "objective_result_invalid",
+                    "OCCT scalar fields do not have unique identities.",
+                )
+            scalar_ids.add(artifact.artifact_id)
+            destination = output_dir / f"scalar_field_{index}.json"
+            shutil.copy2(source, destination)
+            manifests.append(
+                manifest(destination, artifact.artifact_id, "scalar_field")
+            )
+
+        result = ObjectiveResultManifest(
+            schema_version=OBJECTIVE_SCHEMA_VERSION,
+            contract_version=GEOMETRY_RESULT_CONTRACT,
+            producer_version=self.version,
+            run_id=run_id,
+            input_sha256=input_sha256,
+            process="injection",
+            scope_id=GEOMETRY_SCOPE_ID,
+            scope_version=GEOMETRY_SCOPE_VERSION,
+            result_path="engine_result.json",
+            artifacts=manifests,
+        )
+        (output_dir / result.result_path).write_text(
+            json.dumps(result.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return result
+
     def run(
         self,
         context: AnalyzerContext,
@@ -376,111 +752,208 @@ class OcctAnalyzer:
         run_dir = context.project_dir / "runs" / context.run_id
         output_dir = run_dir / "artifacts"
         output_dir.mkdir(parents=True, exist_ok=True)
-        task = ObjectiveTaskRequest(
-            schema_version=OBJECTIVE_SCHEMA_VERSION,
-            run_id=context.run_id,
-            input_sha256=input_record.sha256,
-            input_format="step",
-            process=context.plan.process,
-            # Plan scope identifies the pinned ontology/rule publication. The
-            # external engine has its own capability scope and must never be
-            # handed Hermes semantic scope identities as geometry policy.
-            scope_id=GEOMETRY_SCOPE_ID,
-            scope_version=GEOMETRY_SCOPE_VERSION,
-            operations=context.plan.operations,
-            regions=context.plan.regions,
-        )
-        request = LocalObjectiveWorkerRequest(
-            schema_version=WORKER_SCHEMA_VERSION,
-            backend_version=self.version,
-            input_path=str(
-                (context.project_dir / input_record.relative_path).resolve()
-            ),
-            output_dir=str(output_dir.resolve()),
-            task=task,
-            contract_version=GEOMETRY_REQUEST_CONTRACT,
-        )
-        request_path = run_dir / "request.json"
-        request_path.write_text(
-            json.dumps(request.to_dict(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        events: list[WorkerEvent] = []
+        snapshot_path: Path | None = None
+        if context.plan.status == "preview":
+            tasks: list[ObjectiveTaskRequest | GeometryQuery] = [
+                ObjectiveTaskRequest(
+                    schema_version=OBJECTIVE_SCHEMA_VERSION,
+                    run_id=context.run_id,
+                    input_sha256=input_record.sha256,
+                    input_format="step",
+                    process=context.plan.process,
+                    scope_id=GEOMETRY_SCOPE_ID,
+                    scope_version=GEOMETRY_SCOPE_VERSION,
+                    operations=context.plan.operations,
+                    regions=context.plan.regions,
+                )
+            ]
+        else:
+            queries, snapshot = self._geometry_queries(
+                context, input_sha256=input_record.sha256
+            )
+            tasks = list(queries)
+            snapshot_path = run_dir / "objective_snapshot.json"
+            snapshot_path.write_text(
+                json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        assert self.executable is not None
+        query_results: list[tuple[Path, ObjectiveResultManifest]] = []
+        for index, task in enumerate(tasks, start=1):
+            cancellation.raise_if_cancelled()
+            query_dir = run_dir / "objective" / f"query_{index:04d}"
+            query_dir.mkdir(parents=True, exist_ok=True)
+            request = LocalObjectiveWorkerRequest(
+                schema_version=WORKER_SCHEMA_VERSION,
+                backend_version=self.version,
+                input_path=str(
+                    (context.project_dir / input_record.relative_path).resolve()
+                ),
+                output_dir=str(query_dir.resolve()),
+                task=task,
+                contract_version=GEOMETRY_REQUEST_CONTRACT,
+                snapshot_path=(
+                    str(snapshot_path.resolve()) if snapshot_path is not None else ""
+                ),
+            )
+            request_path = (
+                run_dir / "request.json"
+                if index == 1
+                else run_dir / f"request_{index:04d}.json"
+            )
+            request_path.write_text(
+                json.dumps(request.to_dict(), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            query_events: list[WorkerEvent] = []
 
-        def handle_event(event: WorkerEvent) -> None:
-            if event.contract_version != GEOMETRY_EVENT_CONTRACT:
+            def handle_event(event: WorkerEvent) -> None:
+                if event.contract_version != GEOMETRY_EVENT_CONTRACT:
+                    raise DFMError(
+                        "geometry_protocol_invalid",
+                        "The OCCT engine emitted an event with an incompatible contract.",
+                        {"contract_version": event.contract_version},
+                    )
+                query_events.append(event)
+                if context.event_sink is not None and event.type == "progress":
+                    context.event_sink(event)
+
+            process_result = self.runner.run(
+                [self.executable, "analyze", "--request", str(request_path)],
+                Path(__file__).resolve().parents[3],
+                self.timeout_seconds,
+                cancellation,
+                handle_event,
+                run_dir / f"worker_{index:04d}.stdout.log",
+                run_dir / f"worker_{index:04d}.stderr.log",
+            )
+            self._validate_jsonl_stdout(process_result.stdout, query_events)
+            error_events = [
+                event for event in query_events if event.type == "error"
+            ]
+            if process_result.returncode != 0:
+                if (
+                    len(error_events) != 1
+                    or any(event.type == "completed" for event in query_events)
+                    or not query_events
+                    or query_events[-1] != error_events[0]
+                ):
+                    raise DFMError(
+                        "geometry_protocol_invalid",
+                        "A failed OCCT process must end with exactly one error event.",
+                    )
+                error = error_events[0]
+                if context.event_sink is not None:
+                    context.event_sink(error)
+                raise DFMError(
+                    error.code or "objective_backend_failed",
+                    error.message or "The OCCT geometry engine failed.",
+                )
+            if error_events:
                 raise DFMError(
                     "geometry_protocol_invalid",
-                    "The OCCT engine emitted an event with an incompatible contract.",
-                    {"contract_version": event.contract_version},
+                    "A successful OCCT process emitted an error event.",
                 )
-            events.append(event)
-            if context.event_sink is not None:
-                context.event_sink(event)
-
-        assert self.executable is not None
-        process_result = self.runner.run(
-            [self.executable, "analyze", "--request", str(request_path)],
-            Path(__file__).resolve().parents[3],
-            self.timeout_seconds,
-            cancellation,
-            handle_event,
-            run_dir / "worker.stdout.log",
-            run_dir / "worker.stderr.log",
-        )
-        self._validate_jsonl_stdout(process_result.stdout, events)
-        error_events = [event for event in events if event.type == "error"]
-        if process_result.returncode != 0:
+            completed = [
+                event for event in query_events if event.type == "completed"
+            ]
             if (
-                len(error_events) != 1
-                or any(event.type == "completed" for event in events)
-                or not events
-                or events[-1] != error_events[0]
+                len(completed) != 1
+                or completed[0].path != "engine_result.json"
+                or not query_events
+                or query_events[-1] != completed[0]
             ):
                 raise DFMError(
-                    "geometry_protocol_invalid",
-                    "A failed OCCT process must end with exactly one error event.",
+                    "objective_result_invalid",
+                    "The OCCT engine did not emit exactly one completion result.",
                 )
-            error = error_events[0]
-            raise DFMError(
-                error.code if error and error.code else "objective_backend_failed",
-                error.message
-                if error and error.message
-                else "The OCCT geometry engine failed.",
+            artifact_events = [
+                event for event in query_events if event.type == "artifact"
+            ]
+            artifact_pairs = [
+                (event.kind, event.path) for event in artifact_events
+            ]
+            if len(artifact_pairs) != len(set(artifact_pairs)):
+                raise DFMError(
+                    "geometry_protocol_invalid",
+                    "The OCCT engine emitted duplicate artifact events.",
+                )
+            query_result_path = self._contained_file(
+                query_dir, completed[0].path
             )
-        if error_events:
-            raise DFMError(
-                "geometry_protocol_invalid",
-                "A successful OCCT process emitted an error event.",
-            )
-        completed = [event for event in events if event.type == "completed"]
-        if (
-            len(completed) != 1
-            or completed[0].path != "engine_result.json"
-            or not events
-            or events[-1] != completed[0]
-        ):
-            raise DFMError(
-                "objective_result_invalid",
-                "The OCCT engine did not emit exactly one completion result.",
-            )
-        artifact_events = [event for event in events if event.type == "artifact"]
-        artifact_pairs = [(event.kind, event.path) for event in artifact_events]
-        if len(artifact_pairs) != len(set(artifact_pairs)):
-            raise DFMError(
-                "geometry_protocol_invalid",
-                "The OCCT engine emitted duplicate artifact events.",
-            )
-        result_path = self._contained_file(output_dir, completed[0].path)
-        try:
-            result = ObjectiveResultManifest.from_dict(
-                json.loads(result_path.read_text(encoding="utf-8"))
-            )
-        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
-            raise DFMError(
-                "objective_result_invalid",
-                "The OCCT engine result could not be loaded.",
-            ) from exc
+            try:
+                query_result = ObjectiveResultManifest.from_dict(
+                    json.loads(query_result_path.read_text(encoding="utf-8"))
+                )
+            except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                raise DFMError(
+                    "objective_result_invalid",
+                    "The OCCT engine result could not be loaded.",
+                ) from exc
+            query_artifact_kinds = [
+                item.kind for item in query_result.artifacts
+            ]
+            if any(
+                query_artifact_kinds.count(kind) != 1
+                for kind in (
+                    "preflight",
+                    "topology_map",
+                    "render_scene",
+                    "features",
+                    "measurements",
+                )
+            ):
+                raise DFMError(
+                    "objective_result_invalid",
+                    "The OCCT query result has an incomplete or duplicated artifact set.",
+                )
+            expected_pairs = {
+                (item.kind, item.filename) for item in query_result.artifacts
+            } | {("worker_result", "engine_result.json")}
+            if set(artifact_pairs) != expected_pairs:
+                raise DFMError(
+                    "geometry_protocol_invalid",
+                    "The OCCT query artifact events do not match its result manifest.",
+                )
+            query_results.append((query_dir, query_result))
+
+        result = self._merge_query_results(
+            query_results,
+            output_dir,
+            run_id=context.run_id,
+            input_sha256=input_record.sha256,
+        )
+        result_path = output_dir / result.result_path
+        events = [
+            *[
+                WorkerEvent(
+                    WORKER_SCHEMA_VERSION,
+                    "artifact",
+                    kind=item.kind,
+                    path=item.filename,
+                    contract_version=GEOMETRY_EVENT_CONTRACT,
+                )
+                for item in result.artifacts
+            ],
+            WorkerEvent(
+                WORKER_SCHEMA_VERSION,
+                "artifact",
+                kind="worker_result",
+                path="engine_result.json",
+                contract_version=GEOMETRY_EVENT_CONTRACT,
+            ),
+            WorkerEvent(
+                WORKER_SCHEMA_VERSION,
+                "completed",
+                path="engine_result.json",
+                contract_version=GEOMETRY_EVENT_CONTRACT,
+            ),
+        ]
+        if context.event_sink is not None:
+            for event in events:
+                context.event_sink(event)
+        artifact_pairs = [
+            (event.kind, event.path) for event in events if event.type == "artifact"
+        ]
         if (
             result.schema_version != OBJECTIVE_SCHEMA_VERSION
             or result.contract_version != GEOMETRY_RESULT_CONTRACT

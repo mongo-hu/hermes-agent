@@ -458,10 +458,15 @@ def test_geometric_id_capability_binding_ignores_empty_legacy_fields():
     assert not compiled.skipped_checks
     assert compiled.rule_bindings[0].metric_id == METRIC
     assert compiled.rule_bindings[0].quantity_id == "thickness_mm"
+    assert compiled.rule_bindings[0].geometric_id == "G_WALL_THK_MIN"
+    assert (
+        compiled.rule_bindings[0].measurement_operands()[0].geometric_id
+        == "G_WALL_THK_MIN"
+    )
     target = next(
         item
         for item in store.analysis_target_specs("injection")
-        if item["metric_id"] == METRIC
+        if METRIC in item["metrics"]
     )
     assert target["feature_kind"] == "main_wall"
     assert target["region_role"] == "wall"

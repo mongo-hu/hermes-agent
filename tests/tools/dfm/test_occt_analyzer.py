@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,8 @@ from tools.dfm.contracts import (
     OBJECTIVE_SCHEMA_VERSION,
     ArtifactRecord,
     CapabilityStatus,
+    EffectiveRule,
+    GeometryRef,
     InputRecord,
     LocalObjectiveWorkerRequest,
     ObjectiveArtifactManifest,
@@ -28,6 +31,7 @@ from tools.dfm.contracts import (
     PlanRecord,
     RegionRecord,
     ResolvedArgument,
+    RuleBinding,
     WorkerEvent,
 )
 from tools.dfm.errors import DFMError
@@ -116,7 +120,21 @@ MAIN_WALL_ALGORITHM_OPTIONS = [
 CAPABILITIES = {
     "binding_mode": "geometric_id",
     "legacy_binding_fields_active": False,
-    "geometric_bindings": [],
+    "geometric_bindings": [{
+        "concept_id": "G_WALL_THK_MIN",
+        "support_status": "supported",
+        "worker_geometric_id": "",
+        "quantity_id": "",
+        "dimension": "",
+        "canonical_unit": "",
+        "execution": {
+            "discovery_operation_id": "recognize_main_wall",
+            "measurement_operation_id": "measure_wall_thickness",
+            "feature_kind": "main_wall",
+            "region_role": "wall",
+            "result_selector": {"quantity_id": "thickness_mm"},
+        },
+    }],
     "contract_version": "dfm.geometry.capabilities/v1",
     "engine_version": ENGINE_VERSION,
     "objective_schema_version": OBJECTIVE_SCHEMA_VERSION,
@@ -191,6 +209,7 @@ def _artifact(path: Path, artifact_id: str, kind: str) -> ObjectiveArtifactManif
 class SuccessfulRunner:
     def __init__(self, *, healed=False):
         self.request = None
+        self.requests = []
         self.argv = None
         self.healed = healed
 
@@ -210,12 +229,18 @@ class SuccessfulRunner:
         self.request = LocalObjectiveWorkerRequest.from_dict(
             json.loads(request_path.read_text(encoding="utf-8"))
         )
+        self.requests.append(self.request)
+        snapshot = json.loads(
+            Path(self.request.snapshot_path).read_text(encoding="utf-8")
+        )
+        self.run_id = snapshot["run_id"]
+        self.input_sha256 = snapshot["input_sha256"]
         output = Path(self.request.output_dir)
         output.mkdir(parents=True, exist_ok=True)
         identity = {
             "schema_version": 1,
-            "run_id": self.request.task.run_id,
-            "input_sha256": self.request.task.input_sha256,
+            "run_id": self.run_id,
+            "input_sha256": self.input_sha256,
         }
         preflight = output / "preflight.json"
         preflight.write_text(
@@ -273,7 +298,7 @@ class SuccessfulRunner:
         geometry_ref = {
             "kind": "face",
             "index": 1,
-            "input_sha256": self.request.task.input_sha256,
+            "input_sha256": self.input_sha256,
             "topology_snapshot_id": topology_snapshot_id,
             "entity_id": "face-1",
         }
@@ -303,12 +328,12 @@ class SuccessfulRunner:
             json.dumps({
                 "schema_version": 2,
                 "map_id": "topology_geometry",
-                "run_id": self.request.task.run_id,
-                "input_sha256": self.request.task.input_sha256,
+                "run_id": self.run_id,
+                "input_sha256": self.input_sha256,
                 "scene_ref": "scene_geometry",
                 "topology_snapshot": {
                     "topology_snapshot_id": topology_snapshot_id,
-                    "input_sha256": self.request.task.input_sha256,
+                    "input_sha256": self.input_sha256,
                     "backend": "analysis_situs+occt",
                     "backend_version": ENGINE_VERSION,
                     "loader_id": "occt-step-loader",
@@ -335,15 +360,15 @@ class SuccessfulRunner:
             json.dumps({
                 "schema_version": 2,
                 "scene_id": "scene_geometry",
-                "run_id": self.request.task.run_id,
-                "input_sha256": self.request.task.input_sha256,
+                "run_id": self.run_id,
+                "input_sha256": self.input_sha256,
                 "coordinate_system": "model",
                 "unit": "mm",
                 "topology_snapshot_ref": topology_snapshot_id,
                 "render_mesh_snapshot": {
                     "render_mesh_snapshot_id": mesh_snapshot_id,
                     "topology_snapshot_id": topology_snapshot_id,
-                    "input_sha256": self.request.task.input_sha256,
+                    "input_sha256": self.input_sha256,
                     "producer": "occt",
                     "producer_version": ENGINE_VERSION,
                     "tessellation": {"linear_deflection_mm": 0.1},
@@ -364,9 +389,9 @@ class SuccessfulRunner:
                 "scope_version": "4.0.0",
                 "features": [
                     {
-                        "feature_id": "feature-drilled-hole-1",
-                        "kind": "drilled_hole",
-                        "source_refs": ["input:" + self.request.task.input_sha256],
+                        "feature_id": self.request.task.feature_id,
+                        "kind": "main_wall",
+                        "source_refs": ["input:" + self.input_sha256],
                         "confidence": 0.8,
                         "subtype": "through_hole",
                         "geometry_refs": [
@@ -375,7 +400,7 @@ class SuccessfulRunner:
                         "parameters": {"diameter_mm": 4.0},
                         "method": "analysis_situs_recognize_drill_holes",
                         "algorithm_version": ENGINE_VERSION,
-                        "input_sha256": self.request.task.input_sha256,
+                        "input_sha256": self.input_sha256,
                         "quality": {
                             "backend": "analysis_situs+occt",
                             "maturity": "experimental",
@@ -388,11 +413,20 @@ class SuccessfulRunner:
             encoding="utf-8",
         )
         measurements = output / "measurements.json"
-        draft_operation = next(
-            item
-            for item in self.request.task.operations
-            if item.calculator_id == "measure_draft"
+        execution = next(
+            item for item in snapshot["executions"]
+            if item["feature_id"] == self.request.task.feature_id
         )
+        measurement_operation = PlanOperation(
+            execution["operation_id"],
+            execution["measurement_operation_id"],
+            metric_ids=["injection.geometry.wall_thickness"],
+            required_quantities=["thickness_mm"],
+            required_artifacts=["topology_map", "scalar_field"],
+            feature_refs=[self.request.task.feature_id],
+            region_refs=[execution["region_ref"]],
+        )
+        field_id = f"scalar-field-{measurement_operation.operation_id}"
         measurements.write_text(
             json.dumps({
                 **identity,
@@ -403,29 +437,29 @@ class SuccessfulRunner:
                 "producer_contract": "measurement_only",
                 "measurements": [
                     {
-                        "measurement_id": "measurement-draft-minimum",
-                        "operation_id": draft_operation.operation_id,
-                        "calculator_id": draft_operation.calculator_id,
-                        "metric_id": draft_operation.metric_ids[0],
-                        "quantity_id": draft_operation.required_quantities[0],
+                        "measurement_id": f"measurement-{measurement_operation.operation_id}",
+                        "operation_id": measurement_operation.operation_id,
+                        "calculator_id": measurement_operation.calculator_id,
+                        "metric_id": measurement_operation.metric_ids[0],
+                        "quantity_id": measurement_operation.required_quantities[0],
                         "value": 2.0,
-                        "unit": "degree",
+                        "unit": "mm",
                         "status": "measured",
                         "geometry_refs": [
                             geometry_ref
                         ],
                         "method": "freecad_dfm_uv_grid_draft",
                         "algorithm_version": ENGINE_VERSION,
-                        "input_sha256": self.request.task.input_sha256,
+                        "input_sha256": self.input_sha256,
                         "quality": {
                             "backend": "occt",
                             "maturity": "experimental",
                             "certified": False,
                         },
                         "diagnostics": {},
-                        "feature_refs": draft_operation.feature_refs,
-                        "region_refs": draft_operation.region_refs,
-                        "field_refs": ["scalar-field-measure-draft"],
+                        "feature_refs": measurement_operation.feature_refs,
+                        "region_refs": measurement_operation.region_refs,
+                        "field_refs": [field_id],
                     }
                 ],
             }),
@@ -435,21 +469,21 @@ class SuccessfulRunner:
         scalar_field.write_text(
             json.dumps({
                 "schema_version": 2,
-                "field_id": "scalar-field-measure-draft",
-                "run_id": self.request.task.run_id,
-                "input_sha256": self.request.task.input_sha256,
-                "operation_id": draft_operation.operation_id,
-                "metric_id": draft_operation.metric_ids[0],
-                "quantity_id": draft_operation.required_quantities[0],
-                "unit": "degree",
+                "field_id": field_id,
+                "run_id": self.run_id,
+                "input_sha256": self.input_sha256,
+                "operation_id": measurement_operation.operation_id,
+                "metric_id": measurement_operation.metric_ids[0],
+                "quantity_id": measurement_operation.required_quantities[0],
+                "unit": "mm",
                 "scene_ref": "scene_geometry",
                 "topology_map_ref": "topology_geometry",
                 "topology_snapshot_ref": topology_snapshot_id,
                 "render_mesh_snapshot_ref": mesh_snapshot_id,
                 "interpolation": "constant_per_triangle",
                 "calculation_context": {"pull_direction": [0, 0, 1]},
-                "feature_refs": draft_operation.feature_refs,
-                "region_refs": draft_operation.region_refs,
+                "feature_refs": measurement_operation.feature_refs,
+                "region_refs": measurement_operation.region_refs,
                 "samples": [{
                     "sample_id": "draft-sample-1",
                     "point": [0.25, 0.25, 0],
@@ -480,8 +514,8 @@ class SuccessfulRunner:
         result = ObjectiveResultManifest(
             schema_version=OBJECTIVE_SCHEMA_VERSION,
             producer_version=ENGINE_VERSION,
-            run_id=self.request.task.run_id,
-            input_sha256=self.request.task.input_sha256,
+            run_id=self.run_id,
+            input_sha256=self.input_sha256,
             process="injection",
             scope_id="injection.geometry-core",
             scope_version="4.0.0",
@@ -494,7 +528,7 @@ class SuccessfulRunner:
                 _artifact(measurements, "measurements", "measurements"),
                 _artifact(
                     scalar_field,
-                    "scalar-field-measure-draft",
+                    field_id,
                     "scalar_field",
                 ),
             ],
@@ -692,6 +726,25 @@ def _plan():
         scope_version="4.0.0",
         input_ids=["input_1"],
         input_hashes={"input_1": "a" * 64},
+        rules={
+            "R_WALL": EffectiveRule(
+                1.0, "mm", "ontology:test", name="Minimum wall thickness"
+            )
+        },
+        rule_bindings=[
+            RuleBinding(
+                binding_id="binding.wall",
+                operation_id="measure_wall_thickness",
+                metric_id="injection.geometry.wall_thickness",
+                quantity_id="thickness_mm",
+                geometric_id="G_WALL_THK_MIN",
+                rule_id="R_WALL",
+                operator=">=",
+                aggregation="minimum",
+                feature_refs=["feature.main-wall.1"],
+                region_refs=["region.main-wall.1"],
+            )
+        ],
         operations=[
             PlanOperation(
                 "geometry.preflight",
@@ -711,19 +764,14 @@ def _plan():
                 required_artifacts=["topology_map"],
             ),
             PlanOperation(
-                "measure_draft",
-                "measure_draft",
-                depends_on=["topology.aag"],
-                metric_ids=["injection.geometry.draft"],
-                required_quantities=["draft_angle_deg"],
+                "measure_wall_thickness",
+                "measure_wall_thickness",
+                depends_on=["topology.index"],
+                metric_ids=["injection.geometry.wall_thickness"],
+                required_quantities=["thickness_mm"],
                 required_artifacts=["topology_map", "scalar_field"],
-                arguments={
-                    "pull_direction": ResolvedArgument(
-                        [0, 0, 1], "fact:pull_dir"
-                    )
-                },
-                feature_refs=["feature.ordinary.1"],
-                region_refs=["region.ordinary.1"],
+                feature_refs=["feature.main-wall.1"],
+                region_refs=["region.main-wall.1"],
             ),
             PlanOperation(
                 "recognize_drilled_hole",
@@ -734,18 +782,24 @@ def _plan():
         ],
         regions=[
             RegionRecord(
-                region_id="region.ordinary.1",
+                region_id="region.main-wall.1",
                 input_sha256="a" * 64,
                 coordinate_system="model",
-                mode="whole_model",
-                semantic_label="ordinary_model_region",
+                mode="topology_refs",
+                semantic_label="main_wall",
                 source_refs=["test:fixture"],
                 version="1.0.0",
                 content_sha256="b" * 64,
-                role="ordinary",
-                feature_refs=["feature.ordinary.1"],
+                geometry_refs=[
+                    GeometryRef(
+                        "face", 1, "a" * 64, "topology_test", "face-1"
+                    )
+                ],
+                role="wall",
+                feature_refs=["feature.main-wall.1"],
             )
         ],
+        discovery_snapshot_refs=["snapshot_A"],
     )
 
 
@@ -879,12 +933,16 @@ def test_occt_analyzer_runs_versioned_request_and_returns_validated_artifacts(tm
 
     assert runner.argv[:3] == ["C:/dfm/dfm-geometry.exe", "analyze", "--request"]
     assert runner.request.contract_version == "dfm.geometry.request/v1"
-    assert runner.request.task.schema_version == OBJECTIVE_SCHEMA_VERSION
-    assert runner.request.task.regions == context.plan.regions
-    assert runner.request.task.operations == context.plan.operations
+    assert runner.request.task.to_dict() == {
+        "snapshot_id": "snapshot_A",
+        "feature_id": "feature.main-wall.1",
+        "geometric_ids": ["G_WALL_THK_MIN"],
+    }
+    assert set(runner.request.task.to_dict()) == {
+        "snapshot_id", "feature_id", "geometric_ids",
+    }
+    assert Path(runner.request.snapshot_path).name == "objective_snapshot.json"
     assert runner.timeout_seconds == 900
-    assert "verification_level" not in runner.request.task.to_dict()
-    assert "assumed_pull_direction" not in runner.request.task.to_dict()
     assert {item.kind for item in artifacts} == {
         "preflight",
         "topology_map",
@@ -894,6 +952,77 @@ def test_occt_analyzer_runs_versioned_request_and_returns_validated_artifacts(tm
         "scalar_field",
         "worker_result",
     }
+
+
+def test_occt_analyzer_runs_one_exact_query_per_frozen_feature_and_merges_results(
+    tmp_path,
+):
+    input_path = tmp_path / "inputs" / "part.step"
+    input_path.parent.mkdir()
+    input_path.write_bytes(b"opaque-step")
+    input_record = InputRecord(
+        "input_1", "step", "part.step", "inputs/part.step", 11, "a" * 64, "now"
+    )
+    base = _plan()
+    second_feature = "feature.main-wall.2"
+    second_region = replace(
+        base.regions[0],
+        region_id="region.main-wall.2",
+        content_sha256="c" * 64,
+        feature_refs=[second_feature],
+    )
+    first_measurement = next(
+        item
+        for item in base.operations
+        if item.calculator_id == "measure_wall_thickness"
+    )
+    second_measurement = replace(
+        first_measurement,
+        operation_id="measure_wall_thickness.second",
+        feature_refs=[second_feature],
+        region_refs=[second_region.region_id],
+    )
+    second_binding = replace(
+        base.rule_bindings[0],
+        binding_id="binding.wall.second",
+        operation_id=second_measurement.operation_id,
+        feature_refs=[second_feature],
+        region_refs=[second_region.region_id],
+    )
+    plan = replace(
+        base,
+        rule_bindings=[*base.rule_bindings, second_binding],
+        operations=[*base.operations, second_measurement],
+        regions=[*base.regions, second_region],
+    )
+    runner = SuccessfulRunner()
+    analyzer = OcctAnalyzer(
+        "C:/dfm/dfm-geometry.exe",
+        runner=runner,
+        capability_probe=lambda executable: CAPABILITIES,
+    )
+
+    artifacts = analyzer.run(
+        AnalyzerContext(
+            "dfm_1", tmp_path, "step", [input_record], "run_1", plan
+        ),
+        CancellationToken(),
+    )
+
+    assert [request.task.feature_id for request in runner.requests] == [
+        "feature.main-wall.1",
+        "feature.main-wall.2",
+    ]
+    assert all(
+        set(request.task.to_dict())
+        == {"snapshot_id", "feature_id", "geometric_ids"}
+        for request in runner.requests
+    )
+    measurements = next(item for item in artifacts if item.kind == "measurements")
+    payload = json.loads(
+        (tmp_path / measurements.relative_path).read_text(encoding="utf-8")
+    )
+    assert len(payload["measurements"]) == 2
 
 
 def test_occt_analyzer_accepts_audited_fixshape_normalization(tmp_path):
