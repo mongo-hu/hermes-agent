@@ -377,7 +377,9 @@ class DiscoveryEngine:
             if item.kind == "main_wall" and item.status in {"confirmed", "detected"}
         }
         targets: list[dict[str, Any]] = []
-        claims: dict[tuple[str, tuple[str, int, str]], str] = {}
+        claims: dict[
+            tuple[str, tuple[str, int, str]], tuple[str, str]
+        ] = {}
         for region in manifest.regions:
             if region.region_id not in snapshot.region_refs:
                 continue
@@ -414,16 +416,16 @@ class DiscoveryEngine:
                 for ref in region.geometry_refs:
                     key = (metric_id, self._geometry_key(ref))
                     owner = claims.get(key)
-                    if owner is not None and owner != region.region_id:
+                    if owner is not None and owner[0] != feature.feature_id:
                         raise DFMError(
                             "analysis_region_overlap",
                             "Two feature regions claim the same topology for one metric.",
                             {
                                 "metric_id": metric_id,
-                                "region_ids": [owner, region.region_id],
+                                "region_ids": [owner[1], region.region_id],
                             },
                         )
-                    claims[key] = region.region_id
+                    claims[key] = (feature.feature_id, region.region_id)
                 targets.append({
                     "feature": feature,
                     "region": region,

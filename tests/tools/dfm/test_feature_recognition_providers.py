@@ -161,3 +161,66 @@ def test_main_wall_region_exclusively_owns_wall_thickness_target():
     ordinary = next(item for item in refreshed.regions if item.role == "ordinary")
     assert ordinary.mode == "topology_complement"
     assert ordinary.excluded_geometry_refs == [geometry_ref]
+
+
+def test_one_feature_may_reuse_topology_across_measurement_roles():
+    input_record = _input()
+    feature_id = "feature.screw_boss.1"
+    region_ids = {
+        "transition": "region.screw_boss.1.transition",
+        "adjacent_main_wall": "region.screw_boss.1.adjacent_main_wall",
+    }
+    geometry_ref = GeometryRef(
+        "face",
+        209,
+        input_record.sha256,
+        topology_snapshot_id="topology.snapshot.screw-boss",
+        entity_id="face-209",
+    )
+    regions = [
+        RegionRecord(
+            region_id=region_id,
+            input_sha256=input_record.sha256,
+            coordinate_system="model",
+            mode="topology_refs",
+            semantic_label=f"screw_boss_{role}",
+            source_refs=["recognizer:occt_cpp"],
+            version="1",
+            content_sha256=character * 64,
+            geometry_refs=[geometry_ref],
+            role=role,
+            feature_refs=[feature_id],
+        )
+        for (role, region_id), character in zip(region_ids.items(), ("b", "c"))
+    ]
+    manifest = ProjectManifest(
+        project_id="dfm_bbbbbbbbbbbb",
+        name="overlapping screw-boss measurement roles",
+        created_at="now",
+        updated_at="now",
+        inputs=[input_record],
+        features=[
+            FeatureRecord(
+                feature_id=feature_id,
+                kind="screw_boss",
+                source_refs=["recognizer:occt_cpp"],
+                confidence=0.9,
+                input_sha256=input_record.sha256,
+                region_refs=list(region_ids.values()),
+                recognizer="occt_cpp",
+                recognizer_version="1",
+            )
+        ],
+        regions=regions,
+    )
+    engine = DiscoveryEngine()
+    refreshed, snapshot = engine.freeze(manifest)
+
+    targets = engine.analysis_targets(refreshed, snapshot)
+
+    fillet_roles = {
+        target["region"].role
+        for target in targets
+        if target["metric_id"] == "injection.geometry.screw_boss.fillet"
+    }
+    assert fillet_roles == {"transition", "adjacent_main_wall"}
