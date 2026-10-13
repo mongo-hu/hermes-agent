@@ -724,7 +724,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
   const [error, setError] = useState('')
   const [reloadRequest, setReloadRequest] = useState(0)
   const [fitRequest, setFitRequest] = useState(0)
-  const [reviewPaneTab, setReviewPaneTab] = useState<'features' | 'clarifications'>('clarifications')
+  const [reviewPaneTab, setReviewPaneTab] = useState<'features' | 'issues' | 'clarifications'>('features')
 
   useEffect(() => {
     let cancelled = false
@@ -1044,11 +1044,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
         className="grid min-h-0"
         style={
           embedded
-            ? {
-                gridTemplateRows: clarificationRequest
-                  ? 'minmax(14rem, 1fr) minmax(16rem, 1fr)'
-                  : 'minmax(14rem, 3fr) minmax(9rem, 2fr)'
-              }
+            ? { gridTemplateRows: 'minmax(14rem, 1fr) minmax(14rem, 1fr)' }
             : { gridTemplateColumns: 'minmax(0, 1fr) 20rem' }
         }
       >
@@ -1073,61 +1069,81 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
           )}
         </div>
         <aside
-          className={`grid min-h-0 overflow-hidden bg-[#151b24] p-2.5 ${
-            clarificationRequest ? 'grid-rows-[auto_minmax(0,1fr)] gap-2' : 'grid-rows-2 gap-2'
-          } ${embedded ? 'border-t border-white/10' : 'border-l border-white/10'}`}
+          className={`grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-2 overflow-hidden bg-[#151b24] p-2.5 ${
+            embedded ? 'border-t border-white/10' : 'border-l border-white/10'
+          }`}
         >
-          {clarificationRequest && (
-            <div className="grid grid-cols-2 rounded-lg border border-white/10 bg-black/15 p-1" role="tablist">
-              <button
-                aria-selected={reviewPaneTab === 'features'}
-                className={`flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] transition ${
-                  reviewPaneTab === 'features'
-                    ? 'bg-amber-500/15 text-amber-100 shadow-sm'
-                    : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
-                }`}
-                onClick={() => setReviewPaneTab('features')}
-                role="tab"
-                type="button"
-              >
-                特征点
-                <span className="rounded-full bg-black/20 px-1.5 py-0.5 text-[9px]">
-                  {manifest.features?.length ?? 0}
-                </span>
-              </button>
-              <button
-                aria-selected={reviewPaneTab === 'clarifications'}
-                className={`flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] transition ${
-                  reviewPaneTab === 'clarifications'
-                    ? 'bg-cyan-500/15 text-cyan-100 shadow-sm'
-                    : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
-                }`}
-                onClick={() => setReviewPaneTab('clarifications')}
-                role="tab"
-                type="button"
-              >
-                补充信息
-                <span className="rounded-full bg-cyan-500/15 px-1.5 py-0.5 text-[9px] text-cyan-100">
-                  {clarificationRequest.context!.items.length}
-                </span>
-              </button>
-            </div>
-          )}
+          <div className="grid grid-cols-3 rounded-lg border border-white/10 bg-black/15 p-1" role="tablist">
+            <button
+              aria-selected={reviewPaneTab === 'features'}
+              className={`flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] transition ${
+                reviewPaneTab === 'features'
+                  ? 'bg-amber-500/15 text-amber-100 shadow-sm'
+                  : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
+              }`}
+              onClick={() => setReviewPaneTab('features')}
+              role="tab"
+              type="button"
+            >
+              特征点
+              <span className="rounded-full bg-black/20 px-1.5 py-0.5 text-[9px]">
+                {manifest.features?.length ?? 0}
+              </span>
+            </button>
+            <button
+              aria-selected={reviewPaneTab === 'issues'}
+              className={`flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] transition ${
+                reviewPaneTab === 'issues'
+                  ? 'bg-red-500/15 text-red-100 shadow-sm'
+                  : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
+              }`}
+              onClick={() => setReviewPaneTab('issues')}
+              role="tab"
+              type="button"
+            >
+              问题明细
+              <span className="rounded-full bg-red-500/15 px-1.5 py-0.5 text-[9px] text-red-100">
+                {manifest.issue_count}
+              </span>
+            </button>
+            <button
+              aria-selected={reviewPaneTab === 'clarifications'}
+              className={`flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] transition ${
+                reviewPaneTab === 'clarifications'
+                  ? 'bg-cyan-500/15 text-cyan-100 shadow-sm'
+                  : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
+              }`}
+              onClick={() => setReviewPaneTab('clarifications')}
+              role="tab"
+              type="button"
+            >
+              补充信息
+              <span className="rounded-full bg-cyan-500/15 px-1.5 py-0.5 text-[9px] text-cyan-100">
+                {clarificationRequest?.context?.items.length ?? 0}
+              </span>
+            </button>
+          </div>
           <section
             className={
-              clarificationRequest
-                ? reviewPaneTab === 'clarifications'
-                  ? 'order-1 min-h-0 overflow-hidden'
+              reviewPaneTab === 'clarifications'
+                ? 'order-1 min-h-0 overflow-hidden'
+                : reviewPaneTab === 'issues'
+                  ? 'order-1 min-h-0 overflow-y-auto pr-1'
                   : 'hidden'
-                : 'order-2 min-h-0 overflow-y-auto border-t border-white/10 pr-1 pt-2'
             }
           >
-            {clarificationRequest ? (
-              <DfmClarificationPanel
-                features={manifest.features ?? []}
-                onFeatureSelect={handleFeatureSelect}
-                request={clarificationRequest}
-              />
+            {reviewPaneTab === 'clarifications' ? (
+              clarificationRequest ? (
+                <DfmClarificationPanel
+                  features={manifest.features ?? []}
+                  onFeatureSelect={handleFeatureSelect}
+                  request={clarificationRequest}
+                />
+              ) : (
+                <div className="rounded-lg border border-cyan-400/15 bg-cyan-500/[0.06] p-3 text-xs leading-5 text-cyan-100">
+                  当前没有待补充的信息。
+                </div>
+              )
             ) : (
               <>
                 <div className="mb-2 flex items-center justify-between">
@@ -1200,23 +1216,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
               </>
             )}
           </section>
-          <section
-            className={
-              clarificationRequest
-                ? reviewPaneTab === 'features'
-                  ? 'order-1 min-h-0 overflow-y-auto pr-1'
-                  : 'hidden'
-                : 'order-1 min-h-0 overflow-y-auto pr-1'
-            }
-          >
-            {!clarificationRequest && (
-              <div className="mb-2 flex items-center justify-between">
-                <h2 className="text-xs font-semibold text-amber-100">特征点</h2>
-                <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] text-amber-200">
-                  {manifest.features?.length ?? 0}
-                </span>
-              </div>
-            )}
+          <section className={reviewPaneTab === 'features' ? 'order-1 min-h-0 overflow-y-auto pr-1' : 'hidden'}>
             {reviewError && (
               <div className="mb-2 rounded-md border border-red-400/25 bg-red-500/10 px-2 py-1.5 text-[10px] text-red-100">
                 {reviewError}
