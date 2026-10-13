@@ -38,6 +38,8 @@ export interface PaneProps {
   forceCollapsed?: boolean
   /** When collapsed, float the contents over the main column on hover/focus instead of hiding them (track stays 0px). */
   hoverReveal?: boolean
+  /** Whether pointer hover may reveal the collapsed overlay. */
+  hoverRevealOnPointer?: boolean
   /**
    * Lay the pane out as a horizontal row beneath its rail (spanning every column on
    * its `side`) instead of as a vertical column. The pane then resizes on the Y axis.
@@ -343,6 +345,7 @@ export function Pane({
   divider = false,
   disabled = false,
   hoverReveal = false,
+  hoverRevealOnPointer = true,
   maxHeight,
   minHeight,
   overlayWidth: overlayWidthProp,
@@ -500,12 +503,14 @@ export function Pane({
         ref={paneRef}
         style={{ gridColumn: slot.gridColumn, gridRow: slot.gridRow }}
       >
-        <div
-          aria-hidden="true"
-          className="pointer-events-auto absolute inset-y-0 z-30 [-webkit-app-region:no-drag]"
-          data-pane-reveal-trigger=""
-          style={{ [edge]: HOVER_REVEAL_EDGE_GUTTER, width: HOVER_REVEAL_TRIGGER_WIDTH }}
-        />
+        {hoverRevealOnPointer && (
+          <div
+            aria-hidden="true"
+            className="pointer-events-auto absolute inset-y-0 z-30 [-webkit-app-region:no-drag]"
+            data-pane-reveal-trigger=""
+            style={{ [edge]: HOVER_REVEAL_EDGE_GUTTER, width: HOVER_REVEAL_TRIGGER_WIDTH }}
+          />
+        )}
 
         {/* Keyed on side so flipping panes remounts off-screen on the new edge
             instead of transitioning the transform across the viewport. */}
@@ -513,7 +518,8 @@ export function Pane({
           className={cn(
             'pointer-events-none absolute inset-y-0 z-30 overflow-hidden transition-transform delay-0',
             offscreen,
-            'group-hover/reveal:pointer-events-auto group-hover/reveal:translate-x-0 group-hover/reveal:delay-[var(--reveal-enter-delay)] group-hover/reveal:shadow-[var(--reveal-shadow)]',
+            hoverRevealOnPointer &&
+              'group-hover/reveal:pointer-events-auto group-hover/reveal:translate-x-0 group-hover/reveal:delay-[var(--reveal-enter-delay)] group-hover/reveal:shadow-[var(--reveal-shadow)]',
             'group-data-[forced]/reveal:pointer-events-auto group-data-[forced]/reveal:translate-x-0 group-data-[forced]/reveal:delay-0 group-data-[forced]/reveal:shadow-[var(--reveal-shadow)]'
           )}
           key={edge}

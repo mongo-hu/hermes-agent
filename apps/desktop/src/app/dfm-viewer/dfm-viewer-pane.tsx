@@ -539,6 +539,7 @@ function formatFeatureParameters(parameters: Record<string, unknown>): string {
 }
 
 export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean; target: DfmViewerTarget }) {
+  const activeFeatureElementRef = useRef<HTMLDivElement | null>(null)
   const [manifest, setManifest] = useState<ViewerManifest | null>(null)
   const [scene, setScene] = useState<RenderSceneDocument | null>(null)
   const [topologyFaces, setTopologyFaces] = useState<TopologyFace[]>([])
@@ -613,6 +614,10 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
 
   const activeIssue = manifest?.issues.find(issue => issue.evaluation_id === activeIssueId) ?? null
   const activeFeature = manifest?.features?.find(feature => feature.feature_id === activeFeatureId) ?? null
+
+  useEffect(() => {
+    activeFeatureElementRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [activeFeatureId])
 
   const issueFacesById = useMemo(
     () =>
@@ -992,6 +997,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
                           : 'border-white/10 bg-white/[0.035] hover:border-white/20 hover:bg-white/[0.07]')
                       }
                       key={feature.feature_id}
+                      ref={selected ? activeFeatureElementRef : undefined}
                     >
                       <button
                         aria-pressed={selected}

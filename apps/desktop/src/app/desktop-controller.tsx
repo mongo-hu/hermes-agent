@@ -1209,6 +1209,7 @@ export function DesktopController() {
       disabled={!chatOpen}
       forceCollapsed={narrowViewport}
       hoverReveal
+      hoverRevealOnPointer={false}
       id="file-browser"
       key="file-browser"
       maxWidth={FILE_BROWSER_MAX_WIDTH}
