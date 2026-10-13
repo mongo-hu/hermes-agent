@@ -206,7 +206,7 @@ def _run_tool_summary(result: dict, action: str) -> dict:
             "diagnostics": run.get("diagnostics", {}),
         },
         "next_action": next_action,
-        **({"wait_seconds": 60} if next_action == "report_context" else {}),
+        **({"wait_seconds": 180} if next_action == "report_context" else {}),
     }
 
 
@@ -281,7 +281,7 @@ def _call(kind: str, args: dict, **context) -> str:
                         "run_id": run.get("run_id"),
                         "status": run.get("status"),
                         "next_action": next_action,
-                        **({"wait_seconds": 60} if next_action == "report_context" else {}),
+                        **({"wait_seconds": 180} if next_action == "report_context" else {}),
                     },
                 )
         params = {key: value for key, value in args.items() if key != "action"}
@@ -384,7 +384,7 @@ DFM_ANALYSIS_SCHEMA = {
             "wait_seconds": {
                 "type": "number",
                 "minimum": 0,
-                "maximum": 60,
+                "maximum": 180,
                 "description": "For action=report_context, wait up to this many seconds for deterministic analysis to reach report editing. The complete Runtime and exact required_issue_ids are inline; never use terminal/read-file to obtain them.",
             },
             "input_id": {

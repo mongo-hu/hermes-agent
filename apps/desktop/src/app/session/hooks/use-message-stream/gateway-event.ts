@@ -13,7 +13,7 @@ import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
-import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
+import { clearClarifyRequest, readDfmClarificationBatch, setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { showDfmViewer } from '@/store/dfm-viewer'
@@ -475,6 +475,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (requestId && question) {
           setClarifyRequest({
+            context: readDfmClarificationBatch(payload?.context),
             requestId,
             question,
             choices: Array.isArray(payload?.choices) ? payload!.choices!.filter(c => typeof c === 'string') : null,

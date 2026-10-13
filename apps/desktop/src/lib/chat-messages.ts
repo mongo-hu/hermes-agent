@@ -32,7 +32,7 @@ export type GatewayEventPayload = {
   tool_call_id?: string
   args?: unknown
   arguments?: unknown
-  context?: string
+  context?: unknown
   input?: unknown
   preview?: string
   result?: unknown

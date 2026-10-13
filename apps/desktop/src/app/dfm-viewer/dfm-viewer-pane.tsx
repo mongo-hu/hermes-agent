@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useStore } from '@nanostores/react'
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Box3,
   BufferGeometry,
@@ -27,7 +28,9 @@ import {
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 
 import { openDfmViewerWindow } from '@/lib/dfm-viewer-window'
+import { $clarifyRequest, type ClarifyRequest, clearClarifyRequest } from '@/store/clarify'
 import type { DfmViewerTarget } from '@/store/dfm-viewer'
+import { $gateway } from '@/store/gateway'
 
 import {
   type GeometryReference,
@@ -538,8 +541,175 @@ function formatFeatureParameters(parameters: Record<string, unknown>): string {
   )
 }
 
+function DfmClarificationPanel({
+  features,
+  onFeatureSelect,
+  request
+}: {
+  features: ViewerFeature[]
+  onFeatureSelect: (feature: ViewerFeature) => void
+  request: ClarifyRequest
+}) {
+  const gateway = useStore($gateway)
+  const context = request.context!
+  const [answers, setAnswers] = useState<Record<string, string>>({})
+  const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    setAnswers({})
+    setError('')
+    setSubmitting(false)
+  }, [request.requestId])
+
+  const selectRelatedFeature = useCallback(
+    (featureRefs: string[]) => {
+      const feature = featureRefs.map(ref => features.find(item => item.feature_id === ref)).find(Boolean)
+
+      if (feature) {
+        onFeatureSelect(feature)
+      }
+    },
+    [features, onFeatureSelect]
+  )
+
+  const answeredCount = context.items.filter(item => Boolean(answers[item.factName]?.trim())).length
+  const allAnswered = answeredCount === context.items.length
+
+  const submit = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault()
+
+      if (!gateway || !allAnswered) {
+        return
+      }
+
+      setSubmitting(true)
+      setError('')
+
+      try {
+        await gateway.request<{ ok?: boolean }>('clarify.respond', {
+          answer: JSON.stringify({
+            answers: context.items.map(item => ({ fact_name: item.factName, value: answers[item.factName].trim() }))
+          }),
+          request_id: request.requestId
+        })
+        clearClarifyRequest(request.requestId, request.sessionId)
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause))
+        setSubmitting(false)
+      }
+    },
+    [allAnswered, answers, context.items, gateway, request.requestId, request.sessionId]
+  )
+
+  return (
+    <form className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)_auto] gap-2" onSubmit={submit}>
+      <div className="rounded-lg border border-cyan-400/15 bg-cyan-500/[0.06] px-2.5 py-2">
+        <div className="flex items-center justify-between gap-3 text-[10px]">
+          <span className="text-cyan-100">请补充分析条件</span>
+          <span className="text-slate-400">
+            已完成 {answeredCount}/{context.items.length}
+          </span>
+        </div>
+        <div className="mt-2 h-1 overflow-hidden rounded-full bg-white/8">
+          <div
+            className="h-full rounded-full bg-cyan-400 transition-[width]"
+            style={{ width: `${(answeredCount / context.items.length) * 100}%` }}
+          />
+        </div>
+        <p className="mt-1.5 text-[10px] leading-4 text-slate-400">问题由已识别特征和适用规则动态生成</p>
+      </div>
+
+      <div className="min-h-0 overflow-y-auto pr-1">
+        <div className="grid gap-2">
+          {context.items.map((item, index) => {
+            const answered = Boolean(answers[item.factName]?.trim())
+
+            return (
+              <label
+                className={`grid gap-1.5 rounded-lg border p-2.5 transition ${
+                  answered
+                    ? 'border-cyan-400/35 bg-cyan-500/[0.07]'
+                    : 'border-white/10 bg-white/[0.035] focus-within:border-cyan-400/50'
+                }`}
+                key={item.clarificationId}
+                onFocus={() => selectRelatedFeature(item.featureRefs)}
+                onMouseEnter={() => selectRelatedFeature(item.featureRefs)}
+              >
+                <span className="flex items-start gap-2 text-[11px] leading-4 text-slate-100">
+                  <span
+                    className={`grid size-5 shrink-0 place-items-center rounded-full text-[10px] ${
+                      answered ? 'bg-cyan-400 text-[#10151d]' : 'bg-cyan-500/15 text-cyan-100'
+                    }`}
+                  >
+                    {answered ? '✓' : index + 1}
+                  </span>
+                  <span>{item.question}</span>
+                </span>
+                {item.featureRefs.length > 0 && (
+                  <span className="ml-7 flex flex-wrap gap-1">
+                    {item.featureRefs.map(ref => {
+                      const featureIndex = features.findIndex(feature => feature.feature_id === ref)
+                      const feature = features[featureIndex]
+
+                      return (
+                        <span
+                          className="rounded border border-amber-300/10 bg-amber-500/10 px-1.5 py-0.5 text-[9px] text-amber-100"
+                          key={ref}
+                        >
+                          {feature ? `${FEATURE_LABELS[feature.kind] ?? feature.kind} ${featureIndex + 1}` : ref}
+                        </span>
+                      )
+                    })}
+                  </span>
+                )}
+                {item.choices.length > 0 ? (
+                  <select
+                    className="ml-7 min-w-0 rounded-md border border-white/10 bg-[#10151d] px-2 py-1.5 text-[11px] text-slate-100 outline-none focus:border-cyan-400/60"
+                    disabled={submitting}
+                    onChange={event => setAnswers(current => ({ ...current, [item.factName]: event.target.value }))}
+                    value={answers[item.factName] ?? ''}
+                  >
+                    <option value="">请选择</option>
+                    {item.choices.map(choice => (
+                      <option key={choice} value={choice}>
+                        {choice}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    className="ml-7 min-w-0 rounded-md border border-white/10 bg-[#10151d] px-2 py-1.5 text-[11px] text-slate-100 outline-none placeholder:text-slate-600 focus:border-cyan-400/60"
+                    disabled={submitting}
+                    onChange={event => setAnswers(current => ({ ...current, [item.factName]: event.target.value }))}
+                    placeholder="请输入"
+                    value={answers[item.factName] ?? ''}
+                  />
+                )}
+              </label>
+            )
+          })}
+        </div>
+      </div>
+
+      <div className="border-t border-white/10 pt-2">
+        {error && <p className="mb-2 text-[10px] text-red-200">{error}</p>}
+        <button
+          className="w-full rounded-md bg-cyan-500/20 px-3 py-2 text-[11px] font-medium text-cyan-50 hover:bg-cyan-500/30 disabled:cursor-not-allowed disabled:opacity-40"
+          disabled={!allAnswered || submitting}
+          type="submit"
+        >
+          {submitting ? '提交中…' : `提交全部并继续分析（${answeredCount}/${context.items.length}）`}
+        </button>
+      </div>
+    </form>
+  )
+}
+
 export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean; target: DfmViewerTarget }) {
   const activeFeatureElementRef = useRef<HTMLDivElement | null>(null)
+  const clarifyRequest = useStore($clarifyRequest)
   const [manifest, setManifest] = useState<ViewerManifest | null>(null)
   const [scene, setScene] = useState<RenderSceneDocument | null>(null)
   const [topologyFaces, setTopologyFaces] = useState<TopologyFace[]>([])
@@ -554,6 +724,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
   const [error, setError] = useState('')
   const [reloadRequest, setReloadRequest] = useState(0)
   const [fitRequest, setFitRequest] = useState(0)
+  const [reviewPaneTab, setReviewPaneTab] = useState<'features' | 'clarifications'>('clarifications')
 
   useEffect(() => {
     let cancelled = false
@@ -614,6 +785,19 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
 
   const activeIssue = manifest?.issues.find(issue => issue.evaluation_id === activeIssueId) ?? null
   const activeFeature = manifest?.features?.find(feature => feature.feature_id === activeFeatureId) ?? null
+
+  const clarificationRequest =
+    clarifyRequest?.context?.mode === 'dfm_analysis_batch' && clarifyRequest.context.projectId === target.projectId
+      ? clarifyRequest
+      : null
+
+  const clarificationRequestId = clarificationRequest?.requestId
+
+  useEffect(() => {
+    if (clarificationRequestId) {
+      setReviewPaneTab('clarifications')
+    }
+  }, [clarificationRequestId])
 
   useEffect(() => {
     activeFeatureElementRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -860,7 +1044,11 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
         className="grid min-h-0"
         style={
           embedded
-            ? { gridTemplateRows: 'minmax(14rem, 3fr) minmax(9rem, 2fr)' }
+            ? {
+                gridTemplateRows: clarificationRequest
+                  ? 'minmax(14rem, 1fr) minmax(16rem, 1fr)'
+                  : 'minmax(14rem, 3fr) minmax(9rem, 2fr)'
+              }
             : { gridTemplateColumns: 'minmax(0, 1fr) 20rem' }
         }
       >
@@ -885,83 +1073,150 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
           )}
         </div>
         <aside
-          className={`grid min-h-0 grid-rows-2 gap-2 overflow-hidden bg-[#151b24] p-2.5 ${
-            embedded ? 'border-t border-white/10' : 'border-l border-white/10'
-          }`}
+          className={`grid min-h-0 overflow-hidden bg-[#151b24] p-2.5 ${
+            clarificationRequest ? 'grid-rows-[auto_minmax(0,1fr)] gap-2' : 'grid-rows-2 gap-2'
+          } ${embedded ? 'border-t border-white/10' : 'border-l border-white/10'}`}
         >
-          <section className="order-2 min-h-0 overflow-y-auto border-t border-white/10 pr-1 pt-2">
-            <div className="mb-2 flex items-center justify-between">
-              <h2 className="text-xs font-semibold text-red-100">问题分类与明细</h2>
-              <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] text-red-200">
-                {manifest.issue_count}
-              </span>
+          {clarificationRequest && (
+            <div className="grid grid-cols-2 rounded-lg border border-white/10 bg-black/15 p-1" role="tablist">
+              <button
+                aria-selected={reviewPaneTab === 'features'}
+                className={`flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] transition ${
+                  reviewPaneTab === 'features'
+                    ? 'bg-amber-500/15 text-amber-100 shadow-sm'
+                    : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
+                }`}
+                onClick={() => setReviewPaneTab('features')}
+                role="tab"
+                type="button"
+              >
+                特征点
+                <span className="rounded-full bg-black/20 px-1.5 py-0.5 text-[9px]">
+                  {manifest.features?.length ?? 0}
+                </span>
+              </button>
+              <button
+                aria-selected={reviewPaneTab === 'clarifications'}
+                className={`flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] transition ${
+                  reviewPaneTab === 'clarifications'
+                    ? 'bg-cyan-500/15 text-cyan-100 shadow-sm'
+                    : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
+                }`}
+                onClick={() => setReviewPaneTab('clarifications')}
+                role="tab"
+                type="button"
+              >
+                补充信息
+                <span className="rounded-full bg-cyan-500/15 px-1.5 py-0.5 text-[9px] text-cyan-100">
+                  {clarificationRequest.context!.items.length}
+                </span>
+              </button>
             </div>
-            {issueTypeCounts.length > 0 && (
-              <div className="mb-2 flex flex-wrap gap-1.5">
-                {issueTypeCounts.map(item => (
-                  <span
-                    className="rounded-full border border-red-300/15 bg-red-500/10 px-2 py-1 text-[10px] text-red-100"
-                    key={item.issue_type_id}
-                  >
-                    {item.label} <strong className="ml-1 font-semibold">{item.count}</strong>
-                  </span>
-                ))}
-              </div>
-            )}
-            {manifest.issues.length === 0 ? (
-              <div className="rounded-lg border border-sky-400/20 bg-sky-400/10 p-3 text-xs leading-5 text-sky-100">
-                {status === 'preview'
-                  ? '模型已加载。DFM 分析完成后，风险项会自动更新到这里。'
-                  : '当前规则未发现需要高亮的问题。'}
-              </div>
+          )}
+          <section
+            className={
+              clarificationRequest
+                ? reviewPaneTab === 'clarifications'
+                  ? 'order-1 min-h-0 overflow-hidden'
+                  : 'hidden'
+                : 'order-2 min-h-0 overflow-y-auto border-t border-white/10 pr-1 pt-2'
+            }
+          >
+            {clarificationRequest ? (
+              <DfmClarificationPanel
+                features={manifest.features ?? []}
+                onFeatureSelect={handleFeatureSelect}
+                request={clarificationRequest}
+              />
             ) : (
-              <div className="grid gap-2">
-                {manifest.issues.map((issue, index) => {
-                  const selected = issue.evaluation_id === activeIssueId
-                  const refs = issue.geometry_refs.map(ref => `${ref.kind} #${ref.index}`).join('、') || '无拓扑引用'
-                  const [, issueTypeLabel] = classifyViewerIssueType(issue)
+              <>
+                <div className="mb-2 flex items-center justify-between">
+                  <h2 className="text-xs font-semibold text-red-100">问题分类与明细</h2>
+                  <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] text-red-200">
+                    {manifest.issue_count}
+                  </span>
+                </div>
+                {issueTypeCounts.length > 0 && (
+                  <div className="mb-2 flex flex-wrap gap-1.5">
+                    {issueTypeCounts.map(item => (
+                      <span
+                        className="rounded-full border border-red-300/15 bg-red-500/10 px-2 py-1 text-[10px] text-red-100"
+                        key={item.issue_type_id}
+                      >
+                        {item.label} <strong className="ml-1 font-semibold">{item.count}</strong>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {manifest.issues.length === 0 ? (
+                  <div className="rounded-lg border border-sky-400/20 bg-sky-400/10 p-3 text-xs leading-5 text-sky-100">
+                    {status === 'preview'
+                      ? '模型已加载。DFM 分析完成后，风险项会自动更新到这里。'
+                      : '当前规则未发现需要高亮的问题。'}
+                  </div>
+                ) : (
+                  <div className="grid gap-2">
+                    {manifest.issues.map((issue, index) => {
+                      const selected = issue.evaluation_id === activeIssueId
 
-                  return (
-                    <button
-                      aria-pressed={selected}
-                      className={`w-full rounded-lg border p-2.5 text-left transition ${
-                        selected
-                          ? 'border-red-400/70 bg-red-500/18 shadow-[0_0_0_1px_rgba(248,113,113,0.12)]'
-                          : 'border-white/10 bg-white/[0.035] hover:border-white/20 hover:bg-white/[0.07]'
-                      }`}
-                      key={issue.evaluation_id}
-                      onClick={() => handleIssueSelect(issue)}
-                      type="button"
-                    >
-                      <div className="flex items-start gap-2">
-                        <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-red-500/20 text-[10px] text-red-100">
-                          {index + 1}
-                        </span>
-                        <div className="min-w-0">
-                          <h2 className="text-xs font-medium text-slate-100">{issue.title}</h2>
-                          <p className="mt-1 text-[11px] text-red-200">{issueTypeLabel}</p>
-                          <p className="mt-0.5 text-[10px] text-slate-500">{issue.check_id || issue.metric_id}</p>
-                          <p className="mt-1.5 text-[11px] text-slate-300">
-                            未满足：实际 {formatViewerValue(issue.actual)}{' '}
-                            {issue.operator === 'between' ? '∈' : issue.operator} 目标{' '}
-                            {formatViewerValue(issue.expected)}
-                          </p>
-                          <p className="mt-1 break-words text-[10px] text-slate-500">{refs}</p>
-                        </div>
-                      </div>
-                    </button>
-                  )
-                })}
-              </div>
+                      const refs =
+                        issue.geometry_refs.map(ref => `${ref.kind} #${ref.index}`).join('、') || '无拓扑引用'
+
+                      const [, issueTypeLabel] = classifyViewerIssueType(issue)
+
+                      return (
+                        <button
+                          aria-pressed={selected}
+                          className={`w-full rounded-lg border p-2.5 text-left transition ${
+                            selected
+                              ? 'border-red-400/70 bg-red-500/18 shadow-[0_0_0_1px_rgba(248,113,113,0.12)]'
+                              : 'border-white/10 bg-white/[0.035] hover:border-white/20 hover:bg-white/[0.07]'
+                          }`}
+                          key={issue.evaluation_id}
+                          onClick={() => handleIssueSelect(issue)}
+                          type="button"
+                        >
+                          <div className="flex items-start gap-2">
+                            <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-red-500/20 text-[10px] text-red-100">
+                              {index + 1}
+                            </span>
+                            <div className="min-w-0">
+                              <h2 className="text-xs font-medium text-slate-100">{issue.title}</h2>
+                              <p className="mt-1 text-[11px] text-red-200">{issueTypeLabel}</p>
+                              <p className="mt-0.5 text-[10px] text-slate-500">{issue.check_id || issue.metric_id}</p>
+                              <p className="mt-1.5 text-[11px] text-slate-300">
+                                未满足：实际 {formatViewerValue(issue.actual)}{' '}
+                                {issue.operator === 'between' ? '∈' : issue.operator} 目标{' '}
+                                {formatViewerValue(issue.expected)}
+                              </p>
+                              <p className="mt-1 break-words text-[10px] text-slate-500">{refs}</p>
+                            </div>
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </>
             )}
           </section>
-          <section className="order-1 min-h-0 overflow-y-auto pr-1">
-            <div className="mb-2 flex items-center justify-between">
-              <h2 className="text-xs font-semibold text-amber-100">特征点</h2>
-              <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] text-amber-200">
-                {manifest.features?.length ?? 0}
-              </span>
-            </div>
+          <section
+            className={
+              clarificationRequest
+                ? reviewPaneTab === 'features'
+                  ? 'order-1 min-h-0 overflow-y-auto pr-1'
+                  : 'hidden'
+                : 'order-1 min-h-0 overflow-y-auto pr-1'
+            }
+          >
+            {!clarificationRequest && (
+              <div className="mb-2 flex items-center justify-between">
+                <h2 className="text-xs font-semibold text-amber-100">特征点</h2>
+                <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] text-amber-200">
+                  {manifest.features?.length ?? 0}
+                </span>
+              </div>
+            )}
             {reviewError && (
               <div className="mb-2 rounded-md border border-red-400/25 bg-red-500/10 px-2 py-1.5 text-[10px] text-red-100">
                 {reviewError}

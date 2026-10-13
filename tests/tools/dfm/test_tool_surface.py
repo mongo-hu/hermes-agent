@@ -193,7 +193,7 @@ def test_dfm_project_create_cannot_reenter_an_active_session_run(monkeypatch):
                 "run_id": "run_existing",
                 "status": "running",
                 "next_action": "report_context",
-                "wait_seconds": 60,
+                "wait_seconds": 180,
             },
         },
     }

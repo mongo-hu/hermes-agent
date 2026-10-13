@@ -2,11 +2,70 @@ import { atom, computed } from 'nanostores'
 
 import { $activeSessionId } from './session'
 
+export interface DfmClarificationItem {
+  choices: string[]
+  clarificationId: string
+  factName: string
+  featureRefs: string[]
+  question: string
+}
+
+export interface DfmClarificationBatchContext {
+  items: DfmClarificationItem[]
+  mode: 'dfm_analysis_batch'
+  projectId: string
+}
+
 export interface ClarifyRequest {
+  context?: DfmClarificationBatchContext | null
   requestId: string
   question: string
   choices: string[] | null
   sessionId: string | null
+}
+
+export function readDfmClarificationBatch(value: unknown): DfmClarificationBatchContext | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null
+  }
+
+  const row = value as Record<string, unknown>
+
+  if (row.mode !== 'dfm_analysis_batch' || typeof row.project_id !== 'string' || !Array.isArray(row.items)) {
+    return null
+  }
+
+  const items = row.items.flatMap(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      return []
+    }
+
+    const candidate = item as Record<string, unknown>
+
+    if (
+      typeof candidate.clarification_id !== 'string' ||
+      typeof candidate.fact_name !== 'string' ||
+      typeof candidate.question !== 'string'
+    ) {
+      return []
+    }
+
+    return [
+      {
+        choices: Array.isArray(candidate.choices)
+          ? candidate.choices.filter((choice): choice is string => typeof choice === 'string')
+          : [],
+        clarificationId: candidate.clarification_id,
+        factName: candidate.fact_name,
+        featureRefs: Array.isArray(candidate.feature_refs)
+          ? candidate.feature_refs.filter((ref): ref is string => typeof ref === 'string')
+          : [],
+        question: candidate.question
+      }
+    ]
+  })
+
+  return items.length > 0 ? { items, mode: row.mode, projectId: row.project_id } : null
 }
 
 // Pending clarify requests keyed by the runtime session id that raised them.

@@ -11,6 +11,7 @@ gateway/run.py for messaging). This module defines the schema, validation, and
 a thin dispatcher that delegates to a platform-provided callback.
 """
 
+import inspect
 import json
 from typing import List, Optional, Callable
 
@@ -18,6 +19,56 @@ from typing import List, Optional, Callable
 # Maximum number of predefined choices the agent can offer.
 # A 5th "Other (type your answer)" option is always appended by the UI.
 MAX_CHOICES = 4
+
+_DFM_STARTUP_CLARIFICATIONS = {
+    "clarification_process",
+    "clarification_model_units",
+    "clarification_pull_dir",
+}
+
+
+def _supports_clarify_context(callback: Callable) -> bool:
+    """Whether a UI callback accepts the optional structured context value."""
+
+    try:
+        inspect.signature(callback).bind("question", None, {})
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _dfm_analysis_batch_context(service, project_id: str, project: dict) -> dict | None:
+    """Build one UI payload from the already-dynamic analysis clarifications."""
+
+    pending = list(project.get("open_clarifications") or [])
+    if not pending or any(
+        item.get("clarification_id") in _DFM_STARTUP_CLARIFICATIONS
+        for item in pending
+    ):
+        return None
+    process = project.get("process") or service.config.default_process
+    items = []
+    for item in pending:
+        clarification_id = str(item.get("clarification_id") or "")
+        fact_name = clarification_id.removeprefix("clarification_")
+        if not fact_name:
+            continue
+        items.append({
+            "clarification_id": clarification_id,
+            "fact_name": fact_name,
+            "question": str(item.get("question") or fact_name),
+            "choices": list(service.clarification_choices(process, fact_name)),
+            "feature_refs": list(
+                service.clarification_feature_refs(project_id, fact_name)
+            ),
+        })
+    if not items:
+        return None
+    return {
+        "mode": "dfm_analysis_batch",
+        "project_id": project_id,
+        "items": items,
+    }
 
 
 def _dfm_continuation(service, project_id: str, next_action: object) -> dict:
@@ -140,6 +191,7 @@ def clarify_tool(
         dfm_fact_name = dfm_fact_name.strip().removeprefix("clarification_")
 
     dfm_service = None
+    dfm_batch_context = None
     if not dfm_project_id and not dfm_fact_name and session_id:
         from tools.dfm.errors import DFMError
         from tools.dfm.service import get_dfm_service
@@ -222,6 +274,16 @@ def clarify_tool(
                 project.get("process") or dfm_service.config.default_process,
                 fact_name,
             ))
+            if callback is not None and _supports_clarify_context(callback):
+                dfm_batch_context = _dfm_analysis_batch_context(
+                    dfm_service, dfm_project_id, project
+                )
+                if dfm_batch_context is not None:
+                    question = (
+                        "特征识别已完成，请在右侧 DFM 模型中一次性补充 "
+                        f"{len(dfm_batch_context['items'])} 项分析条件。"
+                    )
+                    choices = None
         except DFMError as exc:
             return json.dumps(exc.to_dict(), ensure_ascii=False)
     # Generic clarifications retain their existing four-choice limit. DFM
@@ -247,7 +309,11 @@ def clarify_tool(
         )
 
     try:
-        user_response = callback(question, choices)
+        user_response = (
+            callback(question, choices, dfm_batch_context)
+            if dfm_batch_context is not None
+            else callback(question, choices)
+        )
     except Exception as exc:
         return json.dumps(
             {"error": f"Failed to get user input: {exc}"},
@@ -272,6 +338,41 @@ def clarify_tool(
         except DFMError as exc:
             return json.dumps(exc.to_dict(), ensure_ascii=False)
         confirmed = None
+    elif dfm_service is not None and dfm_batch_context is not None:
+        try:
+            response = json.loads(str(user_response))
+            raw_answers = response.get("answers") if isinstance(response, dict) else None
+        except (json.JSONDecodeError, TypeError):
+            raw_answers = None
+        if not isinstance(raw_answers, list):
+            return json.dumps(
+                {"error": "The DFM analysis answers were not submitted as a batch."},
+                ensure_ascii=False,
+            )
+        answers = {
+            str(item.get("fact_name") or ""): item.get("value")
+            for item in raw_answers
+            if isinstance(item, dict)
+        }
+        expected = [item["fact_name"] for item in dfm_batch_context["items"]]
+        missing = [name for name in expected if not str(answers.get(name) or "").strip()]
+        if missing:
+            return json.dumps(
+                {"error": "Every DFM analysis question requires an answer.", "missing": missing},
+                ensure_ascii=False,
+            )
+        confirmed_facts = []
+        try:
+            for name in expected:
+                confirmed = dfm_service.project(
+                    "confirm_fact",
+                    project_id=dfm_project_id,
+                    fact_name=name,
+                    fact_value=str(answers[name]).strip(),
+                )
+                confirmed_facts.append(confirmed["fact"])
+        except DFMError as exc:
+            return json.dumps(exc.to_dict(), ensure_ascii=False)
     elif dfm_service is not None:
         if not str(user_response).strip():
             return json.dumps({"error": "The user did not answer the DFM fact."})
@@ -305,6 +406,10 @@ def clarify_tool(
         "choices_offered": choices,
         "user_response": str(user_response).strip(),
         **({"dfm_fact": confirmed["fact"]} if confirmed is not None else {}),
+        **(
+            {"dfm_facts": confirmed_facts}
+            if dfm_batch_context is not None else {}
+        ),
         **(
             {"next_action": confirmed["next_action"]}
             if confirmed is not None and "next_action" in confirmed else {}

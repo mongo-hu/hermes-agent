@@ -123,7 +123,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
       return null
     }
 
-    if (fromArgs.question && request.question && fromArgs.question !== request.question) {
+    if (fromArgs.question && request.question && fromArgs.question !== request.question && !request.context) {
       return null
     }
 
@@ -286,6 +286,17 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         role="status"
       >
         <Loader2 aria-hidden className="size-4 animate-spin text-(--ui-text-tertiary)" />
+      </ClarifyShell>
+    )
+  }
+
+  if (matchingRequest?.context?.mode === 'dfm_analysis_batch') {
+    return (
+      <ClarifyShell className="flex items-start gap-2 px-2.5 py-2">
+        <span className="flex-1 leading-(--conversation-line-height)">
+          已根据特征识别结果生成 {matchingRequest.context.items.length} 项补充信息，请在右侧 DFM 模型中统一填写并提交。
+        </span>
+        <MessageQuestion aria-hidden className="mt-px size-4 shrink-0 text-(--ui-text-tertiary)" />
       </ClarifyShell>
     )
   }

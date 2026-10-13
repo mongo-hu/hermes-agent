@@ -142,14 +142,21 @@ class TestClarifyToolChoicesValidation:
                 return {"fact": {"name": "process", "value": "injection"}}
 
         monkeypatch.setattr("tools.dfm.service.get_dfm_service", FakeService)
+        contexts = []
+
+        def desktop_callback(_question, options, context=None):
+            contexts.append(context)
+            return options[-1]
+
         result = json.loads(clarify_tool(
             "选择工艺", choices=["injection", "die_casting"],
-            callback=lambda _question, options: options[-1],
+            callback=desktop_callback,
             dfm_project_id="dfm_test", dfm_fact_name="process",
         ))
         assert result["choices_offered"] == ["压铸", "注塑成型"]
         assert result["user_response"] == "注塑成型"
         assert confirmed[0]["fact_value"] == "注塑成型"
+        assert contexts == [None]
 
     def test_unbound_dfm_question_binds_next_open_factor_before_showing_ui(
         self, monkeypatch
@@ -281,6 +288,87 @@ class TestClarifyToolChoicesValidation:
             },
         }
         assert "Do not end the turn" in result["instruction"]
+
+    def test_desktop_batches_dynamic_analysis_questions_once(self, monkeypatch):
+        from types import SimpleNamespace
+
+        pending = [
+            {"clarification_id": "clarification_material", "question": "Material?"},
+            {
+                "clarification_id": "clarification_fill@check.boss",
+                "question": "Boss fill?",
+            },
+        ]
+        confirmed = []
+
+        class FakeService:
+            config = SimpleNamespace(default_process="injection")
+
+            @staticmethod
+            def _canonical_fact_name(name):
+                return name
+
+            @staticmethod
+            def clarification_choices(_process, name):
+                return ["ABS", "PC"] if name == "material" else ["unfilled", "GF"]
+
+            @staticmethod
+            def clarification_feature_refs(_project_id, name):
+                return ("feature.boss.1",) if "check.boss" in name else ()
+
+            @staticmethod
+            def project(action, **kwargs):
+                if action == "status":
+                    return {
+                        "project": {
+                            "process": "injection",
+                            "open_clarifications": pending,
+                        }
+                    }
+                assert action == "confirm_fact"
+                confirmed.append(kwargs)
+                pending.pop(0)
+                return {
+                    "fact": {
+                        "name": kwargs["fact_name"],
+                        "value": kwargs["fact_value"],
+                    },
+                    "next_action": "clarify" if pending else "plan",
+                }
+
+        monkeypatch.setattr("tools.dfm.service.get_dfm_service", FakeService)
+        shown = []
+
+        def desktop_callback(question, choices, context):
+            shown.append((question, choices, context))
+            return json.dumps({
+                "answers": [
+                    {"fact_name": "material", "value": "ABS"},
+                    {"fact_name": "fill@check.boss", "value": "GF"},
+                ]
+            })
+
+        result = json.loads(clarify_tool(
+            "",
+            callback=desktop_callback,
+            dfm_project_id="dfm_test",
+            dfm_fact_name="material",
+        ))
+
+        assert len(shown) == 1
+        assert shown[0][1] is None
+        assert shown[0][2]["mode"] == "dfm_analysis_batch"
+        assert shown[0][2]["items"][1]["feature_refs"] == ["feature.boss.1"]
+        assert [item["fact_name"] for item in confirmed] == [
+            "material",
+            "fill@check.boss",
+        ]
+        assert result["next_action"] == "plan"
+        assert len(result["dfm_facts"]) == 2
+        assert result["next_call"] == {
+            "tool": "dfm_analysis",
+            "arguments": {"action": "plan", "project_id": "dfm_test"},
+        }
 
     @pytest.mark.parametrize("requested_review", [False, True])
     def test_unbound_question_binds_pending_discovery_review_once(

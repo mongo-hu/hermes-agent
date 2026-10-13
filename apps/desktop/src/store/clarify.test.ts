@@ -5,6 +5,7 @@ import {
   $clarifyRequests,
   type ClarifyRequest,
   clearClarifyRequest,
+  readDfmClarificationBatch,
   setClarifyRequest
 } from './clarify'
 import { $activeSessionId } from './session'
@@ -77,5 +78,35 @@ describe('clarify store', () => {
 
     expect($clarifyRequests.get()['session-a']).toBeUndefined()
     expect($clarifyRequests.get()['session-b']?.requestId).toBe('other')
+  })
+
+  it('normalizes a dynamic DFM analysis batch from the gateway', () => {
+    expect(
+      readDfmClarificationBatch({
+        items: [
+          {
+            choices: ['ABS', 'PC'],
+            clarification_id: 'clarification_material',
+            fact_name: 'material',
+            feature_refs: ['feature.main-wall'],
+            question: '请选择材料'
+          }
+        ],
+        mode: 'dfm_analysis_batch',
+        project_id: 'dfm-1'
+      })
+    ).toEqual({
+      items: [
+        {
+          choices: ['ABS', 'PC'],
+          clarificationId: 'clarification_material',
+          factName: 'material',
+          featureRefs: ['feature.main-wall'],
+          question: '请选择材料'
+        }
+      ],
+      mode: 'dfm_analysis_batch',
+      projectId: 'dfm-1'
+    })
   })
 })

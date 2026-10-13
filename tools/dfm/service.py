@@ -2006,11 +2006,8 @@ class DFMService:
                     )
                     if (
                         not choices
-                        or (name in confirmed and confirmed[name] in choices)
-                        or (
-                            (name, check_id) in confirmed_by_check
-                            and confirmed_by_check[(name, check_id)] in choices
-                        )
+                        or name in confirmed
+                        or (name, check_id) in confirmed_by_check
                     ):
                         continue
                     check_name = self.ontology_store.check_context(check_id)["check"][
@@ -2055,6 +2052,55 @@ class DFMService:
             if name == startup_name:
                 return options
         return self.ontology_store.fact_enum_values(process, name)
+
+    def clarification_feature_refs(
+        self, project_id: str, fact_name: str
+    ) -> tuple[str, ...]:
+        """Discovered features whose applicable checks require one factor."""
+
+        manifest = self._store(project_id).load()
+        snapshot = next(
+            (
+                item
+                for item in reversed(manifest.discovery_snapshots)
+                if item.status == "frozen"
+            ),
+            None,
+        )
+        if snapshot is None:
+            return ()
+        name, check_id = self._fact_reference(fact_name)
+        check_ids = {check_id} if check_id else set()
+        if not check_ids:
+            adapter = self.process_registry.get(
+                manifest.process or self.config.default_process
+            )
+            requirement = next(
+                (
+                    item
+                    for item in adapter.fact_requirements()
+                    if self._canonical_fact_name(item.name) == name
+                ),
+                None,
+            )
+            if requirement is not None:
+                check_ids.update(requirement.check_ids)
+        if not check_ids:
+            return ()
+
+        feature_refs: list[str] = []
+        for target in self.discovery.analysis_targets(manifest, snapshot):
+            target_checks = {str(value) for value in target.get("check_ids", [])}
+            target_checks.update(
+                str(key[0])
+                for key in target.get("operand_anchors", {})
+                if isinstance(key, tuple) and key
+            )
+            feature = target.get("feature")
+            feature_id = getattr(feature, "feature_id", "")
+            if check_ids.intersection(target_checks) and feature_id:
+                feature_refs.append(str(feature_id))
+        return tuple(dict.fromkeys(feature_refs))
 
     def _reconcile_clarifications(self, project_id: str) -> ProjectManifest:
         """Close old open clarification rows when an alias fact already exists."""
@@ -2464,12 +2510,12 @@ class DFMService:
         except (TypeError, ValueError) as exc:
             raise DFMError(
                 "wait_invalid",
-                "wait_seconds must be a number between 0 and 60.",
+                "wait_seconds must be a number between 0 and 180.",
             ) from exc
-        if timeout < 0 or timeout > 60:
+        if timeout < 0 or timeout > 180:
             raise DFMError(
                 "wait_invalid",
-                "wait_seconds must be a number between 0 and 60.",
+                "wait_seconds must be a number between 0 and 180.",
             )
 
         deadline = time.monotonic() + timeout

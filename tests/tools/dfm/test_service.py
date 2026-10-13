@@ -702,6 +702,10 @@ def test_same_factor_can_be_answered_separately_for_two_checks(service, monkeypa
         "clarification_mat_additive_fill@check.main_wall_minimum_thickness",
         "clarification_mat_additive_fill@check.main_wall_minimum_draft",
     }
+    assert dfm.clarification_feature_refs(
+        project_id,
+        "mat_additive_fill@check.main_wall_minimum_thickness",
+    )
     with pytest.raises(DFMError) as invalid:
         dfm.project(
             "confirm_fact",
