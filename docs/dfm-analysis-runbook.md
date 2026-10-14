@@ -2,12 +2,19 @@
 title: "单次 DFM 分析数据说明"
 status: active
 milestone: M2.5-A
-last_updated: 2026-08-27
+last_updated: 2026-10-14
 type: living-runbook
 owners: DFM 工程团队
 ---
 
 # 单次 DFM 分析数据说明
+
+> 2026-10-14：跨端契约与模型驻留的下一阶段设计见
+> [Geometric 契约与模型会话重构](dfm-geometric-session-contract.md)。
+> 目标是预览、Discovery、特征审核及分批测量共享一次 STEP 导入，
+> 直接使用 Feature/G ID，规则评估后立即更新 Viewer，HTML 继续异步生成。
+> 本文下面的早期基线流程与文件布局不能当作新会话接口已实现的证明；
+> 不可变快照、会话过期恢复及新版字段按重构文档实施后再更新运行说明。
 
 本文说明当前开发版本中，一次真实 DFM 分析如何执行、输入和过程数据保存在哪里、结果文件分别有什么用途，以及出现异常时应检查哪些文件。
 

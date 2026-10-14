@@ -1,5 +1,28 @@
 # Mold / Agent DFM 契约对齐
 
+## 2026-10-14：Hermes / OCCT Worker 下一阶段契约
+
+能力描述、计算请求和结果的目标设计统一为
+[Geometric 契约与模型会话重构](dfm-geometric-session-contract.md)。
+本节是待实施方案；下文 2026-09-17 的绑定机制与兼容记录仅保留为历史对齐记录。
+
+- Check 是业务指标，Geometric 的 G ID 是两端共同技术指标 ID。
+  Hermes 不再把 G 转换为公开的 Operation/Metric/Quantity 组合。
+- Worker 能力直接声明 `geometric_id`，计算使用 `snapshot_id + feature_id +
+  geometric_id + context`，逐 G 返回客观值、状态和快照绑定的 evidence。
+- Geometric `properties_json` 不再依赖 `worker_geometric_id/quantity_id`；
+  G ID 使用通用 Concept 的 `concept_id`，保留量纲、标准单位和数据 Schema。
+  与 Mold 发布团队同步白名单更新；本次不修改 Mold 数据库或发布器代码。
+- 普通指标请求不要求 Region。Worker 根据已识别/已审核 Feature 选择部位；
+  人工修订和几何证据仍保留实际面、边、见证点、场及网格映射。
+- 预览、Discovery、修订和分批计算共享常驻 Worker 模型，不跨阶段重复导入 STEP。
+- 直接迁移新契约，不保留旧 Worker 协议适配器或静默 fallback；
+  规则公式、`acceptance_criteria_json` 和 Factor 条件职责不变。
+
+本节不声明新 Schema 或运行代码已实现，也不替换既有业务规则数据。
+
+## 历史：2026-09-17 Schema 2 对齐记录
+
 > 本文记录 2026-09-17 的 Schema 2 对齐状态。最新 Schema 4 以
 > [规则库设计](dfm-rule-catalog-database-design.md) 为准：发布快照与管理库的 JSON 字段
 > 同名使用 `_json` 后缀，例如 `properties_json`、`qualifiers_json`、
