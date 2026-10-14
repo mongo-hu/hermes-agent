@@ -24,6 +24,28 @@ export interface ClarifyRequest {
   sessionId: string | null
 }
 
+export function prioritizeDfmClarificationItems(
+  items: DfmClarificationItem[],
+  featureId: string | null
+): DfmClarificationItem[] {
+  if (!featureId) {
+    return items
+  }
+
+  const related: DfmClarificationItem[] = []
+  const remaining: DfmClarificationItem[] = []
+
+  for (const item of items) {
+    if (item.featureRefs.includes(featureId)) {
+      related.push(item)
+    } else {
+      remaining.push(item)
+    }
+  }
+
+  return [...related, ...remaining]
+}
+
 export function readDfmClarificationBatch(value: unknown): DfmClarificationBatchContext | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null

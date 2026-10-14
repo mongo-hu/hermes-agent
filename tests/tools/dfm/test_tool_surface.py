@@ -245,11 +245,13 @@ def test_discovery_tool_returns_bounded_counts_without_geometry_payload(monkeypa
         "snapshot": {"snapshot_id": "snapshot_1", "status": "frozen"},
         "features": [
             {"feature_id": f"feature_{index}", "kind": kind, "status": "confirmed",
+             "region_refs": [f"region_{index}"],
              "properties": {"raw": "geometry" * 10_000}}
             for index, kind in enumerate(feature_kinds)
         ],
         "regions": [
             {"region_id": f"region_{index}", "role": kind,
+             "feature_refs": [f"feature_{index}"],
              "geometry_refs": ["face" * 10_000]}
             for index, kind in enumerate(feature_kinds)
         ],
@@ -270,11 +272,11 @@ def test_discovery_tool_returns_bounded_counts_without_geometry_payload(monkeypa
     summary = json.loads(output)
 
     assert len(output) < 10_000
-    assert summary["feature_count"] == 4
-    assert summary["feature_counts"] == {
-        "ordinary_part": 1, "main_wall": 1, "screw_boss": 2,
-    }
-    assert summary["region_count"] == 4
+    assert summary["feature_count"] == 3
+    assert summary["feature_counts"] == {"main_wall": 1, "screw_boss": 2}
+    assert summary["region_count"] == 3
+    assert all(item["feature_id"] != "feature_0" for item in summary["features"])
+    assert all(item["region_id"] != "region_0" for item in summary["regions"])
     assert summary["snapshot"]["snapshot_id"] == "snapshot_1"
     assert summary["next_action"] == "plan"
     assert "geometry_refs" not in output

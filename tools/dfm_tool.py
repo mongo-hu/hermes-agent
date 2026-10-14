@@ -76,8 +76,26 @@ def _project_status_summary(result: dict) -> dict:
 def _discovery_tool_summary(result: dict) -> dict:
     """Expose discovery coverage without repeating persisted geometry details."""
 
-    features = result["features"]
-    regions = result["regions"]
+    hidden_features = {
+        item["feature_id"]
+        for item in result["features"]
+        if item.get("kind") == "ordinary_part" and item.get("feature_id")
+    }
+    hidden_regions = {
+        region_id
+        for item in result["features"]
+        if item.get("kind") == "ordinary_part"
+        for region_id in item.get("region_refs", [])
+    }
+    features = [
+        item for item in result["features"] if item.get("kind") != "ordinary_part"
+    ]
+    regions = [
+        item
+        for item in result["regions"]
+        if item.get("region_id") not in hidden_regions
+        and not hidden_features.intersection(item.get("feature_refs", []))
+    ]
     snapshot = result["snapshot"]
     plan = result["plan"]
     capability = result["capability"]

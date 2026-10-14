@@ -5,6 +5,7 @@ import {
   $clarifyRequests,
   type ClarifyRequest,
   clearClarifyRequest,
+  prioritizeDfmClarificationItems,
   readDfmClarificationBatch,
   setClarifyRequest
 } from './clarify'
@@ -108,5 +109,46 @@ describe('clarify store', () => {
       mode: 'dfm_analysis_batch',
       projectId: 'dfm-1'
     })
+  })
+
+  it('stably prioritizes questions related to the selected feature', () => {
+    const items = [
+      {
+        choices: [],
+        clarificationId: 'boss-3',
+        factName: 'boss_3',
+        featureRefs: ['screw-boss-3'],
+        question: 'boss 3'
+      },
+      {
+        choices: [],
+        clarificationId: 'shared',
+        factName: 'shared',
+        featureRefs: ['main-wall', 'screw-boss-2', 'screw-boss-3'],
+        question: 'shared'
+      },
+      {
+        choices: [],
+        clarificationId: 'project',
+        factName: 'project',
+        featureRefs: [],
+        question: 'project'
+      },
+      {
+        choices: [],
+        clarificationId: 'boss-2',
+        factName: 'boss_2',
+        featureRefs: ['screw-boss-2'],
+        question: 'boss 2'
+      }
+    ]
+
+    expect(prioritizeDfmClarificationItems(items, 'screw-boss-2').map(item => item.clarificationId)).toEqual([
+      'shared',
+      'boss-2',
+      'boss-3',
+      'project'
+    ])
+    expect(items.map(item => item.clarificationId)).toEqual(['boss-3', 'shared', 'project', 'boss-2'])
   })
 })

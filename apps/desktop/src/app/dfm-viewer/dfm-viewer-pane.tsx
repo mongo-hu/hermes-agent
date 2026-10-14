@@ -28,7 +28,12 @@ import {
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 
 import { openDfmViewerWindow } from '@/lib/dfm-viewer-window'
-import { $clarifyRequest, type ClarifyRequest, clearClarifyRequest } from '@/store/clarify'
+import {
+  $clarifyRequest,
+  type ClarifyRequest,
+  clearClarifyRequest,
+  prioritizeDfmClarificationItems
+} from '@/store/clarify'
 import type { DfmViewerTarget } from '@/store/dfm-viewer'
 import { $gateway } from '@/store/gateway'
 
@@ -137,7 +142,7 @@ async function readJson<T>(filePath: string): Promise<T> {
 }
 
 function ModelCanvas({
-  activeFeature,
+  activeFeatures,
   activeIssue,
   document,
   fitRequest,
@@ -146,7 +151,7 @@ function ModelCanvas({
   selectedFaceIndices,
   topologyFaces
 }: {
-  activeFeature: ViewerFeature | null
+  activeFeatures: ViewerFeature[]
   activeIssue: ViewerIssue | null
   document: RenderSceneDocument
   fitRequest: number
@@ -174,10 +179,17 @@ function ModelCanvas({
     [activeIssue, issuePositions]
   )
 
-  const originalFeatureFaces = useMemo(
-    () => resolveGeometryRefFaceIndices(activeFeature?.geometry_refs),
-    [activeFeature]
-  )
+  const originalFeatureFaces = useMemo(() => {
+    const faceIndices = new Set<number>()
+
+    for (const feature of activeFeatures) {
+      for (const faceIndex of resolveGeometryRefFaceIndices(feature.geometry_refs)) {
+        faceIndices.add(faceIndex)
+      }
+    }
+
+    return faceIndices
+  }, [activeFeatures])
 
   const featureFaces = selectedFaceIndices ?? originalFeatureFaces
 
@@ -543,11 +555,13 @@ function formatFeatureParameters(parameters: Record<string, unknown>): string {
 
 function DfmClarificationPanel({
   features,
-  onFeatureSelect,
+  onFeaturesHighlight,
+  priorityFeatureId,
   request
 }: {
   features: ViewerFeature[]
-  onFeatureSelect: (feature: ViewerFeature) => void
+  onFeaturesHighlight: (featureRefs: string[]) => void
+  priorityFeatureId: string | null
   request: ClarifyRequest
 }) {
   const gateway = useStore($gateway)
@@ -555,6 +569,12 @@ function DfmClarificationPanel({
   const [answers, setAnswers] = useState<Record<string, string>>({})
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const questionsRef = useRef<HTMLDivElement>(null)
+
+  const orderedItems = useMemo(
+    () => prioritizeDfmClarificationItems(context.items, priorityFeatureId),
+    [context.items, priorityFeatureId]
+  )
 
   useEffect(() => {
     setAnswers({})
@@ -562,16 +582,11 @@ function DfmClarificationPanel({
     setSubmitting(false)
   }, [request.requestId])
 
-  const selectRelatedFeature = useCallback(
-    (featureRefs: string[]) => {
-      const feature = featureRefs.map(ref => features.find(item => item.feature_id === ref)).find(Boolean)
-
-      if (feature) {
-        onFeatureSelect(feature)
-      }
-    },
-    [features, onFeatureSelect]
-  )
+  useEffect(() => {
+    if (priorityFeatureId) {
+      questionsRef.current?.scrollTo({ behavior: 'smooth', top: 0 })
+    }
+  }, [priorityFeatureId])
 
   const answeredCount = context.items.filter(item => Boolean(answers[item.factName]?.trim())).length
   const allAnswered = answeredCount === context.items.length
@@ -621,9 +636,9 @@ function DfmClarificationPanel({
         <p className="mt-1.5 text-[10px] leading-4 text-slate-400">问题由已识别特征和适用规则动态生成</p>
       </div>
 
-      <div className="min-h-0 overflow-y-auto pr-1">
+      <div className="min-h-0 overflow-y-auto pr-1" ref={questionsRef}>
         <div className="grid gap-2">
-          {context.items.map((item, index) => {
+          {orderedItems.map((item, index) => {
             const answered = Boolean(answers[item.factName]?.trim())
 
             return (
@@ -634,8 +649,8 @@ function DfmClarificationPanel({
                     : 'border-white/10 bg-white/[0.035] focus-within:border-cyan-400/50'
                 }`}
                 key={item.clarificationId}
-                onFocus={() => selectRelatedFeature(item.featureRefs)}
-                onMouseEnter={() => selectRelatedFeature(item.featureRefs)}
+                onFocus={() => onFeaturesHighlight(item.featureRefs)}
+                onMouseEnter={() => onFeaturesHighlight(item.featureRefs)}
               >
                 <span className="flex items-start gap-2 text-[11px] leading-4 text-slate-100">
                   <span
@@ -715,6 +730,8 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
   const [topologyFaces, setTopologyFaces] = useState<TopologyFace[]>([])
   const [activeIssueId, setActiveIssueId] = useState<string | null>(null)
   const [activeFeatureId, setActiveFeatureId] = useState<string | null>(null)
+  const [highlightedFeatureIds, setHighlightedFeatureIds] = useState<string[]>([])
+  const [clarificationPriorityFeatureId, setClarificationPriorityFeatureId] = useState<string | null>(null)
   const [pickedFaceIndex, setPickedFaceIndex] = useState<number | null>(null)
   const [editingFeatureId, setEditingFeatureId] = useState<string | null>(null)
   const [draftFaceIndices, setDraftFaceIndices] = useState<Set<number> | null>(null)
@@ -738,6 +755,8 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
         setPickedFaceIndex(null)
         setActiveIssueId(null)
         setActiveFeatureId(null)
+        setHighlightedFeatureIds([])
+        setClarificationPriorityFeatureId(null)
         setEditingFeatureId(null)
         setDraftFaceIndices(null)
         setReviewError('')
@@ -767,8 +786,10 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
         setScene(nextScene)
         setTopologyFaces(topology.faces)
         const initialIssueId = nextManifest.issues[0]?.evaluation_id ?? null
+        const initialFeatureId = initialIssueId ? null : (nextManifest.features?.[0]?.feature_id ?? null)
         setActiveIssueId(initialIssueId)
-        setActiveFeatureId(initialIssueId ? null : (nextManifest.features?.[0]?.feature_id ?? null))
+        setActiveFeatureId(initialFeatureId)
+        setHighlightedFeatureIds(initialFeatureId ? [initialFeatureId] : [])
       } catch (cause) {
         if (!cancelled) {
           setError(cause instanceof Error ? cause.message : String(cause))
@@ -784,7 +805,12 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
   }, [reloadRequest, target.manifestPath, target.revision, target.status])
 
   const activeIssue = manifest?.issues.find(issue => issue.evaluation_id === activeIssueId) ?? null
-  const activeFeature = manifest?.features?.find(feature => feature.feature_id === activeFeatureId) ?? null
+
+  const activeFeatures = useMemo(() => {
+    const highlighted = new Set(highlightedFeatureIds)
+
+    return (manifest?.features ?? []).filter(feature => highlighted.has(feature.feature_id))
+  }, [highlightedFeatureIds, manifest])
 
   const clarificationRequest =
     clarifyRequest?.context?.mode === 'dfm_analysis_batch' && clarifyRequest.context.projectId === target.projectId
@@ -870,6 +896,8 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
       if (matchingIssue) {
         setActiveIssueId(matchingIssue.evaluation_id)
         setActiveFeatureId(null)
+        setHighlightedFeatureIds([])
+        setClarificationPriorityFeatureId(null)
 
         return
       }
@@ -880,6 +908,8 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
 
       setActiveIssueId(null)
       setActiveFeatureId(matchingFeature?.feature_id ?? null)
+      setHighlightedFeatureIds(matchingFeature ? [matchingFeature.feature_id] : [])
+      setClarificationPriorityFeatureId(matchingFeature?.feature_id ?? null)
     },
     [editingFeatureId, featureFacesById, issueFacesById, manifest]
   )
@@ -888,6 +918,8 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
     (issue: ViewerIssue) => {
       setActiveIssueId(issue.evaluation_id)
       setActiveFeatureId(null)
+      setHighlightedFeatureIds([])
+      setClarificationPriorityFeatureId(null)
       const firstFace = Array.from(issueFacesById.get(issue.evaluation_id) ?? [])[0]
       setPickedFaceIndex(firstFace ?? null)
     },
@@ -897,9 +929,19 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
   const handleFeatureSelect = useCallback(
     (feature: ViewerFeature) => {
       setActiveFeatureId(feature.feature_id)
+      setHighlightedFeatureIds([feature.feature_id])
+      setClarificationPriorityFeatureId(feature.feature_id)
       setActiveIssueId(null)
       const firstFace = Array.from(featureFacesById.get(feature.feature_id) ?? [])[0]
       setPickedFaceIndex(firstFace ?? null)
+    },
+    [featureFacesById]
+  )
+
+  const handleFeaturesHighlight = useCallback(
+    (featureRefs: string[]) => {
+      setHighlightedFeatureIds([...new Set(featureRefs.filter(ref => featureFacesById.has(ref)))])
+      setActiveIssueId(null)
     },
     [featureFacesById]
   )
@@ -1057,7 +1099,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
       >
         <div className="relative min-h-0 overflow-hidden">
           <ModelCanvas
-            activeFeature={activeFeature}
+            activeFeatures={activeFeatures}
             activeIssue={activeIssue}
             document={scene}
             fitRequest={fitRequest}
@@ -1143,7 +1185,8 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
               clarificationRequest ? (
                 <DfmClarificationPanel
                   features={manifest.features ?? []}
-                  onFeatureSelect={handleFeatureSelect}
+                  onFeaturesHighlight={handleFeaturesHighlight}
+                  priorityFeatureId={clarificationPriorityFeatureId}
                   request={clarificationRequest}
                 />
               ) : (
