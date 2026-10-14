@@ -792,12 +792,19 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
       : null
 
   const clarificationRequestId = clarificationRequest?.requestId
+  const analysisCompleted = manifest?.status === 'completed'
 
   useEffect(() => {
     if (clarificationRequestId) {
       setReviewPaneTab('clarifications')
     }
   }, [clarificationRequestId])
+
+  useEffect(() => {
+    if (analysisCompleted && !clarificationRequestId) {
+      setReviewPaneTab('issues')
+    }
+  }, [analysisCompleted, clarificationRequestId])
 
   useEffect(() => {
     activeFeatureElementRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -1091,22 +1098,6 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
               </span>
             </button>
             <button
-              aria-selected={reviewPaneTab === 'issues'}
-              className={`flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] transition ${
-                reviewPaneTab === 'issues'
-                  ? 'bg-red-500/15 text-red-100 shadow-sm'
-                  : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
-              }`}
-              onClick={() => setReviewPaneTab('issues')}
-              role="tab"
-              type="button"
-            >
-              问题明细
-              <span className="rounded-full bg-red-500/15 px-1.5 py-0.5 text-[9px] text-red-100">
-                {manifest.issue_count}
-              </span>
-            </button>
-            <button
               aria-selected={reviewPaneTab === 'clarifications'}
               className={`flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] transition ${
                 reviewPaneTab === 'clarifications'
@@ -1120,6 +1111,22 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
               补充信息
               <span className="rounded-full bg-cyan-500/15 px-1.5 py-0.5 text-[9px] text-cyan-100">
                 {clarificationRequest?.context?.items.length ?? 0}
+              </span>
+            </button>
+            <button
+              aria-selected={reviewPaneTab === 'issues'}
+              className={`flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] transition ${
+                reviewPaneTab === 'issues'
+                  ? 'bg-red-500/15 text-red-100 shadow-sm'
+                  : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
+              }`}
+              onClick={() => setReviewPaneTab('issues')}
+              role="tab"
+              type="button"
+            >
+              问题明细
+              <span className="rounded-full bg-red-500/15 px-1.5 py-0.5 text-[9px] text-red-100">
+                {manifest.issue_count}
               </span>
             </button>
           </div>
