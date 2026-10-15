@@ -1,11 +1,17 @@
 ---
 title: "DFM 本体、规则库与 Agent 运行快照设计"
 status: active
-updated: 2026-09-11
+updated: 2026-10-14
 type: architecture-database-design
 ---
 
 # DFM 本体、规则库与 Agent 运行快照设计
+
+> 2026-10-14 目标调整：Hermes 与 OCCT Worker 对外直接使用本体 Geometric 的 G ID；
+> 移除 Geometric 的第二套执行 ID/Quantity 绑定，模型与已审核特征通过 Worker 快照复用。
+> 详见[Geometric 契约与模型会话重构](dfm-geometric-session-contract.md)。
+> 本文的字段调整是待实施设计，不代表管理库、发布器或两端运行代码已同步完成。
+> 旧发布包不原地改写；新契约直接迁移，不新增旧 Worker 协议兼容层。
 
 ## 1. 设计目标
 
@@ -60,7 +66,7 @@ flowchart LR
 
 | 层级 | 数据源 | 职责 |
 | --- | --- | --- |
-| 算法能力层 | OCCT C++ 代码和 Capability Manifest | Recognizer、Calculator、Metric/Quantity、参数和认证状态 |
+| 算法能力层 | OCCT C++ 代码和 Capability Manifest | 对外声明 Feature 与 Geometric 能力、参数和认证状态；Recognizer/Calculator/计算组留在 Worker 内部 |
 | 管理控制层 | Django/MySQL 8.0+ | 本体维护、规则生成、审核、默认/企业覆盖、知识引用和发布 |
 | Agent 运行层 | 本地 SQLite 快照 | 只读查询、Check 上下文、计划编译、规则选择和离线复现 |
 
@@ -120,7 +126,7 @@ Web 使用字典/Context API，Agent 下载签名发布物，OCCT 只交换 Capa
 | --- | --- |
 | Process | 无，保存为空对象 `{}` |
 | Feature Type | `worker_kind` |
-| Geometric | `worker_geometric_id/quantity_id/dimension/canonical_unit` |
+| Geometric | `dimension/canonical_unit`；通用 `concept_id` 即权威 G ID，不另存 Worker ID 或 Quantity ID |
 | Factor | `runtime_key/default_value/question/source_policy` |
 | Check | `report_group`；历史 `default_severity` 仅作 Draft 起草提示，不作为运行时定级来源 |
 
@@ -128,8 +134,13 @@ Web 使用字典/Context API，Agent 下载签名发布物，OCCT 只交换 Capa
 `null` 或空对象；除此之外的来源追踪、显示分组、导入版本和关系缓存等字段不写入
 `properties_json`。Excel 来源追踪由 Rule Citation、导入日志和发布物哈希承担。
 白名单内字段均在规则库管理界面完整展示，但只读，包括 Feature Type 的 `worker_kind`、Geometric 的
-`worker_geometric_id/quantity_id/dimension/canonical_unit` 和 Factor 的 `runtime_key`。这些字段仅由
+`dimension/canonical_unit` 和 Factor 的 `runtime_key`。这些字段仅由
 工作簿导入或能力同步流程维护；普通管理 API 不接受改写，发布时再依据认证 Capability 和规则完整性要求校验这些值。
+
+新契约中，Geometric 值的类型继续由 `data_schema_json` 描述；部位、参考对象及聚合口径
+由该 G 的定义与对应 Worker Capability 明确声明。Worker 仅在私有执行描述中选择
+计算器和内部结果字段。不得要求 Agent 再维护 G → Operation/Metric/Quantity 映射，
+也不得把 C++ 函数名写入本体的公开属性。发布团队需同步属性白名单，不能仅删除文档字段。
 
 `concept_id` 发布后不得改名；改显示名称或定义不改变稳定 ID。确实发生语义不兼容时创建新 ID，旧 ID
 进入 `retired`。
@@ -242,9 +253,14 @@ Check 的 `default_severity` 不得自动填入 Rule Version，也不得在规�
 }
 ```
 
-Geometric 的 `worker_geometric_id/quantity_id` 来自 Geometric Concept，Feature 的 `worker_kind` 来自
+Geometric 的技术指标 ID 直接使用该 Concept 的 `concept_id`（G ID），Feature 的 `worker_kind` 来自
 `APPLIES_TO_FEATURE` 指向的 Feature Concept。`operand_text` 直接保存规则来源中的“比较对象”字符串，
 不再为字符串中出现的区域另建 Region Type Concept。
+
+Hermes 按 G ID 校验 Worker 能力和取值口径；`operand_text` 用于工程追溯、解释和歧义诊断，
+不是让 Hermes 临时解析自然语言并拼接面号的执行脚本。正常测量通过 snapshot_id/feature_id
+定位已审核特征，再由 Worker 的 G 执行描述选择内部部位和参考对象。
+`aggregation` 不得改变已发布 G 的聚合语义；若填写，只能与该技术指标口径一致。
 
 ```text
 Check ──APPLIES_TO_FEATURE──> Feature
@@ -253,7 +269,7 @@ Check ──APPLIES_TO_FEATURE──> Feature
 ```
 
 发布器保证每个 Operand alias 唯一、`operand_text` 非空且关联 Geometric/Feature 有效。Hermes 在编译
-AnalysisPlan 时结合 Operand 原文、Discovery 结果和经过认证的 Capability 完成几何目标解析；Django
+AnalysisPlan 时结合 G 的明确语义、已确认 Discovery 特征和经过认证的 Capability 校验目标适用性；Django
 不生成 `REGION_SRC_*`、`worker_role` 或其他无法回溯到规则来源的区域标识。
 
 `REQUIRES_FACTOR.qualifiers_json`：
@@ -511,7 +527,8 @@ Measurement/Feature/Region 证据。若工程要求“等于某标称值”，�
 发布校验必须证明：
 
 - 所有关系引用存在且 Concept Type 合法；
-- Check 的每个 Operand 能通过 Geometric 的运行绑定在目标 OCCT Capability 中解析出唯一 Metric/Quantity；
+- Check 的每个 Operand 能以权威 G ID 在目标 OCCT Capability 中找到唯一技术指标定义，
+  且 Feature 类别、参考对象语义、聚合、数据 Schema、量纲和单位一致；不再校验公开 Metric/Quantity 绑定；
 - `conditions_json` 只用于 Factor 适用性筛选，不含 Geometric 合格判定；
 - `acceptance_criteria_json` 是非空外层 OR 数组，每个内层 AND 数组也非空，`criterion_id` 在整条规则内不重复；每项表达式只使用本 Check 声明的
   Operand Alias 和白名单算术运算，比较符属于受控集合；
@@ -649,7 +666,7 @@ Agent 同时保留 Schema 2/3 历史兼容。
 ### 7.2 新增特征和 Check
 
 ```text
-OCCT 新增 Recognizer/Region/Metric Capability
+OCCT 新增 Feature/Geometric Capability（Recognizer、部位选择器和 Calculator 为内部实现）
 ＋ 本体新增 Feature/Geometric/Check/Relation，并在 USES_OPERAND 中保存比较对象原文
 ＋ 规则库新增 Rule Version
 → 发布阶段做 Capability × Ontology 交叉校验
@@ -731,5 +748,7 @@ OCCT 仍只负责返回客观 Measurement。Agent 对 Schema 4 严格校验，�
 数据库级 `CHECK` 约束须在历史 `warning` 版本退出可发布状态或建立明确的历史豁免后再启用，
 不能用一次批量更新伪造逐条工程评审。
 
-本次跨仓对齐及运行边界见 `dfm-catalog-contract-alignment.md`。历史 Metric/Region 快照只保留兼容读取；
-新发布使用 Geometric，运行时仍保留真实 Region 和几何证据引用。
+历史对齐记录见 `dfm-catalog-contract-alignment.md`；下一阶段运行契约见
+[Geometric 契约与模型会话重构](dfm-geometric-session-contract.md)。
+新 Worker 契约直接使用 G ID，不保留旧 Metric/Quantity/Region 请求适配层；
+运行时仍保留真实几何 scope 和 evidence，旧开发数据显式重新生成，不自动覆盖历史产物。
