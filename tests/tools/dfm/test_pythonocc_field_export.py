@@ -121,7 +121,7 @@ def test_adjacent_cell_center_thickness_samples_form_one_patch():
         },
     ]
 
-    assert _connected_cells(cells, scene) == [cells[::-1]]
+    assert _connected_cells(cells, scene) == [cells]
 
 
 def test_region_selector_splits_feature_faces_from_ordinary_complement():

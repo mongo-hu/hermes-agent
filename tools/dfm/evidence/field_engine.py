@@ -13,10 +13,17 @@ from typing import Any, Callable
 from ..contracts import ArtifactRecord, EvidenceRecord, GeometryRef
 from ..errors import DFMError
 from ..geometry.snapshot_hash import render_mesh_content_sha256
+from .planner import (
+    PreparedScene,
+    ProjectedScene,
+    plan_evidence_views,
+    prepare_scene,
+    project_scene,
+    projection_cache_key,
+)
 
 
-EVIDENCE_SCHEMA_VERSION = 2
-_VIEWS_PER_PATCH = 3
+EVIDENCE_SCHEMA_VERSION = 3
 
 
 def _between(value: Any, expected: Any) -> bool:
@@ -47,7 +54,7 @@ def _utc_now() -> str:
 class FieldEvidenceEngine:
     """Render precise evidence from any backend's objective scalar fields."""
 
-    version = "hermes-field-evidence-v6"
+    version = "hermes-field-evidence-v8"
 
     def materialize(
         self,
@@ -55,7 +62,7 @@ class FieldEvidenceEngine:
         run_id: str,
         artifacts: list[ArtifactRecord],
         *,
-        max_findings: int = 12,
+        max_markers_per_image: int = 10,
     ) -> list[ArtifactRecord]:
         by_kind = {item.kind: item for item in artifacts}
         measurements_artifact = by_kind.get("measurements")
@@ -63,8 +70,12 @@ class FieldEvidenceEngine:
         if measurements_artifact is None or evaluations_artifact is None:
             return []
 
-        measurements_payload = _read_json(project_dir, measurements_artifact)
-        evaluations_payload = _read_json(project_dir, evaluations_artifact)
+        payload_cache: dict[str, dict[str, Any]] = {}
+        validation_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        measurements_payload = _read_json(
+            project_dir, measurements_artifact, payload_cache
+        )
+        evaluations_payload = _read_json(project_dir, evaluations_artifact, payload_cache)
         input_sha256 = str(measurements_payload.get("input_sha256") or "")
         if evaluations_payload.get("run_id") != run_id:
             raise DFMError(
@@ -77,7 +88,7 @@ class FieldEvidenceEngine:
             if isinstance(item, dict) and item.get("measurement_id")
         }
         artifact_by_id = {item.artifact_id: item for item in artifacts}
-        pull_direction = _field_pull_direction(project_dir, artifacts)
+        pull_direction = _field_pull_direction(project_dir, artifacts, payload_cache)
         patches: list[dict[str, Any]] = []
         for evaluation in evaluations_payload.get("evaluations", []):
             if not isinstance(evaluation, dict) or evaluation.get("outcome") != "fail":
@@ -110,7 +121,7 @@ class FieldEvidenceEngine:
                             "A failed measurement references a missing scalar field.",
                             {"field_ref": field_ref},
                         )
-                    field = _read_json(project_dir, field_artifact)
+                    field = _read_json(project_dir, field_artifact, payload_cache)
                     self._validate_field_identity(
                         project_dir,
                         field,
@@ -118,10 +129,13 @@ class FieldEvidenceEngine:
                         input_sha256,
                         measurement,
                         artifact_by_id,
+                        payload_cache,
+                        validation_cache,
                     )
                     scene = _read_json(
                         project_dir,
                         artifact_by_id[str(field.get("scene_ref") or "")],
+                        payload_cache,
                     )
                     if direct_expression:
                         patches.extend(
@@ -151,6 +165,7 @@ class FieldEvidenceEngine:
                     "producer": "hermes-evidence-engine",
                     "producer_version": self.version,
                     "failed_patches": patches,
+                    "coverage_requirements": _coverage_requirements(patches),
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -174,19 +189,61 @@ class FieldEvidenceEngine:
             if isinstance(item, dict)
         }
         image_index = 0
-        selected_patches = _select_representative_patches_by_evaluation(
-            patches, max(0, max_findings)
-        )
-        for patch in selected_patches:
-            scene_artifact = artifact_by_id[patch["scene_ref"]]
-            scene = _read_json(project_dir, scene_artifact)
-            evaluation = evaluation_by_id[patch["evaluation_id"]]
-            for view in _adaptive_views(scene, patch, pull_direction):
+        covered_patch_ids: set[str] = set()
+        prepared_by_scene: dict[str, PreparedScene] = {}
+        projected_by_camera: dict[tuple[str, tuple[float, ...]], ProjectedScene] = {}
+        patches_by_scene: dict[str, list[dict[str, Any]]] = {}
+        for patch in patches:
+            patches_by_scene.setdefault(str(patch["scene_ref"]), []).append(patch)
+
+        for scene_ref in sorted(patches_by_scene):
+            scene_artifact = artifact_by_id[scene_ref]
+            scene = _read_json(project_dir, scene_artifact, payload_cache)
+            prepared = prepared_by_scene.setdefault(scene_ref, prepare_scene(scene))
+            scene_patches = patches_by_scene[scene_ref]
+            patch_by_id = {str(patch["patch_id"]): patch for patch in scene_patches}
+            patches_by_evaluation: dict[str, list[dict[str, Any]]] = {}
+            for patch in scene_patches:
+                patches_by_evaluation.setdefault(
+                    str(patch["evaluation_id"]), []
+                ).append(patch)
+
+            # Evidence is an issue-local artifact. Planning each evaluation
+            # independently prevents one overview image from being reused by
+            # unrelated report issues while still allowing adjacent patches of
+            # the same issue to share one readable close-up.
+            plans = [
+                plan
+                for evaluation_id in sorted(patches_by_evaluation)
+                for plan in plan_evidence_views(
+                    prepared,
+                    patches_by_evaluation[evaluation_id],
+                    pull_direction,
+                    max_markers_per_image=max(1, max_markers_per_image),
+                )
+            ]
+            for plan in plans:
+                selected = [patch_by_id[patch_id] for patch_id in plan.patch_ids]
+                selected_evaluation_ids = {
+                    str(patch["evaluation_id"]) for patch in selected
+                }
+                if len(selected_evaluation_ids) != 1:
+                    raise DFMError(
+                        "evidence_issue_scope_invalid",
+                        "An evidence image must contain patches from exactly one evaluation.",
+                        {"evaluation_ids": sorted(selected_evaluation_ids)},
+                    )
+                evaluation_id = next(iter(selected_evaluation_ids))
+                evaluation = evaluation_by_id[evaluation_id]
                 image_index += 1
                 image_id = f"artifact_{run_id}_evidence_{image_index}"
                 image_path = output_dir / f"evidence_{image_index:03d}.png"
-                render_view = _presentation_view(scene, patch, view)
-                self._render(scene, patch, image_path, render_view)
+                camera_key = (scene_ref, projection_cache_key(plan.view))
+                projected = projected_by_camera.get(camera_key)
+                if projected is None:
+                    projected = project_scene(prepared, plan.view)
+                    projected_by_camera[camera_key] = projected
+                self._render(prepared, projected, selected, image_path, plan.view)
                 image_artifact = ArtifactRecord(
                     image_id,
                     "evidence_image",
@@ -195,40 +252,93 @@ class FieldEvidenceEngine:
                     _utc_now(),
                 )
                 generated.append(image_artifact)
+                covered_patch_ids.update(plan.patch_ids)
+                marker_labels = {
+                    str(patch["patch_id"]): f"ISSUE {ordinal:02d}"
+                    for ordinal, patch in enumerate(selected, start=1)
+                }
+
+                geometry_refs = _unique_dicts([
+                    geometry_ref
+                    for patch in selected
+                    for geometry_ref in patch["geometry_refs"]
+                ])
                 records.append(
                     EvidenceRecord(
-                        evidence_id=f"evidence_{run_id}_{image_index}",
+                        evidence_id=f"evidence_{run_id}_{image_index}_1",
                         run_id=run_id,
                         input_sha256=input_sha256,
                         operation_id=str(evaluation.get("operation_id") or ""),
                         metric_id=str(evaluation.get("metric_id") or ""),
-                        measurement_ids=[str(item) for item in patch["measurement_ids"]],
-                        evaluation_ids=[patch["evaluation_id"]],
+                        measurement_ids=sorted({
+                            str(item)
+                            for patch in selected
+                            for item in patch["measurement_ids"]
+                        }),
+                        evaluation_ids=[evaluation_id],
                         geometry_refs=[
-                            GeometryRef.from_dict(item)
-                            for item in patch["geometry_refs"]
+                            GeometryRef.from_dict(item) for item in geometry_refs
                         ],
-                        region_refs=[str(item) for item in patch["region_refs"]],
+                        region_refs=sorted({
+                            str(item)
+                            for patch in selected
+                            for item in patch["region_refs"]
+                        }),
                         artifact_ref=image_id,
                         render={
-                            "mode": "local_patch",
+                            "mode": "local_issue",
                             "producer": "hermes-evidence-renderer",
                             "version": self.version,
                             "viewport": [1440, 810],
-                            "patch_id": patch["patch_id"],
-                            "scene_ref": patch["scene_ref"],
-                            "topology_snapshot_ref": patch["topology_snapshot_ref"],
-                            "render_mesh_snapshot_ref": patch["render_mesh_snapshot_ref"],
-                            "view_id": render_view["id"],
-                            "view_label": render_view["label"],
-                            "camera_direction": list(render_view["basis_d"]),
-                            "camera_up": list(render_view["basis_v"]),
-                            "camera_source": render_view["source"],
-                            "presentation_mode": render_view.get("presentation_mode", "canonical"),
+                            "covered_patch_ids": [
+                                str(patch["patch_id"]) for patch in selected
+                            ],
+                            "covered_sample_refs": sorted({
+                                str(item)
+                                for patch in selected
+                                for item in patch["sample_refs"]
+                            }),
+                            "coverage_modes": sorted({
+                                str(patch["coverage_mode"])
+                                for patch in selected
+                            }),
+                            "markers": [
+                                {
+                                    "label": marker_labels[str(patch["patch_id"])],
+                                    "patch_id": str(patch["patch_id"]),
+                                }
+                                for patch in selected
+                            ],
+                            "scene_ref": scene_ref,
+                            "topology_snapshot_ref": str(
+                                selected[0]["topology_snapshot_ref"]
+                            ),
+                            "render_mesh_snapshot_ref": str(
+                                selected[0]["render_mesh_snapshot_ref"]
+                            ),
+                            "view_id": plan.view["id"],
+                            "view_label": plan.view["label"],
+                            "camera_direction": list(plan.view["basis_d"]),
+                            "camera_up": list(plan.view["basis_v"]),
+                            "camera_source": plan.view["source"],
+                            "presentation_mode": "local",
+                            "visibility_mode": plan.visibility_mode,
                         },
-                        feature_refs=[str(item) for item in patch["feature_refs"]],
+                        feature_refs=sorted({
+                            str(item)
+                            for patch in selected
+                            for item in patch["feature_refs"]
+                        }),
                     )
                 )
+
+        coverage = _coverage_summary(patches, covered_patch_ids)
+        if coverage["uncovered_patch_ids"] or coverage["uncovered_sample_refs"]:
+            raise DFMError(
+                "evidence_coverage_incomplete",
+                "Evidence rendering did not cover every failed geometry patch.",
+                coverage,
+            )
 
         records_path = output_dir / "evidence_records.json"
         records_path.write_text(
@@ -239,6 +349,7 @@ class FieldEvidenceEngine:
                     "input_sha256": input_sha256,
                     "producer": "hermes-evidence-renderer",
                     "producer_version": self.version,
+                    "coverage": coverage,
                     "records": [item.to_dict() for item in records],
                 },
                 ensure_ascii=False,
@@ -265,6 +376,8 @@ class FieldEvidenceEngine:
         input_sha256: str,
         measurement: dict[str, Any],
         artifact_by_id: dict[str, ArtifactRecord],
+        payload_cache: dict[str, dict[str, Any]],
+        validation_cache: dict[tuple[str, str], dict[str, Any]],
     ) -> None:
         expected = (
             run_id,
@@ -296,7 +409,7 @@ class FieldEvidenceEngine:
                     "evidence_field_invalid",
                     f"The scalar field references a missing {kind} artifact.",
                 )
-            linked = _read_json(project_dir, artifact)
+            linked = _read_json(project_dir, artifact, payload_cache)
             linked_payloads[kind] = linked
             if (
                 linked.get("run_id") != run_id
@@ -313,24 +426,104 @@ class FieldEvidenceEngine:
                     "evidence_field_invalid",
                     "The topology map and scalar field reference different scenes.",
                 )
-        scene_triangles = {
-            (
-                str(primitive.get("render_mesh_snapshot_id")),
-                str(primitive.get("primitive_id")),
-                triangle_id,
+        cache_key = (
+            str(field.get("scene_ref") or ""),
+            str(field.get("topology_map_ref") or ""),
+        )
+        snapshot_data = validation_cache.get(cache_key)
+        if snapshot_data is None:
+            scene_triangles = {
+                (
+                    str(primitive.get("render_mesh_snapshot_id")),
+                    str(primitive.get("primitive_id")),
+                    triangle_id,
+                )
+                for primitive in linked_payloads["render_scene"].get("primitives", [])
+                for triangle_id, _triangle in enumerate(
+                    primitive.get("triangles", [])
+                )
+            }
+            mapped_triangles = {
+                (
+                    str(ref.get("render_mesh_snapshot_id")),
+                    str(ref.get("primitive_id")),
+                    int(ref.get("triangle_id", -1)),
+                )
+                for face in linked_payloads["topology_map"].get("faces", [])
+                for ref in face.get("triangle_refs", [])
+            }
+            mapped_by_entity = {
+                (
+                    str(face.get("geometry_ref", {}).get("topology_snapshot_id")),
+                    str(face.get("geometry_ref", {}).get("entity_id")),
+                    str(ref.get("render_mesh_snapshot_id")),
+                    str(ref.get("primitive_id")),
+                    int(ref.get("triangle_id", -1)),
+                )
+                for face in linked_payloads["topology_map"].get("faces", [])
+                for ref in face.get("triangle_refs", [])
+            }
+            scene_snapshot = linked_payloads["render_scene"].get(
+                "render_mesh_snapshot", {}
             )
-            for primitive in linked_payloads["render_scene"].get("primitives", [])
-            for triangle_id, _triangle in enumerate(primitive.get("triangles", []))
-        }
-        mapped_triangles = {
-            (
-                str(ref.get("render_mesh_snapshot_id")),
-                str(ref.get("primitive_id")),
-                int(ref.get("triangle_id", -1)),
+            topology_snapshot = linked_payloads["topology_map"].get(
+                "topology_snapshot", {}
             )
-            for face in linked_payloads["topology_map"].get("faces", [])
-            for ref in face.get("triangle_refs", [])
-        }
+            mesh_id = str(scene_snapshot.get("render_mesh_snapshot_id") or "")
+            topology_id = str(topology_snapshot.get("topology_snapshot_id") or "")
+            if (
+                not mesh_id
+                or not topology_id
+                or linked_payloads["render_scene"].get("topology_snapshot_ref")
+                != topology_id
+                or linked_payloads["topology_map"].get("render_mesh_snapshot_ref")
+                != mesh_id
+                or scene_snapshot.get("topology_snapshot_id") != topology_id
+                or scene_snapshot.get("input_sha256") != input_sha256
+                or topology_snapshot.get("input_sha256") != input_sha256
+            ):
+                raise DFMError(
+                    "evidence_snapshot_mismatch",
+                    "Scalar field, topology, and render mesh do not share one immutable snapshot.",
+                )
+            primitives = linked_payloads["render_scene"].get("primitives", [])
+            try:
+                mesh_content_sha256 = render_mesh_content_sha256(primitives)
+            except ValueError as exc:
+                raise DFMError(
+                    "evidence_artifact_invalid",
+                    "The render mesh snapshot content is not canonicalizable.",
+                ) from exc
+            topology_payload = [
+                {
+                    "entity_id": face.get("geometry_ref", {}).get("entity_id"),
+                    "kind": face.get("geometry_ref", {}).get("kind"),
+                    "index": face.get("geometry_ref", {}).get("index"),
+                }
+                for face in linked_payloads["topology_map"].get("faces", [])
+            ]
+            if (
+                scene_snapshot.get("render_mesh_sha256") != mesh_content_sha256
+                or scene_snapshot.get("triangle_count")
+                != sum(len(item.get("triangles", [])) for item in primitives)
+                or topology_snapshot.get("topology_content_sha256")
+                != _stable_content_sha256(topology_payload)
+            ):
+                raise DFMError(
+                    "evidence_snapshot_mismatch",
+                    "The topology or render mesh content no longer matches its immutable snapshot.",
+                )
+            snapshot_data = {
+                "scene_triangles": scene_triangles,
+                "mapped_triangles": mapped_triangles,
+                "mapped_by_entity": mapped_by_entity,
+                "mesh_id": mesh_id,
+                "topology_id": topology_id,
+            }
+            validation_cache[cache_key] = snapshot_data
+
+        scene_triangles = snapshot_data["scene_triangles"]
+        mapped_triangles = snapshot_data["mapped_triangles"]
         field_triangles = {
             (
                 str(cell.get("triangle_ref", {}).get("render_mesh_snapshot_id")),
@@ -344,17 +537,7 @@ class FieldEvidenceEngine:
                 "evidence_field_invalid",
                 "Scalar field cells are not present in both the scene and topology map.",
             )
-        mapped_by_entity = {
-            (
-                str(face.get("geometry_ref", {}).get("topology_snapshot_id")),
-                str(face.get("geometry_ref", {}).get("entity_id")),
-                str(ref.get("render_mesh_snapshot_id")),
-                str(ref.get("primitive_id")),
-                int(ref.get("triangle_id", -1)),
-            )
-            for face in linked_payloads["topology_map"].get("faces", [])
-            for ref in face.get("triangle_refs", [])
-        }
+        mapped_by_entity = snapshot_data["mapped_by_entity"]
         if any(
             (
                 str(cell.get("geometry_ref", {}).get("topology_snapshot_id")),
@@ -370,51 +553,15 @@ class FieldEvidenceEngine:
                 "evidence_field_invalid",
                 "A scalar-field cell triangle is mapped to a different topology entity.",
             )
-        scene_snapshot = linked_payloads["render_scene"].get("render_mesh_snapshot", {})
-        topology_snapshot = linked_payloads["topology_map"].get("topology_snapshot", {})
-        mesh_id = str(scene_snapshot.get("render_mesh_snapshot_id") or "")
-        topology_id = str(topology_snapshot.get("topology_snapshot_id") or "")
+        mesh_id = snapshot_data["mesh_id"]
+        topology_id = snapshot_data["topology_id"]
         if (
-            not mesh_id
-            or not topology_id
-            or field.get("render_mesh_snapshot_ref") != mesh_id
+            field.get("render_mesh_snapshot_ref") != mesh_id
             or field.get("topology_snapshot_ref") != topology_id
-            or linked_payloads["render_scene"].get("topology_snapshot_ref") != topology_id
-            or linked_payloads["topology_map"].get("render_mesh_snapshot_ref") != mesh_id
-            or scene_snapshot.get("topology_snapshot_id") != topology_id
-            or scene_snapshot.get("input_sha256") != input_sha256
-            or topology_snapshot.get("input_sha256") != input_sha256
         ):
             raise DFMError(
                 "evidence_snapshot_mismatch",
                 "Scalar field, topology, and render mesh do not share one immutable snapshot.",
-            )
-        primitives = linked_payloads["render_scene"].get("primitives", [])
-        try:
-            mesh_content_sha256 = render_mesh_content_sha256(primitives)
-        except ValueError as exc:
-            raise DFMError(
-                "evidence_artifact_invalid",
-                "The render mesh snapshot content is not canonicalizable.",
-            ) from exc
-        topology_payload = [
-            {
-                "entity_id": face.get("geometry_ref", {}).get("entity_id"),
-                "kind": face.get("geometry_ref", {}).get("kind"),
-                "index": face.get("geometry_ref", {}).get("index"),
-            }
-            for face in linked_payloads["topology_map"].get("faces", [])
-        ]
-        if (
-            scene_snapshot.get("render_mesh_sha256") != mesh_content_sha256
-            or scene_snapshot.get("triangle_count")
-            != sum(len(item.get("triangles", [])) for item in primitives)
-            or topology_snapshot.get("topology_content_sha256")
-            != _stable_content_sha256(topology_payload)
-        ):
-            raise DFMError(
-                "evidence_snapshot_mismatch",
-                "The topology or render mesh content no longer matches its immutable snapshot.",
             )
         geometry_refs = [
             item.get("geometry_ref", {}) for item in field.get("samples", [])
@@ -464,19 +611,22 @@ class FieldEvidenceEngine:
             and failed_samples.intersection(str(value) for value in item.get("sample_ids", []))
         ]
         groups = _connected_cells(failed_cells, scene)
-        if not groups and failed_samples:
-            groups = [[]]
-
-        results = []
-        for index, cells in enumerate(groups, start=1):
+        group_specs: list[tuple[list[dict[str, Any]], list[str]]] = []
+        grouped_samples: set[str] = set()
+        for cells in groups:
             sample_ids = sorted({
                 str(sample_id)
                 for cell in cells
                 for sample_id in cell.get("sample_ids", [])
                 if str(sample_id) in failed_samples
             })
-            if not sample_ids:
-                sample_ids = sorted(failed_samples)
+            grouped_samples.update(sample_ids)
+            group_specs.append((cells, sample_ids))
+        for sample_id in sorted(failed_samples - grouped_samples):
+            group_specs.append(([], [sample_id]))
+
+        results = []
+        for index, (cells, sample_ids) in enumerate(group_specs, start=1):
             points = [samples[item]["point"] for item in sample_ids]
             surface_normal = _average_direction(
                 [samples[item].get("surface_normal") for item in sample_ids]
@@ -501,6 +651,7 @@ class FieldEvidenceEngine:
             results.append({
                 "patch_id": f"patch_{stable}",
                 "evaluation_id": str(evaluation.get("evaluation_id") or ""),
+                "coverage_mode": "failed_samples",
                 "measurement_ids": [str(measurement.get("measurement_id") or "")],
                 "field_ref": field_ref,
                 "scene_ref": str(field.get("scene_ref") or ""),
@@ -511,6 +662,7 @@ class FieldEvidenceEngine:
                 "region_refs": sorted(str(item) for item in measurement.get("region_refs", [])),
                 "feature_refs": sorted(str(item) for item in measurement.get("feature_refs", [])),
                 "sample_ids": sample_ids,
+                "sample_refs": [f"{field_ref}:{sample_id}" for sample_id in sample_ids],
                 "cell_ids": sorted(str(item.get("cell_id")) for item in cells),
                 "triangle_refs": triangles,
                 "focus_point": focus,
@@ -600,6 +752,7 @@ class FieldEvidenceEngine:
             patches.append({
                 "patch_id": f"patch_{stable}",
                 "evaluation_id": str(evaluation.get("evaluation_id") or ""),
+                "coverage_mode": "contributing_regions",
                 "measurement_ids": sorted(item for item in measurement_ids if item),
                 "field_ref": sorted(field_refs)[0],
                 "scene_ref": refs[0],
@@ -610,6 +763,7 @@ class FieldEvidenceEngine:
                 "region_refs": sorted(region_refs),
                 "feature_refs": sorted(feature_refs),
                 "sample_ids": sorted(sample_ids),
+                "sample_refs": sorted(sample_ids),
                 "cell_ids": sorted(cell_ids),
                 "triangle_refs": _unique_dicts(triangle_values),
                 "focus_point": [
@@ -626,8 +780,9 @@ class FieldEvidenceEngine:
 
     @staticmethod
     def _render(
-        scene: dict[str, Any],
-        patch: dict[str, Any],
+        prepared: PreparedScene,
+        projected: ProjectedScene,
+        patches: list[dict[str, Any]],
         target: Path,
         view: dict[str, Any],
     ) -> None:
@@ -717,60 +872,37 @@ class FieldEvidenceEngine:
                 canvas.paste(shadow_layer, (0, 0), shadow_layer)
             canvas.paste(layer.resize((layer_width, layer_height)), (left, top), mask)
 
+        if not patches:
+            raise DFMError("evidence_patch_invalid", "No evidence patches were selected.")
+
         highlighted = {
             (
                 str(item["render_mesh_snapshot_id"]),
                 str(item["primitive_id"]),
                 int(item["triangle_id"]),
             )
+            for patch in patches
             for item in patch["triangle_refs"]
         }
-
-        rows: list[dict[str, Any]] = []
-        for primitive in scene.get("primitives", []):
-            primitive_id = str(primitive.get("primitive_id") or "")
-            mesh_snapshot_id = str(primitive.get("render_mesh_snapshot_id") or "")
-            vertices = primitive.get("vertices", [])
-            for triangle_id, triangle in enumerate(primitive.get("triangles", [])):
-                try:
-                    points = [vertices[int(index)] for index in triangle]
-                except (IndexError, TypeError, ValueError) as exc:
-                    raise DFMError(
-                        "render_scene_invalid",
-                        "A render triangle references a missing vertex.",
-                    ) from exc
-                edge_a = [points[1][axis] - points[0][axis] for axis in range(3)]
-                edge_b = [points[2][axis] - points[0][axis] for axis in range(3)]
-                normal = _unit_or_none(_cross(edge_a, edge_b)) or [0.0, 0.0, 1.0]
-                rows.append(
-                    {
-                        "depth": sum(_dot(point, view["basis_d"]) for point in points)
-                        / 3.0,
-                        "key": (mesh_snapshot_id, primitive_id, triangle_id),
-                        "normal": normal,
-                        "projected": [
-                            (
-                                _dot(point, view["basis_u"]),
-                                _dot(point, view["basis_v"]),
-                            )
-                            for point in points
-                        ],
-                    }
-                )
-        rows.sort(key=lambda item: item["depth"], reverse=True)
-        all_xy = [point for row in rows for point in row["projected"]]
+        rows = projected.rows
+        all_xy = list(projected.all_xy)
         if not all_xy:
             raise DFMError("render_scene_invalid", "The render scene is empty.")
 
-        focus = patch["focus_point"]
-        focus_xy = (
-            _dot(focus, view["basis_u"]),
-            _dot(focus, view["basis_v"]),
-        )
-        patch_points = _bounds_corners(patch["bounds"])
+        focus_values = [
+            (
+                patch,
+                (
+                    _dot(patch["focus_point"], view["basis_u"]),
+                    _dot(patch["focus_point"], view["basis_v"]),
+                ),
+            )
+            for patch in patches
+        ]
         patch_xy = [
             (_dot(point, view["basis_u"]), _dot(point, view["basis_v"]))
-            for point in patch_points
+            for patch in patches
+            for point in _bounds_corners(patch["bounds"])
         ]
         scene_span = max(
             max(value[0] for value in all_xy) - min(value[0] for value in all_xy),
@@ -801,7 +933,7 @@ class FieldEvidenceEngine:
             framing: list[tuple[float, float]],
             *,
             detail: bool,
-            callout: str = "",
+            annotate: bool = False,
         ) -> Any:
             panel_width, panel_height = panel_size
             rendered = vertical_gradient(panel_size, panel_top, panel_bottom)
@@ -820,7 +952,7 @@ class FieldEvidenceEngine:
                 )
 
             projected_rows = [
-                (row, [screen(point) for point in row["projected"]])
+                (row, [screen(point) for point in row.projected])
                 for row in rows
             ]
             model_mask = Image.new("L", panel_size, 0)
@@ -852,13 +984,13 @@ class FieldEvidenceEngine:
             for row, polygon in projected_rows:
                 if not _visible(polygon, panel_width, panel_height):
                     continue
-                intensity = 0.91 + 0.11 * abs(_dot(row["normal"], light))
+                intensity = 0.91 + 0.11 * abs(_dot(row.normal, light))
                 shade = tuple(
                     min(255, round(channel * intensity))
                     for channel in (199, 208, 220)
                 )
                 rendered_draw.polygon(polygon, fill=(*shade, 255))
-                if row["key"] in highlighted:
+                if row.key in highlighted:
                     highlight_polygons.append(polygon)
 
             highlight_mask = Image.new("L", panel_size, 0)
@@ -881,108 +1013,144 @@ class FieldEvidenceEngine:
             rendered.paste(accent_dark, (0, 0), highlight_edge)
             rendered_draw = ImageDraw.Draw(rendered, "RGBA")
 
-            marker = screen(focus_xy)
             radius = (6 if detail else 5) * supersample
             halo = (13 if detail else 10) * supersample
-            rendered_draw.ellipse(
-                (
-                    marker[0] - halo,
-                    marker[1] - halo,
-                    marker[0] + halo,
-                    marker[1] + halo,
-                ),
-                fill=(255, 255, 255, 235),
-            )
-            rendered_draw.ellipse(
-                (
-                    marker[0] - radius,
-                    marker[1] - radius,
-                    marker[0] + radius,
-                    marker[1] + radius,
-                ),
-                fill=(*accent, 255),
-                outline=(255, 255, 255, 255),
-                width=2 * supersample,
-            )
-
-            if detail and callout:
-                callout_font = font(11 * supersample, bold=True)
-                text_box = rendered_draw.textbbox(
-                    (0, 0), callout, font=callout_font
-                )
-                callout_width = text_box[2] - text_box[0] + 28 * supersample
-                callout_height = 34 * supersample
-                to_right = marker[0] < panel_width * 0.68
-                label_left = (
-                    marker[0] + 44 * supersample
-                    if to_right
-                    else marker[0] - callout_width - 44 * supersample
-                )
-                label_left = max(
-                    22 * supersample,
-                    min(label_left, panel_width - callout_width - 22 * supersample),
-                )
-                label_top = max(
-                    54 * supersample,
-                    min(
-                        marker[1] - 48 * supersample,
-                        panel_height - callout_height - 36 * supersample,
-                    ),
-                )
-                line_end = (
-                    label_left if to_right else label_left + callout_width,
-                    label_top + callout_height // 2,
-                )
-                elbow = (
-                    marker[0] + (24 if to_right else -24) * supersample,
-                    line_end[1],
-                )
-                rendered_draw.line(
-                    (marker, elbow, line_end),
-                    fill=(*accent_dark, 210),
-                    width=supersample,
-                )
-                rendered_draw.rounded_rectangle(
+            markers = [(patch, screen(focus)) for patch, focus in focus_values]
+            for _patch, marker in markers:
+                rendered_draw.ellipse(
                     (
+                        marker[0] - halo,
+                        marker[1] - halo,
+                        marker[0] + halo,
+                        marker[1] + halo,
+                    ),
+                    fill=(255, 255, 255, 235),
+                )
+                rendered_draw.ellipse(
+                    (
+                        marker[0] - radius,
+                        marker[1] - radius,
+                        marker[0] + radius,
+                        marker[1] + radius,
+                    ),
+                    fill=(*accent, 255),
+                    outline=(255, 255, 255, 255),
+                    width=2 * supersample,
+                )
+
+            if detail and annotate:
+                callout_font = font(11 * supersample, bold=True)
+                label_boxes: list[tuple[int, int, int, int]] = []
+                for ordinal, (_patch, marker) in enumerate(markers, start=1):
+                    marker_callout = f"ISSUE {ordinal:02d}"
+                    text_box = rendered_draw.textbbox(
+                        (0, 0), marker_callout, font=callout_font
+                    )
+                    callout_width = text_box[2] - text_box[0] + 28 * supersample
+                    callout_height = 34 * supersample
+                    to_right = marker[0] < panel_width * 0.68
+                    label_left = (
+                        marker[0] + 44 * supersample
+                        if to_right
+                        else marker[0] - callout_width - 44 * supersample
+                    )
+                    label_left = max(
+                        22 * supersample,
+                        min(
+                            label_left,
+                            panel_width - callout_width - 22 * supersample,
+                        ),
+                    )
+                    base_top = marker[1] - 48 * supersample
+                    candidates = [
+                        base_top + offset * supersample
+                        for offset in (0, -44, 44, -88, 88, -132, 132)
+                    ]
+                    label_top = max(
+                        54 * supersample,
+                        min(
+                            candidates[0],
+                            panel_height - callout_height - 36 * supersample,
+                        ),
+                    )
+                    for candidate_top in candidates:
+                        candidate_top = max(
+                            54 * supersample,
+                            min(
+                                candidate_top,
+                                panel_height - callout_height - 36 * supersample,
+                            ),
+                        )
+                        candidate_box = (
+                            label_left,
+                            candidate_top,
+                            label_left + callout_width,
+                            candidate_top + callout_height,
+                        )
+                        if not any(
+                            _rectangles_overlap(candidate_box, occupied)
+                            for occupied in label_boxes
+                        ):
+                            label_top = candidate_top
+                            break
+                    label_box = (
                         label_left,
                         label_top,
                         label_left + callout_width,
                         label_top + callout_height,
-                    ),
-                    radius=17 * supersample,
-                    fill=(255, 255, 255, 242),
-                    outline=(*accent, 100),
-                    width=supersample,
-                )
-                rendered_draw.ellipse(
-                    (
-                        label_left + 11 * supersample,
-                        label_top + 14 * supersample,
-                        label_left + 17 * supersample,
-                        label_top + 20 * supersample,
-                    ),
-                    fill=(*accent, 255),
-                )
-                rendered_draw.text(
-                    (
-                        label_left + 23 * supersample,
-                        label_top + 9 * supersample,
-                    ),
-                    callout,
-                    font=callout_font,
-                    fill=ink,
-                )
+                    )
+                    label_boxes.append(label_box)
+                    line_end = (
+                        label_left if to_right else label_left + callout_width,
+                        label_top + callout_height // 2,
+                    )
+                    elbow = (
+                        marker[0] + (24 if to_right else -24) * supersample,
+                        line_end[1],
+                    )
+                    rendered_draw.line(
+                        (marker, elbow, line_end),
+                        fill=(*accent_dark, 210),
+                        width=supersample,
+                    )
+                    rendered_draw.rounded_rectangle(
+                        label_box,
+                        radius=17 * supersample,
+                        fill=(255, 255, 255, 242),
+                        outline=(*accent, 100),
+                        width=supersample,
+                    )
+                    rendered_draw.ellipse(
+                        (
+                            label_left + 11 * supersample,
+                            label_top + 14 * supersample,
+                            label_left + 17 * supersample,
+                            label_top + 20 * supersample,
+                        ),
+                        fill=(*accent, 255),
+                    )
+                    rendered_draw.text(
+                        (
+                            label_left + 23 * supersample,
+                            label_top + 9 * supersample,
+                        ),
+                        marker_callout,
+                        font=callout_font,
+                        fill=ink,
+                    )
             return rendered
 
-        field_ref = str(patch.get("field_ref") or "").lower()
-        if "draft" in field_ref:
-            title, callout = "DRAFT ANGLE", "CRITICAL DRAFT REGION"
-        elif "thickness" in field_ref:
-            title, callout = "WALL THICKNESS", "CRITICAL THICKNESS REGION"
-        elif "radius" in field_ref:
-            title, callout = "RADIUS CHECK", "CRITICAL RADIUS REGION"
+        field_refs = {str(patch.get("field_ref") or "").lower() for patch in patches}
+        if field_refs and all("draft" in field_ref for field_ref in field_refs):
+            title = "DRAFT ANGLE"
+        elif field_refs and all("thickness" in field_ref for field_ref in field_refs):
+            title = "WALL THICKNESS"
+        elif field_refs and all("radius" in field_ref for field_ref in field_refs):
+            title = "RADIUS CHECK"
+        elif len(field_refs) > 1:
+            title = "DFM EVIDENCE"
         else:
-            title, callout = "GEOMETRY CHECK", "EVALUATED REGION"
+            title = "GEOMETRY CHECK"
 
         detail_framing = list(patch_xy)
         patch_span_x = max(item[0] for item in patch_xy) - min(
@@ -992,18 +1160,16 @@ class FieldEvidenceEngine:
             item[1] for item in patch_xy
         )
         minimum_span = scene_span * 0.12
-        if view.get("presentation_mode") == "oblique":
-            half = scene_span * 0.10
-            detail_framing = [
-                (focus_xy[0] - half, focus_xy[1] - half),
-                (focus_xy[0] + half, focus_xy[1] + half),
-            ]
-        elif patch_span_x < minimum_span or patch_span_y < minimum_span:
+        focus_center = (
+            sum(focus[0] for _patch, focus in focus_values) / len(focus_values),
+            sum(focus[1] for _patch, focus in focus_values) / len(focus_values),
+        )
+        if patch_span_x < minimum_span or patch_span_y < minimum_span:
             half = minimum_span / 2
             detail_framing.extend(
                 [
-                    (focus_xy[0] - half, focus_xy[1] - half),
-                    (focus_xy[0] + half, focus_xy[1] + half),
+                    (focus_center[0] - half, focus_center[1] - half),
+                    (focus_center[0] + half, focus_center[1] + half),
                 ]
             )
 
@@ -1021,7 +1187,7 @@ class FieldEvidenceEngine:
             (hero_width, hero_height),
             detail_framing,
             detail=True,
-            callout=callout,
+            annotate=True,
         )
         hero_box = (margin, header_height, width - margin, height - margin)
         paste_rounded(
@@ -1083,14 +1249,16 @@ class FieldEvidenceEngine:
         )
         draw.text(
             (margin + 18 * supersample, 77 * supersample),
-            f"Evidence {str(patch['patch_id'])[-8:]}  ·  deterministic geometry trace",
+            (
+                f"Evidence {len(patches)} region{'s' if len(patches) != 1 else ''}"
+                f"  ·  {len(prepared.triangles)} triangles  ·  deterministic trace"
+            ),
             font=small_font,
             fill=muted,
         )
 
         label = str(view["label"]).upper()
-        if view.get("presentation_mode") == "oblique":
-            label = f"{label} · OBLIQUE"
+        label = f"{label} · {str(view.get('presentation_mode', 'shared')).upper()} · X-RAY"
         label_box = draw.textbbox((0, 0), label, font=badge_font)
         label_width = label_box[2] - label_box[0] + 28 * supersample
         badge_left = width - margin - label_width
@@ -1159,7 +1327,7 @@ class FieldEvidenceEngine:
         cursor = width - margin - 22 * supersample
         legend_font = font(10 * supersample, bold=True)
         for legend_label, color in (
-            ("FOCUS", accent),
+            ("PROBLEM REGIONS", accent),
             ("EVALUATED SURFACE", (224, 118, 111)),
             ("MODEL", (157, 170, 188)),
         ):
@@ -1188,37 +1356,73 @@ class FieldEvidenceEngine:
         )
 
 
-def _select_representative_patches_by_evaluation(
-    patches: list[dict[str, Any]], max_findings: int
-) -> list[dict[str, Any]]:
-    """Select one representative patch for each failed evaluation."""
-    if max_findings <= 0:
-        return []
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for patch in patches:
-        grouped.setdefault(str(patch.get("evaluation_id") or ""), []).append(patch)
-    for candidates in grouped.values():
-        candidates.sort(
-            key=lambda item: (
-                len(item.get("cell_ids", [])),
-                len(item.get("sample_ids", [])),
-                _bounds_volume(item.get("bounds", {})),
-                str(item.get("patch_id") or ""),
-            ),
-            reverse=True,
-        )
-    return [candidates[0] for candidates in grouped.values() if candidates][
-        :max_findings
-    ]
+def _coverage_requirements(patches: list[dict[str, Any]]) -> dict[str, Any]:
+    """Describe the geometry that the evidence image set is required to cover."""
+
+    required_patch_ids = sorted(str(patch["patch_id"]) for patch in patches)
+    failed_sample_refs = sorted({
+        str(sample_ref)
+        for patch in patches
+        if patch.get("coverage_mode") == "failed_samples"
+        for sample_ref in patch.get("sample_refs", [])
+    })
+    contributing_patch_ids = sorted(
+        str(patch["patch_id"])
+        for patch in patches
+        if patch.get("coverage_mode") == "contributing_regions"
+    )
+    return {
+        "required_patch_ids": required_patch_ids,
+        "failed_sample_refs": failed_sample_refs,
+        "contributing_patch_ids": contributing_patch_ids,
+    }
+
+
+def _coverage_summary(
+    patches: list[dict[str, Any]], covered_patch_ids: set[str]
+) -> dict[str, Any]:
+    """Prove that the generated image set covers every required patch and sample."""
+
+    requirements = _coverage_requirements(patches)
+    required_patch_ids = set(requirements["required_patch_ids"])
+    covered = required_patch_ids.intersection(covered_patch_ids)
+    sample_refs_by_patch = {
+        str(patch["patch_id"]): {
+            str(sample_ref)
+            for sample_ref in patch.get("sample_refs", [])
+            if patch.get("coverage_mode") == "failed_samples"
+        }
+        for patch in patches
+    }
+    covered_sample_refs = {
+        sample_ref
+        for patch_id in covered
+        for sample_ref in sample_refs_by_patch[patch_id]
+    }
+    required_sample_refs = set(requirements["failed_sample_refs"])
+    required_count = len(required_patch_ids)
+    covered_count = len(covered)
+    return {
+        "required_patch_count": required_count,
+        "covered_patch_count": covered_count,
+        "coverage_ratio": covered_count / required_count if required_count else 1.0,
+        "covered_patch_ids": sorted(covered),
+        "uncovered_patch_ids": sorted(required_patch_ids - covered),
+        "required_sample_count": len(required_sample_refs),
+        "covered_sample_count": len(covered_sample_refs),
+        "uncovered_sample_refs": sorted(required_sample_refs - covered_sample_refs),
+    }
 
 
 def _field_pull_direction(
-    project_dir: Path, artifacts: list[ArtifactRecord]
+    project_dir: Path,
+    artifacts: list[ArtifactRecord],
+    payload_cache: dict[str, dict[str, Any]] | None = None,
 ) -> list[float] | None:
     for artifact in artifacts:
         if artifact.kind != "scalar_field":
             continue
-        field = _read_json(project_dir, artifact)
+        field = _read_json(project_dir, artifact, payload_cache)
         context = field.get("calculation_context")
         if not isinstance(context, dict):
             continue
@@ -1226,220 +1430,6 @@ def _field_pull_direction(
         if direction is not None:
             return direction
     return None
-
-
-def _adaptive_views(
-    scene: dict[str, Any],
-    patch: dict[str, Any],
-    pull_direction: list[float] | None,
-) -> list[dict[str, Any]]:
-    """Build three stable camera frames from process and local geometry data."""
-    center = _scene_center(scene)
-    focus = [float(value) for value in patch["focus_point"]]
-    outward = _unit_or_none([focus[i] - center[i] for i in range(3)])
-    if outward is None:
-        outward = [0.57735027, 0.57735027, 0.57735027]
-
-    surface = _unit_or_none(patch.get("surface_normal")) or outward
-    surface = _toward_patch(surface, outward)
-    process = _unit_or_none(pull_direction) or _overview_direction(scene, outward)
-    process = _toward_patch(process, outward)
-
-    side = _unit_or_none(_cross(process, surface))
-    if side is None:
-        side = _stable_perpendicular(process)
-        surface_view = _unit_or_none(
-            [surface[i] + 0.65 * side[i] for i in range(3)]
-        ) or surface
-    else:
-        surface_view = surface
-    side = _stable_sign(side)
-
-    return [
-        _camera_frame(
-            "pull" if pull_direction is not None else "overview",
-            "Pull" if pull_direction is not None else "Overview",
-            process,
-            surface_view,
-            "calculation_context.pull_direction"
-            if pull_direction is not None
-            else "scene_geometry",
-        ),
-        _camera_frame(
-            "surface",
-            "Surface",
-            surface_view,
-            process,
-            "failed_patch.surface_normal",
-        ),
-        _camera_frame("side", "Side", side, process, "derived_orthogonal"),
-    ]
-
-
-def _presentation_view(
-    scene: dict[str, Any], patch: dict[str, Any], source: dict[str, Any]
-) -> dict[str, Any]:
-    """Tilt collapsed orthographic views into readable engineering views."""
-    vertices = [
-        vertex
-        for primitive in scene.get("primitives", [])
-        for vertex in primitive.get("vertices", [])
-        if isinstance(vertex, list) and len(vertex) == 3
-    ]
-    if not vertices:
-        raise DFMError("render_scene_invalid", "The render scene is empty.")
-
-    patch_points = _bounds_corners(patch["bounds"])
-    base_d = source["basis_d"]
-    base_u = source["basis_u"]
-    base_v = source["basis_v"]
-
-    def candidate_view(horizontal: float, vertical: float) -> dict[str, Any]:
-        direction = [
-            float(base_d[axis])
-            + float(base_u[axis]) * horizontal
-            + float(base_v[axis]) * vertical
-            for axis in range(3)
-        ]
-        return _camera_frame(
-            str(source["id"]),
-            str(source["label"]),
-            direction,
-            list(base_v),
-            str(source["source"]),
-        )
-
-    def projected_aspect(
-        points: list[list[float]], candidate: dict[str, Any]
-    ) -> float:
-        projected = [
-            (_dot(point, candidate["basis_u"]), _dot(point, candidate["basis_v"]))
-            for point in points
-        ]
-        span_x = max(item[0] for item in projected) - min(item[0] for item in projected)
-        span_y = max(item[1] for item in projected) - min(item[1] for item in projected)
-        return min(span_x, span_y) / max(span_x, span_y, 1e-9)
-
-    best: tuple[float, float, dict[str, Any]] | None = None
-    for horizontal, vertical in (
-        (0.0, 0.0),
-        (0.22, 0.16),
-        (-0.22, 0.16),
-        (0.42, 0.24),
-        (-0.42, 0.24),
-        (0.32, -0.30),
-        (-0.32, -0.30),
-        (0.82, 0.38),
-        (-0.82, 0.38),
-        (0.72, -0.62),
-        (-0.72, -0.62),
-        (1.35, 0.85),
-        (-1.35, 0.85),
-        (1.50, -1.15),
-        (-1.50, -1.15),
-    ):
-        candidate = candidate_view(horizontal, vertical)
-        scene_aspect = projected_aspect(vertices, candidate)
-        patch_aspect = projected_aspect(patch_points, candidate)
-        deviation = abs(horizontal) + abs(vertical)
-        score = scene_aspect * 0.68 + patch_aspect * 0.32 - deviation * 0.012
-        if best is None or score > best[0]:
-            best = score, scene_aspect, candidate
-
-    assert best is not None
-    if best[1] >= 0.24:
-        return best[2]
-
-    directions = (
-        (
-            (-1.0, 1.0, 0.82),
-            (-1.0, -1.0, 0.82),
-            (-0.72, 1.0, -0.68),
-        )
-        if str(source.get("label") or "").lower() == "side"
-        else (
-            (1.0, 1.0, 0.82),
-            (1.0, -1.0, 0.82),
-            (0.72, 1.0, -0.68),
-        )
-    )
-    for direction in directions:
-        candidate = _camera_frame(
-            str(source["id"]),
-            str(source["label"]),
-            list(direction),
-            [0.0, 0.0, 1.0],
-            str(source["source"]),
-        )
-        scene_aspect = projected_aspect(vertices, candidate)
-        patch_aspect = projected_aspect(patch_points, candidate)
-        score = scene_aspect * 0.64 + patch_aspect * 0.36
-        if score > best[0]:
-            best = score, scene_aspect, candidate
-    return {**best[2], "presentation_mode": "oblique"}
-
-
-def _camera_frame(
-    view_id: str,
-    label: str,
-    direction: list[float],
-    up_hint: list[float],
-    source: str,
-) -> dict[str, Any]:
-    basis_d = _unit_or_none(direction)
-    assert basis_d is not None
-    basis_u = _unit_or_none(_cross(up_hint, basis_d))
-    if basis_u is None:
-        basis_u = _stable_perpendicular(basis_d)
-    basis_v = _unit_or_none(_cross(basis_d, basis_u))
-    assert basis_v is not None
-    return {
-        "id": view_id,
-        "label": label,
-        "basis_u": tuple(basis_u),
-        "basis_v": tuple(basis_v),
-        "basis_d": tuple(basis_d),
-        "source": source,
-    }
-
-
-def _scene_center(scene: dict[str, Any]) -> list[float]:
-    vertices = [
-        vertex
-        for primitive in scene.get("primitives", [])
-        for vertex in primitive.get("vertices", [])
-        if isinstance(vertex, list) and len(vertex) == 3
-    ]
-    if not vertices:
-        raise DFMError("render_scene_invalid", "The render scene is empty.")
-    return [
-        (min(float(item[axis]) for item in vertices) + max(float(item[axis]) for item in vertices))
-        / 2.0
-        for axis in range(3)
-    ]
-
-
-def _overview_direction(
-    scene: dict[str, Any], outward: list[float]
-) -> list[float]:
-    vertices = [
-        vertex
-        for primitive in scene.get("primitives", [])
-        for vertex in primitive.get("vertices", [])
-        if isinstance(vertex, list) and len(vertex) == 3
-    ]
-    spans = [
-        max(float(item[axis]) for item in vertices)
-        - min(float(item[axis]) for item in vertices)
-        for axis in range(3)
-    ]
-    smallest_axis = min(range(3), key=lambda axis: spans[axis])
-    thin_axis = [0.0, 0.0, 0.0]
-    thin_axis[smallest_axis] = 1.0
-    direction = _unit_or_none(
-        [outward[i] + 0.75 * thin_axis[i] for i in range(3)]
-    )
-    return direction or outward
 
 
 def _average_direction(values: list[Any]) -> list[float] | None:
@@ -1471,34 +1461,6 @@ def _unit_or_none(value: Any) -> list[float] | None:
     return [item / length for item in vector]
 
 
-def _cross(left: Any, right: Any) -> list[float]:
-    return [
-        float(left[1]) * float(right[2]) - float(left[2]) * float(right[1]),
-        float(left[2]) * float(right[0]) - float(left[0]) * float(right[2]),
-        float(left[0]) * float(right[1]) - float(left[1]) * float(right[0]),
-    ]
-
-
-def _stable_perpendicular(direction: list[float]) -> list[float]:
-    axis = min(range(3), key=lambda index: abs(direction[index]))
-    helper = [0.0, 0.0, 0.0]
-    helper[axis] = 1.0
-    perpendicular = _unit_or_none(_cross(direction, helper))
-    assert perpendicular is not None
-    return _stable_sign(perpendicular)
-
-
-def _toward_patch(direction: list[float], outward: list[float]) -> list[float]:
-    return direction if _dot(direction, outward) >= 0 else [-item for item in direction]
-
-
-def _stable_sign(direction: list[float]) -> list[float]:
-    for item in direction:
-        if abs(item) > 1e-12:
-            return direction if item > 0 else [-value for value in direction]
-    return direction
-
-
 def _bounds_corners(bounds: dict[str, Any]) -> list[list[float]]:
     minimum = bounds["minimum"]
     maximum = bounds["maximum"]
@@ -1510,16 +1472,13 @@ def _bounds_corners(bounds: dict[str, Any]) -> list[list[float]]:
     ]
 
 
-def _bounds_volume(bounds: dict[str, Any]) -> float:
-    try:
-        minimum = bounds["minimum"]
-        maximum = bounds["maximum"]
-        return math.prod(max(0.0, float(maximum[i]) - float(minimum[i])) for i in range(3))
-    except (KeyError, TypeError, ValueError):
-        return 0.0
-
-
-def _read_json(project_dir: Path, artifact: ArtifactRecord) -> dict[str, Any]:
+def _read_json(
+    project_dir: Path,
+    artifact: ArtifactRecord,
+    cache: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if cache is not None and artifact.artifact_id in cache:
+        return cache[artifact.artifact_id]
     try:
         payload = json.loads(
             (project_dir / artifact.relative_path).read_text(encoding="utf-8")
@@ -1534,12 +1493,16 @@ def _read_json(project_dir: Path, artifact: ArtifactRecord) -> dict[str, Any]:
             "evidence_artifact_invalid",
             f"The {artifact.kind} artifact must be a JSON object.",
         )
+    if cache is not None:
+        cache[artifact.artifact_id] = payload
     return payload
 
 
 def _connected_cells(
     cells: list[dict[str, Any]], scene: dict[str, Any]
 ) -> list[list[dict[str, Any]]]:
+    """Return connected failed cells using indexed near-linear union operations."""
+
     triangle_vertices = {
         (
             str(primitive.get("render_mesh_snapshot_id")),
@@ -1565,28 +1528,44 @@ def _connected_cells(
             set(),
         )
 
-    remaining = list(cells)
-    groups: list[list[dict[str, Any]]] = []
-    while remaining:
-        group = [remaining.pop()]
-        sample_ids = set(str(item) for item in group[0].get("sample_ids", []))
-        vertices = set(mesh_vertices(group[0]))
-        changed = True
-        while changed:
-            changed = False
-            for cell in list(remaining):
-                cell_samples = set(str(item) for item in cell.get("sample_ids", []))
-                cell_vertices = mesh_vertices(cell)
-                if sample_ids.intersection(cell_samples) or len(
-                    vertices.intersection(cell_vertices)
-                ) >= 2:
-                    remaining.remove(cell)
-                    group.append(cell)
-                    sample_ids.update(cell_samples)
-                    vertices.update(cell_vertices)
-                    changed = True
-        groups.append(group)
-    return groups
+    parents = list(range(len(cells)))
+    ranks = [0] * len(cells)
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root == right_root:
+            return
+        if ranks[left_root] < ranks[right_root]:
+            left_root, right_root = right_root, left_root
+        parents[right_root] = left_root
+        if ranks[left_root] == ranks[right_root]:
+            ranks[left_root] += 1
+
+    sample_owner: dict[str, int] = {}
+    edge_owner: dict[tuple[tuple[float, ...], tuple[float, ...]], int] = {}
+    for cell_index, cell in enumerate(cells):
+        for sample_id in {str(item) for item in cell.get("sample_ids", [])}:
+            owner = sample_owner.setdefault(sample_id, cell_index)
+            union(cell_index, owner)
+
+        vertices = sorted(mesh_vertices(cell))
+        for left_index in range(len(vertices)):
+            for right_index in range(left_index + 1, len(vertices)):
+                edge = (vertices[left_index], vertices[right_index])
+                owner = edge_owner.setdefault(edge, cell_index)
+                union(cell_index, owner)
+
+    grouped: dict[int, list[tuple[int, dict[str, Any]]]] = {}
+    for cell_index, cell in enumerate(cells):
+        grouped.setdefault(find(cell_index), []).append((cell_index, cell))
+    ordered = sorted(grouped.values(), key=lambda group: group[0][0])
+    return [[cell for _index, cell in group] for group in ordered]
 
 
 def _unique_dicts(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1615,4 +1594,15 @@ def _visible(points: list[tuple[int, int]], width: int, height: int) -> bool:
         or min(point[0] for point in points) >= width
         or max(point[1] for point in points) < 0
         or min(point[1] for point in points) >= height
+    )
+
+
+def _rectangles_overlap(
+    left: tuple[int, int, int, int], right: tuple[int, int, int, int]
+) -> bool:
+    return not (
+        left[2] <= right[0]
+        or left[0] >= right[2]
+        or left[3] <= right[1]
+        or left[1] >= right[3]
     )

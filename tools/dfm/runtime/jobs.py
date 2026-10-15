@@ -443,7 +443,9 @@ class JobManager:
                         context.project_dir,
                         run_id,
                         checked,
-                        max_findings=self.config.max_evidence_findings,
+                        max_markers_per_image=(
+                            self.config.max_evidence_markers_per_image
+                        ),
                     )
                     checked.extend(
                         self._validate_artifact(context.project_dir, item)

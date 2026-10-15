@@ -51,6 +51,16 @@ def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path):
             ]
         },
         "evidence_records.json": {
+            "coverage": {
+                "required_patch_count": 1,
+                "covered_patch_count": 1,
+                "coverage_ratio": 1.0,
+                "covered_patch_ids": ["patch-1"],
+                "uncovered_patch_ids": [],
+                "required_sample_count": 2,
+                "covered_sample_count": 2,
+                "uncovered_sample_refs": [],
+            },
             "records": [{
                 "evidence_id": "evidence-draft",
                 "evaluation_ids": ["evaluation-draft"],
@@ -130,3 +140,4 @@ def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path):
     ]
     assert report["stats"]["indeterminate_count"] == 1
     assert report["indeterminate_checks"][0]["check_id"] == "check.boss_wall"
+    assert report["evidence_coverage"]["coverage_ratio"] == 1.0

@@ -20,7 +20,7 @@ def test_dfm_config_defaults_match_m0_contract():
         max_file_size_mb=200,
         max_pages=50,
         keep_failed_runs=True,
-        max_evidence_findings=12,
+        max_evidence_markers_per_image=10,
         drawing_enabled=True,
         geometry_backend=GEOMETRY_BACKEND_OCCT_CPP_EXTERNAL,
     )
@@ -37,7 +37,7 @@ def test_dfm_config_reads_nested_values():
             "intake": {"max_file_size_mb": 12, "max_pages": 8},
             "defaults": {"process": "injection"},
             "retention": {"keep_failed_runs": False},
-            "evidence": {"max_rendered_findings": 7},
+            "evidence": {"max_markers_per_image": 7},
             "nx": {
                 "endpoint": "https://nx.example.internal/",
                 "request_timeout_seconds": 15,
@@ -57,12 +57,20 @@ def test_dfm_config_reads_nested_values():
     assert config.max_file_size_mb == 12
     assert config.max_pages == 8
     assert config.keep_failed_runs is False
-    assert config.max_evidence_findings == 7
+    assert config.max_evidence_markers_per_image == 7
     assert config.nx_endpoint == "https://nx.example.internal"
     assert config.nx_request_timeout_seconds == 15
     assert config.nx_poll_interval_seconds == 1
     assert config.geometry_backend == GEOMETRY_BACKEND_PYTHONOCC_INTERNAL
     assert config.geometry_analyzer_key == "step"
+
+
+def test_dfm_config_reads_legacy_evidence_limit_as_marker_density():
+    config = load_dfm_config({
+        "dfm": {"evidence": {"max_rendered_findings": 6}}
+    })
+
+    assert config.max_evidence_markers_per_image == 6
 
 
 @pytest.mark.parametrize(
@@ -124,7 +132,7 @@ def test_dfm_config_normalizes_the_m0_process_name():
         {"dfm": {"runtime": {"timeout_seconds": "slow"}}},
         {"dfm": {"intake": {"max_file_size_mb": -1}}},
         {"dfm": {"retention": {"keep_failed_runs": "yes"}}},
-        {"dfm": {"evidence": {"max_rendered_findings": 0}}},
+        {"dfm": {"evidence": {"max_markers_per_image": 0}}},
         {"dfm": {"drawing": {"enabled": "yes"}}},
         {"dfm": {"geometry": {"backend": ""}}},
     ],

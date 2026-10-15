@@ -373,16 +373,16 @@ Desktop 与 HTML 摘要页的红色问题高亮都以 `evidence_geometry.json` �
 替代规则判定。Viewer v2 的 `issues[].triangle_refs` 是可选字段：旧工件没有精确三角片时，
 Desktop 回退到 `geometry_refs` 的面级定位。没有 FailedPatch 几何证据的失败项不能声称有精确高亮。
 
-当前只有失败 Evaluation 能关联有效 ScalarField 时才生成局部证据图片。每个入选 FailedPatch
-最多生成三个自适应视角：
+当前只有失败 Evaluation 能关联有效 ScalarField 时才生成证据图片。证据规划器按场景选择共享视角，
+在一张图中合并可辨识的问题区域；无法清晰合并的区域会自动拆分到后续图片。每个 FailedPatch
+以及直接标量规则的每个失败采样点都必须至少被一张图片覆盖，否则证据阶段以
+`evidence_coverage_incomplete` 失败，不允许静默遗漏。
 
-- 出模方向视图 `pull`，未提供方向时为 `overview`；
-- 局部表面法向视图 `surface`；
-- 正交侧视图 `side`。
-
-`dfm.evidence.max_rendered_findings` 当前实际限制一次 Run 最多生成的证据图片总数；并非所有失败
-都会生成三张图片。当前确定性证据管线不生成 `dfm_highlighted.step`、`model.png`、`overview.png`
-或旧式 `DFM-*.png`，这些名称不得作为集成契约。
+`dfm.evidence.max_markers_per_image` 仅限制单张图片的问题标记数，默认值为 `10`，不限制一次 Run
+的证据总数。`evidence_records.json.coverage` 给出 patch 和失败采样点的覆盖结果。PPT 每页最多展示
+三张证据图，超出时自动续页。旧配置 `max_rendered_findings` 仍可读取，但其值按单图标记数解释；
+新配置不要再使用旧键。当前确定性证据管线不生成 `dfm_highlighted.step`、`model.png`、
+`overview.png` 或旧式 `DFM-*.png`，这些名称不得作为集成契约。
 
 ## 10. 数据追溯关系
 

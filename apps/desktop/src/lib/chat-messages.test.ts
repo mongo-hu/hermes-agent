@@ -168,6 +168,12 @@ describe('renderMediaTags', () => {
     expect(renderMediaTags('MEDIA:/tmp/demo.mp4')).toBe('[Video: demo.mp4](#media:%2Ftmp%2Fdemo.mp4)')
   })
 
+  it('canonicalizes a POSIX-prefixed Windows MEDIA path', () => {
+    expect(renderMediaTags('MEDIA:/D:\\item\\DFM\\report.html')).toBe(
+      '[File: report.html](#media:D%3A%5Citem%5CDFM%5Creport.html)'
+    )
+  })
+
   it('renders streamed assistant media once the tag is complete', () => {
     const parts = appendAssistantTextPart(appendAssistantTextPart([], 'ok\nMEDIA:'), '/tmp/voice.mp3')
     const text = chatMessageText({ id: 'a', role: 'assistant', parts })

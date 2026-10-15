@@ -184,7 +184,7 @@ def _issue_images(context: ReportContext, issue: Mapping[str, Any]) -> list[tupl
         if path is not None and path not in used:
             ordered.append(("证据", path))
             used.add(path)
-    return ordered[: context.max_images_per_finding]
+    return ordered
 
 
 def _picture_contain(slide, path: Path, x: float, y: float, w: float, h: float) -> None:
@@ -249,12 +249,31 @@ class PythonPptxReportRenderer(ReportRenderer):
         issues = _valid_issues(context.result)
         evidence = [(issue, _issue_images(context, issue)) for issue in issues]
         evidence = [(issue, images) for issue, images in evidence if images]
+        evidence_pages = [
+            (issue, images[index : index + context.max_images_per_evidence_slide], page, page_count)
+            for issue, images in evidence
+            for page_count in [
+                (len(images) + context.max_images_per_evidence_slide - 1)
+                // context.max_images_per_evidence_slide
+            ]
+            for page, index in enumerate(
+                range(0, len(images), context.max_images_per_evidence_slide),
+                start=1,
+            )
+        ]
 
         self._cover(presentation.slides.add_slide(layout), context)
         self._summary(presentation.slides.add_slide(layout), context, issues)
         self._overview(presentation.slides.add_slide(layout), context, issues, evidence)
-        for issue, images in evidence:
-            self._finding(presentation.slides.add_slide(layout), context, issue, images)
+        for issue, images, page, page_count in evidence_pages:
+            self._finding(
+                presentation.slides.add_slide(layout),
+                context,
+                issue,
+                images,
+                page=page,
+                page_count=page_count,
+            )
         self._notes(presentation.slides.add_slide(layout), context, issues, evidence)
         for page, slide in enumerate(presentation.slides, start=1):
             if page != 1:
@@ -270,7 +289,7 @@ class PythonPptxReportRenderer(ReportRenderer):
                 "The DFM PowerPoint report could not be written.",
                 {"path": str(output)},
             ) from exc
-        expected = 4 + len(evidence)
+        expected = 4 + len(evidence_pages)
         if not output.is_file() or output.stat().st_size == 0 or len(reopened.slides) != expected:
             raise DFMError(
                 "report_generation_failed",
@@ -353,8 +372,8 @@ class PythonPptxReportRenderer(ReportRenderer):
         _shape(slide, 8.62, 1.35, 4.0, 5.45, _NAVY)
         _text(slide, "证据页规则", 8.98, 1.75, 2.8, 0.45, size=19, color=_WHITE, bold=True)
         notes = [
-            "每个问题最多 3 张证据图",
-            "固定顺序：正视、剖视、斜视",
+            "每页最多 3 张证据图，超出时自动续页",
+            "所有有效证据图都会进入报告",
             "检测指标直接来自分析 JSON",
             "未生成证据的问题保留在 JSON/MD",
         ]
@@ -369,13 +388,21 @@ class PythonPptxReportRenderer(ReportRenderer):
         context: ReportContext,
         issue: Mapping[str, Any],
         images: list[tuple[str, Path]],
+        *,
+        page: int,
+        page_count: int,
     ) -> None:
         _base(slide)
         severity = str(issue.get("severity") or "info").lower()
         color = _SEVERITY.get(severity, _SEVERITY["info"])
         issue_id = str(issue.get("id") or "DFM")
         title = str(issue.get("title") or issue.get("code") or "DFM 问题")
-        _title(slide, f"{issue_id} · {title}", str(issue.get("code") or ""))
+        page_suffix = f" · 证据 {page}/{page_count}" if page_count > 1 else ""
+        _title(
+            slide,
+            f"{issue_id} · {title}{page_suffix}",
+            str(issue.get("code") or ""),
+        )
         _shape(slide, 11.45, 0.34, 1.15, 0.45, color)
         _text(slide, severity.upper(), 11.45, 0.34, 1.15, 0.45, size=10, color=_WHITE, bold=True, align="center")
         _shape(slide, 0.7, 1.35, 3.28, 5.45, _WHITE)

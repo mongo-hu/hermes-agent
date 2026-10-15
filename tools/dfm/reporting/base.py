@@ -16,7 +16,7 @@ class ReportContext:
     result: Mapping[str, Any]
     process: str
     scope_id: str
-    max_images_per_finding: int = 3
+    max_images_per_evidence_slide: int = 3
 
 
 @dataclass(frozen=True)

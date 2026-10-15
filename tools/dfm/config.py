@@ -50,7 +50,7 @@ class DFMConfig:
     max_file_size_mb: int = 200
     max_pages: int = 50
     keep_failed_runs: bool = True
-    max_evidence_findings: int = 12
+    max_evidence_markers_per_image: int = 10
     nx_endpoint: str = ""
     nx_request_timeout_seconds: int = 30
     nx_poll_interval_seconds: int = 2
@@ -165,6 +165,17 @@ def load_dfm_config(config: Mapping[str, Any] | None = None) -> DFMConfig:
         raise DFMError(
             "config_invalid", "dfm.retention.keep_failed_runs must be boolean."
         )
+    evidence_config = _nested(config, "dfm", "evidence", default={})
+    if not isinstance(evidence_config, Mapping):
+        raise DFMError("config_invalid", "dfm.evidence must be a mapping.")
+    if "max_markers_per_image" in evidence_config:
+        max_markers_per_image = evidence_config["max_markers_per_image"]
+        max_markers_path = "dfm.evidence.max_markers_per_image"
+    else:
+        max_markers_per_image = evidence_config.get(
+            "max_rendered_findings", defaults.max_evidence_markers_per_image
+        )
+        max_markers_path = "dfm.evidence.max_rendered_findings"
     return DFMConfig(
         runtime_python=runtime_python.strip(),
         default_process=normalized_process,
@@ -203,15 +214,9 @@ def load_dfm_config(config: Mapping[str, Any] | None = None) -> DFMConfig:
             "dfm.intake.max_pages",
         ),
         keep_failed_runs=keep_failed,
-        max_evidence_findings=_positive_int(
-            _nested(
-                config,
-                "dfm",
-                "evidence",
-                "max_rendered_findings",
-                default=defaults.max_evidence_findings,
-            ),
-            "dfm.evidence.max_rendered_findings",
+        max_evidence_markers_per_image=_positive_int(
+            max_markers_per_image,
+            max_markers_path,
         ),
         nx_endpoint=nx_endpoint.strip().rstrip("/"),
         nx_request_timeout_seconds=_positive_int(

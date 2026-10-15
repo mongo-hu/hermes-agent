@@ -103,7 +103,12 @@ function unquoteMediaPath(value: string): string {
   const trimmed = value.trim()
   const quote = trimmed[0]
 
-  return quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote) ? trimmed.slice(1, -1) : trimmed
+  const path = quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote) ? trimmed.slice(1, -1) : trimmed
+
+  // Some models follow the POSIX-looking `MEDIA:/absolute/path` example
+  // literally for Windows paths and emit `/D:\...`. The slash is not part of
+  // a Windows absolute path; remove only this exact protocol-boundary typo.
+  return path.replace(/^\/(?=[a-z]:[\\/])/i, '')
 }
 
 function mediaLink(value: string): string {

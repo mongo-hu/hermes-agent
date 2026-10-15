@@ -216,7 +216,7 @@ dfm:
     executable: "C:/path/to/dfm-geometry.exe"
     timeout_seconds: 900
   evidence:
-    max_rendered_findings: 12
+    max_markers_per_image: 10
   retention:
     keep_failed_runs: true
   drawing:

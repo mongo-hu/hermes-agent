@@ -12,7 +12,7 @@ def _image(path: Path, color: tuple[int, int, int]) -> None:
     Image.new("RGB", (640, 420), color).save(path)
 
 
-def test_pptx_report_contains_bounded_ordered_evidence(tmp_path):
+def test_pptx_report_paginates_all_ordered_evidence(tmp_path):
     from pptx import Presentation
     from pptx.enum.shapes import MSO_SHAPE_TYPE
 
@@ -60,7 +60,7 @@ def test_pptx_report_contains_bounded_ordered_evidence(tmp_path):
     assert artifacts[0].kind == "report_presentation"
     assert artifacts[0].path.name == "dfm_report.pptx"
     deck = Presentation(artifacts[0].path)
-    assert len(deck.slides) == 5
+    assert len(deck.slides) == 6
 
     detail = deck.slides[3]
     detail_text = "\n".join(
@@ -68,3 +68,12 @@ def test_pptx_report_contains_bounded_ordered_evidence(tmp_path):
     )
     assert detail_text.index("正视") < detail_text.index("剖视") < detail_text.index("斜视")
     assert sum(shape.shape_type == MSO_SHAPE_TYPE.PICTURE for shape in detail.shapes) == 3
+
+    continuation = deck.slides[4]
+    continuation_text = "\n".join(
+        shape.text for shape in continuation.shapes if hasattr(shape, "text_frame")
+    )
+    assert "证据 2/2" in continuation_text
+    assert sum(
+        shape.shape_type == MSO_SHAPE_TYPE.PICTURE for shape in continuation.shapes
+    ) == 1

@@ -34,6 +34,18 @@ def materialize_result_reports(
         if "evidence_records" in by_kind
         else {"records": []}
     )
+    evidence_coverage = evidence_payload.get("coverage")
+    if not isinstance(evidence_coverage, dict):
+        evidence_coverage = {
+            "required_patch_count": 0,
+            "covered_patch_count": 0,
+            "coverage_ratio": 1.0,
+            "covered_patch_ids": [],
+            "uncovered_patch_ids": [],
+            "required_sample_count": 0,
+            "covered_sample_count": 0,
+            "uncovered_sample_refs": [],
+        }
     measurements = {
         str(item.get("measurement_id")): item
         for item in measurements_payload.get("measurements", [])
@@ -156,6 +168,7 @@ def materialize_result_reports(
             "issue_type_counts": summarize_issue_types(issues),
             "indeterminate_count": len(indeterminate_checks),
         },
+        "evidence_coverage": evidence_coverage,
         "issues": issues,
         "indeterminate_checks": indeterminate_checks,
     }
@@ -171,6 +184,11 @@ def materialize_result_reports(
         f"- Scope: {plan.scope_id}@{plan.scope_version}",
         f"- Failed checks: {len(issues)}",
         f"- Indeterminate checks: {len(indeterminate_checks)}",
+        (
+            "- Evidence coverage: "
+            f"{evidence_coverage.get('covered_patch_count', 0)}/"
+            f"{evidence_coverage.get('required_patch_count', 0)} patches"
+        ),
         "",
     ]
     for issue in issues:
