@@ -616,11 +616,12 @@
   padding: 0.125rem;
   background: conic-gradient(
     from var(--tab-edge-orbit-angle) at 50% 50%,
-    color-mix(in srgb, var(--tab-edge-color) 38%, transparent) 0deg 244deg,
-    color-mix(in srgb, var(--tab-edge-color) 62%, transparent) 270deg,
-    color-mix(in srgb, var(--tab-edge-color) 92%, #fff) 306deg,
-    #fff 328deg,
-    color-mix(in srgb, var(--tab-edge-color) 94%, #fff) 346deg,
+    color-mix(in srgb, var(--tab-edge-color) 38%, transparent) 0deg 168deg,
+    color-mix(in srgb, var(--tab-edge-color) 62%, transparent) 192deg,
+    color-mix(in srgb, var(--tab-edge-color) 92%, #fff) 230deg,
+    #fff 270deg,
+    color-mix(in srgb, var(--tab-edge-color) 94%, #fff) 320deg,
+    color-mix(in srgb, var(--tab-edge-color) 62%, transparent) 348deg,
     color-mix(in srgb, var(--tab-edge-color) 38%, transparent) 360deg
   );
   mask:
