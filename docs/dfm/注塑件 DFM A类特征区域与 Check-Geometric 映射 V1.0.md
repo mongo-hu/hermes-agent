@@ -1,40 +1,16 @@
 # 注塑件 DFM A类特征区域与 Check-Geometric 映射 V1.0
 
-日期：2026-09-29。
+状态：工程映射设计，非已发布能力清单。更新：2026-10-19。[开发导航](README.md)
 
-输入资料：`D:\notes\MoldMind\V1.2.5.xlsx`。
+本文维护 A 类 44 条来源需求的 Feature、部位、配对、Check 与 G 定义，不再维护完整流程或通信字段。流程见[主流程](dfm-main-workflow-explained.md)，来源边界见[统一需求台账](dfm-injection-requirements-and-coverage.md)，实现交付见[任务与验收](%E6%B3%A8%E5%A1%91%E4%BB%B6%20DFM%20%E7%89%B9%E5%BE%81%E8%AF%86%E5%88%AB%E4%B8%8E%E5%87%A0%E4%BD%95%E8%AE%A1%E7%AE%97%E5%BC%80%E5%8F%91%E4%BB%BB%E5%8A%A1%E6%B8%85%E5%8D%95%20V1.0.md)。
 
-关联文档：[特征识别与几何计算开发任务清单](注塑件%20DFM%20特征识别与几何计算开发任务清单%20V1.0.md)、[检查项覆盖矩阵](注塑件%20DFM%20检查项覆盖矩阵%20V1.0.md)。
+映射最初对照资料为 `D:\notes\MoldMind\V1.2.5.xlsx`；这是历史资料身份，不证明当前数据库仍与其一致。表内“现有”仅指该次对照资料，“新增”表示候选命名。正式 G ID、Check 和规则以已审核发布物为准；发布前逐项核对差异、冻结定义，不根据名称推定算法已实现。
 
-本文先用螺钉柱还原Excel的设计思路，再检查现有“功能区指标”对A类44行的覆盖，最后给出可落地的Feature、Check和Geometric映射。区域和对象关系由Geometric ID的定义携带，由OCCT Worker在内部定位；本文中的区域名称用于说明每个Geometric必须理解的目标语义，不建议新增独立的Region Role或Relation ID体系。标为“新增”的`C_*`/`G_*`是建议命名，正式发布前应与现有数据字典统一冻结。
+## 1. 映射的职责
 
-## 1. 对Excel设计思路的理解
+每个 Check 绑定明确的业务目标；每个 G 固定要测的部位、参考对象、几何量和聚合口径。一个 G 可以服务多个 Check，内部算法也可复用，但不能因底层算法相同而混淆外根部与孔底、最小值与最大值。
 
-Excel目前表达的是一条正确的规则执行链：
-
-```text
-Feature实例
-  → 目标Region及其关系
-  → Geometric客观量
-  → Check业务指标
-  → Factor选择/修正规则
-  → Rule比较表达式
-  → Finding及几何证据
-```
-
-各层职责应保持如下边界：
-
-| 层 | 回答的问题 | 示例 |
-| --- | --- | --- |
-| Feature | 这是什么结构实例 | 螺钉柱、筋、盲孔、卡扣 |
-| Geometric的区域语义 | 这个实例的哪个部位参与量测 | 螺钉柱外壁、孔壁、孔底、外根部；编码在Geometric定义中 |
-| Geometric的配对语义 | 与谁比较、如何连接或如何选参考 | 螺钉柱邻近主壁、孔底对应外壁、BOSS支撑筋集合 |
-| Geometric结果 | 客观几何值及证据是什么 | 局部厚度场、最小R、带符号拔模角、净距，以及相关Face/Edge位置 |
-| Check | 要检查的业务指标是什么 | 螺钉柱壁厚、孔底厚度、BOSS加强筋 |
-| Factor | 哪条规则适用、阈值如何修正 | 材料、外观区、工艺、方向、钢材类型 |
-| Rule | 如何比较Geometric与阈值 | `min_ratio >= lower && max_ratio <= upper` |
-
-这个方向适合继续落地。根据当前方案，Feature和Geometric之间不需要再暴露独立的Region Role和Relation模型：`CORE、BOTTOM、OUT、IN、ROOT`等词汇共同构成Geometric ID的固定语义，OCCT Worker按该定义寻找目标区域、参考区域或对象配对，并在Measurement中返回相关Face/Edge/Volume位置。需要补强的不是一套新ID，而是**每个Geometric ID的可执行契约**，保证名称、区域选择、聚合口径和证据返回在各实现间保持一致。
+外壁、孔壁、孔底、根部和邻近主体壁是 Worker 理解的工程部位，不另建本体 Region 或公开 Region Role 路由。几何证据必须保留实际选中的面、边、体或采样位置。
 
 ## 2. 用螺钉柱还原完整模型
 
@@ -66,7 +42,7 @@ Feature实例
 | `C_SCREW_BOSS_HOLE_DEPTH` | 孔壁＋孔底＋轴线 | `G_SCREW_BOSS_CORE_DEPTH`、`G_SCREW_BOSS_HOLE_DIA_EFFECTIVE`、二者比值 | “取孔底处孔径”对锥底、阶梯孔不充分；需定义有效成型段和控制直径。规则页第二分支表达式为`≤4`，改进建议却写“超过3:1”，需统一 |
 | `C_SCREW_BOSS_BOTTOM_THK` | 孔底＋对应外壁＋局部主壁参考 | `G_SCREW_BOSS_BOTTOM_THK_MIN`、`G_SCREW_BOSS_WALL_REF_THK` | 将现有`BOTTOM_THK`明确为配对区域内最小底厚，并返回见证点/线 |
 | `C_SCREW_BOSS_DRAFT` | 外壁、孔壁＋用户主出模方向 | `G_SCREW_BOSS_DRAFT_OUT_FIELD/MIN`、`G_SCREW_BOSS_DRAFT_IN_FIELD/MIN` | A类统一使用用户提供的`F_TOOL_MAIN_DRAW_DIR`并分别处理内外壁符号；孔轴/柱轴只能用于一致性检查，不能替代主方向。若需要侧向芯针，先返回主方向下不适用/倒扣证据，取得局部方向后转相应扩展检查 |
-| `C_SCREW_BOSS_OUTER_ROOT_FILLET` | 外根过渡＋局部主壁参考 | `G_SCREW_BOSS_OUTER_ROOT_FILLET_R_MIN`、`G_SCREW_BOSS_WALL_REF_THK` | 现有名称`G_SCREW_BOSS_FILLET_TOP_R`与规则页“外根部”不一致，建议迁移为外根部ID并保留旧ID别名 |
+| `C_SCREW_BOSS_OUTER_ROOT_FILLET` | 外根过渡＋局部主壁参考 | `G_SCREW_BOSS_OUTER_ROOT_FILLET_R_MIN`、`G_SCREW_BOSS_WALL_REF_THK` | 现有名称`G_SCREW_BOSS_FILLET_TOP_R`与规则页“外根部”不一致，经工程确认后迁移为语义明确的外根部ID；新 Worker 协议不增加旧 ID 路由别名，旧发布物只保留追溯 |
 | `C_SCREW_BOSS_HOLE_BOTTOM_FILLET` | 孔底内圆角＋局部主壁参考 | `G_SCREW_BOSS_HOLE_BOTTOM_FILLET_R_MIN`、`G_SCREW_BOSS_WALL_REF_THK` | 不应与外根部圆角共用一个Check，否则不同区域、风险和改进建议无法独立出Finding |
 | `C_BOSS_ROOT_CONNECTION` | 柱根＋主壁＋支撑筋关系 | `G_BOSS_ROOT_THK_MAX`、`G_BOSS_ROOT_CONTACT_AREA`、`G_BOSS_ROOT_FILLET_R_MIN` | A类01.08，现表缺少 |
 | `C_SCREW_BOSS_RIB_SUPPORT` | 螺钉柱＋支撑筋集合＋主壁 | `G_BOSS_SUPPORT_RIB_COUNT`、筋尺度、连接和根R | A类11.02；即使没有筋也要从螺钉柱触发，返回数量0及“期望关系缺失”证据 |
@@ -75,9 +51,17 @@ Feature实例
 
 现有`C_SCREW_BOSS_THIN_STEEL`需要钢材类型、成型侧、钢料高度和支撑条件。产品几何可以先输出BOSS到外壁净距作为预筛，但“薄钢是否合格”应放在B类模具对象补齐后确认，不应占用A类11.04的几何净距Check。
 
+### 2.3 柱壁两项 G 的测量口径
+
+对受支持的同轴中空柱，柱壁采样沿朝柱轴方向找到孔内壁；仅当有效材料路径首次命中属于该孔壁时计入厚度。采样值 1.2、1.8、2.1 mm 的采样最大值为 2.1 mm，并非对所有复杂形状都已证明的解析最大值。非同轴、变截面和无效配对需按能力定义处理。
+
+参考壁厚从该柱关联的局部主壁选取。现有示例算法沿有效壁面向内取厚度样本后用中位数；2.9、3.0、3.1 mm 得到 3.0 mm。正式 G 定义须审核这一口径，不能仅因算法已有实现就改变业务定义，也不能改用全件平均值。
+
+外根部和孔底圆角可以复用同一半径算法，但选择器和证据部位不同。孔深／孔径也可共享孔壁分析；技术指标身份仍按各自工程含义区分。
+
 ## 3. Geometric内部的特征区域应怎样划分
 
-### 3.1 四类目标必须分开
+### 3.1 五类目标必须分开
 
 | 目标类型 | 谁负责定位 | 示例 |
 | --- | --- | --- |
@@ -89,18 +73,11 @@ Feature实例
 
 不能要求特征识别器在不知道方向、量测结果或规则阈值时直接给出“零拔模区”“超限厚肉区”。识别器先返回稳定的Feature实例和全局作用域；Geometric根据ID语义定位面并返回数值/场及证据；Hermes再按规则筛出违规证据。
 
-### 3.2 推荐请求和结果模型
+### 3.2 请求与结果引用
 
-- `snapshot_id`：绑定模型版本；拓扑变化后旧证据不得静默复用。
-- `feature_id`或`scope_id`：指定在哪个Feature实例或全局作用域执行，例如`SCREW_BOSS_0007`。
-- `geometric_id`：唯一确定特征类型、内部目标区域、参考对象、计算量和聚合口径。
-- `context`：A类方向相关任务必须携带用户提供的主出模方向、来源和坐标系；还可包含成型侧、比较基准或方案。方向改变时，相关结果必须重新计算。
-- `value/field`、`quantity`、`unit`和`aggregation`：返回客观计算结果和口径。
-- `evidence_refs`：返回参与计算、极值或违规定位所需的Face/Edge/Volume引用、见证点/线和可视化网格映射。
-- `selected_operands`：当Geometric内部选择了邻近主壁、对应外壁、另一孔或支撑筋集合时，返回实际选中的对象及选择质量。
-- `status/diagnostics`：成功、无适用区域、输入缺失、歧义、不支持和计算失败必须区分。
+普通测量使用 snapshot、Feature、G 和必要 context，不由 Hermes 拼底层面清单。公共字段由 Worker 契约及后续共享 Schema 维护，Hermes 使用方式见[会话接入 §2、§6](dfm-geometric-session-contract.md)。
 
-不要求为每个内部区域建立持久Region ID。相同Face可以成为多个Geometric结果的证据；每个Measurement通过`geometric_id + feature/scope + context + snapshot`建立缓存身份，并携带本次计算实际使用的拓扑引用。
+本表只补工程证据要求：返回实际选中的目标与参考对象、选择质量和见证几何；无法唯一选主壁或对应外壁时保留歧义，不静默选最近任意面。该要求不在此定义另一套消息字段。
 
 ### 3.3 Geometric ID最低契约
 
@@ -115,7 +92,7 @@ Feature实例
 | 适用与空结果 | 通孔没有孔底、实心BOSS没有内壁、没有支撑筋时分别返回什么 |
 | 证据 | 需要返回哪些面、边、体、见证点/线、极值位置和匹配质量 |
 
-### 3.3 划分粒度原则
+### 3.3.1 划分粒度原则
 
 1. 按几何操作数区分内部区域：螺钉柱外壁和孔壁必须分开，因为方向和拔模阈值不同，但无需为两者发布独立Region ID。
 2. 按部位语义定位，不按业务阈值定位：Worker可以识别筋根；“R/t不合格部分”由规则结果确定。
@@ -135,6 +112,12 @@ Feature实例
 5. 孔轴、BOSS轴、筋延伸方向等是几何测量结果，可用于报告与主方向的夹角或发现侧向成型需求，但不是新的脱模方向Fact。
 6. 某Feature沿主方向不可成型时，A类返回倒扣、不适用或需要局部方向的证据；只有用户/模具方案补充侧抽、斜顶或芯针方向后，才执行局部方向检查。
 7. 缺少主方向时，方向相关Check状态为`MISSING_REQUIRED_INPUT`，不能自动猜测并输出合格/不合格；不依赖方向的厚度、尺寸和圆角任务可以独立执行。
+
+### 3.5 主方向与局部方向的语义边界
+
+局部退出方向不覆盖第3.4节的主方向约定。只有 G 工程定义和实际能力均支持局部模式时才可执行，否则先审核扩展语义或定义新 G。局部目标仍可引用范围外的主壁、支撑与遮挡物，不能截掉模型后当成独立实体计算。
+
+确认顺序、coverage、快照合并与依赖调度只在[会话设计](dfm-geometric-session-contract.md)维护；本表不另定义一套审核状态机。
 
 ## 4. Excel现有Check对A类44行的覆盖
 

@@ -62,7 +62,7 @@ DFM 智能分析平台的长期目标，是覆盖产品设计、模具设计、�
 [PNG 1920×1080 版](assets/dfm-system-long-term-architecture-ppt.png)
 
 该图用于说明产品的长期目标架构，不替代当前版本的落地架构。当前版本架构及数据流继续保留在
-[DFM 分析系统总体架构与数据流](dfm-system-architecture-and-data-flow.md)中。
+[DFM 系统架构与主流程](dfm-main-workflow-explained.md)中。
 
 ## 4. 产品版本规划 🗺️
 
