@@ -1,11 +1,15 @@
 ---
 title: "DFM 架构、工作流与 OCCT C++ 契约"
-status: active
+status: archived
 updated: 2026-08-26
 type: architecture-contract
 ---
 
+> 保留理由：保留一次性 Discovery／Objective 协议及早期跨仓职责的设计背景；不作为常驻会话调用依据。 返回 [开发导航](../../../README.md)。
+
 # DFM 架构、工作流与 OCCT C++ 契约
+
+> 历史方案入口：2026-10-17的运行编排以[两轮分组确认主流程](../../../dfm-main-workflow-explained.md)和[Hermes会话契约](../../../dfm-geometric-session-contract.md)为准。下文保留早期接口/版本记录，不用于调用新的常驻会话协议。
 
 本文是 DFM 智能体与独立几何引擎项目的研发协作入口。它说明模块边界、两阶段运行流程、
 OCCT C++ 交付要求和关键数据契约。完整字段以 `tools/dfm/schemas/` 和
@@ -66,7 +70,7 @@ flowchart LR
 本体只描述稳定业务语义和关系，不保存算法实现。发布器必须验证本体中的 `worker_kind`、
 `worker_role`、`worker_metric_id` 和 `quantity_id` 能在目标 OCCT Capability 中解析；验证失败的
 Check 不得发布为可执行能力。完整库表见
-[DFM 本体、规则库与 Agent 运行快照设计](../dfm-rule-catalog-database-design.md)。
+[DFM 本体、规则库与 Agent 运行快照设计](../../../dfm-rule-catalog-database-design.md)。
 
 ### 2.1 代码仓库归属
 

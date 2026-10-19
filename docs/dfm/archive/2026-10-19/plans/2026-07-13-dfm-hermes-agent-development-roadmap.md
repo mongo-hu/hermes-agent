@@ -1,9 +1,11 @@
 ---
 title: "DFM Hermes Agent 开发路径"
-status: active
+status: archived
 updated: 2026-08-25
 type: product-development-plan
 ---
+
+> 保留理由：保留早期里程碑、范围取舍与验收门槛；其中完成状态和 Region 关系属于当时基线，不作为当前任务指令。 返回 [开发导航](../../../README.md)。
 
 # DFM Hermes Agent 开发路径
 
