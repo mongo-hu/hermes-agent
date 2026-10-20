@@ -3,11 +3,18 @@ import { atom, computed } from 'nanostores'
 import { $activeSessionId } from './session'
 
 export interface DfmClarificationItem {
+  checkId: string | null
   choices: string[]
   clarificationId: string
+  defaultValue: string | null
   factName: string
+  featureId: string | null
+  featureKind: string
   featureRefs: string[]
+  hasDefault: boolean
+  impactScope: string
   question: string
+  runtimeKey: string
 }
 
 export interface DfmClarificationBatchContext {
@@ -74,15 +81,27 @@ export function readDfmClarificationBatch(value: unknown): DfmClarificationBatch
 
     return [
       {
+        checkId: typeof candidate.check_id === 'string' && candidate.check_id ? candidate.check_id : null,
         choices: Array.isArray(candidate.choices)
           ? candidate.choices.filter((choice): choice is string => typeof choice === 'string')
           : [],
         clarificationId: candidate.clarification_id,
+        defaultValue:
+          typeof candidate.default_value === 'string' ||
+          typeof candidate.default_value === 'number' ||
+          typeof candidate.default_value === 'boolean'
+            ? String(candidate.default_value)
+            : null,
         factName: candidate.fact_name,
+        featureId: typeof candidate.feature_id === 'string' && candidate.feature_id ? candidate.feature_id : null,
+        featureKind: typeof candidate.feature_kind === 'string' ? candidate.feature_kind : '',
         featureRefs: Array.isArray(candidate.feature_refs)
           ? candidate.feature_refs.filter((ref): ref is string => typeof ref === 'string')
           : [],
-        question: candidate.question
+        hasDefault: candidate.has_default === true,
+        impactScope: typeof candidate.impact_scope === 'string' ? candidate.impact_scope : '',
+        question: candidate.question,
+        runtimeKey: typeof candidate.runtime_key === 'string' ? candidate.runtime_key : candidate.fact_name
       }
     ]
   })

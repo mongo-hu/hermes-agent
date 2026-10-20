@@ -28,12 +28,7 @@ import {
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 
 import { openDfmViewerWindow } from '@/lib/dfm-viewer-window'
-import {
-  $clarifyRequest,
-  type ClarifyRequest,
-  clearClarifyRequest,
-  prioritizeDfmClarificationItems
-} from '@/store/clarify'
+import { $clarifyRequest, type ClarifyRequest, clearClarifyRequest, type DfmClarificationItem } from '@/store/clarify'
 import type { DfmViewerTarget } from '@/store/dfm-viewer'
 import { $gateway } from '@/store/gateway'
 
@@ -553,7 +548,7 @@ function formatFeatureParameters(parameters: Record<string, unknown>): string {
   )
 }
 
-function DfmClarificationPanel({
+export function DfmClarificationPanel({
   features,
   onFeaturesHighlight,
   priorityFeatureId,
@@ -567,20 +562,90 @@ function DfmClarificationPanel({
   const gateway = useStore($gateway)
   const context = request.context!
   const [answers, setAnswers] = useState<Record<string, string>>({})
+  const [inheritedFeatureIds, setInheritedFeatureIds] = useState<Set<string>>(new Set())
+  const [openFeatureKinds, setOpenFeatureKinds] = useState<Set<string>>(new Set())
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const questionsRef = useRef<HTMLDivElement>(null)
 
-  const orderedItems = useMemo(
-    () => prioritizeDfmClarificationItems(context.items, priorityFeatureId),
-    [context.items, priorityFeatureId]
+  const featureById = useMemo(
+    () => new Map(features.map((feature, index) => [feature.feature_id, { feature, index }] as const)),
+    [features]
   )
+
+  const wholeItems = useMemo(
+    () =>
+      context.items.filter(
+        item => !item.featureId && item.impactScope !== '特征实例级' && !item.impactScope.startsWith('非前置')
+      ),
+    [context.items]
+  )
+
+  const inferredItems = useMemo(
+    () => context.items.filter(item => item.impactScope.startsWith('非前置')),
+    [context.items]
+  )
+
+  const featureTypeGroups = useMemo(() => {
+    const byKind = new Map<
+      string,
+      { firstIndex: number; instances: Map<string, { firstIndex: number; items: DfmClarificationItem[] }> }
+    >()
+
+    for (const item of context.items) {
+      if (item.impactScope !== '特征实例级' || !item.featureId) {
+        continue
+      }
+
+      const featureEntry = featureById.get(item.featureId)
+      const kind = item.featureKind || featureEntry?.feature.kind || 'unknown'
+      const featureIndex = featureEntry?.index ?? Number.MAX_SAFE_INTEGER
+      const typeGroup = byKind.get(kind) ?? { firstIndex: featureIndex, instances: new Map() }
+
+      const instance = typeGroup.instances.get(item.featureId) ?? {
+        firstIndex: featureIndex,
+        items: []
+      }
+
+      instance.items.push(item)
+      typeGroup.instances.set(item.featureId, instance)
+      typeGroup.firstIndex = Math.min(typeGroup.firstIndex, featureIndex)
+      byKind.set(kind, typeGroup)
+    }
+
+    const priorityKind = priorityFeatureId ? featureById.get(priorityFeatureId)?.feature.kind : undefined
+
+    return [...byKind.entries()]
+      .map(([kind, group]) => ({
+        firstIndex: group.firstIndex,
+        kind,
+        instances: [...group.instances.entries()]
+          .map(([featureId, instance]) => ({ featureId, ...instance }))
+          .sort((left, right) => left.firstIndex - right.firstIndex)
+      }))
+      .sort((left, right) => {
+        if (left.kind === priorityKind && right.kind !== priorityKind) {
+          return -1
+        }
+
+        if (right.kind === priorityKind && left.kind !== priorityKind) {
+          return 1
+        }
+
+        return left.firstIndex - right.firstIndex
+      })
+  }, [context.items, featureById, priorityFeatureId])
 
   useEffect(() => {
     setAnswers({})
+    setInheritedFeatureIds(new Set())
     setError('')
     setSubmitting(false)
   }, [request.requestId])
+
+  useEffect(() => {
+    setOpenFeatureKinds(new Set(featureTypeGroups.map(typeGroup => typeGroup.kind)))
+  }, [featureTypeGroups, priorityFeatureId, request.requestId])
 
   useEffect(() => {
     if (priorityFeatureId) {
@@ -588,8 +653,72 @@ function DfmClarificationPanel({
     }
   }, [priorityFeatureId])
 
-  const answeredCount = context.items.filter(item => Boolean(answers[item.factName]?.trim())).length
+  const answeredCount = context.items.filter(item => Boolean(answers[item.clarificationId]?.trim())).length
   const allAnswered = answeredCount === context.items.length
+
+  const pendingDefaults = context.items.filter(
+    item => item.hasDefault && item.defaultValue !== null && !answers[item.clarificationId]?.trim()
+  ).length
+
+  const fillAllDefaults = useCallback(() => {
+    setAnswers(current => {
+      const next = { ...current }
+
+      for (const item of context.items) {
+        if (item.hasDefault && item.defaultValue !== null && !next[item.clarificationId]?.trim()) {
+          next[item.clarificationId] = item.defaultValue
+        }
+      }
+
+      return next
+    })
+  }, [context.items])
+
+  const inheritFeatureType = useCallback(
+    (instances: Array<{ featureId: string; items: DfmClarificationItem[] }>) => {
+      const source = instances[0]
+
+      if (!source) {
+        return
+      }
+
+      const sourceValues = new Map(
+        source.items.flatMap(item => {
+          const value = answers[item.clarificationId]?.trim()
+
+          return value ? [[`${item.runtimeKey}@${item.checkId ?? ''}`, value] as const] : []
+        })
+      )
+
+      const inherited = new Set(
+        instances
+          .slice(1)
+          .flatMap(instance =>
+            instance.items.some(item => sourceValues.has(`${item.runtimeKey}@${item.checkId ?? ''}`))
+              ? [instance.featureId]
+              : []
+          )
+      )
+
+      setAnswers(current => {
+        const next = { ...current }
+
+        for (const instance of instances.slice(1)) {
+          for (const item of instance.items) {
+            const value = sourceValues.get(`${item.runtimeKey}@${item.checkId ?? ''}`)
+
+            if (value !== undefined) {
+              next[item.clarificationId] = value
+            }
+          }
+        }
+
+        return next
+      })
+      setInheritedFeatureIds(current => new Set([...current, ...inherited]))
+    },
+    [answers]
+  )
 
   const submit = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
@@ -605,7 +734,11 @@ function DfmClarificationPanel({
       try {
         await gateway.request<{ ok?: boolean }>('clarify.respond', {
           answer: JSON.stringify({
-            answers: context.items.map(item => ({ fact_name: item.factName, value: answers[item.factName].trim() }))
+            answers: context.items.map(item => ({
+              fact_name: item.factName,
+              feature_id: item.featureId,
+              value: answers[item.clarificationId].trim()
+            }))
           }),
           request_id: request.requestId
         })
@@ -618,14 +751,73 @@ function DfmClarificationPanel({
     [allAnswered, answers, context.items, gateway, request.requestId, request.sessionId]
   )
 
+  const renderQuestion = (item: DfmClarificationItem) => {
+    const answered = Boolean(answers[item.clarificationId]?.trim())
+    const question = item.question.replace(/^(?:【[^】]+】)+/, '')
+
+    return (
+      <label
+        className={`grid gap-1.5 rounded-md border px-2 py-2 transition ${
+          answered
+            ? 'border-cyan-400/25 bg-cyan-500/[0.055]'
+            : 'border-white/8 bg-black/10 focus-within:border-cyan-400/50'
+        }`}
+        key={item.clarificationId}
+      >
+        <span className="flex items-start justify-between gap-2 text-[10px] leading-4 text-slate-200">
+          <span>{question}</span>
+          {item.hasDefault && item.defaultValue !== null && (
+            <span className="shrink-0 text-[9px] text-slate-500">默认：{item.defaultValue}</span>
+          )}
+        </span>
+        {item.choices.length > 0 ? (
+          <select
+            className="min-w-0 rounded-md border border-white/10 bg-[#10151d] px-2 py-1.5 text-[11px] text-slate-100 outline-none focus:border-cyan-400/60"
+            disabled={submitting}
+            onChange={event => setAnswers(current => ({ ...current, [item.clarificationId]: event.target.value }))}
+            value={answers[item.clarificationId] ?? ''}
+          >
+            <option value="">请选择</option>
+            {item.choices.map(choice => (
+              <option key={choice} value={choice}>
+                {choice}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <input
+            className="min-w-0 rounded-md border border-white/10 bg-[#10151d] px-2 py-1.5 text-[11px] text-slate-100 outline-none placeholder:text-slate-600 focus:border-cyan-400/60"
+            disabled={submitting}
+            onChange={event => setAnswers(current => ({ ...current, [item.clarificationId]: event.target.value }))}
+            placeholder="请输入"
+            value={answers[item.clarificationId] ?? ''}
+          />
+        )}
+      </label>
+    )
+  }
+
   return (
     <form className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)_auto] gap-2" onSubmit={submit}>
       <div className="rounded-lg border border-cyan-400/15 bg-cyan-500/[0.06] px-2.5 py-2">
         <div className="flex items-center justify-between gap-3 text-[10px]">
-          <span className="text-cyan-100">请补充分析条件</span>
-          <span className="text-slate-400">
-            已完成 {answeredCount}/{context.items.length}
-          </span>
+          <div className="grid gap-0.5">
+            <span className="text-cyan-100">请补充分析条件</span>
+            <span className="text-slate-500">默认值只填充空项</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-slate-400">
+              {answeredCount}/{context.items.length}
+            </span>
+            <button
+              className="rounded-md border border-cyan-300/20 bg-cyan-500/10 px-2 py-1 text-[10px] text-cyan-100 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+              disabled={pendingDefaults === 0 || submitting}
+              onClick={fillAllDefaults}
+              type="button"
+            >
+              一键填充默认值{pendingDefaults > 0 ? `（${pendingDefaults}）` : ''}
+            </button>
+          </div>
         </div>
         <div className="mt-2 h-1 overflow-hidden rounded-full bg-white/8">
           <div
@@ -633,78 +825,156 @@ function DfmClarificationPanel({
             style={{ width: `${(answeredCount / context.items.length) * 100}%` }}
           />
         </div>
-        <p className="mt-1.5 text-[10px] leading-4 text-slate-400">问题由已识别特征和适用规则动态生成</p>
+        <p className="mt-1.5 text-[10px] leading-4 text-slate-400">整件 → 特征类型 → 特征实例</p>
       </div>
 
       <div className="min-h-0 overflow-y-auto pr-1" ref={questionsRef}>
-        <div className="grid gap-2">
-          {orderedItems.map((item, index) => {
-            const answered = Boolean(answers[item.factName]?.trim())
+        <div className="overflow-hidden rounded-lg border border-cyan-300/20 bg-cyan-500/[0.025]">
+          <div className="border-b border-white/10 bg-cyan-500/[0.07] px-2.5 py-2">
+            <div className="text-[11px] font-medium text-cyan-50">整件：当前零件</div>
+            <div className="mt-0.5 text-[9px] text-slate-400">所有补充信息的最外层作用域</div>
+          </div>
 
-            return (
-              <label
-                className={`grid gap-1.5 rounded-lg border p-2.5 transition ${
-                  answered
-                    ? 'border-cyan-400/35 bg-cyan-500/[0.07]'
-                    : 'border-white/10 bg-white/[0.035] focus-within:border-cyan-400/50'
-                }`}
-                key={item.clarificationId}
-                onFocus={() => onFeaturesHighlight(item.featureRefs)}
-                onMouseEnter={() => onFeaturesHighlight(item.featureRefs)}
-              >
-                <span className="flex items-start gap-2 text-[11px] leading-4 text-slate-100">
-                  <span
-                    className={`grid size-5 shrink-0 place-items-center rounded-full text-[10px] ${
-                      answered ? 'bg-cyan-400 text-[#10151d]' : 'bg-cyan-500/15 text-cyan-100'
-                    }`}
-                  >
-                    {answered ? '✓' : index + 1}
-                  </span>
-                  <span>{item.question}</span>
-                </span>
-                {item.featureRefs.length > 0 && (
-                  <span className="ml-7 flex flex-wrap gap-1">
-                    {item.featureRefs.map(ref => {
-                      const featureIndex = features.findIndex(feature => feature.feature_id === ref)
-                      const feature = features[featureIndex]
+          <div className="grid gap-2 p-2">
+            {wholeItems.length > 0 && (
+              <section className="overflow-hidden rounded-lg border border-white/10 bg-white/[0.025]">
+                <div className="border-b border-white/10 px-2.5 py-2">
+                  <div className="text-[11px] font-medium text-slate-100">整件级</div>
+                  <div className="mt-0.5 text-[9px] text-slate-500">答案对当前零件整体生效</div>
+                </div>
+                <div className="grid gap-1.5 p-2">{wholeItems.map(renderQuestion)}</div>
+              </section>
+            )}
 
-                      return (
-                        <span
-                          className="rounded border border-amber-300/10 bg-amber-500/10 px-1.5 py-0.5 text-[9px] text-amber-100"
-                          key={ref}
-                        >
-                          {feature ? `${FEATURE_LABELS[feature.kind] ?? feature.kind} ${featureIndex + 1}` : ref}
-                        </span>
-                      )
-                    })}
-                  </span>
-                )}
-                {item.choices.length > 0 ? (
-                  <select
-                    className="ml-7 min-w-0 rounded-md border border-white/10 bg-[#10151d] px-2 py-1.5 text-[11px] text-slate-100 outline-none focus:border-cyan-400/60"
-                    disabled={submitting}
-                    onChange={event => setAnswers(current => ({ ...current, [item.factName]: event.target.value }))}
-                    value={answers[item.factName] ?? ''}
-                  >
-                    <option value="">请选择</option>
-                    {item.choices.map(choice => (
-                      <option key={choice} value={choice}>
-                        {choice}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    className="ml-7 min-w-0 rounded-md border border-white/10 bg-[#10151d] px-2 py-1.5 text-[11px] text-slate-100 outline-none placeholder:text-slate-600 focus:border-cyan-400/60"
-                    disabled={submitting}
-                    onChange={event => setAnswers(current => ({ ...current, [item.factName]: event.target.value }))}
-                    placeholder="请输入"
-                    value={answers[item.factName] ?? ''}
-                  />
-                )}
-              </label>
-            )
-          })}
+            {featureTypeGroups.length > 0 && (
+              <section className="overflow-hidden rounded-lg border border-amber-300/15 bg-amber-500/[0.025]">
+                <div className="border-b border-white/10 px-2.5 py-2">
+                  <div className="text-[11px] font-medium text-amber-100">特征实例级</div>
+                  <div className="mt-0.5 text-[9px] text-slate-500">先按特征类型，再按模型中的实例顺序</div>
+                </div>
+
+                <div className="grid gap-2 p-2">
+                  {featureTypeGroups.map(typeGroup => {
+                    const source = typeGroup.instances[0]
+
+                    const sourceReady = Boolean(
+                      source && source.items.every(item => answers[item.clarificationId]?.trim())
+                    )
+
+                    const inheritableCount = Math.max(0, typeGroup.instances.length - 1)
+
+                    return (
+                      <details
+                        className="overflow-hidden rounded-lg border border-white/10 bg-[#171f2b]"
+                        key={typeGroup.kind}
+                        onToggle={event => {
+                          const isOpen = event.currentTarget.open
+
+                          setOpenFeatureKinds(current => {
+                            if (current.has(typeGroup.kind) === isOpen) {
+                              return current
+                            }
+
+                            const next = new Set(current)
+
+                            if (isOpen) {
+                              next.add(typeGroup.kind)
+                            } else {
+                              next.delete(typeGroup.kind)
+                            }
+
+                            return next
+                          })
+                        }}
+                        open={openFeatureKinds.has(typeGroup.kind)}
+                      >
+                        <summary className="flex items-center justify-between gap-2 px-2.5 py-2 text-[11px] text-slate-100">
+                          <span>
+                            {FEATURE_LABELS[typeGroup.kind] ?? typeGroup.kind} · {typeGroup.instances.length} 个实例
+                          </span>
+                          <span className="text-[9px] text-slate-500">
+                            {
+                              typeGroup.instances.filter(instance =>
+                                instance.items.every(item => answers[item.clarificationId]?.trim())
+                              ).length
+                            }
+                            /{typeGroup.instances.length}
+                          </span>
+                        </summary>
+
+                        {inheritableCount > 0 && (
+                          <div className="flex items-center justify-between gap-2 border-t border-white/8 px-2 py-1.5">
+                            <span className="text-[9px] leading-4 text-slate-500">
+                              先填写实例 1，再应用到同类型后续实例
+                            </span>
+                            <button
+                              className="shrink-0 rounded-md border border-cyan-300/20 bg-cyan-500/10 px-2 py-1 text-[9px] text-cyan-100 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                              disabled={!sourceReady || submitting}
+                              onClick={() => inheritFeatureType(typeGroup.instances)}
+                              type="button"
+                            >
+                              将实例 1 应用到后续 {inheritableCount} 个
+                            </button>
+                          </div>
+                        )}
+
+                        <div className="grid gap-2 border-t border-white/8 p-2">
+                          {typeGroup.instances.map((instance, instanceIndex) => {
+                            const featureEntry = featureById.get(instance.featureId)
+                            const instanceAnswered = instance.items.every(item => answers[item.clarificationId]?.trim())
+
+                            return (
+                              <article
+                                className={`grid gap-1.5 rounded-lg border p-2 ${
+                                  instanceAnswered
+                                    ? 'border-cyan-400/25 bg-cyan-500/[0.045]'
+                                    : 'border-white/8 bg-black/10'
+                                }`}
+                                key={instance.featureId}
+                                onFocus={() => onFeaturesHighlight([instance.featureId])}
+                                onMouseEnter={() => onFeaturesHighlight([instance.featureId])}
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <div>
+                                    <div className="text-[10px] font-medium text-slate-100">
+                                      {FEATURE_LABELS[typeGroup.kind] ?? typeGroup.kind} {instanceIndex + 1}
+                                    </div>
+                                    <div className="mt-0.5 text-[9px] text-slate-500">
+                                      {featureEntry ? `模型特征 ${featureEntry.index + 1}` : instance.featureId}
+                                    </div>
+                                  </div>
+                                  <span
+                                    className={`text-[9px] ${instanceAnswered ? 'text-cyan-300' : 'text-slate-500'}`}
+                                  >
+                                    {inheritedFeatureIds.has(instance.featureId)
+                                      ? '已继承，可修改'
+                                      : instanceAnswered
+                                        ? '已填写'
+                                        : '待填写'}
+                                  </span>
+                                </div>
+                                <div className="grid gap-1.5">{instance.items.map(renderQuestion)}</div>
+                              </article>
+                            )
+                          })}
+                        </div>
+                      </details>
+                    )
+                  })}
+                </div>
+              </section>
+            )}
+
+            {inferredItems.length > 0 && (
+              <section className="overflow-hidden rounded-lg border border-violet-300/15 bg-violet-500/[0.025]">
+                <div className="border-b border-white/10 px-2.5 py-2">
+                  <div className="text-[11px] font-medium text-violet-100">系统识别待确认</div>
+                  <div className="mt-0.5 text-[9px] text-slate-500">仅显示需要人工确认的非前置项</div>
+                </div>
+                <div className="grid gap-1.5 p-2">{inferredItems.map(renderQuestion)}</div>
+              </section>
+            )}
+          </div>
         </div>
       </div>
 

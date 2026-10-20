@@ -318,8 +318,33 @@ class DFMService:
 
     @classmethod
     def _fact_reference(cls, raw: str) -> tuple[str, str | None]:
-        name, separator, check_id = str(raw or "").partition("@")
+        scoped, _feature_separator, _feature_id = str(raw or "").partition("#")
+        name, separator, check_id = scoped.partition("@")
         return cls._canonical_fact_name(name), check_id.strip() if separator else None
+
+    @classmethod
+    def _fact_scope_reference(
+        cls, raw: str
+    ) -> tuple[str, str | None, str | None]:
+        scoped, feature_separator, feature_id = str(raw or "").partition("#")
+        name, check_id = cls._fact_reference(scoped)
+        return (
+            name,
+            check_id,
+            feature_id.strip() if feature_separator and feature_id.strip() else None,
+        )
+
+    @staticmethod
+    def _clarification_id(
+        fact_name: str,
+        *,
+        check_id: str | None = None,
+        feature_id: str | None = None,
+    ) -> str:
+        scoped = f"{fact_name}@{check_id}" if check_id else fact_name
+        if feature_id:
+            scoped = f"{scoped}#{feature_id}"
+        return f"clarification_{scoped}"
 
     @staticmethod
     def _normalize_fact_value(fact_name: str, raw_value: Any) -> Any:
@@ -1926,12 +1951,25 @@ class DFMService:
         confirmed = {
             self._canonical_fact_name(fact.name): fact.value
             for fact in manifest.facts
-            if fact.status == "confirmed" and fact.check_id is None
+            if fact.status == "confirmed"
+            and fact.check_id is None
+            and fact.feature_id is None
         }
         confirmed_by_check = {
             (self._canonical_fact_name(fact.name), fact.check_id): fact.value
             for fact in manifest.facts
-            if fact.status == "confirmed" and fact.check_id is not None
+            if fact.status == "confirmed"
+            and fact.check_id is not None
+            and fact.feature_id is None
+        }
+        confirmed_by_feature = {
+            (
+                self._canonical_fact_name(fact.name),
+                fact.check_id,
+                fact.feature_id,
+            ): fact.value
+            for fact in manifest.facts
+            if fact.status == "confirmed" and fact.feature_id is not None
         }
         existing = {item.clarification_id: item for item in manifest.clarifications}
         if phase == "discovery":
@@ -1986,8 +2024,43 @@ class DFMService:
                 )
             if phase != "all" and not required_in_phase:
                 continue
-            if phase == "analysis" and name in self._CHECK_SCOPED_FACTS.get(
-                adapter.key, ()
+            if phase == "analysis" and requirement.impact_scope == "特征实例级":
+                feature_refs: list[str] = []
+                for target in self.discovery.analysis_targets(manifest, snapshot):
+                    target_checks = {str(value) for value in target.get("check_ids", [])}
+                    target_checks.update(
+                        str(key[0])
+                        for key in target.get("operand_anchors", {})
+                        if isinstance(key, tuple) and key
+                    )
+                    feature = target.get("feature")
+                    feature_id = str(getattr(feature, "feature_id", "") or "")
+                    if (
+                        feature_id
+                        and set(requirement.check_ids).intersection(target_checks)
+                        and feature_id not in feature_refs
+                    ):
+                        feature_refs.append(feature_id)
+                for feature_id in feature_refs:
+                    if (name, None, feature_id) in confirmed_by_feature:
+                        continue
+                    clarification_id = self._clarification_id(
+                        name, feature_id=feature_id
+                    )
+                    item = existing.get(clarification_id)
+                    question = (
+                        f"【特征实例：{feature_id}】{requirement.question}"
+                    )
+                    scoped_result.append(
+                        replace(item, question=question, status="open", answer=None)
+                        if item is not None
+                        else ClarificationRecord(clarification_id, question, "open")
+                    )
+                continue
+            if (
+                phase == "analysis"
+                and requirement.impact_scope != "整件级"
+                and name in self._CHECK_SCOPED_FACTS.get(adapter.key, ())
             ):
                 for check_id in requirement.check_ids:
                     if check_id not in applicable_check_ids:
@@ -2013,9 +2086,16 @@ class DFMService:
                     check_name = self.ontology_store.check_context(check_id)["check"][
                         "name_zh"
                     ]
-                    clarification_id = f"clarification_{name}@{check_id}"
+                    clarification_id = self._clarification_id(
+                        name, check_id=check_id
+                    )
                     item = existing.get(clarification_id)
-                    question = f"{check_name}：{requirement.question}"
+                    scope = (
+                        f"【影响范围：{requirement.impact_scope}】"
+                        if requirement.impact_scope
+                        else ""
+                    )
+                    question = f"{check_name}：{scope}{requirement.question}"
                     scoped_result.append(
                         replace(item, question=question, status="open", answer=None)
                         if item is not None
@@ -2026,7 +2106,9 @@ class DFMService:
             if name in confirmed and (not choices or confirmed[name] in choices):
                 continue
             question = requirement.question
-            clarification_id = f"clarification_{name}"
+            if requirement.impact_scope:
+                question = f"【影响范围：{requirement.impact_scope}】{question}"
+            clarification_id = self._clarification_id(name)
             item = existing.get(clarification_id)
             result.append(
                 replace(item, question=question, status="open", answer=None)
@@ -2069,7 +2151,9 @@ class DFMService:
         )
         if snapshot is None:
             return ()
-        name, check_id = self._fact_reference(fact_name)
+        name, check_id, feature_id = self._fact_scope_reference(fact_name)
+        if feature_id:
+            return (feature_id,)
         check_ids = {check_id} if check_id else set()
         if not check_ids:
             adapter = self.process_registry.get(
@@ -2102,25 +2186,69 @@ class DFMService:
                 feature_refs.append(str(feature_id))
         return tuple(dict.fromkeys(feature_refs))
 
+    def clarification_metadata(
+        self, project_id: str, fact_name: str
+    ) -> dict[str, Any]:
+        """Return UI metadata for one pending ontology-driven question."""
+
+        manifest = self._store(project_id).load()
+        process = manifest.process or self.config.default_process
+        name, check_id, feature_id = self._fact_scope_reference(fact_name)
+        definition = next(
+            (
+                item
+                for item in self.ontology_store.factor_definitions(process)
+                if self._canonical_fact_name(item["runtime_key"]) == name
+            ),
+            None,
+        )
+        impact_scope = str((definition or {}).get("impact_scope") or "")
+        feature_refs = (
+            (feature_id,)
+            if feature_id
+            else self.clarification_feature_refs(project_id, fact_name)
+        )
+        feature_kind = ""
+        if feature_id:
+            feature = next(
+                (item for item in manifest.features if item.feature_id == feature_id),
+                None,
+            )
+            feature_kind = feature.kind if feature is not None else ""
+        return {
+            "runtime_key": name,
+            "check_id": check_id,
+            "feature_id": feature_id,
+            "feature_kind": feature_kind,
+            "feature_refs": list(feature_refs),
+            "impact_scope": impact_scope,
+            "has_default": bool((definition or {}).get("has_default")),
+            "default_value": (definition or {}).get("default_value"),
+        }
+
     def _reconcile_clarifications(self, project_id: str) -> ProjectManifest:
         """Close old open clarification rows when an alias fact already exists."""
         store = self._store(project_id)
 
         def reconcile(current: ProjectManifest) -> ProjectManifest:
             confirmed = {
-                (self._canonical_fact_name(fact.name), fact.check_id): fact
+                (
+                    self._canonical_fact_name(fact.name),
+                    fact.check_id,
+                    fact.feature_id,
+                ): fact
                 for fact in current.facts
                 if fact.status == "confirmed"
             }
             changed = False
             rows = []
             for item in current.clarifications:
-                name, check_id = self._fact_reference(
+                name, check_id, feature_id = self._fact_scope_reference(
                     item.clarification_id.removeprefix("clarification_")
                 )
-                fact = confirmed.get((name, check_id))
-                if fact is None and check_id:
-                    global_fact = confirmed.get((name, None))
+                fact = confirmed.get((name, check_id, feature_id))
+                if fact is None and check_id and feature_id is None:
+                    global_fact = confirmed.get((name, None, None))
                     if (
                         global_fact is not None
                         and global_fact.value
@@ -2949,15 +3077,31 @@ class DFMService:
                 ),
             }
         if action == "confirm_fact":
-            name, check_id = self._fact_reference(str(params.get("fact_name") or ""))
+            name, check_id, referenced_feature_id = self._fact_scope_reference(
+                str(params.get("fact_name") or "")
+            )
+            explicit_feature_id = str(params.get("feature_id") or "").strip() or None
+            if (
+                explicit_feature_id
+                and referenced_feature_id
+                and explicit_feature_id != referenced_feature_id
+            ):
+                raise DFMError(
+                    "fact_invalid",
+                    "feature_id conflicts with the scoped fact reference.",
+                )
+            feature_id = explicit_feature_id or referenced_feature_id
             if not name:
                 raise DFMError("fact_invalid", "fact_name is required.")
 
             raw_value = params.get("fact_value")
             normalized_value = self._normalize_fact_value(name, raw_value)
             if name == "process":
-                if check_id:
-                    raise DFMError("fact_invalid", "process cannot be check-scoped.")
+                if check_id or feature_id:
+                    raise DFMError(
+                        "fact_invalid",
+                        "process cannot be Check- or Feature-scoped.",
+                    )
                 self.process_registry.get(normalized_value)
             else:
                 manifest = self._store(project_id).load()
@@ -2981,6 +3125,33 @@ class DFMService:
                         "This factor is not required by the discovered Check.",
                         {"fact_name": name, "check_id": check_id},
                     )
+                if feature_id:
+                    requirement = next(
+                        (
+                            item
+                            for item in self.process_registry.get(
+                                process
+                            ).fact_requirements()
+                            if self._canonical_fact_name(item.name) == name
+                        ),
+                        None,
+                    )
+                    feature_ref = (
+                        f"{name}@{check_id}" if check_id else name
+                    )
+                    allowed_feature_ids = self.clarification_feature_refs(
+                        project_id, feature_ref
+                    )
+                    if (
+                        requirement is None
+                        or requirement.impact_scope != "特征实例级"
+                        or feature_id not in allowed_feature_ids
+                    ):
+                        raise DFMError(
+                            "fact_invalid",
+                            "This factor is not required by the discovered Feature instance.",
+                            {"fact_name": name, "feature_id": feature_id},
+                        )
                 choices = (
                     ()
                     if name == "pull_dir"
@@ -3015,6 +3186,7 @@ class DFMService:
                 "user",
                 "confirmed",
                 check_id=check_id,
+                feature_id=feature_id,
             )
 
             def confirm(current: ProjectManifest) -> ProjectManifest:
@@ -3037,6 +3209,7 @@ class DFMService:
                     observations=[
                         replace(item, status="confirmed_by_user")
                         if check_id is None
+                        and feature_id is None
                         and self._observation_factor_name(item) == name
                         and item.value == normalized_value
                         and item.status
@@ -3060,10 +3233,10 @@ class DFMService:
                     clarifications=[
                         replace(item, status="answered", answer=fact.value)
                         if item.clarification_id
-                        == (
-                            f"clarification_{name}@{check_id}"
-                            if check_id
-                            else f"clarification_{name}"
+                        == self._clarification_id(
+                            name,
+                            check_id=check_id,
+                            feature_id=feature_id,
                         )
                         else item
                         for item in current.clarifications
@@ -3488,34 +3661,137 @@ class DFMService:
                     for fact in manifest.facts
                     if fact.status == "confirmed"
                     and fact.check_id is None
+                    and fact.feature_id is None
                     and fact.name in defaults.accepted_inputs
                 }
                 scoped_facts: dict[str, dict[str, Any]] = {}
                 for fact in manifest.facts:
-                    if fact.status == "confirmed" and fact.check_id is not None:
+                    if (
+                        fact.status == "confirmed"
+                        and fact.check_id is not None
+                        and fact.feature_id is None
+                    ):
                         scoped_facts.setdefault(fact.check_id, {})[fact.name] = (
                             fact.value
                         )
-                scoped_kwargs = {"scoped_facts": scoped_facts} if scoped_facts else {}
-                process_plan = (
-                    compile_occt_injection_plan(
-                        adapter,
-                        context,
-                        raw_parameters,
-                        self.occt_geometry_capability,
-                        **scoped_kwargs,
+
+                def compile_with_scope(check_facts):
+                    scoped_kwargs = (
+                        {"scoped_facts": check_facts} if check_facts else {}
                     )
-                    if str(analyzer_key) == "occt_cpp" and process == "injection"
-                    else adapter.compile(context, raw_parameters, **scoped_kwargs)
-                    if process == "injection"
-                    else adapter.compile(context, raw_parameters)
-                )
-                process_plan = self._bind_discovery_scope(
-                    process_plan,
-                    manifest,
-                    discovery_snapshot,
-                    preserve_single_operation_ids=str(analyzer_key) == "occt_cpp",
-                )
+                    compiled = (
+                        compile_occt_injection_plan(
+                            adapter,
+                            context,
+                            raw_parameters,
+                            self.occt_geometry_capability,
+                            **scoped_kwargs,
+                        )
+                        if str(analyzer_key) == "occt_cpp" and process == "injection"
+                        else adapter.compile(context, raw_parameters, **scoped_kwargs)
+                        if process == "injection"
+                        else adapter.compile(context, raw_parameters)
+                    )
+                    return self._bind_discovery_scope(
+                        compiled,
+                        manifest,
+                        discovery_snapshot,
+                        preserve_single_operation_ids=(
+                            str(analyzer_key) == "occt_cpp"
+                        ),
+                    )
+
+                process_plan = compile_with_scope(scoped_facts)
+                feature_facts = [
+                    fact
+                    for fact in manifest.facts
+                    if fact.status == "confirmed" and fact.feature_id is not None
+                ]
+                if feature_facts:
+                    checks_by_feature: dict[str, set[str]] = {}
+                    for target in self.discovery.analysis_targets(
+                        manifest, discovery_snapshot
+                    ):
+                        feature = target.get("feature")
+                        feature_id = str(
+                            getattr(feature, "feature_id", "") or ""
+                        )
+                        if not feature_id:
+                            continue
+                        checks = checks_by_feature.setdefault(feature_id, set())
+                        checks.update(
+                            str(value) for value in target.get("check_ids", [])
+                        )
+                        checks.update(
+                            str(key[0])
+                            for key in target.get("operand_anchors", {})
+                            if isinstance(key, tuple) and key
+                        )
+
+                    plans_by_feature = {}
+                    for feature_id in dict.fromkeys(
+                        str(fact.feature_id) for fact in feature_facts
+                    ):
+                        feature_scope = {
+                            check_id: dict(values)
+                            for check_id, values in scoped_facts.items()
+                        }
+                        for fact in feature_facts:
+                            if fact.feature_id != feature_id:
+                                continue
+                            check_ids = (
+                                {fact.check_id}
+                                if fact.check_id
+                                else checks_by_feature.get(feature_id, set())
+                            )
+                            for check_id in check_ids:
+                                feature_scope.setdefault(check_id, {})[
+                                    fact.name
+                                ] = fact.value
+                        plans_by_feature[feature_id] = compile_with_scope(
+                            feature_scope
+                        )
+
+                    bindings = [
+                        binding
+                        for binding in process_plan.rule_bindings
+                        if not set(binding.feature_refs).intersection(
+                            plans_by_feature
+                        )
+                    ]
+                    for feature_id, feature_plan in plans_by_feature.items():
+                        bindings.extend(
+                            binding
+                            for binding in feature_plan.rule_bindings
+                            if feature_id in binding.feature_refs
+                        )
+
+                    referenced_operation_ids = {
+                        operand.operation_id
+                        for binding in bindings
+                        for operand in binding.measurement_operands()
+                    }
+                    all_plans = [process_plan, *plans_by_feature.values()]
+                    operations_by_id = {
+                        operation.operation_id: operation
+                        for plan in all_plans
+                        for operation in plan.operations
+                        if not operation.metric_ids
+                        or operation.operation_id in referenced_operation_ids
+                    }
+                    rule_ids = {binding.rule_id for binding in bindings}
+                    rules = {
+                        rule_id: rule
+                        for plan in all_plans
+                        for rule_id, rule in plan.rules.items()
+                        if rule_id in rule_ids
+                    }
+                    process_plan = replace(
+                        process_plan,
+                        rule_bindings=bindings,
+                        operations=list(operations_by_id.values()),
+                        rules=rules,
+                    )
                 if (
                     str(analyzer_key) in {"occt_cpp", "step"}
                     and process == "injection"

@@ -115,7 +115,7 @@ Web 使用字典/Context API，Agent 下载签名发布物，OCCT 只交换 Capa
 | Process | 无，保存为空对象 `{}` |
 | Feature Type | `worker_kind` |
 | Geometric | `dimension/canonical_unit`；通用 `concept_id` 即权威 G ID，不另存 Worker ID 或 Quantity ID |
-| Factor | `runtime_key/default_value/question/source_policy` |
+| Factor | `runtime_key/default_value/question/impact_scope/source_policy` |
 | Check | `report_group`；历史 `default_severity` 仅作 Draft 起草提示，不作为运行时定级来源 |
 
 以上是 `properties_json` 的完整字段白名单。字段有可靠来源时填写实际内容，没有来源时保留空字符串、
@@ -140,6 +140,19 @@ Check 的 `default_severity` 不得自动填入 Rule Version，也不得在规�
 两轮确认中的`forming_scope_id`、确认组、方向绑定、coverage、计划片段和结果来源属于项目/Worker运行数据，不新增本体Region、CheckOperand或会话管理表。规则发布的`scope_id/scope_version`与运行时成型范围分开。
 
 同一G的工程定义须明确是否允许主/局部方向及分域求值，实际输入Schema与能力由Worker声明。限定主方向的G不得仅改变context就变成局部指标；语义不兼容时按现有规则创建新G。产品外观和成型侧的实例范围由用户确认，不能从可见性候选直接固化为本体事实。
+
+#### Factor 的 `impact_scope`
+
+`impact_scope` 定义影响因子在分析与追问中的作用范围，使用受控中文值：
+
+- `整件级`：同一项目整件共用，追问时不按 Check 或特征重复询问；
+- `特征实例级`：结合当前 Check 和已识别特征展示追问范围；
+- `非前置（特征识别）`：优先由特征识别产生 Observation，不作为几何识别前的必填项；
+- `非前置（系统推导）+用户确认`：先由系统推导候选值，再按 `source_policy` 请用户确认。
+
+历史快照可以不包含该字段；新发布包携带时，Hermes 必须保留并将其传入
+`FactRequirement`。它只控制事实的作用范围和追问语义，不参与 Rule Version 唯一选择，
+也不改变 `conditions_json` 的判定含义。
 
 #### Factor 的 `source_policy`
 

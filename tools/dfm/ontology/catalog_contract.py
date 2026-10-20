@@ -22,8 +22,24 @@ PROPERTY_FIELDS = {
     "process": set(),
     "feature_type": {"worker_kind"},
     "geometric": {"worker_geometric_id", "quantity_id", "dimension", "canonical_unit"},
-    "factor": {"runtime_key", "default_value", "question", "source_policy"},
+    "factor": {
+        "runtime_key",
+        "default_value",
+        "question",
+        "source_policy",
+        "impact_scope",
+    },
     "check": {"default_severity", "report_group"},
+}
+REQUIRED_PROPERTY_FIELDS = {
+    kind: fields - ({"impact_scope"} if kind == "factor" else set())
+    for kind, fields in PROPERTY_FIELDS.items()
+}
+FACTOR_IMPACT_SCOPES = {
+    "整件级",
+    "特征实例级",
+    "非前置（特征识别）",
+    "非前置（系统推导）+用户确认",
 }
 ENDPOINTS = {
     "HAS_CHECK": ({"process"}, {"check"}),
@@ -142,7 +158,12 @@ def validate_catalog(payload: Mapping[str, Any], validate_source_policy) -> None
     for concept_id, concept in concepts.items():
         kind = concept["concept_type"]
         properties = catalog_json_field(concept, "properties", version, {})
-        if not isinstance(properties, dict) or set(properties) != PROPERTY_FIELDS[kind]:
+        property_names = set(properties) if isinstance(properties, dict) else set()
+        if (
+            not isinstance(properties, dict)
+            or not REQUIRED_PROPERTY_FIELDS[kind].issubset(property_names)
+            or not property_names.issubset(PROPERTY_FIELDS[kind])
+        ):
             invalid(
                 "Concept properties must match the documented whitelist.",
                 concept_id=concept_id,
@@ -164,6 +185,13 @@ def validate_catalog(payload: Mapping[str, Any], validate_source_policy) -> None
         ):
             invalid("Geometric runtime metadata must use string values.", concept_id=concept_id)
         if kind == "factor":
+            impact_scope = properties.get("impact_scope")
+            if impact_scope is not None and impact_scope not in FACTOR_IMPACT_SCOPES:
+                invalid(
+                    "A Factor impact_scope is invalid.",
+                    concept_id=concept_id,
+                    impact_scope=impact_scope,
+                )
             validate_source_policy(concept_id, properties["source_policy"])
             policy = properties["source_policy"]
             if (

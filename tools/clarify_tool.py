@@ -53,14 +53,34 @@ def _dfm_analysis_batch_context(service, project_id: str, project: dict) -> dict
         fact_name = clarification_id.removeprefix("clarification_")
         if not fact_name:
             continue
+        if hasattr(service, "clarification_metadata"):
+            metadata = service.clarification_metadata(project_id, fact_name)
+        else:
+            metadata = {
+                "runtime_key": fact_name.partition("@")[0].partition("#")[0],
+                "check_id": None,
+                "feature_id": None,
+                "feature_kind": "",
+                "feature_refs": list(
+                    service.clarification_feature_refs(project_id, fact_name)
+                ),
+                "impact_scope": "",
+                "has_default": False,
+                "default_value": None,
+            }
         items.append({
             "clarification_id": clarification_id,
             "fact_name": fact_name,
+            "runtime_key": metadata["runtime_key"],
             "question": str(item.get("question") or fact_name),
             "choices": list(service.clarification_choices(process, fact_name)),
-            "feature_refs": list(
-                service.clarification_feature_refs(project_id, fact_name)
-            ),
+            "feature_refs": metadata["feature_refs"],
+            "feature_id": metadata["feature_id"],
+            "feature_kind": metadata["feature_kind"],
+            "check_id": metadata["check_id"],
+            "impact_scope": metadata["impact_scope"],
+            "has_default": metadata["has_default"],
+            "default_value": metadata["default_value"],
         })
     if not items:
         return None
@@ -255,8 +275,15 @@ def clarify_tool(
             dfm_service = get_dfm_service()
             project = dfm_service.project("status", project_id=dfm_project_id)["project"]
             def canonical_ref(value):
-                name, _, check_id = value.partition("@")
-                return dfm_service._canonical_fact_name(name), check_id.casefold()
+                if hasattr(dfm_service, "_fact_scope_reference"):
+                    name, check_id, feature_id = dfm_service._fact_scope_reference(
+                        value
+                    )
+                else:
+                    scoped, _separator, feature_id = str(value).partition("#")
+                    name, _separator, check_id = scoped.partition("@")
+                    name = dfm_service._canonical_fact_name(name)
+                return name, (check_id or "").casefold(), feature_id or ""
 
             requested_ref = canonical_ref(dfm_fact_name)
             pending = next((

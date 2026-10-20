@@ -351,6 +351,7 @@ class LocalOntologyStore:
                     or f"Please provide {runtime_key}."
                 ),
                 "phase": str(qualifiers.get("phase") or "analysis"),
+                "impact_scope": str(properties.get("impact_scope") or ""),
                 "required_by": sorted({
                     str(item) for item in qualifiers.get("required_by", []) if str(item)
                 }),
@@ -519,6 +520,12 @@ class LocalOntologyStore:
                         properties.get("runtime_key") or row["concept_id"]
                     ),
                     "question": str(properties.get("question") or ""),
+                    "impact_scope": str(properties.get("impact_scope") or ""),
+                    "default_value": properties.get("default_value"),
+                    "has_default": (
+                        "default_value" in properties
+                        and properties.get("default_value") is not None
+                    ),
                     "data_schema": _load_json(row["data_schema_json"], None),
                     "source_policy": properties.get("source_policy", {}),
                 }

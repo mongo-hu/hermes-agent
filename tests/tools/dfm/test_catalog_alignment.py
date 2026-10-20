@@ -89,6 +89,48 @@ def grouped_payload():
     return rehash(value)
 
 
+def test_schema_4_factor_impact_scope_is_validated_and_projected(tmp_path):
+    value = grouped_payload()
+    factor = next(
+        item for item in value["concepts"] if item["concept_type"] == "factor"
+    )
+    factor["properties_json"]["impact_scope"] = "特征实例级"
+    value = rehash(value)
+
+    store = LocalOntologyStore(tmp_path / "impact-scope.sqlite3")
+    store.install_package(value)
+
+    definition = next(
+        item
+        for item in store.factor_definitions("injection")
+        if item["concept_id"] == factor["concept_id"]
+    )
+    requirement = next(
+        item
+        for item in store.fact_requirements("injection")
+        if item["name"] == factor["properties_json"]["runtime_key"]
+    )
+    assert definition["impact_scope"] == "特征实例级"
+    assert requirement["impact_scope"] == "特征实例级"
+
+
+def test_schema_4_rejects_unknown_factor_impact_scope(tmp_path):
+    value = grouped_payload()
+    factor = next(
+        item for item in value["concepts"] if item["concept_type"] == "factor"
+    )
+    factor["properties_json"]["impact_scope"] = "check_level"
+    value = rehash(value)
+
+    with pytest.raises(DFMError) as exc_info:
+        LocalOntologyStore(tmp_path / "invalid-impact-scope.sqlite3").install_package(
+            value
+        )
+
+    assert exc_info.value.code == "ontology_snapshot_invalid"
+    assert exc_info.value.details["path"][-1] == "impact_scope"
+
+
 def rehash(value):
     value.pop("content_sha256", None)
     value["content_sha256"] = hashlib.sha256(

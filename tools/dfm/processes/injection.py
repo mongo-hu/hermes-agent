@@ -64,6 +64,7 @@ class InjectionProcessAdapter:
                 phase=str(item["phase"]),
                 required_by=tuple(str(value) for value in item["required_by"]),
                 check_ids=tuple(str(value) for value in item["check_ids"]),
+                impact_scope=str(item.get("impact_scope") or ""),
             )
             for item in self.ontology_store.fact_requirements(self.key)
         )
@@ -81,6 +82,7 @@ class InjectionProcessAdapter:
                     question=question,
                     phase="discovery",
                     required_by=required_by,
+                    impact_scope="整件级",
                 )
             return FactRequirement(
                 name=published.name,
@@ -88,6 +90,7 @@ class InjectionProcessAdapter:
                 phase="discovery",
                 required_by=published.required_by or required_by,
                 check_ids=published.check_ids,
+                impact_scope=published.impact_scope,
             )
 
         return (
@@ -96,6 +99,7 @@ class InjectionProcessAdapter:
                 question="Should this project be analyzed as injection molding or die casting?",
                 phase="discovery",
                 required_by=("feature.process_semantics",),
+                impact_scope="整件级",
             ),
             startup_requirement(
                 "model_units",

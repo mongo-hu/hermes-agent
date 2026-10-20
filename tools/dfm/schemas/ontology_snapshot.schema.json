@@ -97,6 +97,7 @@
               "properties": {
                 "required": ["source_policy"],
                 "properties": {
+                  "impact_scope": {"$ref": "#/$defs/factorImpactScope"},
                   "source_policy": {"$ref": "#/$defs/sourcePolicy"}
                 }
               }
@@ -124,9 +125,20 @@
         "if": {"required": ["concept_type"], "properties": {"concept_type": {"const": "factor"}}},
         "then": {"properties": {"properties_json": {
           "required": ["source_policy"],
-          "properties": {"source_policy": {"$ref": "#/$defs/sourcePolicy"}}
+          "properties": {
+            "impact_scope": {"$ref": "#/$defs/factorImpactScope"},
+            "source_policy": {"$ref": "#/$defs/sourcePolicy"}
+          }
         }}}
       }]
+    },
+    "factorImpactScope": {
+      "enum": [
+        "整件级",
+        "特征实例级",
+        "非前置（特征识别）",
+        "非前置（系统推导）+用户确认"
+      ]
     },
     "sourcePolicy": {
       "type": "object",

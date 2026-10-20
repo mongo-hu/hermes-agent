@@ -23,6 +23,7 @@ from tools.dfm.contracts import (
     ClarificationRecord,
     Capability,
     CapabilityStatus,
+    DiscoverySnapshotRecord,
     FactRecord,
     FeatureRecord,
     GeometryRef,
@@ -748,6 +749,176 @@ def test_same_factor_can_be_answered_separately_for_two_checks(service, monkeypa
     assert {"R_INJ_MAIN_WALL_MIN_ABS", "R_INJ_MAIN_WALL_DRAFT_DEFAULT"} <= set(
         plan["rules"]
     )
+
+
+def test_feature_instance_factor_is_asked_and_saved_per_discovered_feature(
+    service, monkeypatch
+):
+    dfm, temp = service
+    package_path = Path(__file__).parent / "fixtures/ontology_legacy_v2.json"
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    material = next(
+        item for item in package["concepts"] if item["concept_id"] == "factor.material"
+    )
+    material["properties"]["impact_scope"] = "特征实例级"
+    material["data_schema"]["enum"] = ["ABS", "PC"]
+    package["factor_options"].append({
+        "factor_id": "factor.material",
+        "option_code": "PC",
+        "name_zh": "PC",
+        "value": "PC",
+        "sort_order": 20,
+        "status": "active",
+    })
+    pc_rule = deepcopy(
+        next(
+            item
+            for item in package["rules"]
+            if item["rule_id"] == "R_INJ_MAIN_WALL_MIN_ABS"
+        )
+    )
+    pc_rule.update(
+        rule_version_id="rule-version.main-wall-min-pc.1",
+        rule_id="R_INJ_MAIN_WALL_MIN_PC",
+        name="PC主体壁最小厚度",
+    )
+    pc_rule["conditions"][0]["value"] = "PC"
+    package["rules"].append(pc_rule)
+    unhashed = {key: value for key, value in package.items() if key != "content_sha256"}
+    package["content_sha256"] = hashlib.sha256(
+        json.dumps(
+            unhashed, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    dfm.ontology_store.install_package(package)
+
+    project_id = dfm.project("create", name="Feature-scoped material")["project_id"]
+    source = temp / "feature-scoped.step"
+    source.write_bytes(STEP_PAYLOAD)
+    registered = dfm.project("add_input", project_id=project_id, path=str(source))["input"]
+    for name, value in (
+        ("process", "injection"),
+        ("model_units", "mm"),
+        ("pull_dir", "+Z"),
+    ):
+        dfm.project(
+            "confirm_fact", project_id=project_id, fact_name=name, fact_value=value
+        )
+
+    features = [
+        FeatureRecord(
+            f"feature.main-wall.{index}",
+            "main_wall",
+            ["recognizer:test"],
+            0.9,
+            input_sha256=registered["sha256"],
+        )
+        for index in (1, 2)
+    ]
+    snapshot = DiscoverySnapshotRecord(
+        "snapshot.feature-scope",
+        "now",
+        {registered["input_id"]: registered["sha256"]},
+        [],
+        [item.feature_id for item in features],
+        [],
+        [],
+        {"recognizer:test": "1"},
+        "a" * 64,
+    )
+    dfm._store(project_id).update(
+        lambda current: replace(
+            current,
+            features=features,
+            discovery_snapshots=[snapshot],
+        )
+    )
+    monkeypatch.setattr(
+        dfm.discovery,
+        "analysis_targets",
+        lambda _manifest, _snapshot: [
+            {
+                "feature": feature,
+                "check_ids": ["check.main_wall_minimum_thickness"],
+                "operand_anchors": {},
+            }
+            for feature in features
+        ],
+    )
+
+    manifest = dfm._ensure_clarifications(project_id, phase="analysis")
+    assert {
+        item.clarification_id
+        for item in dfm._open_clarifications(manifest, phase="analysis")
+    } == {
+        "clarification_material#feature.main-wall.1",
+        "clarification_material#feature.main-wall.2",
+    }
+    assert dfm.clarification_metadata(
+        project_id, "material#feature.main-wall.1"
+    ) == {
+        "runtime_key": "material",
+        "check_id": None,
+        "feature_id": "feature.main-wall.1",
+        "feature_kind": "main_wall",
+        "feature_refs": ["feature.main-wall.1"],
+        "impact_scope": "特征实例级",
+        "has_default": True,
+        "default_value": "ABS",
+    }
+
+    confirmed = dfm.project(
+        "confirm_fact",
+        project_id=project_id,
+        fact_name="material#feature.main-wall.1",
+        fact_value="ABS",
+    )
+    assert confirmed["fact"]["feature_id"] == "feature.main-wall.1"
+    project = dfm.project("status", project_id=project_id)["project"]
+    assert {
+        item["clarification_id"] for item in project["open_clarifications"]
+    } == {"clarification_material#feature.main-wall.2"}
+    assert any(
+        item["name"] == "material"
+        and item["feature_id"] == "feature.main-wall.1"
+        and item["value"] == "ABS"
+        for item in project["facts"]
+    )
+
+    dfm.project(
+        "confirm_fact",
+        project_id=project_id,
+        fact_name="material#feature.main-wall.2",
+        fact_value="PC",
+    )
+
+    def bind_each_feature(process_plan, *_args, **_kwargs):
+        return replace(
+            process_plan,
+            rule_bindings=[
+                replace(
+                    binding,
+                    binding_id=f"{binding.binding_id}.{feature.feature_id}",
+                    feature_refs=[feature.feature_id],
+                )
+                for binding in process_plan.rule_bindings
+                if binding.check_id == "check.main_wall_minimum_thickness"
+                for feature in features
+            ],
+        )
+
+    monkeypatch.setattr(dfm, "_bind_discovery_scope", bind_each_feature)
+    monkeypatch.setattr(
+        dfm, "_latest_discovery_snapshot", lambda _manifest: snapshot
+    )
+    plan = dfm.analysis("plan", project_id=project_id, analyzer_key="step")["plan"]
+    assert {
+        (binding["feature_refs"][0], binding["rule_id"])
+        for binding in plan["rule_bindings"]
+    } == {
+        ("feature.main-wall.1", "R_INJ_MAIN_WALL_MIN_ABS"),
+        ("feature.main-wall.2", "R_INJ_MAIN_WALL_MIN_PC"),
+    }
 
 
 def test_ontology_status_reads_installed_workspace_store(service):

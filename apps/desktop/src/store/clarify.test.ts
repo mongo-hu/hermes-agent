@@ -86,10 +86,17 @@ describe('clarify store', () => {
       readDfmClarificationBatch({
         items: [
           {
+            check_id: 'C_WALL',
             choices: ['ABS', 'PC'],
             clarification_id: 'clarification_material',
+            default_value: 'ABS',
             fact_name: 'material',
+            feature_id: 'feature.main-wall',
+            feature_kind: 'main_wall',
             feature_refs: ['feature.main-wall'],
+            has_default: true,
+            impact_scope: '特征实例级',
+            runtime_key: 'material',
             question: '请选择材料'
           }
         ],
@@ -99,11 +106,18 @@ describe('clarify store', () => {
     ).toEqual({
       items: [
         {
+          checkId: 'C_WALL',
           choices: ['ABS', 'PC'],
           clarificationId: 'clarification_material',
+          defaultValue: 'ABS',
           factName: 'material',
+          featureId: 'feature.main-wall',
+          featureKind: 'main_wall',
           featureRefs: ['feature.main-wall'],
-          question: '请选择材料'
+          hasDefault: true,
+          impactScope: '特征实例级',
+          question: '请选择材料',
+          runtimeKey: 'material'
         }
       ],
       mode: 'dfm_analysis_batch',
@@ -114,32 +128,60 @@ describe('clarify store', () => {
   it('stably prioritizes questions related to the selected feature', () => {
     const items = [
       {
+        checkId: null,
         choices: [],
         clarificationId: 'boss-3',
+        defaultValue: null,
         factName: 'boss_3',
+        featureId: 'screw-boss-3',
+        featureKind: 'screw_boss',
         featureRefs: ['screw-boss-3'],
-        question: 'boss 3'
+        hasDefault: false,
+        impactScope: '特征实例级',
+        question: 'boss 3',
+        runtimeKey: 'boss'
       },
       {
+        checkId: null,
         choices: [],
         clarificationId: 'shared',
+        defaultValue: null,
         factName: 'shared',
+        featureId: null,
+        featureKind: '',
         featureRefs: ['main-wall', 'screw-boss-2', 'screw-boss-3'],
-        question: 'shared'
+        hasDefault: false,
+        impactScope: '整件级',
+        question: 'shared',
+        runtimeKey: 'shared'
       },
       {
+        checkId: null,
         choices: [],
         clarificationId: 'project',
+        defaultValue: null,
         factName: 'project',
+        featureId: null,
+        featureKind: '',
         featureRefs: [],
-        question: 'project'
+        hasDefault: false,
+        impactScope: '整件级',
+        question: 'project',
+        runtimeKey: 'project'
       },
       {
+        checkId: null,
         choices: [],
         clarificationId: 'boss-2',
+        defaultValue: null,
         factName: 'boss_2',
+        featureId: 'screw-boss-2',
+        featureKind: 'screw_boss',
         featureRefs: ['screw-boss-2'],
-        question: 'boss 2'
+        hasDefault: false,
+        impactScope: '特征实例级',
+        question: 'boss 2',
+        runtimeKey: 'boss'
       }
     ]
 

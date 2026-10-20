@@ -57,6 +57,28 @@ def test_injection_startup_requirements_do_not_depend_on_ontology_rows(monkeypat
     assert all(item.phase == "discovery" for item in requirements[:3])
 
 
+def test_injection_factor_requirement_preserves_impact_scope(monkeypatch):
+    adapter = build_default_process_registry().get("injection")
+    monkeypatch.setattr(
+        adapter.ontology_store,
+        "fact_requirements",
+        lambda process: ({
+            "name": "surface_finish",
+            "question": "请确认表面状态要求。",
+            "phase": "analysis",
+            "required_by": ["C_WALL_DRAFT"],
+            "check_ids": ["C_WALL_DRAFT"],
+            "impact_scope": "特征实例级",
+        },),
+    )
+
+    requirement = next(
+        item for item in adapter.fact_requirements() if item.name == "surface_finish"
+    )
+
+    assert requirement.impact_scope == "特征实例级"
+
+
 def test_die_casting_scope_is_independent_and_topology_only(context):
     adapter = build_default_process_registry().get("die_casting")
 
