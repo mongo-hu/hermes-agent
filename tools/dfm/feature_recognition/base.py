@@ -11,20 +11,19 @@ from ..contracts import (
     FeatureRecord,
     InputRecord,
     ObservationRecord,
-    RegionRecord,
 )
 
 
 @dataclass(frozen=True)
 class FeatureRecognitionResult:
     features: list[FeatureRecord]
-    regions: list[RegionRecord]
     diagnostics: dict[str, Any]
     observations: list[ObservationRecord] = field(default_factory=list)
     artifacts: list[ArtifactRecord] = field(default_factory=list)
     topology_snapshot_id: str = ""
     render_mesh_snapshot_id: str = ""
     geometry_snapshot_ref: str = ""
+    worker_snapshot_id: str = ""
 
 
 @runtime_checkable
@@ -32,7 +31,7 @@ class FeatureRecognitionProvider(Protocol):
     key: str
     version: str
 
-    def capability(self) -> dict[str, Any]: ...
+    def capability(self, project_id: str = "") -> dict[str, Any]: ...
 
     def recognize(
         self,

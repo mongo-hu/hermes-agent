@@ -4,7 +4,7 @@
   "title": "Hermes DFM Immutable Discovery Snapshot",
   "type": "object",
   "additionalProperties": false,
-  "required": ["snapshot_id", "created_at", "input_hashes", "observation_refs", "feature_refs", "region_refs", "fusion_link_refs", "provider_versions", "content_sha256", "status", "process", "confirmed_fact_refs"],
+  "required": ["snapshot_id", "created_at", "input_hashes", "observation_refs", "feature_refs", "fusion_link_refs", "provider_versions", "content_sha256", "status", "process", "confirmed_fact_refs"],
   "properties": {
     "snapshot_id": {"type": "string", "minLength": 1},
     "created_at": {"type": "string", "minLength": 1},
@@ -19,12 +19,29 @@
     "fusion_link_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "provider_versions": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1}},
     "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "status": {"const": "frozen"}
-    ,"process": {"type": "string"}
-    ,"confirmed_fact_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
-    ,"geometry_snapshot_ref": {"type": "string"}
-    ,"topology_snapshot_id": {"type": "string"}
-    ,"render_mesh_snapshot_id": {"type": "string"}
-    ,"artifact_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+    "status": {"const": "frozen"},
+    "process": {"type": "string"},
+    "confirmed_fact_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "geometry_snapshot_ref": {"type": "string"},
+    "topology_snapshot_id": {"type": "string"},
+    "render_mesh_snapshot_id": {"type": "string"},
+    "worker_snapshot_id": {"type": "string"},
+    "artifact_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "coverage": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["feature_kind", "context", "status", "covered_geometry_ref", "unresolved_geometry_ref", "diagnostics"],
+        "properties": {
+          "feature_kind": {"type": "string", "minLength": 1},
+          "context": {"type": "object"},
+          "status": {"enum": ["complete", "partial", "failed"]},
+          "covered_geometry_ref": {"type": "object"},
+          "unresolved_geometry_ref": {"type": ["object", "null"]},
+          "diagnostics": {"type": "object"}
+        }
+      }
+    }
   }
 }

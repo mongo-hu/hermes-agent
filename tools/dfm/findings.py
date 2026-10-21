@@ -6,17 +6,19 @@ import hashlib
 import json
 from pathlib import Path
 
-from .contracts import ArtifactRecord, FindingRecord
+from .contracts import ArtifactRecord, FindingRecord, GeometricFindingRecord
 from .errors import DFMError
 
 
 def materialize_evaluated_findings(
     project_dir: Path, artifacts: list[ArtifactRecord]
-) -> list[FindingRecord]:
+) -> list[FindingRecord | GeometricFindingRecord]:
     """Create findings from explicit evaluations and evidence records."""
 
     by_kind = {item.kind: item for item in artifacts}
-    measurements_artifact = by_kind.get("measurements")
+    measurements_artifact = by_kind.get("geometric_results") or by_kind.get(
+        "measurements"
+    )
     evaluations_artifact = by_kind.get("evaluations")
     if measurements_artifact is None or evaluations_artifact is None:
         return []
@@ -31,9 +33,22 @@ def materialize_evaluated_findings(
         if "evidence_records" in by_kind
         else {"records": []}
     )
+    raw_measurements = (
+        [
+            {
+                **item,
+                "measurement_id": item.get("result_id"),
+                "feature_refs": [item.get("feature_id")],
+            }
+            for item in measurements_payload.get("results", [])
+            if isinstance(item, dict) and item.get("result_id")
+        ]
+        if measurements_artifact.kind == "geometric_results"
+        else measurements_payload.get("measurements", [])
+    )
     measurements = {
         str(item.get("measurement_id")): item
-        for item in measurements_payload.get("measurements", [])
+        for item in raw_measurements
         if isinstance(item, dict) and item.get("measurement_id")
     }
     evidence_by_evaluation: dict[str, list[str]] = {}
@@ -51,64 +66,68 @@ def materialize_evaluated_findings(
         if not isinstance(evaluation, dict) or evaluation.get("outcome") != "fail":
             continue
         evaluation_id = str(evaluation.get("evaluation_id") or "")
-        measurement_ids = [
-            str(item) for item in evaluation.get("measurement_ids", [])
+        measurement_ids = [str(item) for item in evaluation.get("measurement_ids", [])]
+        linked = [
+            measurements[item] for item in measurement_ids if item in measurements
         ]
-        linked = [measurements[item] for item in measurement_ids if item in measurements]
         rule_id = str(evaluation.get("rule_id") or "unmapped")
         rule_version = str(evaluation.get("rule_version") or "1")
         stable = hashlib.sha256(
             f"{input_hash}:{evaluation_id}".encode("utf-8")
         ).hexdigest()[:20]
-        results.append(
-            FindingRecord(
-                finding_id=f"finding_{stable}",
-                title=rule_id.replace(".", " ").replace("_", " ").title(),
-                severity=str(evaluation.get("severity") or "unclassified"),
-                status="open",
-                evaluation_ids=[evaluation_id],
-                measurement_ids=measurement_ids,
-                metric_ids=[str(evaluation.get("metric_id") or "unmapped")],
-                region_refs=sorted(
-                    {
+        common_finding = {
+            "finding_id": f"finding_{stable}",
+            "title": rule_id.replace(".", " ").replace("_", " ").title(),
+            "severity": str(evaluation.get("severity") or "unclassified"),
+            "status": "open",
+            "evaluation_ids": [evaluation_id],
+            "measurement_ids": measurement_ids,
+            "evidence_refs": sorted(evidence_by_evaluation.get(evaluation_id, [])),
+            "rule_refs": [
+                f"{rule_id}@{rule_version}",
+                f"sha256:{evaluation.get('rule_hash')}",
+            ],
+            "recommendation": (
+                "Review and correct the geometry identified by the evaluated rule."
+            ),
+            "feature_refs": sorted(
+                {str(ref) for item in linked for ref in item.get("feature_refs", [])}
+                | {str(ref) for ref in evaluation.get("feature_refs", [])}
+            ),
+            "check_ids": (
+                [str(evaluation["check_id"])] if evaluation.get("check_id") else []
+            ),
+            "severity_rationale": evaluation.get("severity_rationale"),
+            "criterion_results": list(evaluation.get("criterion_results") or []),
+        }
+        if evaluation.get("geometric_id"):
+            results.append(
+                GeometricFindingRecord(
+                    geometric_ids=[str(evaluation["geometric_id"])],
+                    location_status=(
+                        "precise"
+                        if common_finding["evidence_refs"]
+                        else "preliminary"
+                    ),
+                    **common_finding,
+                )
+            )
+        else:
+            results.append(
+                FindingRecord(
+                    metric_ids=[str(evaluation.get("metric_id") or "unmapped")],
+                    region_refs=sorted({
                         str(ref)
                         for item in linked
                         for ref in item.get("region_refs", [])
-                    }
-                ),
-                evidence_refs=sorted(
-                    evidence_by_evaluation.get(evaluation_id, [])
-                ),
-                rule_refs=[
-                    f"{rule_id}@{rule_version}",
-                    f"sha256:{evaluation.get('rule_hash')}",
-                ],
-                recommendation=(
-                    "Review and correct the geometry identified by the evaluated rule."
-                ),
-                feature_refs=sorted(
-                    {
-                        str(ref)
-                        for item in linked
-                        for ref in item.get("feature_refs", [])
-                    }
-                    | {str(ref) for ref in evaluation.get("feature_refs", [])}
-                ),
-                check_ids=(
-                    [str(evaluation["check_id"])]
-                    if evaluation.get("check_id")
-                    else []
-                ),
-                severity_rationale=evaluation.get("severity_rationale"),
-                criterion_results=list(evaluation.get("criterion_results") or []),
+                    }),
+                    **common_finding,
+                )
             )
-        )
     return results
 
 
-def _read_object(
-    project_dir: Path, artifact: ArtifactRecord, error_code: str
-) -> dict:
+def _read_object(project_dir: Path, artifact: ArtifactRecord, error_code: str) -> dict:
     try:
         payload = json.loads(
             (project_dir / artifact.relative_path).read_text(encoding="utf-8")

@@ -31,13 +31,14 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["evidence_id", "run_id", "input_sha256", "operation_id", "metric_id", "measurement_ids", "evaluation_ids", "geometry_refs", "region_refs", "feature_refs", "artifact_ref", "render"],
+        "required": ["evidence_id", "run_id", "input_sha256", "measurement_ids", "evaluation_ids", "geometry_refs", "feature_refs", "artifact_ref", "render"],
         "properties": {
           "evidence_id": {"type": "string", "minLength": 1},
           "run_id": {"type": "string", "minLength": 1},
           "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
           "operation_id": {"type": "string", "minLength": 1},
           "metric_id": {"type": "string", "minLength": 1},
+          "geometric_id": {"type": "string", "pattern": "^G_[A-Z0-9_]+$"},
           "measurement_ids": {"type": "array", "items": {"type": "string"}},
           "evaluation_ids": {"type": "array", "items": {"type": "string"}},
           "geometry_refs": {"type": "array", "items": {"$ref": "#/$defs/geometryRef"}},
@@ -45,7 +46,21 @@
           "feature_refs": {"type": "array", "items": {"type": "string"}},
           "artifact_ref": {"type": "string", "minLength": 1},
           "render": {"type": "object"}
-        }
+        },
+        "oneOf": [
+          {
+            "required": ["geometric_id"],
+            "not": {"anyOf": [
+              {"required": ["operation_id"]},
+              {"required": ["metric_id"]},
+              {"required": ["region_refs"]}
+            ]}
+          },
+          {
+            "required": ["operation_id", "metric_id", "region_refs"],
+            "not": {"required": ["geometric_id"]}
+          }
+        ]
       }
     }
   },

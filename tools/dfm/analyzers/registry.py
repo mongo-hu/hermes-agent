@@ -40,7 +40,9 @@ class AnalyzerRegistry:
         return sorted(self._analyzers)
 
 
-def build_default_registry(config: DFMConfig | None = None) -> AnalyzerRegistry:
+def build_default_registry(
+    config: DFMConfig | None = None, *, geometry_sessions=None
+) -> AnalyzerRegistry:
     config = config or DFMConfig()
     registry = AnalyzerRegistry()
     registry.register(
@@ -55,6 +57,8 @@ def build_default_registry(config: DFMConfig | None = None) -> AnalyzerRegistry:
         OcctAnalyzer(
             discover_geometry_executable(config.geometry_executable),
             timeout_seconds=config.geometry_timeout_seconds,
+            session_pool=geometry_sessions,
+            lease_seconds=config.geometry_session_lease_seconds,
         )
     )
     registry.register(

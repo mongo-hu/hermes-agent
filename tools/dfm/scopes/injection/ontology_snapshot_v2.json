@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
-  "snapshot_id": "ontology.injection.default@1.3.0",
-  "ontology_version": "1.3.0",
+  "snapshot_id": "ontology.injection.default@2.0.0",
+  "ontology_version": "2.0.0",
   "published_at": "2026-09-17T00:00:00Z",
   "rule_set": {
     "rule_set_code": "injection.default",
-    "version": "1.2.0",
+    "version": "2.0.0",
     "process": "injection",
     "scope_type": "system",
     "scope_key": "default"
@@ -25,25 +25,11 @@
       "status": "active"
     },
     {
-      "concept_id": "feature.ordinary_part",
-      "concept_type": "feature_type",
-      "name_zh": "普通主体",
-      "name_en": "Ordinary part",
-      "definition": "尚未被专用工艺特征认领的零件主体区域。",
-      "aliases": [
-        "main body"
-      ],
-      "properties": {
-        "worker_kind": "ordinary_part"
-      },
-      "status": "active"
-    },
-    {
-      "concept_id": "metric.injection.wall_thickness",
+      "concept_id": "G_WALL_THK_MIN",
       "concept_type": "geometric",
-      "name_zh": "壁厚",
-      "name_en": "Wall thickness",
-      "definition": "由几何计算器得到的局部壁厚客观测量。",
+      "name_zh": "主体壁最小厚度",
+      "name_en": "Minimum main-wall thickness",
+      "definition": "由几何 Worker 按主体壁特征定义得到的最小客观厚度。",
       "aliases": [
         "thickness"
       ],
@@ -52,19 +38,17 @@
         "exclusiveMinimum": 0
       },
       "properties": {
-        "quantity_id": "thickness_mm",
         "dimension": "length",
-        "canonical_unit": "mm",
-        "worker_geometric_id": "injection.geometry.wall_thickness"
+        "canonical_unit": "mm"
       },
       "status": "active"
     },
     {
-      "concept_id": "metric.injection.draft_angle",
+      "concept_id": "G_WALL_IN_DRAFT",
       "concept_type": "geometric",
-      "name_zh": "拔模角",
-      "name_en": "Draft angle",
-      "definition": "表面法向与确认出模方向之间形成的客观拔模角测量。",
+      "name_zh": "主体壁内侧拔模角",
+      "name_en": "Main-wall inner draft angle",
+      "definition": "由几何 Worker 按主体壁特征和已确认成型方向得到的内侧拔模角。",
       "aliases": [
         "draft"
       ],
@@ -72,10 +56,8 @@
         "type": "number"
       },
       "properties": {
-        "quantity_id": "draft_angle_deg",
         "dimension": "angle",
-        "canonical_unit": "degree",
-        "worker_geometric_id": "injection.geometry.draft"
+        "canonical_unit": "degree"
       },
       "status": "active"
     },
@@ -218,7 +200,7 @@
       "name_zh": "主体壁",
       "definition": "由现有 OCCT 主体壁识别器返回的实际壁面。",
       "properties": {
-        "worker_kind": "main_wall"
+        "feature_kind": "main_wall"
       },
       "status": "active"
     },
@@ -254,23 +236,15 @@
       "sort_order": 20
     },
     {
-      "relation_id": "rel.check.wall.feature.ordinary",
-      "subject_id": "check.main_wall_minimum_thickness",
-      "predicate": "APPLIES_TO_FEATURE",
-      "object_id": "feature.ordinary_part",
-      "qualifiers": {},
-      "sort_order": 10
-    },
-    {
       "relation_id": "rel.check.wall.operand.actual",
       "subject_id": "check.main_wall_minimum_thickness",
       "predicate": "USES_OPERAND",
-      "object_id": "metric.injection.wall_thickness",
+      "object_id": "G_WALL_THK_MIN",
       "qualifiers": {
         "alias": "actual",
         "aggregation": "minimum",
         "required": true,
-        "operand_text": "普通主体区域的最小客观壁厚"
+        "operand_text": "主体壁特征的最小客观厚度"
       },
       "sort_order": 20
     },
@@ -292,10 +266,10 @@
       "sort_order": 30
     },
     {
-      "relation_id": "rel.check.draft.feature.ordinary",
+      "relation_id": "rel.check.draft.feature.main_wall",
       "subject_id": "check.main_wall_minimum_draft",
       "predicate": "APPLIES_TO_FEATURE",
-      "object_id": "feature.ordinary_part",
+      "object_id": "feature.main_wall",
       "qualifiers": {},
       "sort_order": 10
     },
@@ -303,12 +277,12 @@
       "relation_id": "rel.check.draft.operand.actual",
       "subject_id": "check.main_wall_minimum_draft",
       "predicate": "USES_OPERAND",
-      "object_id": "metric.injection.draft_angle",
+      "object_id": "G_WALL_IN_DRAFT",
       "qualifiers": {
         "alias": "actual",
         "aggregation": "minimum",
         "required": true,
-        "operand_text": "普通主体区域相对确认出模方向的最小拔模角"
+        "operand_text": "主体壁特征相对确认成型方向的最小内侧拔模角"
       },
       "sort_order": 20
     },
@@ -424,5 +398,5 @@
       "citation_refs": []
     }
   ],
-  "content_sha256": "2c5108fe931be9ea635ee9f7b2b2810c99c851399eb248670320e6066501364c"
+  "content_sha256": "bf6bf786a2b916430e8669a514f9665003aa51f97718d6c599a17c7c46eb55fe"
 }

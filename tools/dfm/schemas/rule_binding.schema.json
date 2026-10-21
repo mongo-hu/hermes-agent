@@ -4,7 +4,7 @@
   "title": "Hermes DFM Rule Binding",
   "type": "object",
   "additionalProperties": false,
-  "required": ["binding_id", "operation_id", "metric_id", "quantity_id", "rule_id", "operator", "aggregation", "required_fact_names", "feature_refs", "region_refs"],
+  "required": ["binding_id", "rule_id", "operator", "aggregation", "required_fact_names", "feature_refs"],
   "properties": {
     "binding_id": {"type": "string", "minLength": 1},
     "operation_id": {"type": "string", "minLength": 1},
@@ -17,6 +17,7 @@
     "required_fact_names": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "feature_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "region_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "context": {"type": "object"},
     "check_id": {"type": "string"},
     "operand_alias": {"type": "string", "minLength": 1},
     "rule_selection": {
@@ -75,6 +76,26 @@
   },
   "allOf": [
     {
+      "oneOf": [
+        {
+          "required": ["geometric_id"],
+          "not": {"anyOf": [
+            {"required": ["operation_id"]},
+            {"required": ["metric_id"]},
+            {"required": ["quantity_id"]},
+            {"required": ["region_refs"]}
+          ]},
+          "properties": {
+            "feature_refs": {"minItems": 1}
+          }
+        },
+        {
+          "required": ["operation_id", "metric_id", "quantity_id", "region_refs"],
+          "not": {"required": ["geometric_id"]}
+        }
+      ]
+    },
+    {
       "if": {
         "properties": {
           "additional_operands": {"minItems": 1}
@@ -105,7 +126,7 @@
     "operand": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["alias", "operation_id", "metric_id", "quantity_id", "aggregation", "feature_refs", "region_refs"],
+      "required": ["alias", "aggregation", "feature_refs"],
       "properties": {
         "alias": {"type": "string", "minLength": 1},
         "operation_id": {"type": "string", "minLength": 1},
@@ -114,8 +135,27 @@
         "geometric_id": {"type": "string", "pattern": "^G_[A-Z0-9_]+$"},
         "aggregation": {"enum": ["minimum", "maximum", "mean", "median", "sum", "count", "identity"]},
         "feature_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
-        "region_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
-      }
+        "region_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "context": {"type": "object"}
+      },
+      "oneOf": [
+        {
+          "required": ["geometric_id"],
+          "not": {"anyOf": [
+            {"required": ["operation_id"]},
+            {"required": ["metric_id"]},
+            {"required": ["quantity_id"]},
+            {"required": ["region_refs"]}
+          ]},
+          "properties": {
+            "feature_refs": {"minItems": 1}
+          }
+        },
+        {
+          "required": ["operation_id", "metric_id", "quantity_id", "region_refs"],
+          "not": {"required": ["geometric_id"]}
+        }
+      ]
     },
     "expression": {
       "oneOf": [

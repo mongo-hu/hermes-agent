@@ -15,23 +15,17 @@ from tools.dfm.analyzers.registry import AnalyzerRegistry
 from tools.dfm.analyzers.step import StepAnalyzer
 from tools.dfm.config import DFMConfig
 from tools.dfm.errors import DFMError
-from tools.dfm.processes.base import FactRequirement, ProcessPlan
+from tools.dfm.processes.base import FactRequirement
 from tools.dfm.service import DFMService
-from tools.dfm.feature_recognition.occt_cpp import OCCTCppFeatureRecognitionProvider
 from tools.dfm.contracts import (
-    ArtifactRecord,
     ClarificationRecord,
     Capability,
     CapabilityStatus,
-    DiscoverySnapshotRecord,
     FactRecord,
-    FeatureRecord,
-    GeometryRef,
+    GeometricRequest,
     ObservationRecord,
-    PlanOperation,
-    RegionRecord,
-    RuleBinding,
-    RuleOperand,
+    PlanFragmentRecord,
+    PlanRecord,
 )
 from tools.dfm.processes.occt_injection import geometry_binding_index
 
@@ -204,7 +198,7 @@ def test_interactive_dfm_fact_requires_real_response(service, monkeypatch):
     assert "error" in repeated
 
 
-def test_dfm_questions_bind_the_active_project_and_next_factor(
+def test_dfm_questions_bind_the_active_project_and_startup_factors(
     service, monkeypatch
 ):
     from tools.clarify_tool import clarify_tool
@@ -270,18 +264,7 @@ def test_dfm_questions_bind_the_active_project_and_next_factor(
     )
 
     discovered = dfm.analysis("discover", project_id=project_id)
-    assert [item["clarification_id"] for item in discovered["open_clarifications"]] == [
-        "clarification_material"
-    ]
-    shown.clear()
-    material = answer_next("material", "ABS")
-    assert material["dfm_fact"]["name"] == "material"
-    assert material["next_action"] == "plan"
-    assert len(shown) == 1
-    assert (
-        dfm.project("status", project_id=project_id)["project"]["open_clarifications"]
-        == []
-    )
+    assert discovered["open_clarifications"] == []
 
 
 def test_requested_process_is_routing_state_until_confirmed_as_a_fact(service):
@@ -305,7 +288,7 @@ def test_requested_process_is_routing_state_until_confirmed_as_a_fact(service):
     assert not any(item["name"] == "process" for item in status["facts"])
 
 
-def test_discovery_asks_startup_facts_before_feature_scoped_rule_facts(service):
+def test_discovery_does_not_ask_rule_facts_without_a_worker_feature(service):
     dfm, temp = service
     adapter = dfm.process_registry.get("injection")
     original_requirements = adapter.fact_requirements
@@ -356,202 +339,14 @@ def test_discovery_asks_startup_facts_before_feature_scoped_rule_facts(service):
     discovered = dfm.analysis("discover", project_id=project_id)
     status = dfm.project("status", project_id=project_id)["project"]
 
-    assert [item["clarification_id"] for item in discovered["open_clarifications"]] == [
-        "clarification_material"
-    ]
+    assert discovered["open_clarifications"] == []
     assert next(
         item["value"] for item in status["facts"] if item["name"] == "pull_dir"
     ) == [0.0, 0.0, 1.0]
-    confirmed_material = dfm.project(
-        "confirm_fact",
-        project_id=project_id,
-        fact_name="material",
-        fact_value="ABS",
-    )
-    assert confirmed_material["next_action"] == "plan"
 
 
-def test_discovery_review_edits_regions_before_confirmation(service, monkeypatch):
-    from tools.clarify_tool import clarify_tool
-
-    dfm, temp = service
-    project_id = dfm.project("create", name="Editable discovery")["project_id"]
-    source = temp / "editable.step"
-    source.write_bytes(STEP_PAYLOAD)
-    dfm.project("add_input", project_id=project_id, path=str(source))
-    confirm_step_facts(dfm, project_id)
-    manifest = dfm._store(project_id).load()
-    input_sha256 = manifest.inputs[0].sha256
-    artifact_dir = (
-        dfm.workspace.project_dir(project_id)
-        / "artifacts"
-        / "geometry_discovery"
-        / input_sha256[:16]
-    )
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    refs = [
-        GeometryRef("face", index, input_sha256, "topology-1", f"face-{index}")
-        for index in (1, 2, 3)
-    ]
-    (artifact_dir / "topology_map.json").write_text(
-        json.dumps({
-            "schema_version": 2,
-            "faces": [{"geometry_ref": item.to_dict()} for item in refs],
-        }),
-        encoding="utf-8",
-    )
-    (artifact_dir / "render_scene.json").write_text(
-        json.dumps({"schema_version": 2, "primitives": []}), encoding="utf-8"
-    )
-    topology_artifact = ArtifactRecord(
-        "artifact.discovery.topology",
-        "topology_map",
-        (artifact_dir / "topology_map.json")
-        .relative_to(dfm.workspace.project_dir(project_id))
-        .as_posix(),
-        "application/json",
-        "now",
-    )
-    scene_artifact = ArtifactRecord(
-        "artifact.discovery.scene",
-        "render_scene",
-        (artifact_dir / "render_scene.json")
-        .relative_to(dfm.workspace.project_dir(project_id))
-        .as_posix(),
-        "application/json",
-        "now",
-    )
-    feature = FeatureRecord(
-        "feature.main-wall.1",
-        "main_wall",
-        ["recognizer:test"],
-        0.9,
-        input_sha256=input_sha256,
-        region_refs=["region.main-wall.1", "region.main-wall.transition"],
-    )
-    region = RegionRecord(
-        "region.main-wall.1",
-        input_sha256,
-        "model",
-        "topology_refs",
-        "main_wall",
-        ["recognizer:test"],
-        "1",
-        "b" * 64,
-        geometry_refs=[refs[0]],
-        role="wall",
-        feature_refs=[feature.feature_id],
-    )
-    transition_region = RegionRecord(
-        "region.main-wall.transition",
-        input_sha256,
-        "model",
-        "topology_refs",
-        "main_wall_transition",
-        ["recognizer:test"],
-        "1",
-        "c" * 64,
-        geometry_refs=[refs[1]],
-        role="transition",
-        feature_refs=[feature.feature_id],
-    )
-    manifest = dfm._store(project_id).update(
-        lambda current: replace(
-            current,
-            features=[feature],
-            regions=[region, transition_region],
-            artifacts=[*current.artifacts, topology_artifact, scene_artifact],
-            capabilities={
-                **current.capabilities,
-                "geometry_discovery": {
-                    "inputs": {
-                        input_sha256: {
-                            "artifact_refs": [
-                                topology_artifact.artifact_id,
-                                scene_artifact.artifact_id,
-                            ]
-                        }
-                    }
-                },
-                "discovery_review": {"status": "pending"},
-            },
-        )
-    )
-    dfm._store(project_id).update(
-        lambda current: replace(current, updated_at="unrelated-update"),
-        expected_revision=manifest.revision,
-    )
-
-    edited = dfm.analysis(
-        "update_feature_geometry",
-        project_id=project_id,
-        feature_id=feature.feature_id,
-        face_indices=[1, 3],
-        expected_revision=manifest.revision,
-    )
-    saved = dfm._store(project_id).load()
-    saved_region = next(
-        item for item in saved.regions if item.region_id == region.region_id
-    )
-    assert edited["face_indices"] == [1, 3]
-    assert [item.index for item in saved_region.geometry_refs] == [1, 3]
-    saved_feature = next(
-        item for item in saved.features if item.feature_id == feature.feature_id
-    )
-    assert saved_feature.region_refs == [region.region_id]
-    assert saved_feature.properties["manual_face_additions"] == [3]
-    assert saved_feature.properties["manual_face_removals"] == [2]
-    assert saved_feature.properties["unavailable_region_roles"] == ["transition"]
-
-    restored = dfm.analysis(
-        "update_feature_geometry",
-        project_id=project_id,
-        feature_id=feature.feature_id,
-        face_indices=[1, 2, 3],
-        expected_revision=edited["revision"],
-    )
-    saved = dfm._store(project_id).load()
-    saved_feature = next(
-        item for item in saved.features if item.feature_id == feature.feature_id
-    )
-    assert transition_region.region_id in saved_feature.region_refs
-    assert saved_feature.properties["manual_face_additions"] == [3]
-    assert saved_feature.properties["manual_face_removals"] == []
-    assert saved_feature.properties["unavailable_region_roles"] == []
-    assert restored["revision"] == saved.revision
-    blocked = dfm.analysis("plan", project_id=project_id)
-    assert blocked["status"] == "discovery_review_required"
-
-    monkeypatch.setattr("tools.dfm.service.get_dfm_service", lambda: dfm)
-    shown = []
-    response = json.loads(
-        clarify_tool(
-            "ignored",
-            callback=lambda question, choices: (
-                shown.append((question, choices)) or "确认最终特征区域并继续"
-            ),
-            dfm_project_id=project_id,
-            dfm_discovery_review=True,
-        )
-    )
-    confirmed = response["dfm_discovery_review"]
-    final = dfm._store(project_id).load()
-    assert shown == [
-        (
-            "请在右侧三维模型中核对识别到的特征区域；如需调整，请先编辑并保存，然后继续。",
-            ["确认最终特征区域并继续"],
-        )
-    ]
-    assert confirmed["status"] == "discovery_confirmed"
-    assert final.capabilities["discovery_review"]["status"] == "confirmed"
-    assert (
-        final.capabilities["discovery_review"]["snapshot_id"]
-        == confirmed["snapshot"]["snapshot_id"]
-    )
-
-
-def test_published_factor_choices_are_asked_and_validated(service):
-    dfm, temp = service
+def test_published_factor_choices_are_validated_without_fabricated_feature(service):
+    dfm, _temp = service
     package_path = (
         Path(__file__).parents[3]
         / "tools/dfm/scopes/injection/ontology_snapshot_v2.json"
@@ -578,24 +373,6 @@ def test_published_factor_choices_are_asked_and_validated(service):
     dfm.ontology_store.install_package(package)
 
     project_id = dfm.project("create", name="Published factor choices")["project_id"]
-    source = temp / "part.step"
-    source.write_bytes(STEP_PAYLOAD)
-    dfm.project("add_input", project_id=project_id, path=str(source))
-    for name, value in {
-        "process": "injection",
-        "model_units": "mm",
-        "pull_dir": "+Z",
-    }.items():
-        dfm.project(
-            "confirm_fact", project_id=project_id, fact_name=name, fact_value=value
-        )
-    discovered = dfm.analysis("discover", project_id=project_id)
-    question = next(
-        item["question"]
-        for item in discovered["open_clarifications"]
-        if item["clarification_id"] == "clarification_material"
-    )
-    assert question == "What resin/material grade will be used for this part?"
     assert dfm.clarification_choices("injection", "material") == ("ABS", "PC")
 
     with pytest.raises(DFMError) as exc_info:
@@ -608,317 +385,15 @@ def test_published_factor_choices_are_asked_and_validated(service):
     assert exc_info.value.code == "fact_invalid"
     assert exc_info.value.details["allowed_values"] == ["ABS", "PC"]
 
-    # Older projects may already contain a confirmed value outside the publication.
-    dfm._store(project_id).update(
-        lambda current: replace(
-            current,
-            facts=[
-                *current.facts,
-                FactRecord(
-                    "fact_legacy", "material", "glass_fiber", "user", "confirmed"
-                ),
-            ],
-        )
-    )
-    reopened = dfm.project("status", project_id=project_id)["project"][
-        "open_clarifications"
-    ]
-    assert any(
-        item["clarification_id"] == "clarification_material" for item in reopened
-    )
-
     dfm.project(
         "confirm_fact", project_id=project_id, fact_name="material", fact_value="PC"
     )
-    status = dfm.project("status", project_id=project_id)["project"]
-    assert not any(
-        item["clarification_id"] == "clarification_material"
-        for item in status["open_clarifications"]
-    )
-
-
-def test_same_factor_can_be_answered_separately_for_two_checks(service, monkeypatch):
-    from tools.clarify_tool import clarify_tool
-
-    dfm, temp = service
-    package_path = Path(__file__).parent / "fixtures/ontology_legacy_v2.json"
-    package = json.loads(package_path.read_text(encoding="utf-8"))
-    factor = next(
-        item for item in package["concepts"] if item["concept_id"] == "factor.material"
-    )
-    factor["properties"]["runtime_key"] = "mat_additive_fill"
-    factor["properties"].pop("default_value", None)
-    factor["data_schema"]["enum"] = ["非LGF", "未填充"]
-    package["factor_options"] = [
-        {
-            **package["factor_options"][0],
-            "option_code": value,
-            "name_zh": value,
-            "value": value,
-            "sort_order": index,
-        }
-        for index, value in enumerate(("非LGF", "未填充"), start=1)
-    ]
-    material_relation = next(
+    material_facts = [
         item
-        for item in package["relations"]
-        if item["relation_id"] == "rel.check.wall.factor.material"
-    )
-    draft_relation = deepcopy(material_relation)
-    draft_relation["relation_id"] = "rel.check.draft.factor.material"
-    draft_relation["subject_id"] = "check.main_wall_minimum_draft"
-    draft_relation["qualifiers"]["required_by"] = [draft_relation["subject_id"]]
-    package["relations"].append(draft_relation)
-    for rule in package["rules"]:
-        if rule["rule_id"] == "R_INJ_MAIN_WALL_MIN_ABS":
-            rule["conditions"][0]["value"] = "非LGF"
-        if rule["rule_id"] == "R_INJ_MAIN_WALL_DRAFT_DEFAULT":
-            rule["conditions"] = [
-                {"factor_id": "factor.material", "operator": "EQ", "value": "未填充"}
-            ]
-    unhashed = {key: value for key, value in package.items() if key != "content_sha256"}
-    package["content_sha256"] = hashlib.sha256(
-        json.dumps(
-            unhashed, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
-    ).hexdigest()
-    dfm.ontology_store.install_package(package)
-    monkeypatch.setattr("tools.dfm.service.get_dfm_service", lambda: dfm)
-
-    project_id = dfm.project("create", name="Check-scoped fill")["project_id"]
-    source = temp / "scoped.step"
-    source.write_bytes(STEP_PAYLOAD)
-    dfm.project("add_input", project_id=project_id, path=str(source))
-    for name, value in (
-        ("process", "injection"),
-        ("model_units", "mm"),
-        ("pull_dir", "+Z"),
-    ):
-        dfm.project(
-            "confirm_fact", project_id=project_id, fact_name=name, fact_value=value
-        )
-    discovered = dfm.analysis("discover", project_id=project_id)
-    clarifications = discovered["open_clarifications"]
-    assert {item["clarification_id"] for item in clarifications} == {
-        "clarification_mat_additive_fill@check.main_wall_minimum_thickness",
-        "clarification_mat_additive_fill@check.main_wall_minimum_draft",
-    }
-    assert dfm.clarification_feature_refs(
-        project_id,
-        "mat_additive_fill@check.main_wall_minimum_thickness",
-    )
-    with pytest.raises(DFMError) as invalid:
-        dfm.project(
-            "confirm_fact",
-            project_id=project_id,
-            fact_name="mat_additive_fill@check.main_wall_minimum_thickness",
-            fact_value="未填充",
-        )
-    assert invalid.value.code == "fact_invalid"
-    for check_id, expected in (
-        ("check.main_wall_minimum_thickness", "非LGF"),
-        ("check.main_wall_minimum_draft", "未填充"),
-    ):
-        result = json.loads(
-            clarify_tool(
-                "ignored",
-                callback=lambda _question, choices: expected,
-                dfm_project_id=project_id,
-                dfm_fact_name=f"clarification_mat_additive_fill@{check_id}",
-            )
-        )
-        assert result["choices_offered"] == [expected]
-        assert result["dfm_fact"]["check_id"] == check_id
-    project = dfm.project("status", project_id=project_id)["project"]
-    assert project["open_clarifications"] == []
-    assert {
-        (item["check_id"], item["value"])
-        for item in project["facts"]
-        if item["name"] == "mat_additive_fill"
-    } == {
-        ("check.main_wall_minimum_thickness", "非LGF"),
-        ("check.main_wall_minimum_draft", "未填充"),
-    }
-    for check_id, expected in (
-        ("check.main_wall_minimum_thickness", "非LGF"),
-        ("check.main_wall_minimum_draft", "未填充"),
-    ):
-        context = dfm.analysis("context", project_id=project_id, check_id=check_id)
-        assert context["confirmed_facts"]["mat_additive_fill"]["value"] == expected
-    plan = dfm.analysis("plan", project_id=project_id)["plan"]
-    assert {"R_INJ_MAIN_WALL_MIN_ABS", "R_INJ_MAIN_WALL_DRAFT_DEFAULT"} <= set(
-        plan["rules"]
-    )
-
-
-def test_feature_instance_factor_is_asked_and_saved_per_discovered_feature(
-    service, monkeypatch
-):
-    dfm, temp = service
-    package_path = Path(__file__).parent / "fixtures/ontology_legacy_v2.json"
-    package = json.loads(package_path.read_text(encoding="utf-8"))
-    material = next(
-        item for item in package["concepts"] if item["concept_id"] == "factor.material"
-    )
-    material["properties"]["impact_scope"] = "特征实例级"
-    material["data_schema"]["enum"] = ["ABS", "PC"]
-    package["factor_options"].append({
-        "factor_id": "factor.material",
-        "option_code": "PC",
-        "name_zh": "PC",
-        "value": "PC",
-        "sort_order": 20,
-        "status": "active",
-    })
-    pc_rule = deepcopy(
-        next(
-            item
-            for item in package["rules"]
-            if item["rule_id"] == "R_INJ_MAIN_WALL_MIN_ABS"
-        )
-    )
-    pc_rule.update(
-        rule_version_id="rule-version.main-wall-min-pc.1",
-        rule_id="R_INJ_MAIN_WALL_MIN_PC",
-        name="PC主体壁最小厚度",
-    )
-    pc_rule["conditions"][0]["value"] = "PC"
-    package["rules"].append(pc_rule)
-    unhashed = {key: value for key, value in package.items() if key != "content_sha256"}
-    package["content_sha256"] = hashlib.sha256(
-        json.dumps(
-            unhashed, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
-    ).hexdigest()
-    dfm.ontology_store.install_package(package)
-
-    project_id = dfm.project("create", name="Feature-scoped material")["project_id"]
-    source = temp / "feature-scoped.step"
-    source.write_bytes(STEP_PAYLOAD)
-    registered = dfm.project("add_input", project_id=project_id, path=str(source))["input"]
-    for name, value in (
-        ("process", "injection"),
-        ("model_units", "mm"),
-        ("pull_dir", "+Z"),
-    ):
-        dfm.project(
-            "confirm_fact", project_id=project_id, fact_name=name, fact_value=value
-        )
-
-    features = [
-        FeatureRecord(
-            f"feature.main-wall.{index}",
-            "main_wall",
-            ["recognizer:test"],
-            0.9,
-            input_sha256=registered["sha256"],
-        )
-        for index in (1, 2)
+        for item in dfm.project("status", project_id=project_id)["project"]["facts"]
+        if item["name"] == "material" and item["status"] == "confirmed"
     ]
-    snapshot = DiscoverySnapshotRecord(
-        "snapshot.feature-scope",
-        "now",
-        {registered["input_id"]: registered["sha256"]},
-        [],
-        [item.feature_id for item in features],
-        [],
-        [],
-        {"recognizer:test": "1"},
-        "a" * 64,
-    )
-    dfm._store(project_id).update(
-        lambda current: replace(
-            current,
-            features=features,
-            discovery_snapshots=[snapshot],
-        )
-    )
-    monkeypatch.setattr(
-        dfm.discovery,
-        "analysis_targets",
-        lambda _manifest, _snapshot: [
-            {
-                "feature": feature,
-                "check_ids": ["check.main_wall_minimum_thickness"],
-                "operand_anchors": {},
-            }
-            for feature in features
-        ],
-    )
-
-    manifest = dfm._ensure_clarifications(project_id, phase="analysis")
-    assert {
-        item.clarification_id
-        for item in dfm._open_clarifications(manifest, phase="analysis")
-    } == {
-        "clarification_material#feature.main-wall.1",
-        "clarification_material#feature.main-wall.2",
-    }
-    assert dfm.clarification_metadata(
-        project_id, "material#feature.main-wall.1"
-    ) == {
-        "runtime_key": "material",
-        "check_id": None,
-        "feature_id": "feature.main-wall.1",
-        "feature_kind": "main_wall",
-        "feature_refs": ["feature.main-wall.1"],
-        "impact_scope": "特征实例级",
-        "has_default": True,
-        "default_value": "ABS",
-    }
-
-    confirmed = dfm.project(
-        "confirm_fact",
-        project_id=project_id,
-        fact_name="material#feature.main-wall.1",
-        fact_value="ABS",
-    )
-    assert confirmed["fact"]["feature_id"] == "feature.main-wall.1"
-    project = dfm.project("status", project_id=project_id)["project"]
-    assert {
-        item["clarification_id"] for item in project["open_clarifications"]
-    } == {"clarification_material#feature.main-wall.2"}
-    assert any(
-        item["name"] == "material"
-        and item["feature_id"] == "feature.main-wall.1"
-        and item["value"] == "ABS"
-        for item in project["facts"]
-    )
-
-    dfm.project(
-        "confirm_fact",
-        project_id=project_id,
-        fact_name="material#feature.main-wall.2",
-        fact_value="PC",
-    )
-
-    def bind_each_feature(process_plan, *_args, **_kwargs):
-        return replace(
-            process_plan,
-            rule_bindings=[
-                replace(
-                    binding,
-                    binding_id=f"{binding.binding_id}.{feature.feature_id}",
-                    feature_refs=[feature.feature_id],
-                )
-                for binding in process_plan.rule_bindings
-                if binding.check_id == "check.main_wall_minimum_thickness"
-                for feature in features
-            ],
-        )
-
-    monkeypatch.setattr(dfm, "_bind_discovery_scope", bind_each_feature)
-    monkeypatch.setattr(
-        dfm, "_latest_discovery_snapshot", lambda _manifest: snapshot
-    )
-    plan = dfm.analysis("plan", project_id=project_id, analyzer_key="step")["plan"]
-    assert {
-        (binding["feature_refs"][0], binding["rule_id"])
-        for binding in plan["rule_bindings"]
-    } == {
-        ("feature.main-wall.1", "R_INJ_MAIN_WALL_MIN_ABS"),
-        ("feature.main-wall.2", "R_INJ_MAIN_WALL_MIN_PC"),
-    }
+    assert material_facts[-1]["value"] == "PC"
 
 
 def test_ontology_status_reads_installed_workspace_store(service):
@@ -1227,12 +702,12 @@ def test_missing_run_id_is_recovered_only_when_unambiguous():
     assert exc_info.value.code == "run_id_required"
 
 
-def test_plan_is_persisted_but_unavailable_production_start_fails_explicitly(service):
+def test_injection_plan_rejects_non_v2_backend_explicitly(service):
     dfm, temp = service
     project_id = dfm.project("create", name="Bracket")["project_id"]
     source = temp / "part.step"
     source.write_bytes(STEP_PAYLOAD)
-    added = dfm.project("add_input", project_id=project_id, path=str(source))
+    dfm.project("add_input", project_id=project_id, path=str(source))
 
     blocked = dfm.analysis("plan", project_id=project_id)
     assert blocked["ok"] is True
@@ -1247,91 +722,30 @@ def test_plan_is_persisted_but_unavailable_production_start_fails_explicitly(ser
     awaiting_discovery = dfm.analysis("plan", project_id=project_id)
     assert awaiting_discovery["ok"] is True
     assert awaiting_discovery["status"] == "discovery_required"
-    discovery = dfm.analysis("discover", project_id=project_id)
-    plan = dfm.analysis("plan", project_id=project_id)
-
-    assert discovery["snapshot"]["feature_refs"]
-    assert discovery["features"][0]["kind"] == "ordinary_part"
-    assert discovery["regions"][0]["mode"] == "whole_model"
-    assert discovery["capability"]["providers"]["occt_cpp_feature_recognition"] == (
-        f"{OCCTCppFeatureRecognitionProvider.version}:dependency_missing"
-    )
-    assert plan["plan"]["analyzer_keys"] == ["step"]
-    assert plan["plan"]["discovery_snapshot_refs"] == [
-        discovery["snapshot"]["snapshot_id"]
-    ]
-    measured = [item for item in plan["plan"]["operations"] if item["metric_ids"]]
-    assert all(
-        item["feature_refs"] == discovery["snapshot"]["feature_refs"]
-        for item in measured
-    )
-    assert all(
-        item["region_refs"] == discovery["snapshot"]["region_refs"] for item in measured
-    )
-    assert plan["plan"]["process"] == "injection"
-    assert plan["plan"]["scope_id"] == "injection.default"
-    assert plan["plan"]["scope_version"] == dfm.ontology_store.identity().scope_version
-    assert (
-        plan["plan"]["ontology_snapshot_id"]
-        == dfm.ontology_store.identity().snapshot_id
-    )
-    assert len(plan["plan"]["ontology_snapshot_sha256"]) == 64
-    assert plan["plan"]["input_ids"] == [plan["plan"]["input_ids"][0]]
-    assert set(plan["plan"]["input_hashes"].values()) == {added["input"]["sha256"]}
-    draft_rule = plan["plan"]["rules"]["R_INJ_MAIN_WALL_DRAFT_DEFAULT"]
-    assert draft_rule["value"] == 1.0
-    assert draft_rule["unit"] == "degree"
-    assert draft_rule["version"] == "1.0.0"
-    assert draft_rule["source"].startswith(
-        f"ontology:{plan['plan']['ontology_snapshot_id']}/"
-    )
-    assert plan["capability"]["status"] == "dependency_missing"
+    dfm.analysis("discover", project_id=project_id)
     with pytest.raises(DFMError) as exc_info:
-        dfm.analysis("start", project_id=project_id, plan_id=plan["plan"]["plan_id"])
-    assert exc_info.value.code == "dependency_missing"
+        dfm.analysis("plan", project_id=project_id)
+    assert exc_info.value.code == "geometry_contract_unsupported"
+    assert exc_info.value.details == {
+        "analyzer_key": "step",
+        "required_contract": "dfm.geometry/v2",
+    }
 
 
 def test_occt_plan_stops_when_no_supported_rule_is_applicable(service, monkeypatch):
     dfm, temp = service
-    scope = {
-        "binding_mode": "geometric_id",
-        "legacy_binding_fields_active": False,
-        "geometric_bindings": [
+    capability = {
+        "contract_version": "dfm.geometry/v2",
+        "geometrics": [
             {
-                "concept_id": "G_WALL_THK_MIN",
+                "geometric_id": "G_WALL_THK_MIN",
+                "feature_kind": "main_wall",
                 "support_status": "supported",
-                "execution": {
-                    "discovery_operation_id": "recognize_main_wall",
-                    "feature_kind": "main_wall",
-                    "region_role": "wall",
-                    "measurement_operation_id": "measure_wall_thickness",
-                    "result_selector": {"quantity_id": "thickness_mm"},
-                },
+                "scope_modes": ["feature"],
+                "direction_modes": ["none"],
+                "requires_complete_inventory": False,
+                "context_schema": {},
             }
-        ],
-        "operations": [
-            {
-                "operation_id": "recognize_main_wall",
-                "calculator_id": "recognize_main_wall",
-                "depends_on": [],
-                "metric_ids": [],
-                "required_quantities": [],
-                "required_artifacts": ["features"],
-                "status": "available",
-                "arguments": {},
-                "algorithm_options": {},
-            },
-            {
-                "operation_id": "measure_wall_thickness",
-                "calculator_id": "measure_wall_thickness",
-                "depends_on": [],
-                "metric_ids": ["injection.geometry.wall_thickness"],
-                "required_quantities": ["thickness_mm"],
-                "required_artifacts": ["scalar_field"],
-                "status": "available",
-                "arguments": {},
-                "algorithm_options": {},
-            },
         ],
     }
 
@@ -1355,8 +769,10 @@ def test_occt_plan_stops_when_no_supported_rule_is_applicable(service, monkeypat
     source.write_bytes(STEP_PAYLOAD)
     dfm.project("add_input", project_id=project_id, path=str(source))
     dfm.registry.register(AvailableOcctAnalyzer())
-    dfm.occt_geometry_capability = scope
-    dfm.ontology_store.configure_geometric_bindings(geometry_binding_index(scope))
+    dfm.occt_geometry_capability = capability
+    dfm.ontology_store.configure_geometric_bindings(
+        geometry_binding_index(capability)
+    )
     monkeypatch.setattr(
         "tools.dfm.service.compile_occt_injection_plan",
         lambda adapter, context, raw_parameters, capability: replace(
@@ -1375,191 +791,14 @@ def test_occt_plan_stops_when_no_supported_rule_is_applicable(service, monkeypat
     assert result["status"] == "no_applicable_checks"
     assert result["next_action"] == "complete"
     assert result["reason_code"] == "no_applicable_supported_rules"
-    assert result["supported_geometric_ids"] == ["G_WALL_THK_MIN"]
+    assert result["supported_geometric_ids"] == sorted(
+        geometry_binding_index(dfm.occt_geometry_capability or {})
+    )
     assert result["ontology"]["rule_set_version"]
     assert result["published_check_ids"]
     assert "plan" not in result
     manifest = dfm.project("status", project_id=project_id)["project"]
     assert all(item["phase"] == "discovery" for item in manifest["plans"])
-
-    adapter = dfm.process_registry.get("injection")
-    original_compile = adapter.compile
-    monkeypatch.setattr(
-        adapter,
-        "compile",
-        lambda context, raw_parameters: replace(
-            original_compile(context, raw_parameters),
-            rules={},
-            operations=[],
-            rule_bindings=[],
-            binding_selectors={},
-        ),
-    )
-
-    fallback = dfm.analysis("plan", project_id=project_id, analyzer_key="step")
-
-    assert fallback["status"] == "no_applicable_checks"
-    assert fallback["next_action"] == "complete"
-    manifest = dfm.project("status", project_id=project_id)["project"]
-    assert all(item["phase"] == "discovery" for item in manifest["plans"])
-
-
-def test_region_binding_ignores_targets_for_inapplicable_rules(service, monkeypatch):
-    dfm, _ = service
-    feature = SimpleNamespace(feature_id="feature.main_wall", kind="main_wall")
-    region = SimpleNamespace(
-        region_id="region.main_wall.wall",
-        role="wall",
-        input_sha256="input-sha",
-        content_sha256="a" * 64,
-    )
-    draft_metric = "injection.geometry.main_wall.draft"
-    transition_metric = "injection.geometry.main_wall.transition"
-    monkeypatch.setattr(
-        dfm.discovery,
-        "analysis_targets",
-        lambda _manifest, _snapshot: [
-            {
-                "feature": feature,
-                "region": region,
-                "metric_id": draft_metric,
-                "operand_anchors": {("C_WALL_DRAFT", "actual"): [feature.feature_id]},
-            },
-            {
-                "feature": feature,
-                "region": region,
-                "metric_id": transition_metric,
-                "operand_anchors": {
-                    ("C_WALL_THK_TRANSITION", "actual"): [feature.feature_id]
-                },
-            },
-        ],
-    )
-    plan = ProcessPlan(
-        process="injection",
-        adapter_version="test",
-        scope_id="test",
-        scope_version="1",
-        rules={},
-        operations=[
-            PlanOperation(
-                "measure_main_wall_draft",
-                "measure_main_wall_draft",
-                metric_ids=[draft_metric],
-            )
-        ],
-        accepted_inputs=set(),
-        rule_bindings=[
-            RuleBinding(
-                binding_id="binding.C_WALL_DRAFT.R_WALL_DRAFT",
-                operation_id="measure_main_wall_draft",
-                metric_id=draft_metric,
-                quantity_id="outer_draft_angle_deg",
-                rule_id="R_WALL_DRAFT",
-                operator="GTE",
-                aggregation="identity",
-                check_id="C_WALL_DRAFT",
-            )
-        ],
-        binding_selectors={
-            "binding.C_WALL_DRAFT.R_WALL_DRAFT": {
-                "actual": {"operand_text": "outer wall"}
-            }
-        },
-    )
-
-    bound = dfm._bind_discovery_scope(plan, None, None)
-
-    assert [item.metric_ids for item in bound.operations] == [[draft_metric]]
-    assert len(bound.rule_bindings) == 1
-    assert bound.rule_bindings[0].region_refs == [region.region_id]
-    with pytest.raises(DFMError) as exc_info:
-        dfm._bind_discovery_scope(replace(plan, operations=[]), None, None)
-    assert exc_info.value.code == "analysis_target_unsupported"
-    assert exc_info.value.details["metric_id"] == draft_metric
-
-
-def test_region_binding_skips_feature_when_secondary_semantic_region_is_missing(
-    service, monkeypatch
-):
-    dfm, _ = service
-    feature = SimpleNamespace(feature_id="feature.screw_boss", kind="screw_boss")
-    body_region = SimpleNamespace(
-        region_id="region.screw_boss.body",
-        role="body",
-        input_sha256="input-sha",
-        content_sha256="a" * 64,
-    )
-    body_metric = "injection.geometry.screw_boss.wall_thickness"
-    fillet_metric = "injection.geometry.screw_boss.fillet"
-    monkeypatch.setattr(
-        dfm.discovery,
-        "analysis_targets",
-        lambda _manifest, _snapshot: [
-            {
-                "feature": feature,
-                "region": body_region,
-                "metric_id": body_metric,
-                "operand_anchors": {
-                    ("C_SCREW_BOSS_FILLET", "wall"): [feature.feature_id]
-                },
-            }
-        ],
-    )
-    binding_id = "binding.C_SCREW_BOSS_FILLET.R_SCREW_BOSS_FILLET"
-    plan = ProcessPlan(
-        process="injection",
-        adapter_version="test",
-        scope_id="test",
-        scope_version="1",
-        rules={},
-        operations=[
-            PlanOperation(
-                "measure_screw_boss_wall",
-                "measure_screw_boss_wall",
-                metric_ids=[body_metric],
-            ),
-            PlanOperation(
-                "measure_screw_boss_fillet",
-                "measure_screw_boss_fillet",
-                metric_ids=[fillet_metric],
-            ),
-        ],
-        accepted_inputs=set(),
-        rule_bindings=[
-            RuleBinding(
-                binding_id=binding_id,
-                operation_id="measure_screw_boss_wall",
-                metric_id=body_metric,
-                quantity_id="wall_thickness",
-                rule_id="R_SCREW_BOSS_FILLET",
-                operator="GTE",
-                aggregation="identity",
-                check_id="C_SCREW_BOSS_FILLET",
-                operand_alias="wall",
-                additional_operands=[
-                    RuleOperand(
-                        alias="bottom_fillet",
-                        operation_id="measure_screw_boss_fillet",
-                        metric_id=fillet_metric,
-                        quantity_id="radius",
-                    )
-                ],
-            )
-        ],
-        binding_selectors={
-            binding_id: {
-                "wall": {"operand_text": "boss wall"},
-                "bottom_fillet": {"operand_text": "boss bottom fillet"},
-            }
-        },
-    )
-
-    bound = dfm._bind_discovery_scope(plan, None, None)
-
-    assert bound.rule_bindings == []
-    assert bound.operations == []
-
 
 def test_input_or_confirmed_fact_invalidates_prior_plan(service):
     dfm, temp = service
@@ -1568,18 +807,38 @@ def test_input_or_confirmed_fact_invalidates_prior_plan(service):
     source.write_bytes(STEP_PAYLOAD)
     dfm.project("add_input", project_id=project_id, path=str(source))
     confirm_step_facts(dfm, project_id)
-    dfm.analysis("discover", project_id=project_id)
-    plan = dfm.analysis("plan", project_id=project_id)["plan"]
+    fragment = PlanFragmentRecord(
+        "fragment-ready",
+        "snapshot-worker",
+        "snapshot-discovery",
+        "dfm.geometry/v2:test",
+        "a" * 64,
+        [],
+        [],
+        [GeometricRequest("feature-main-wall", ["G_WALL_THK_MIN"], {})],
+    )
+    plan = PlanRecord(
+        "plan-ready",
+        "step",
+        ["occt_cpp"],
+        "ready",
+        "2026-10-21T00:00:00Z",
+        process="injection",
+        plan_fragments=[fragment],
+    )
+    dfm._store(project_id).update(
+        lambda current: replace(current, plans=[*current.plans, plan])
+    )
 
     dfm.project(
         "confirm_fact",
         project_id=project_id,
-        fact_name="material",
-        fact_value="PC",
+        fact_name="model_units",
+        fact_value="inch",
     )
 
     with pytest.raises(DFMError) as exc_info:
-        dfm.analysis("start", project_id=project_id, plan_id=plan["plan_id"])
+        dfm.analysis("start", project_id=project_id, plan_id=plan.plan_id)
     assert exc_info.value.code == "plan_not_ready"
     assert exc_info.value.details["status"] == "invalidated"
 
@@ -1593,97 +852,6 @@ def test_start_requires_explicit_plan_id(service):
 
     assert exc_info.value.code == "plan_id_required"
     assert exc_info.value.details == {"action": "start"}
-
-
-def test_new_input_version_supersedes_prior_input_and_replans_full_scope(service):
-    dfm, temp = service
-    project_id = dfm.project("create", name="Bracket")["project_id"]
-    source = temp / "part.step"
-    source.write_bytes(STEP_PAYLOAD)
-    first = dfm.project("add_input", project_id=project_id, path=str(source))["input"]
-    confirm_step_facts(dfm, project_id)
-    dfm.analysis("discover", project_id=project_id)
-    plan = dfm.analysis("plan", project_id=project_id)["plan"]
-
-    source.write_bytes(STEP_PAYLOAD + b"\n/* revised */\n")
-    second = dfm.project("add_input", project_id=project_id, path=str(source))["input"]
-    dfm.analysis("discover", project_id=project_id)
-    rebuilt = dfm.analysis("plan", project_id=project_id, base_plan_id=plan["plan_id"])[
-        "plan"
-    ]
-
-    assert second["supersedes_input_id"] == first["input_id"]
-    assert rebuilt["parent_plan_id"] == plan["plan_id"]
-    assert rebuilt["input_ids"] == [second["input_id"]]
-    assert [item["calculator_id"] for item in rebuilt["operations"]] == [
-        item["calculator_id"] for item in plan["operations"]
-    ]
-    assert (
-        rebuilt["operations"][2]["region_refs"] != plan["operations"][2]["region_refs"]
-    )
-
-
-def test_pull_direction_rebuild_only_includes_affected_operation_closure(service):
-    dfm, temp = service
-    project_id = dfm.project("create", name="Bracket")["project_id"]
-    source = temp / "part.step"
-    source.write_bytes(STEP_PAYLOAD)
-    dfm.project("add_input", project_id=project_id, path=str(source))
-    confirm_step_facts(dfm, project_id)
-    dfm.analysis("discover", project_id=project_id)
-    plan = dfm.analysis("plan", project_id=project_id)["plan"]
-
-    dfm.project(
-        "confirm_fact",
-        project_id=project_id,
-        fact_name="pull_dir",
-        fact_value=[1, 0, 0],
-    )
-    rebuilt = dfm.analysis("plan", project_id=project_id, base_plan_id=plan["plan_id"])[
-        "plan"
-    ]
-
-    assert [item["calculator_id"] for item in rebuilt["operations"]] == [
-        "load_geometry",
-        "inspect_topology",
-        "measure_draft",
-    ]
-    assert rebuilt["operations"][2]["operation_id"].startswith("geometry.draft.")
-    assert [item["quantity_id"] for item in rebuilt["rule_bindings"]] == [
-        "draft_angle_deg"
-    ]
-
-
-def test_material_rebuild_uses_wall_rule_dependency_without_draft_recalculation(
-    service,
-):
-    dfm, temp = service
-    project_id = dfm.project("create", name="Bracket")["project_id"]
-    source = temp / "part.step"
-    source.write_bytes(STEP_PAYLOAD)
-    dfm.project("add_input", project_id=project_id, path=str(source))
-    confirm_step_facts(dfm, project_id)
-    dfm.analysis("discover", project_id=project_id)
-    plan = dfm.analysis("plan", project_id=project_id)["plan"]
-
-    dfm.project(
-        "confirm_fact", project_id=project_id, fact_name="material", fact_value="ABS"
-    )
-    rebuilt = dfm.analysis("plan", project_id=project_id, base_plan_id=plan["plan_id"])[
-        "plan"
-    ]
-
-    assert [item["calculator_id"] for item in rebuilt["operations"]] == [
-        "load_geometry",
-        "inspect_topology",
-        "measure_wall_thickness",
-    ]
-    assert rebuilt["operations"][2]["operation_id"].startswith(
-        "geometry.wall_thickness."
-    )
-    assert [item["quantity_id"] for item in rebuilt["rule_bindings"]] == [
-        "thickness_mm"
-    ]
 
 
 def test_analysis_only_fact_change_reuses_discovery_snapshot(service):
@@ -1705,71 +873,6 @@ def test_analysis_only_fact_change_reuses_discovery_snapshot(service):
     assert set(second["confirmed_fact_refs"]) == {
         item["fact_id"] for item in facts if item["name"] in {"process", "model_units"}
     }
-
-
-def test_unpublished_feature_region_remains_inside_ordinary_analysis_scope(service):
-    dfm, temp = service
-    project_id = dfm.project("create", name="Feature-aware bracket")["project_id"]
-    source = temp / "part.step"
-    source.write_bytes(STEP_PAYLOAD)
-    added = dfm.project("add_input", project_id=project_id, path=str(source))["input"]
-    confirm_step_facts(dfm, project_id)
-    feature_id = "feature.screw_boss.001"
-    region_id = "region.screw_boss.001.wall"
-    face = GeometryRef("face", 1, added["sha256"], "topology_test", "face_000001")
-
-    dfm._store(project_id).update(
-        lambda current: __import__("dataclasses").replace(
-            current,
-            features=[
-                *current.features,
-                FeatureRecord(
-                    feature_id,
-                    "screw_boss",
-                    ["recognizer:test"],
-                    0.99,
-                    input_sha256=added["sha256"],
-                    region_refs=[region_id],
-                    recognizer="test-recognizer",
-                    recognizer_version="1",
-                    status="confirmed",
-                ),
-            ],
-            regions=[
-                *current.regions,
-                RegionRecord(
-                    region_id,
-                    added["sha256"],
-                    "model",
-                    "topology_refs",
-                    "screw_boss_wall",
-                    ["recognizer:test"],
-                    "1",
-                    "b" * 64,
-                    geometry_refs=[face],
-                    role="wall",
-                    feature_refs=[feature_id],
-                ),
-            ],
-        )
-    )
-
-    discovery = dfm.analysis("discover", project_id=project_id)
-    plan = dfm.analysis("plan", project_id=project_id)["plan"]
-    regions = {item["region_id"]: item for item in plan["regions"]}
-    ordinary_id = next(
-        item["region_id"] for item in discovery["regions"] if item["role"] == "ordinary"
-    )
-
-    assert regions[ordinary_id]["mode"] == "whole_model"
-    assert regions[ordinary_id]["excluded_geometry_refs"] == []
-    measured = [item for item in plan["operations"] if item["metric_ids"]]
-    assert len(measured) == 2
-    assert {(item["calculator_id"], item["region_refs"][0]) for item in measured} == {
-        ("measure_wall_thickness", ordinary_id),
-        ("measure_draft", ordinary_id),
-    }
-    assert len({item["operation_id"] for item in measured}) == 2
 
 
 def test_desktop_file_reference_prefix_is_accepted(service):
@@ -1850,7 +953,3 @@ def test_parasolid_capability_is_local_and_does_not_disable_step(service):
     assert status["project"]["inputs"][0]["format_id"] == "parasolid_xt"
     assert status["capabilities"]["parasolid"]["status"] == "dependency_missing"
     assert status["capabilities"]["step"]["status"] == "dependency_missing"
-    dfm.analysis("discover", project_id=project_id)
-    plan = dfm.analysis("plan", project_id=project_id)
-    assert plan["plan"]["status"] == "blocked"
-    assert plan["capability"]["status"] == "dependency_missing"

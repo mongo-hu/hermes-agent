@@ -62,6 +62,11 @@ class DFMConfig:
     ontology_pinned_snapshot_id: str = ""
     geometry_executable: str = ""
     geometry_timeout_seconds: int = 900
+    geometry_session_lease_seconds: int = 900
+    geometry_session_idle_timeout_seconds: int = 1800
+    geometry_session_max_processes: int = 2
+    geometry_session_memory_budget_mb: int = 4096
+    geometry_job_poll_interval_ms: int = 100
     drawing_enabled: bool = True
     geometry_backend: str = GEOMETRY_BACKEND_OCCT_CPP_EXTERNAL
 
@@ -273,6 +278,56 @@ def load_dfm_config(config: Mapping[str, Any] | None = None) -> DFMConfig:
                 default=defaults.geometry_timeout_seconds,
             ),
             "dfm.geometry.timeout_seconds",
+        ),
+        geometry_session_lease_seconds=_positive_int(
+            _nested(
+                config,
+                "dfm",
+                "geometry",
+                "session_lease_seconds",
+                default=defaults.geometry_session_lease_seconds,
+            ),
+            "dfm.geometry.session_lease_seconds",
+        ),
+        geometry_session_idle_timeout_seconds=_positive_int(
+            _nested(
+                config,
+                "dfm",
+                "geometry",
+                "session_idle_timeout_seconds",
+                default=defaults.geometry_session_idle_timeout_seconds,
+            ),
+            "dfm.geometry.session_idle_timeout_seconds",
+        ),
+        geometry_session_max_processes=_positive_int(
+            _nested(
+                config,
+                "dfm",
+                "geometry",
+                "session_max_processes",
+                default=defaults.geometry_session_max_processes,
+            ),
+            "dfm.geometry.session_max_processes",
+        ),
+        geometry_session_memory_budget_mb=_positive_int(
+            _nested(
+                config,
+                "dfm",
+                "geometry",
+                "session_memory_budget_mb",
+                default=defaults.geometry_session_memory_budget_mb,
+            ),
+            "dfm.geometry.session_memory_budget_mb",
+        ),
+        geometry_job_poll_interval_ms=_positive_int(
+            _nested(
+                config,
+                "dfm",
+                "geometry",
+                "job_poll_interval_ms",
+                default=defaults.geometry_job_poll_interval_ms,
+            ),
+            "dfm.geometry.job_poll_interval_ms",
         ),
         drawing_enabled=drawing_enabled,
         geometry_backend=normalize_geometry_backend(geometry_backend),

@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import json
 import sys
-import time
 import types
 from pathlib import Path
 
@@ -17,11 +16,10 @@ from tools.dfm.analyzers.base import AnalyzerContext
 from tools.dfm.analyzers.registry import AnalyzerRegistry
 from tools.dfm.config import DFMConfig
 from tools.dfm.contracts import (
-    ArtifactRecord,
     Capability,
     CapabilityStatus,
-    RunStatus,
 )
+from tools.dfm.errors import DFMError
 from tools.dfm.project.workspace import DFMWorkspace
 from tools.dfm.service import DFMService, get_dfm_service
 from tools.registry import discover_builtin_tools, registry
@@ -120,23 +118,11 @@ class SuccessfulTestAnalyzer:
     def capability(self, context: AnalyzerContext) -> Capability:
         return Capability(self.key, CapabilityStatus.AVAILABLE, "test only")
 
-    def run(self, context: AnalyzerContext, cancellation) -> list[ArtifactRecord]:
-        cancellation.raise_if_cancelled()
-        relative_path = f"artifacts/{context.run_id}.json"
-        output = context.project_dir / relative_path
-        output.write_text('{"accepted": true}', encoding="utf-8")
-        return [
-            ArtifactRecord(
-                artifact_id=f"artifact_{context.run_id}",
-                kind="diagnostic",
-                relative_path=relative_path,
-                media_type="application/json",
-                created_at="2026-07-14T00:00:00Z",
-            )
-        ]
+    def run(self, context: AnalyzerContext, cancellation):
+        raise AssertionError("the removed internal route must not execute")
 
 
-def test_injected_analyzer_vertical_slice_returns_desktop_compatible_artifact(tmp_path):
+def test_injected_internal_analyzer_cannot_bypass_the_v2_contract(tmp_path):
     token = set_hermes_home_override(tmp_path / "home")
     analyzer_registry = AnalyzerRegistry()
     analyzer_registry.register(SuccessfulTestAnalyzer())
@@ -178,44 +164,13 @@ def test_injected_analyzer_vertical_slice_returns_desktop_compatible_artifact(tm
                 project_id=project_id,
                 expected_revision=discovery["revision"],
             )
-        plan = service.analysis("plan", project_id=project_id)
-        started = service.analysis(
-            "start",
-            project_id=project_id,
-            plan_id=plan["plan"]["plan_id"],
-        )
-        run_id = started["run"]["run_id"]
-
-        deadline = time.monotonic() + 3
-        while time.monotonic() < deadline:
-            observed = service.analysis(
-                "status",
-                project_id=project_id,
-                run_id=run_id,
-            )
-            if observed["run"]["status"] == RunStatus.SUCCEEDED.value:
-                break
-            time.sleep(0.01)
-        else:
-            pytest.fail(f"run did not succeed: {observed}")
-
-        result = service.analysis(
-            "result",
-            project_id=project_id,
-            run_id=run_id,
-        )
+        with pytest.raises(DFMError) as exc_info:
+            service.analysis("plan", project_id=project_id)
     finally:
         service.close()
         reset_hermes_home_override(token)
 
-    artifact = result["run"]["artifacts"][0]
-    assert artifact["relative_path"] == f"artifacts/{run_id}.json"
-    artifact_path = Path(artifact["path"])
-    assert artifact_path.is_absolute()
-    assert artifact_path.is_file()
-    assert artifact_path == (
-        service.workspace.project_dir(project_id) / artifact["relative_path"]
-    ).resolve()
+    assert exc_info.value.code == "geometry_contract_unsupported"
 
 
 def test_desktop_file_attach_reference_flows_into_dfm_project(monkeypatch, tmp_path):

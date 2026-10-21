@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Protocol, Sequence, runtime_checkable
+from typing import Callable, FrozenSet, Protocol, Sequence, runtime_checkable
 
 from ..contracts import ArtifactRecord, Capability, InputRecord, PlanRecord, WorkerEvent
 from ..errors import DFMError
@@ -20,6 +20,7 @@ class AnalyzerContext:
     run_id: str = ""
     plan: PlanRecord | None = None
     event_sink: Callable[[WorkerEvent], None] | None = None
+    completed_plan_fragment_refs: FrozenSet[str] = frozenset()
 
 
 class CancellationToken:

@@ -165,6 +165,11 @@ dfm:
     backend: occt_cpp_external
     executable: "C:/path/to/dfm-geometry.exe"
     timeout_seconds: 900
+    session_lease_seconds: 900
+    session_idle_timeout_seconds: 1800
+    session_max_processes: 2
+    session_memory_budget_mb: 4096
+    job_poll_interval_ms: 100
   evidence:
     max_markers_per_image: 10
   retention:

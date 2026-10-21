@@ -5,15 +5,10 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 from ..analyzers.base import AnalyzerContext
-from ..contracts import (
-    Capability,
-    CapabilityStatus,
-    PlanOperation,
-    ResolvedArgument,
-)
+from ..contracts import Capability, CapabilityStatus
 from ..errors import DFMError
 from ..ontology import LocalOntologyStore
 from .base import FactRequirement, ProcessPlan
@@ -25,7 +20,7 @@ _TRUSTED_SOURCES = {"project_fact", "user_confirmed"}
 class InjectionProcessAdapter:
     key = "injection"
     display_name_zh = "注塑成型"
-    version = "injection-ontology-runtime-v1"
+    version = "injection-geometric-v2"
 
     def __init__(
         self,
@@ -123,7 +118,6 @@ class InjectionProcessAdapter:
         context: AnalyzerContext,
         raw_parameters: Mapping[str, Any],
         *,
-        operations_override: Sequence[PlanOperation] | None = None,
         scoped_facts: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> ProcessPlan:
         scope = self._load_scope()
@@ -135,19 +129,6 @@ class InjectionProcessAdapter:
         if unknown:
             self._invalid("Unknown injection parameter.", {"parameters": unknown})
 
-        resolved = {
-            key: {
-                "value": self._normalize_value(key, definition["value"]),
-                "unit": definition.get("unit"),
-                "source": "injection_scope_default",
-                "source_ref": (
-                    f"capability:{scope['capability_id']}@{scope['version']}"
-                    f"/parameters/{key}"
-                ),
-                "kind": str(definition.get("kind") or "rule"),
-            }
-            for key, definition in defaults.items()
-        }
         ontology_facts: dict[str, Any] = {}
         for key, raw in raw_parameters.items():
             source = "project_fact"
@@ -162,54 +143,9 @@ class InjectionProcessAdapter:
                 )
             normalized = self._normalize_value(key, value)
             ontology_facts[key] = normalized
-            if key in defaults:
-                resolved[key] = {
-                    "value": normalized,
-                    "unit": defaults[key].get("unit"),
-                    "source": source,
-                    "source_ref": str(raw.get("source_ref") or f"fact:{key}")
-                    if isinstance(raw, Mapping)
-                    else f"fact:{key}",
-                    "kind": "engineering_context",
-                }
-
-        operations = (
-            list(operations_override)
-            if operations_override is not None
-            else [PlanOperation.from_dict(item) for item in scope["operations"]]
-        )
         compiled = self.ontology_store.compile(
-            self.key, ontology_facts, operations, scoped_facts=scoped_facts
+            self.key, ontology_facts, [], scoped_facts=scoped_facts
         )
-        enriched_operations = []
-        for operation in operations:
-            arguments = dict(operation.arguments)
-            algorithm_options = dict(operation.algorithm_options)
-            if operation.calculator_id == "load_geometry":
-                units = resolved["model_units"]
-                arguments["model_unit"] = ResolvedArgument(
-                    units["value"], units["source_ref"], None
-                )
-            elif operation.calculator_id == "measure_draft":
-                pull = resolved["pull_dir"]
-                arguments["pull_direction"] = ResolvedArgument(
-                    pull["value"], pull["source_ref"], pull["unit"]
-                )
-            enriched_operations.append(
-                PlanOperation(
-                    operation_id=operation.operation_id,
-                    calculator_id=operation.calculator_id,
-                    depends_on=operation.depends_on,
-                    metric_ids=operation.metric_ids,
-                    required_quantities=operation.required_quantities,
-                    required_artifacts=operation.required_artifacts,
-                    required_fact_names=operation.required_fact_names,
-                    feature_refs=operation.feature_refs,
-                    region_refs=operation.region_refs,
-                    arguments=arguments,
-                    algorithm_options=algorithm_options,
-                )
-            )
 
         return ProcessPlan(
             process=self.key,
@@ -217,12 +153,13 @@ class InjectionProcessAdapter:
             scope_id=compiled.identity.scope_id,
             scope_version=compiled.identity.scope_version,
             rules=compiled.rules,
-            operations=enriched_operations,
+            operations=[],
             accepted_inputs=accepted_inputs,
             rule_bindings=compiled.rule_bindings,
             binding_selectors=compiled.binding_selectors,
             ontology_snapshot_id=compiled.identity.snapshot_id,
             ontology_snapshot_sha256=compiled.identity.content_sha256,
+            skipped_checks=compiled.skipped_checks,
         )
 
     def _load_scope(self) -> dict[str, Any]:
@@ -235,11 +172,11 @@ class InjectionProcessAdapter:
                 {"path": str(self.scope_path)},
             ) from exc
         if (
-            scope.get("capability_id") != "injection.geometry.wall-draft"
-            or scope.get("version") != "1.0.0"
+            scope.get("contract_version") != "dfm.geometry/v2"
+            or scope.get("capability_id") != "injection.geometry.context"
+            or scope.get("version") != "2.0.0"
             or scope.get("process") != self.key
             or not isinstance(scope.get("parameters"), dict)
-            or not isinstance(scope.get("operations"), list)
         ):
             raise DFMError(
                 "process_scope_invalid",

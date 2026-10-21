@@ -10,7 +10,12 @@ import operator
 from pathlib import Path
 from typing import Any, Callable
 
-from ..contracts import ArtifactRecord, EvidenceRecord, GeometryRef
+from ..contracts import (
+    ArtifactRecord,
+    EvidenceRecord,
+    GeometricEvidenceRecord,
+    GeometryRef,
+)
 from ..errors import DFMError
 from ..geometry.snapshot_hash import render_mesh_content_sha256
 from .planner import (
@@ -65,7 +70,9 @@ class FieldEvidenceEngine:
         max_markers_per_image: int = 10,
     ) -> list[ArtifactRecord]:
         by_kind = {item.kind: item for item in artifacts}
-        measurements_artifact = by_kind.get("measurements")
+        measurements_artifact = by_kind.get("geometric_results") or by_kind.get(
+            "measurements"
+        )
         evaluations_artifact = by_kind.get("evaluations")
         if measurements_artifact is None or evaluations_artifact is None:
             return []
@@ -75,16 +82,34 @@ class FieldEvidenceEngine:
         measurements_payload = _read_json(
             project_dir, measurements_artifact, payload_cache
         )
-        evaluations_payload = _read_json(project_dir, evaluations_artifact, payload_cache)
+        evaluations_payload = _read_json(
+            project_dir, evaluations_artifact, payload_cache
+        )
         input_sha256 = str(measurements_payload.get("input_sha256") or "")
         if evaluations_payload.get("run_id") != run_id:
             raise DFMError(
                 "evidence_input_invalid",
                 "The evaluation artifact belongs to a different run.",
             )
+        if measurements_artifact.kind == "geometric_results":
+            rows = []
+            for item in measurements_payload.get("results", []):
+                if not isinstance(item, dict) or not item.get("result_id"):
+                    continue
+                evidence = item.get("evidence") or {}
+                rows.append({
+                    **item,
+                    "measurement_id": item["result_id"],
+                    "feature_refs": [item.get("feature_id")],
+                    "region_refs": [],
+                    "field_refs": list(evidence.get("field_refs") or []),
+                    "geometry_refs": list(evidence.get("geometry_refs") or []),
+                })
+        else:
+            rows = measurements_payload.get("measurements", [])
         measurements = {
             str(item.get("measurement_id")): item
-            for item in measurements_payload.get("measurements", [])
+            for item in rows
             if isinstance(item, dict) and item.get("measurement_id")
         }
         artifact_by_id = {item.artifact_id: item for item in artifacts}
@@ -182,7 +207,7 @@ class FieldEvidenceEngine:
             )
         ]
 
-        records: list[EvidenceRecord] = []
+        records: list[EvidenceRecord | GeometricEvidenceRecord] = []
         evaluation_by_id = {
             str(item.get("evaluation_id")): item
             for item in evaluations_payload.get("evaluations", [])
@@ -263,74 +288,84 @@ class FieldEvidenceEngine:
                     for patch in selected
                     for geometry_ref in patch["geometry_refs"]
                 ])
-                records.append(
-                    EvidenceRecord(
-                        evidence_id=f"evidence_{run_id}_{image_index}_1",
-                        run_id=run_id,
-                        input_sha256=input_sha256,
-                        operation_id=str(evaluation.get("operation_id") or ""),
-                        metric_id=str(evaluation.get("metric_id") or ""),
-                        measurement_ids=sorted({
-                            str(item)
-                            for patch in selected
-                            for item in patch["measurement_ids"]
-                        }),
-                        evaluation_ids=[evaluation_id],
-                        geometry_refs=[
-                            GeometryRef.from_dict(item) for item in geometry_refs
+                common_evidence = {
+                    "evidence_id": f"evidence_{run_id}_{image_index}_1",
+                    "run_id": run_id,
+                    "input_sha256": input_sha256,
+                    "measurement_ids": sorted({
+                        str(item)
+                        for patch in selected
+                        for item in patch["measurement_ids"]
+                    }),
+                    "evaluation_ids": [evaluation_id],
+                    "geometry_refs": [
+                        GeometryRef.from_dict(item) for item in geometry_refs
+                    ],
+                    "artifact_ref": image_id,
+                    "render": {
+                        "mode": "local_issue",
+                        "producer": "hermes-evidence-renderer",
+                        "version": self.version,
+                        "viewport": [1440, 810],
+                        "covered_patch_ids": [
+                            str(patch["patch_id"]) for patch in selected
                         ],
-                        region_refs=sorted({
+                        "covered_sample_refs": sorted({
                             str(item)
                             for patch in selected
-                            for item in patch["region_refs"]
+                            for item in patch["sample_refs"]
                         }),
-                        artifact_ref=image_id,
-                        render={
-                            "mode": "local_issue",
-                            "producer": "hermes-evidence-renderer",
-                            "version": self.version,
-                            "viewport": [1440, 810],
-                            "covered_patch_ids": [
-                                str(patch["patch_id"]) for patch in selected
-                            ],
-                            "covered_sample_refs": sorted({
+                        "coverage_modes": sorted({
+                            str(patch["coverage_mode"]) for patch in selected
+                        }),
+                        "markers": [
+                            {
+                                "label": marker_labels[str(patch["patch_id"])],
+                                "patch_id": str(patch["patch_id"]),
+                            }
+                            for patch in selected
+                        ],
+                        "scene_ref": scene_ref,
+                        "topology_snapshot_ref": str(
+                            selected[0]["topology_snapshot_ref"]
+                        ),
+                        "render_mesh_snapshot_ref": str(
+                            selected[0]["render_mesh_snapshot_ref"]
+                        ),
+                        "view_id": plan.view["id"],
+                        "view_label": plan.view["label"],
+                        "camera_direction": list(plan.view["basis_d"]),
+                        "camera_up": list(plan.view["basis_v"]),
+                        "camera_source": plan.view["source"],
+                        "presentation_mode": "local",
+                        "visibility_mode": plan.visibility_mode,
+                    },
+                    "feature_refs": sorted({
+                        str(item)
+                        for patch in selected
+                        for item in patch["feature_refs"]
+                    }),
+                }
+                if evaluation.get("geometric_id"):
+                    records.append(
+                        GeometricEvidenceRecord(
+                            geometric_id=str(evaluation["geometric_id"]),
+                            **common_evidence,
+                        )
+                    )
+                else:
+                    records.append(
+                        EvidenceRecord(
+                            operation_id=str(evaluation.get("operation_id") or ""),
+                            metric_id=str(evaluation.get("metric_id") or ""),
+                            region_refs=sorted({
                                 str(item)
                                 for patch in selected
-                                for item in patch["sample_refs"]
+                                for item in patch["region_refs"]
                             }),
-                            "coverage_modes": sorted({
-                                str(patch["coverage_mode"])
-                                for patch in selected
-                            }),
-                            "markers": [
-                                {
-                                    "label": marker_labels[str(patch["patch_id"])],
-                                    "patch_id": str(patch["patch_id"]),
-                                }
-                                for patch in selected
-                            ],
-                            "scene_ref": scene_ref,
-                            "topology_snapshot_ref": str(
-                                selected[0]["topology_snapshot_ref"]
-                            ),
-                            "render_mesh_snapshot_ref": str(
-                                selected[0]["render_mesh_snapshot_ref"]
-                            ),
-                            "view_id": plan.view["id"],
-                            "view_label": plan.view["label"],
-                            "camera_direction": list(plan.view["basis_d"]),
-                            "camera_up": list(plan.view["basis_v"]),
-                            "camera_source": plan.view["source"],
-                            "presentation_mode": "local",
-                            "visibility_mode": plan.visibility_mode,
-                        },
-                        feature_refs=sorted({
-                            str(item)
-                            for patch in selected
-                            for item in patch["feature_refs"]
-                        }),
+                            **common_evidence,
+                        )
                     )
-                )
 
         coverage = _coverage_summary(patches, covered_patch_ids)
         if coverage["uncovered_patch_ids"] or coverage["uncovered_sample_refs"]:
@@ -379,31 +414,43 @@ class FieldEvidenceEngine:
         payload_cache: dict[str, dict[str, Any]],
         validation_cache: dict[tuple[str, str], dict[str, Any]],
     ) -> None:
-        expected = (
-            run_id,
-            input_sha256,
-            measurement.get("operation_id"),
-            measurement.get("metric_id"),
-            measurement.get("quantity_id"),
-        )
-        actual = (
-            field.get("run_id"),
-            field.get("input_sha256"),
-            field.get("operation_id"),
-            field.get("metric_id"),
-            field.get("quantity_id"),
-        )
-        if actual != expected:
+        if measurement.get("geometric_id"):
+            valid_identity = (
+                field.get("contract_version") == "dfm.geometry/v2"
+                and field.get("snapshot_id") == measurement.get("snapshot_id")
+                and field.get("input_sha256") == input_sha256
+                and field.get("feature_id") == measurement.get("feature_id")
+                and measurement.get("geometric_id") in field.get("geometric_ids", [])
+                and field.get("context") == measurement.get("context")
+            )
+        else:
+            valid_identity = (
+                field.get("run_id"),
+                field.get("input_sha256"),
+                field.get("operation_id"),
+                field.get("metric_id"),
+                field.get("quantity_id"),
+            ) == (
+                run_id,
+                input_sha256,
+                measurement.get("operation_id"),
+                measurement.get("metric_id"),
+                measurement.get("quantity_id"),
+            )
+        if not valid_identity:
             raise DFMError(
                 "evidence_field_invalid",
-                "The scalar field does not belong to its linked measurement.",
+                "The scalar field does not belong to its linked objective result.",
             )
         linked_payloads: dict[str, dict[str, Any]] = {}
         for ref, kind in (
             (field.get("scene_ref"), "render_scene"),
             (field.get("topology_map_ref"), "topology_map"),
         ):
-            artifact = artifact_by_id.get(str(ref))
+            artifact = artifact_by_id.get(str(ref)) or next(
+                (item for item in artifact_by_id.values() if item.kind == kind),
+                None,
+            )
             if artifact is None or artifact.kind != kind:
                 raise DFMError(
                     "evidence_field_invalid",
@@ -411,13 +458,15 @@ class FieldEvidenceEngine:
                 )
             linked = _read_json(project_dir, artifact, payload_cache)
             linked_payloads[kind] = linked
-            if (
-                linked.get("run_id") != run_id
-                or linked.get("input_sha256") != input_sha256
-            ):
+            if not measurement.get("geometric_id") and linked.get("run_id") != run_id:
                 raise DFMError(
                     "evidence_field_invalid",
-                    f"The linked {kind} artifact belongs to another run or input.",
+                    f"The linked {kind} artifact belongs to another run.",
+                )
+            if linked.get("input_sha256") != input_sha256:
+                raise DFMError(
+                    "evidence_field_invalid",
+                    f"The linked {kind} artifact belongs to another input.",
                 )
             if kind == "topology_map" and linked.get("scene_ref") != field.get(
                 "scene_ref"
@@ -439,9 +488,7 @@ class FieldEvidenceEngine:
                     triangle_id,
                 )
                 for primitive in linked_payloads["render_scene"].get("primitives", [])
-                for triangle_id, _triangle in enumerate(
-                    primitive.get("triangles", [])
-                )
+                for triangle_id, _triangle in enumerate(primitive.get("triangles", []))
             }
             mapped_triangles = {
                 (
@@ -608,7 +655,9 @@ class FieldEvidenceEngine:
             item
             for item in field.get("cells", [])
             if isinstance(item, dict)
-            and failed_samples.intersection(str(value) for value in item.get("sample_ids", []))
+            and failed_samples.intersection(
+                str(value) for value in item.get("sample_ids", [])
+            )
         ]
         groups = _connected_cells(failed_cells, scene)
         group_specs: list[tuple[list[dict[str, Any]], list[str]]] = []
@@ -628,12 +677,12 @@ class FieldEvidenceEngine:
         results = []
         for index, (cells, sample_ids) in enumerate(group_specs, start=1):
             points = [samples[item]["point"] for item in sample_ids]
-            surface_normal = _average_direction(
-                [samples[item].get("surface_normal") for item in sample_ids]
-            )
-            geometry_values = [
-                samples[item]["geometry_ref"] for item in sample_ids
-            ] + [cell["geometry_ref"] for cell in cells]
+            surface_normal = _average_direction([
+                samples[item].get("surface_normal") for item in sample_ids
+            ])
+            geometry_values = [samples[item]["geometry_ref"] for item in sample_ids] + [
+                cell["geometry_ref"] for cell in cells
+            ]
             geometry_refs = _unique_dicts(geometry_values)
             triangles = _unique_dicts([cell["triangle_ref"] for cell in cells])
             focus = min(
@@ -657,10 +706,16 @@ class FieldEvidenceEngine:
                 "scene_ref": str(field.get("scene_ref") or ""),
                 "topology_map_ref": str(field.get("topology_map_ref") or ""),
                 "topology_snapshot_ref": str(field.get("topology_snapshot_ref") or ""),
-                "render_mesh_snapshot_ref": str(field.get("render_mesh_snapshot_ref") or ""),
+                "render_mesh_snapshot_ref": str(
+                    field.get("render_mesh_snapshot_ref") or ""
+                ),
                 "geometry_refs": geometry_refs,
-                "region_refs": sorted(str(item) for item in measurement.get("region_refs", [])),
-                "feature_refs": sorted(str(item) for item in measurement.get("feature_refs", [])),
+                "region_refs": sorted(
+                    str(item) for item in measurement.get("region_refs", [])
+                ),
+                "feature_refs": sorted(
+                    str(item) for item in measurement.get("feature_refs", [])
+                ),
                 "sample_ids": sample_ids,
                 "sample_refs": [f"{field_ref}:{sample_id}" for sample_id in sample_ids],
                 "cell_ids": sorted(str(item.get("cell_id")) for item in cells),
@@ -668,8 +723,12 @@ class FieldEvidenceEngine:
                 "focus_point": focus,
                 "surface_normal": surface_normal,
                 "bounds": {
-                    "minimum": [min(point[axis] for point in points) for axis in range(3)],
-                    "maximum": [max(point[axis] for point in points) for axis in range(3)],
+                    "minimum": [
+                        min(point[axis] for point in points) for axis in range(3)
+                    ],
+                    "maximum": [
+                        max(point[axis] for point in points) for axis in range(3)
+                    ],
                 },
             })
         return results
@@ -772,8 +831,12 @@ class FieldEvidenceEngine:
                 ],
                 "surface_normal": _average_direction(normals),
                 "bounds": {
-                    "minimum": [min(point[axis] for point in points) for axis in range(3)],
-                    "maximum": [max(point[axis] for point in points) for axis in range(3)],
+                    "minimum": [
+                        min(point[axis] for point in points) for axis in range(3)
+                    ],
+                    "maximum": [
+                        max(point[axis] for point in points) for axis in range(3)
+                    ],
                 },
             })
         return patches
@@ -873,7 +936,9 @@ class FieldEvidenceEngine:
             canvas.paste(layer.resize((layer_width, layer_height)), (left, top), mask)
 
         if not patches:
-            raise DFMError("evidence_patch_invalid", "No evidence patches were selected.")
+            raise DFMError(
+                "evidence_patch_invalid", "No evidence patches were selected."
+            )
 
         highlighted = {
             (
@@ -952,8 +1017,7 @@ class FieldEvidenceEngine:
                 )
 
             projected_rows = [
-                (row, [screen(point) for point in row.projected])
-                for row in rows
+                (row, [screen(point) for point in row.projected]) for row in rows
             ]
             model_mask = Image.new("L", panel_size, 0)
             model_mask_draw = ImageDraw.Draw(model_mask)
@@ -962,15 +1026,10 @@ class FieldEvidenceEngine:
             for _row, polygon in projected_rows:
                 model_mask_draw.polygon(polygon, fill=255)
                 shadow_draw.polygon(
-                    [
-                        (x + 8 * supersample, y + 12 * supersample)
-                        for x, y in polygon
-                    ],
+                    [(x + 8 * supersample, y + 12 * supersample) for x, y in polygon],
                     fill=92,
                 )
-            shadow_mask = shadow_mask.filter(
-                ImageFilter.GaussianBlur(16 * supersample)
-            )
+            shadow_mask = shadow_mask.filter(ImageFilter.GaussianBlur(16 * supersample))
             shadow_layer = Image.new("RGBA", panel_size, (45, 58, 76, 0))
             shadow_layer.putalpha(shadow_mask)
             rendered = Image.alpha_composite(
@@ -986,8 +1045,7 @@ class FieldEvidenceEngine:
                     continue
                 intensity = 0.91 + 0.11 * abs(_dot(row.normal, light))
                 shade = tuple(
-                    min(255, round(channel * intensity))
-                    for channel in (199, 208, 220)
+                    min(255, round(channel * intensity)) for channel in (199, 208, 220)
                 )
                 rendered_draw.polygon(polygon, fill=(*shade, 255))
                 if row.key in highlighted:
@@ -996,9 +1054,7 @@ class FieldEvidenceEngine:
             highlight_mask = Image.new("L", panel_size, 0)
             highlight_mask_draw = ImageDraw.Draw(highlight_mask)
             for polygon in highlight_polygons:
-                rendered_draw.polygon(
-                    polygon, fill=(*accent, 112 if detail else 72)
-                )
+                rendered_draw.polygon(polygon, fill=(*accent, 112 if detail else 72))
                 highlight_mask_draw.polygon(polygon, fill=255)
 
             kernel = 2 * supersample + 1
@@ -1166,16 +1222,12 @@ class FieldEvidenceEngine:
         )
         if patch_span_x < minimum_span or patch_span_y < minimum_span:
             half = minimum_span / 2
-            detail_framing.extend(
-                [
-                    (focus_center[0] - half, focus_center[1] - half),
-                    (focus_center[0] + half, focus_center[1] + half),
-                ]
-            )
+            detail_framing.extend([
+                (focus_center[0] - half, focus_center[1] - half),
+                (focus_center[0] + half, focus_center[1] + half),
+            ])
 
-        canvas = vertical_gradient(
-            (width, height), background_top, background_bottom
-        )
+        canvas = vertical_gradient((width, height), background_top, background_bottom)
         context = draw_mesh(
             (330 * supersample, 205 * supersample), all_xy, detail=False
         )
@@ -1258,7 +1310,9 @@ class FieldEvidenceEngine:
         )
 
         label = str(view["label"]).upper()
-        label = f"{label} · {str(view.get('presentation_mode', 'shared')).upper()} · X-RAY"
+        label = (
+            f"{label} · {str(view.get('presentation_mode', 'shared')).upper()} · X-RAY"
+        )
         label_box = draw.textbbox((0, 0), label, font=badge_font)
         label_width = label_box[2] - label_box[0] + 28 * supersample
         badge_left = width - margin - label_width
@@ -1351,9 +1405,7 @@ class FieldEvidenceEngine:
             )
             cursor -= 16 * supersample
 
-        canvas.resize(final_size, Image.Resampling.LANCZOS).save(
-            target, format="PNG"
-        )
+        canvas.resize(final_size, Image.Resampling.LANCZOS).save(target, format="PNG")
 
 
 def _coverage_requirements(patches: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1441,9 +1493,9 @@ def _average_direction(values: list[Any]) -> list[float] | None:
         direction if _dot(direction, reference) >= 0 else [-item for item in direction]
         for direction in directions
     ]
-    return _unit_or_none(
-        [sum(direction[axis] for direction in aligned) for axis in range(3)]
-    )
+    return _unit_or_none([
+        sum(direction[axis] for direction in aligned) for axis in range(3)
+    ])
 
 
 def _unit_or_none(value: Any) -> list[float] | None:

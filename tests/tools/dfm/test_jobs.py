@@ -15,6 +15,8 @@ from tools.dfm.contracts import (
     ArtifactRecord,
     Capability,
     CapabilityStatus,
+    GeometricRequest,
+    PlanFragmentRecord,
     PlanRecord,
     RunRecord,
     RunStatus,
@@ -87,6 +89,45 @@ class ProgressAnalyzer(ControlledAnalyzer):
         while not self.release.wait(0.01):
             cancellation.raise_if_cancelled()
         return []
+
+
+class FragmentAnalyzer:
+    key = "fragment"
+    version = "1"
+    supported_inputs = ("step",)
+
+    def __init__(self):
+        self.first_started = Event()
+        self.release_first = Event()
+        self.executed = []
+
+    def capability(self, context):
+        return Capability(self.key, CapabilityStatus.AVAILABLE, "test only")
+
+    def run(self, context: AnalyzerContext, cancellation):
+        selected = [
+            item.fragment_id
+            for item in context.plan.active_plan_fragments(statuses={"ready"})
+            if item.fragment_id not in context.completed_plan_fragment_refs
+        ]
+        self.executed.append(selected)
+        if len(self.executed) == 1:
+            self.first_started.set()
+            while not self.release_first.wait(0.01):
+                cancellation.raise_if_cancelled()
+        path = context.project_dir / "artifacts" / (
+            f"{context.run_id}.{len(self.executed)}.json"
+        )
+        path.write_text(json.dumps({"fragments": selected}), encoding="utf-8")
+        return [
+            ArtifactRecord(
+                f"artifact_{context.run_id}_{len(self.executed)}",
+                "diagnostic",
+                path.relative_to(context.project_dir).as_posix(),
+                "application/json",
+                "2026-07-14T00:00:00Z",
+            )
+        ]
 
 
 class InspectingExecutor:
@@ -422,6 +463,62 @@ def test_run_executes_and_persists_the_named_plan_snapshot(job_env):
     assert finished.plan_id == plan.plan_id
     assert finished.plan_snapshot == plan.to_dict()
     assert analyzer.contexts[0].plan == plan
+
+
+def test_executing_run_accepts_only_appended_immutable_fragments(job_env):
+    workspace, project_id, _, _, managers = job_env
+    analyzer = FragmentAnalyzer()
+    registry = AnalyzerRegistry()
+    registry.register(analyzer)
+    manager = JobManager(workspace, registry, DFMConfig())
+    managers.append(manager)
+
+    first_fragment = PlanFragmentRecord(
+        "fragment-first",
+        "snapshot-1",
+        "discovery-1",
+        "v2:test",
+        "a" * 64,
+        [],
+        [],
+        [GeometricRequest("feature-1", ["G_FIRST"], {})],
+    )
+    first_plan = PlanRecord(
+        "plan-first",
+        "step",
+        ["fragment"],
+        "ready",
+        "2026-07-15T00:00:00Z",
+        process="injection",
+        plan_fragments=[first_fragment],
+    )
+    run = manager.start(project_id, "fragment", plan=first_plan)
+    assert analyzer.first_started.wait(1)
+
+    second_fragment = PlanFragmentRecord(
+        "fragment-second",
+        "snapshot-2",
+        "discovery-2",
+        "v2:test",
+        "b" * 64,
+        [],
+        [],
+        [GeometricRequest("feature-2", ["G_SECOND"], {})],
+    )
+    appended_plan = replace(
+        first_plan,
+        plan_id="plan-second",
+        parent_plan_id=first_plan.plan_id,
+        plan_fragments=[first_fragment, second_fragment],
+    )
+    appended = manager.append_plan(project_id, run.run_id, appended_plan)
+    analyzer.release_first.set()
+    finished = _wait_status(manager, project_id, run.run_id, RunStatus.SUCCEEDED)
+
+    assert appended.run_id == run.run_id
+    assert finished.plan_id == appended_plan.plan_id
+    assert finished.plan_snapshot == appended_plan.to_dict()
+    assert analyzer.executed == [["fragment-first"], ["fragment-second"]]
 
 
 def test_run_can_be_cancelled_cooperatively(job_env):

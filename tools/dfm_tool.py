@@ -20,6 +20,8 @@ def _project_status_summary(result: dict) -> dict:
     facts = project.get("facts", [])
     plans = project.get("plans", [])
     runs = project.get("runs", [])
+    forming_scopes = project.get("forming_scopes", [])
+    review_groups = project.get("review_groups", [])
     return {
         "ok": True,
         "project_id": project["project_id"],
@@ -42,6 +44,34 @@ def _project_status_summary(result: dict) -> dict:
             "facts_omitted": max(0, len(facts) - _TOOL_PREVIEW_LIMIT),
             "open_clarifications": project.get("open_clarifications", []),
             "discovery_snapshot_id": snapshots[-1]["snapshot_id"] if snapshots else None,
+            "forming_scopes": [
+                {
+                    key: item[key]
+                    for key in (
+                        "forming_scope_id",
+                        "mode",
+                        "status",
+                        "snapshot_id",
+                    )
+                    if key in item
+                }
+                for item in forming_scopes[-_TOOL_PREVIEW_LIMIT:]
+            ],
+            "forming_scope_count": len(forming_scopes),
+            "review_groups": [
+                {
+                    key: item[key]
+                    for key in (
+                        "review_group_id",
+                        "kind",
+                        "status",
+                        "snapshot_id",
+                    )
+                    if key in item
+                }
+                for item in review_groups[-_TOOL_PREVIEW_LIMIT:]
+            ],
+            "review_group_count": len(review_groups),
             "plan_count": len(plans),
             "latest_plan": next(
                 (
@@ -369,7 +399,7 @@ DFM_PROJECT_SCHEMA = {
 
 DFM_ANALYSIS_SCHEMA = {
     "name": "dfm_analysis",
-    "description": "Run the DFM workflow. Discovery, plan, start, status, and result return bounded control summaries; follow next_action and use feature_counts for exact discovery counts. If report_context returns ready=false, call report_context again with the same project_id/run_id (or wait for its background notification); never create a new project, add the input again, or restart clarification while the run is unfinished. Features and regions are previews with explicit omitted counts. When discover returns discovery_review_required, the 3D viewer is editable: call clarify with the project_id and dfm_discovery_review=true. That bound question confirms the latest saved regions atomically; then follow its next_action. Drawing OCR is deterministic; use drawing_context and the current Hermes model once to organize every explicit drawing fact into validated drawing observations. Use fusion_context and submit_fusion_links for Agent semantic proposals that the service checks against geometry IDs. An HTML-capable STEP run (PDF drawing optional) remains reporting (not succeeded) after deterministic analysis; call report_context to obtain the complete Runtime and required_issue_ids, then author dfm-html-llm/v1 with exactly those issue IDs and call render_html. render_html validates IDs before queuing background rendering; wait for succeeded status or its completion notification before calling result. Only a validated report.html completes the run. Do not reinterpret OCR during reporting. The external OCCT C++ analyzer is integrated as experimental; PythonOCC remains the reference STEP backend and NX/Parasolid remains optional. Unavailable analyzers fail explicitly; never infer engineering findings from that status.",
+    "description": "Run the DFM workflow. The OCCT path uses the persistent dfm.geometry/v2 contract: Discovery returns Worker feature IDs and geometry refs, forming scopes are reviewed separately, and ordinary calculation is sent only as snapshot_id + feature_id + geometric_ids + context. Do not create Region, face_indices, operation/calculator/metric/quantity routing, or per-G task IDs for this path. Follow next_action and use feature_counts for exact discovery counts. When a main or local direction is user-confirmed, call analyze_forming_scope, review its candidate, then call revise_forming_scopes. If report_context returns ready=false, call it again with the same project_id/run_id (or wait for its background notification); never recreate the project or restart clarification while the run is unfinished. Drawing OCR is deterministic; use drawing_context and submit_observations, then fusion_context and submit_fusion_links. render_html validates exact issue IDs and runs asynchronously. Unavailable analyzers and incomplete G results remain explicit and must never be presented as passing.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -381,6 +411,10 @@ DFM_ANALYSIS_SCHEMA = {
                     "submit_observations",
                     "fusion_context",
                     "submit_fusion_links",
+                    "update_feature_geometry",
+                    "confirm_discovery",
+                    "analyze_forming_scope",
+                    "revise_forming_scopes",
                     "plan",
                     "start",
                     "status",
@@ -418,6 +452,13 @@ DFM_ANALYSIS_SCHEMA = {
                 "type": "integer",
                 "minimum": 0,
                 "description": "Manifest revision returned by drawing_context or fusion_context; required by semantic submissions.",
+            },
+            "review_group_ids": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": True,
+                "items": {"type": "string", "minLength": 1},
+                "description": "Optional independently submitted review groups returned by Discovery or forming-scope analysis.",
             },
             "observations": {
                 "type": "array",
@@ -484,6 +525,92 @@ DFM_ANALYSIS_SCHEMA = {
             "check_id": {
                 "type": "string",
                 "description": "Stable Check identity required when action=context, keeping the ontology/rule response bounded.",
+            },
+            "feature_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Worker feature identity returned by Discovery.",
+            },
+            "geometry_refs": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "kind": {"type": "string", "const": "face"},
+                        "index": {"type": "integer", "minimum": 1},
+                        "input_sha256": {
+                            "type": "string",
+                            "pattern": "^[0-9a-f]{64}$",
+                        },
+                        "topology_snapshot_id": {
+                            "type": "string",
+                            "minLength": 1,
+                        },
+                        "entity_id": {"type": "string", "minLength": 1},
+                    },
+                    "required": [
+                        "kind",
+                        "index",
+                        "input_sha256",
+                        "topology_snapshot_id",
+                        "entity_id",
+                    ],
+                },
+                "description": "Complete confirmed face references for update_feature_geometry.",
+            },
+            "forming_scope_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Snapshot-local direction scope, for example MAIN_POS or SIDE_01.",
+            },
+            "scope_mode": {
+                "type": "string",
+                "enum": ["main", "local"],
+            },
+            "draw_direction": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": {"type": "number"},
+                "description": "User-confirmed part exit direction in model coordinates.",
+            },
+            "forming_scopes": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "forming_scope_id": {"type": "string", "minLength": 1},
+                        "mode": {"type": "string", "enum": ["main", "local"]},
+                        "draw_direction": {
+                            "type": "array",
+                            "minItems": 3,
+                            "maxItems": 3,
+                            "items": {"type": "number"},
+                        },
+                        "coordinate_system": {"type": "string", "const": "model"},
+                        "direction_source": {"type": "string", "const": "user_confirmed"},
+                        "geometry_refs": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "properties": {
+                                    "kind": {"type": "string", "const": "face"},
+                                    "index": {"type": "integer", "minimum": 1},
+                                    "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                                    "topology_snapshot_id": {"type": "string", "minLength": 1},
+                                    "entity_id": {"type": "string", "minLength": 1},
+                                },
+                                "required": ["kind", "index", "input_sha256", "topology_snapshot_id", "entity_id"],
+                            },
+                        },
+                    },
+                    "required": ["forming_scope_id", "mode", "draw_direction", "coordinate_system", "direction_source", "geometry_refs"],
+                },
             },
             "base_plan_id": {
                 "type": "string",

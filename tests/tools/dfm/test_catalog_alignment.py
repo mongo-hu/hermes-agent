@@ -5,19 +5,16 @@ from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
-from types import SimpleNamespace
-
 import pytest
 from jsonschema import Draft202012Validator
 
 from tools.dfm.contracts import (
-    FeatureRecord,
-    RegionRecord,
+    GeometricRequest,
+    GeometricResultRecord,
+    PlanFragmentRecord,
     PlanOperation,
     PlanRecord,
-    MeasurementRecord,
 )
-from tools.dfm.discovery import DiscoveryEngine
 from tools.dfm.errors import DFMError
 from tools.dfm.evaluation import EvaluationEngine
 from tools.dfm.ontology import LocalOntologyStore
@@ -175,37 +172,66 @@ def conditional_payload():
 
 
 def plan(compiled):
+    feature_id = "feature-main-wall-1"
+    bindings = [
+        replace(
+            binding,
+            feature_refs=[feature_id],
+            additional_operands=[
+                replace(operand, feature_refs=[feature_id])
+                for operand in binding.additional_operands
+            ],
+        )
+        for binding in compiled.rule_bindings
+    ]
+    geometric_ids = sorted({
+        operand.geometric_id
+        for binding in bindings
+        for operand in binding.measurement_operands()
+    })
+    fragment = PlanFragmentRecord(
+        fragment_id="fragment.catalog",
+        snapshot_id="snapshot_catalog",
+        source_discovery_snapshot_id="discovery.catalog",
+        capability_version="2.0.0:test",
+        dependency_fingerprint="f" * 64,
+        confirmed_fact_refs=[],
+        rule_binding_refs=[binding.binding_id for binding in bindings],
+        items=[GeometricRequest(feature_id, geometric_ids, {})],
+    )
     return PlanRecord(
         plan_id="catalog.plan",
         input_mode="step",
-        analyzer_keys=["step"],
+        analyzer_keys=["occt_cpp"],
         status="ready",
         created_at="2026-09-17T00:00:00Z",
         process="injection",
         scope_id=compiled.identity.scope_id,
         scope_version=compiled.identity.scope_version,
         rules=compiled.rules,
-        rule_bindings=compiled.rule_bindings,
-        operations=operations(),
+        rule_bindings=bindings,
+        operations=[],
         ontology_snapshot_id=compiled.identity.snapshot_id,
         ontology_snapshot_sha256=compiled.identity.content_sha256,
+        plan_fragments=[fragment],
     )
 
 
 def measurement(value, unit="mm"):
-    return MeasurementRecord(
-        "m.wall",
-        "wall",
-        "measure_wall_thickness",
-        METRIC,
-        "thickness_mm",
-        value,
-        unit,
-        "measured",
-        [],
-        "test",
-        "1",
-        "a" * 64,
+    return GeometricResultRecord(
+        result_id="result.wall",
+        snapshot_id="snapshot_catalog",
+        feature_id="feature-main-wall-1",
+        geometric_id="G_WALL_THK_MIN",
+        status="ok",
+        value=value,
+        unit=unit,
+        context={},
+        evidence={"geometry_refs": [], "field_refs": []},
+        quality={},
+        reason=None,
+        provenance={"plan_fragment_ref": "fragment.catalog"},
+        input_sha256="a" * 64,
     )
 
 
@@ -425,7 +451,7 @@ def test_schema_3_rejects_invalid_new_rule_contract(change):
     assert exc_info.value.code == "ontology_snapshot_invalid"
 
 
-def test_schema_3_installs_unresolved_geometric_metadata_and_skips_it():
+def test_schema_3_skips_geometric_ids_missing_from_worker_capability():
     value = composite_payload()
     renamed_ids = {}
     for concept in value["concepts"]:
@@ -434,12 +460,6 @@ def test_schema_3_installs_unresolved_geometric_metadata_and_skips_it():
         previous_id = concept["concept_id"]
         concept["concept_id"] = f"G_UNIMPLEMENTED_{len(renamed_ids) + 1}"
         renamed_ids[previous_id] = concept["concept_id"]
-        concept["properties_json"].update({
-            "worker_geometric_id": "",
-            "quantity_id": "",
-            "dimension": "",
-            "canonical_unit": "",
-        })
     for relation in value["relations"]:
         relation["subject_id"] = renamed_ids.get(
             relation["subject_id"], relation["subject_id"]
@@ -452,16 +472,16 @@ def test_schema_3_installs_unresolved_geometric_metadata_and_skips_it():
     store.configure_geometric_bindings({})
 
     result = store.compile("injection", {"material": "ABS"}, operations())
-    # The check should be skipped rather than raising an error
     assert len(result.skipped_checks) > 0
-    assert any(sc.reason == "feature_not_found" for sc in result.skipped_checks)
-    assert store.analysis_target_specs("injection") == ()
+    assert any(
+        sc.reason == "geometric_id_unsupported" for sc in result.skipped_checks
+    )
     assert [item["name"] for item in store.fact_requirements("injection")] == [
         "model_units"
     ]
 
 
-def test_geometric_id_capability_binding_ignores_empty_legacy_fields():
+def test_geometric_id_capability_binding_keeps_only_public_g_identity():
     value = composite_payload()
     operand_relation = next(
         row for row in value["relations"] if row["predicate"] == "USES_OPERAND"
@@ -471,12 +491,6 @@ def test_geometric_id_capability_binding_ignores_empty_legacy_fields():
         if concept["concept_id"] != previous_id:
             continue
         concept["concept_id"] = "G_WALL_THK_MIN"
-        concept["properties_json"].update({
-            "worker_geometric_id": "",
-            "quantity_id": "",
-            "dimension": "",
-            "canonical_unit": "",
-        })
     for relation in value["relations"]:
         if relation["subject_id"] == previous_id:
             relation["subject_id"] = "G_WALL_THK_MIN"
@@ -486,32 +500,35 @@ def test_geometric_id_capability_binding_ignores_empty_legacy_fields():
     store = LocalOntologyStore.from_package(rehash(value))
     store.configure_geometric_bindings({
         "G_WALL_THK_MIN": {
-            "metric_id": METRIC,
-            "quantity_id": "thickness_mm",
             "feature_kind": "main_wall",
-            "region_role": "wall",
-            "discovery_operation_id": "recognize_main_wall",
-            "measurement_operation_id": "measure_wall_thickness",
+            "scope_modes": ["feature"],
+            "direction_modes": ["none"],
+            "requires_complete_inventory": False,
+            "context_schema": {"type": "object", "additionalProperties": False},
         }
     })
 
     compiled = store.compile("injection", {"material": "ABS"}, operations())
 
     assert not compiled.skipped_checks
-    assert compiled.rule_bindings[0].metric_id == METRIC
-    assert compiled.rule_bindings[0].quantity_id == "thickness_mm"
-    assert compiled.rule_bindings[0].geometric_id == "G_WALL_THK_MIN"
-    assert (
-        compiled.rule_bindings[0].measurement_operands()[0].geometric_id
-        == "G_WALL_THK_MIN"
-    )
-    target = next(
-        item
-        for item in store.analysis_target_specs("injection")
-        if METRIC in item["metrics"]
-    )
+    binding = compiled.rule_bindings[0]
+    assert binding.geometric_id == "G_WALL_THK_MIN"
+    assert not hasattr(binding, "operation_id")
+    assert not hasattr(binding, "metric_id")
+    assert not hasattr(binding, "quantity_id")
+    assert not hasattr(binding, "region_refs")
+    assert binding.measurement_operands()[0].geometric_id == "G_WALL_THK_MIN"
+    target = store.geometric_scope_specs("injection")[0]
+    assert target["geometric_id"] == "G_WALL_THK_MIN"
     assert target["feature_kind"] == "main_wall"
-    assert target["region_role"] == "wall"
+    assert not {
+        "worker_geometric_id",
+        "operation_id",
+        "calculator_id",
+        "metric_id",
+        "quantity_id",
+        "region_role",
+    }.intersection(target)
 
 
 def test_schema_3_accepts_empty_unit_for_a_dimensionless_constant():
@@ -572,9 +589,7 @@ def test_invalid_current_catalog_cannot_replace_installed_snapshot(tmp_path, cha
     if change == "region_cache":
         geometric["properties"]["worker_role"] = "wall"
     if change == "old_binding":
-        geometric["properties"]["worker_metric_id"] = geometric["properties"].pop(
-            "worker_geometric_id"
-        )
+        geometric["properties"]["worker_metric_id"] = "legacy.metric"
     with pytest.raises(DFMError):
         store.install_package(rehash(value))
     assert store.identity() == original
@@ -594,7 +609,7 @@ def test_geometry_selects_one_rule_after_measurement_and_plan_roundtrip(value, w
     pinned = PlanRecord.from_dict(plan(compiled).to_dict())
     evaluations, provenance = EvaluationEngine().evaluate([measurement(value)], pinned)
     assert [row.rule_id for row in evaluations] == [winner]
-    assert evaluations[0].operand_values["actual"]["measurement_ids"] == ["m.wall"]
+    assert evaluations[0].operand_values["actual"]["measurement_ids"] == ["result.wall"]
     assert provenance[evaluations[0].evaluation_id]["rule_selection"] is not None
 
 
@@ -638,7 +653,7 @@ def test_current_rule_binding_matches_its_wire_schema():
             encoding="utf-8"
         )
     )
-    for binding in compiled.rule_bindings:
+    for binding in plan(compiled).rule_bindings:
         Draft202012Validator(schema).validate(binding.to_dict())
 
 
@@ -648,7 +663,6 @@ def test_condition_only_operand_does_not_replace_expression_anchor():
         next(item for item in value["concepts"] if item["concept_type"] == "geometric")
     )
     geometric["concept_id"] = "G_GATE"
-    geometric["properties"]["worker_geometric_id"] = "metric.gate"
     value["concepts"].append(geometric)
     relation = deepcopy(
         next(item for item in value["relations"] if item["predicate"] == "USES_OPERAND")
@@ -657,30 +671,20 @@ def test_condition_only_operand_does_not_replace_expression_anchor():
     relation["qualifiers"]["alias"] = "gate"
     value["relations"].append(relation)
     value["rules"][0]["conditions"][1]["geometric_id"] = "gate"
-    ops = [
-        *operations(),
-        PlanOperation(
-            "gate",
-            "measure_gate",
-            metric_ids=["metric.gate"],
-            required_quantities=["thickness_mm"],
-        ),
-    ]
     compiled = LocalOntologyStore.from_package(rehash(value)).compile(
-        "injection", {"material": "ABS"}, ops
+        "injection", {"material": "ABS"}, operations()
     )
     assert all(binding.operand_alias == "actual" for binding in compiled.rule_bindings)
-    pinned = replace(plan(compiled), operations=ops)
+    pinned = plan(compiled)
     pinned = PlanRecord.from_dict(pinned.to_dict())
     gate = replace(
         measurement(3),
-        measurement_id="m.gate",
-        operation_id="gate",
-        metric_id="metric.gate",
+        result_id="result.gate",
+        geometric_id="G_GATE",
     )
     evaluations, _ = EvaluationEngine().evaluate([measurement(1), gate], pinned)
     assert [item.rule_id for item in evaluations] == [value["rules"][0]["rule_id"]]
-    assert set(evaluations[0].measurement_ids) == {"m.wall", "m.gate"}
+    assert set(evaluations[0].measurement_ids) == {"result.wall", "result.gate"}
 
 
 def test_measured_rule_selection_is_per_feature_instance():
@@ -698,12 +702,39 @@ def test_measured_rule_selection_is_per_feature_instance():
         measurements.append(
             replace(
                 measurement(value),
-                measurement_id=feature + ".measurement",
-                feature_refs=[feature],
+                result_id=feature + ".result",
+                feature_id=feature,
             )
         )
+    pinned = plan(compiled)
+    fragments = [
+        replace(
+            pinned.plan_fragments[0],
+            fragment_id=f"fragment.catalog.{feature}",
+            rule_binding_refs=[
+                binding.binding_id
+                for binding in bindings
+                if feature in binding.feature_refs
+            ],
+            items=[
+                replace(item, feature_id=feature)
+                for item in pinned.plan_fragments[0].items
+            ],
+        )
+        for feature in ("feature.a", "feature.b")
+    ]
+    measurements = [
+        replace(
+            item,
+            provenance={
+                "plan_fragment_ref": f"fragment.catalog.{item.feature_id}"
+            },
+        )
+        for item in measurements
+    ]
     evaluations, _ = EvaluationEngine().evaluate(
-        measurements, replace(plan(compiled), rule_bindings=bindings)
+        measurements,
+        replace(pinned, rule_bindings=bindings, plan_fragments=fragments),
     )
     assert {item.feature_refs[0]: item.rule_id for item in evaluations} == {
         "feature.a": "R_INJ_MAIN_WALL_MIN_ABS",
@@ -711,156 +742,16 @@ def test_measured_rule_selection_is_per_feature_instance():
     }
 
 
-def test_legacy_binding_serialization_does_not_change_historical_rule_hash_input():
-    old = ROOT / "tests/tools/dfm/fixtures/ontology_legacy_v2.json"
-    ops = [
-        *operations(),
-        PlanOperation(
-            "draft",
-            "measure_draft",
-            metric_ids=["injection.geometry.draft"],
-            required_quantities=["draft_angle_deg"],
-        ),
-    ]
-    compiled = LocalOntologyStore.from_package(old).compile(
-        "injection", {"material": "ABS"}, ops
-    )
-    assert all(
-        "rule_selection" not in binding.to_dict() for binding in compiled.rule_bindings
-    )
-
-
-def discovered(kind="ordinary_part", role="ordinary"):
-    feature = FeatureRecord(
-        "feature.1",
-        kind,
-        ["input.1"],
-        1.0,
-        input_sha256="a" * 64,
-        region_refs=["region.1"],
-    )
-    region = RegionRecord(
-        "region.1",
-        "a" * 64,
-        "model",
-        "whole_model",
-        "actual region",
-        ["input.1"],
-        "1",
-        "b" * 64,
-        role=role,
-        feature_refs=[feature.feature_id],
-    )
-    manifest = SimpleNamespace(
-        features=[feature], regions=[region], process="injection"
-    )
-    snapshot = SimpleNamespace(
-        feature_refs=[feature.feature_id], region_refs=[region.region_id]
-    )
-    return manifest, snapshot
-
-
-def test_discovery_uses_comparison_text_without_region_concepts_and_reuses_target():
-    store = LocalOntologyStore.from_package(conditional_payload())
-    manifest, snapshot = discovered()
-    targets = DiscoveryEngine(ontology_store=store).analysis_targets(manifest, snapshot)
-    assert len([item for item in targets if item["metric_id"] == METRIC]) == 1
-    assert all(item["region"] is manifest.regions[0] for item in targets)
-    assert all(item["operand_anchors"] for item in targets)
-
-
-def test_unrecognized_comparison_text_is_not_treated_as_whole_part():
-    value = payload()
-    for row in value["relations"]:
-        if row["predicate"] == "USES_OPERAND":
-            row["qualifiers"]["operand_text"] = "an unspecified custom local patch"
-    engine = DiscoveryEngine(
-        ontology_store=LocalOntologyStore.from_package(rehash(value))
-    )
-    with pytest.raises(DFMError) as error:
-        engine.analysis_targets(*discovered())
-    assert error.value.details["operand_text"] == "an unspecified custom local patch"
-
-
-def test_geometric_id_capability_uses_declared_region_not_operand_text():
-    from tools.dfm.ontology.targets import resolve_catalog_targets
-
-    manifest, snapshot = discovered("main_wall", "wall")
-    targets = resolve_catalog_targets(
-        [
-            {
-                "check_id": "C_WALL",
-                "alias": "actual",
-                "metric_id": METRIC,
-                "feature_kinds": ["main_wall"],
-                "region_role": "wall",
-                "operand_text": "text that carries no executable geometry meaning",
-            }
-        ],
-        manifest,
-        snapshot,
-    )
-
-    assert len(targets) == 1
-    assert targets[0]["region"].region_id == "region.1"
-
-
-def test_missing_declared_region_makes_feature_check_unsupported_not_ambiguous():
-    from tools.dfm.ontology.targets import resolve_catalog_targets
-
-    manifest, snapshot = discovered("main_wall", "wall")
-    targets = resolve_catalog_targets(
-        [
-            {
-                "check_id": "C_WALL_TRANSITION",
-                "alias": "actual",
-                "metric_id": METRIC,
-                "feature_kinds": ["main_wall"],
-                "region_role": "transition",
-                "operand_text": "transition",
-            }
-        ],
-        manifest,
-        snapshot,
-    )
-
-    assert targets == []
-
-
-def test_adjacent_wall_requires_explicit_local_link_and_stays_on_same_input():
-    from tools.dfm.ontology.targets import resolve_catalog_targets
-
-    manifest, snapshot = discovered("screw_boss", "wall")
-    boss = manifest.features[0]
-    wall = replace(
-        boss, feature_id="main.1", kind="main_wall", region_refs=["main.wall"]
-    )
-    local = replace(
-        manifest.regions[0], region_id="main.wall", feature_refs=[wall.feature_id]
-    )
-    manifest.features.append(wall)
-    manifest.regions.append(local)
-    snapshot.feature_refs.append(wall.feature_id)
-    snapshot.region_refs.append(local.region_id)
-    spec = {
-        "check_id": "C_BOSS",
-        "alias": "reference",
-        "metric_id": METRIC,
-        "feature_kinds": ["screw_boss"],
-        "operand_text": "相邻主体壁厚度",
-    }
-    with pytest.raises(DFMError):
-        resolve_catalog_targets([spec], manifest, snapshot)
-    boss.relationships.append({
-        "relation": "attached_to",
-        "target_ref": wall.feature_id,
-        "region_refs": [local.region_id],
-    })
-    targets = resolve_catalog_targets(
-        [spec, dict(spec, check_id="C_OTHER")], manifest, snapshot
-    )
-    assert len(targets) == 1
-    assert len(targets[0]["operand_anchors"]) == 2
-    manifest.regions[1] = replace(local, input_sha256="c" * 64)
-    with pytest.raises(DFMError):
-        resolve_catalog_targets([spec], manifest, snapshot)
+def test_bundled_catalog_contains_only_public_geometric_identities():
+    serialized = PACKAGE.read_text(encoding="utf-8")
+    for forbidden in (
+        "worker_geometric_id",
+        "operation_id",
+        "calculator_id",
+        "metric_id",
+        "quantity_id",
+        "region_role",
+        "face_indices",
+        "task_id",
+    ):
+        assert f'"{forbidden}"' not in serialized

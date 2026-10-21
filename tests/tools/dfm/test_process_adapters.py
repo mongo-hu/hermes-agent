@@ -9,7 +9,6 @@ from tools.dfm.processes.base import ProcessPlan
 from tools.dfm.processes.occt_injection import (
     compile_occt_injection_plan,
     geometry_binding_index,
-    probe_occt_geometry_capability,
 )
 
 
@@ -102,7 +101,7 @@ def test_injection_plan_uses_published_ontology_and_capability_provenance(contex
     assert plan.process == "injection"
     assert plan.scope_id == "injection.default"
     assert plan.scope_version == adapter.ontology_store.identity().scope_version
-    assert plan.adapter_version == "injection-ontology-runtime-v1"
+    assert plan.adapter_version == "injection-geometric-v2"
     assert plan.ontology_snapshot_id == adapter.ontology_store.identity().snapshot_id
     assert len(plan.ontology_snapshot_sha256) == 64
     assert plan.rules["R_INJ_MAIN_WALL_MIN_ABS"].value == 1.2
@@ -111,27 +110,14 @@ def test_injection_plan_uses_published_ontology_and_capability_provenance(contex
     )
     assert plan.rules["R_INJ_MAIN_WALL_DRAFT_DEFAULT"].value == 1.0
     assert plan.rules["R_INJ_MAIN_WALL_DRAFT_DEFAULT"].unit == "degree"
-    assert plan.operations[0].calculator_id == "load_geometry"
-    assert plan.operations[0].arguments["model_unit"].value == "mm"
-    assert [item.calculator_id for item in plan.operations] == [
-        "load_geometry",
-        "inspect_topology",
-        "measure_wall_thickness",
-        "measure_draft",
-    ]
-    assert {item.quantity_id for item in plan.rule_bindings} == {
-        "thickness_mm",
-        "draft_angle_deg",
+    assert plan.operations == []
+    assert {item.geometric_id for item in plan.rule_bindings} == {
+        "G_WALL_THK_MIN",
+        "G_WALL_IN_DRAFT",
     }
-    wall_operation = next(
-        item
-        for item in plan.operations
-        if item.calculator_id == "measure_wall_thickness"
-    )
     wall_binding = next(
-        item for item in plan.rule_bindings if item.quantity_id == "thickness_mm"
+        item for item in plan.rule_bindings if item.geometric_id == "G_WALL_THK_MIN"
     )
-    assert wall_operation.required_fact_names == ["model_units"]
     assert wall_binding.required_fact_names == ["material"]
     requirements = {item.name: item for item in adapter.fact_requirements()}
     assert requirements["process"].phase == "discovery"
@@ -144,16 +130,23 @@ def test_injection_plan_uses_published_ontology_and_capability_provenance(contex
     )
     assert requirements["pull_dir"].required_by == ("geometry.draft",)
     assert requirements["pull_dir"].check_ids == ("check.main_wall_minimum_draft",)
-    measured = plan.operations[2:]
-    assert all(
-        item.required_artifacts
-        == [
-            "scalar_field",
-            "render_scene",
-            "topology_map",
-        ]
-        for item in measured
-    )
+    payloads = [item.to_dict() for item in plan.rule_bindings]
+    keys = {
+        key
+        for payload in payloads
+        for key in payload
+    }
+    for forbidden in (
+        "worker_geometric_id",
+        "operation_id",
+        "calculator_id",
+        "metric_id",
+        "quantity_id",
+        "region_refs",
+        "face_indices",
+        "task_id",
+    ):
+        assert forbidden not in keys
 
 
 def test_confirmed_geometry_fact_is_normalized_and_traced(context):
@@ -171,11 +164,8 @@ def test_confirmed_geometry_fact_is_normalized_and_traced(context):
     )
 
     assert plan.rules["R_INJ_MAIN_WALL_MIN_ABS"].value == 1.2
-    draft = next(
-        item for item in plan.operations if item.calculator_id == "measure_draft"
-    )
-    assert draft.arguments["pull_direction"].value == [0.0, 1.0, 0.0]
-    assert draft.arguments["pull_direction"].source_ref == "fact:fact_pull_direction"
+    assert plan.operations == []
+    assert adapter.normalize_parameter("pull_dir", [0, 1, 0]) == [0.0, 1.0, 0.0]
 
 
 def test_occt_plan_does_not_restore_raw_pull_direction_after_adapter_normalization(
@@ -198,16 +188,14 @@ def test_occt_plan_does_not_restore_raw_pull_direction_after_adapter_normalizati
                 "source_ref": "fact:fact_pull_direction",
             },
         },
-        None,
+        _occt_geometric_scope(),
     )
 
-    draft_operations = [
-        item for item in plan.operations if "pull_direction" in item.arguments
-    ]
-    assert draft_operations
+    assert plan.operations == []
     assert all(
-        item.arguments["pull_direction"].value == [0.0, 0.0, 1.0]
-        for item in draft_operations
+        not operand.context
+        for binding in plan.rule_bindings
+        for operand in binding.measurement_operands()
     )
 
 
@@ -261,52 +249,17 @@ def test_injection_adapter_rejects_unknown_or_untrusted_parameters(context, para
 
 def _occt_geometric_scope():
     return {
-        "capability_id": "injection.geometry-core",
-        "version": "4.0.0",
-        "process": "injection",
-        "binding_mode": "geometric_id",
-        "legacy_binding_fields_active": False,
-        "geometric_bindings": [{
-            "concept_id": "G_WALL_THK_MIN",
+        "contract_version": "dfm.geometry/v2",
+        "schema_bundle_version": "2.0.0",
+        "geometrics": [{
+            "geometric_id": "G_WALL_THK_MIN",
             "support_status": "supported",
-            "worker_geometric_id": "",
-            "quantity_id": "",
-            "dimension": "",
-            "canonical_unit": "",
-            "execution": {
-                "discovery_operation_id": "recognize_main_wall",
-                "feature_kind": "main_wall",
-                "region_role": "wall",
-                "measurement_operation_id": "measure_wall_thickness",
-                "result_selector": {"quantity_id": "thickness_mm"},
-            },
+            "feature_kind": "main_wall",
+            "scope_modes": ["feature"],
+            "direction_modes": ["none"],
+            "requires_complete_inventory": False,
+            "context_schema": {},
         }],
-        "operations": [
-            {
-                "operation_id": "recognize_main_wall",
-                "calculator_id": "recognize_main_wall",
-                "depends_on": [],
-                "metric_ids": [],
-                "required_quantities": [],
-                "required_artifacts": ["features"],
-                "required_fact_names": [],
-                "status": "available",
-                "arguments": {},
-                "algorithm_options": {},
-            },
-            {
-                "operation_id": "measure_wall_thickness",
-                "calculator_id": "measure_wall_thickness",
-                "depends_on": [],
-                "metric_ids": ["injection.geometry.wall_thickness"],
-                "required_quantities": ["thickness_mm"],
-                "required_artifacts": ["scalar_field"],
-                "required_fact_names": ["model_units"],
-                "status": "available",
-                "arguments": {},
-                "algorithm_options": {},
-            },
-        ],
     }
 
 
@@ -314,30 +267,34 @@ def test_occt_scope_projects_worker_binding_from_geometric_id_only():
     binding = geometry_binding_index(_occt_geometric_scope())["G_WALL_THK_MIN"]
 
     assert binding == {
-        "metric_id": "injection.geometry.wall_thickness",
-        "quantity_id": "thickness_mm",
         "feature_kind": "main_wall",
-        "region_role": "wall",
-        "discovery_operation_id": "recognize_main_wall",
-        "measurement_operation_id": "measure_wall_thickness",
+        "scope_modes": ["feature"],
+        "direction_modes": ["none"],
+        "requires_complete_inventory": False,
+        "context_schema": {},
     }
 
 
 def test_occt_plan_drops_operations_when_no_rule_binding_is_executable(context):
     class NoRuleAdapter:
+        class ontology_store:
+            @staticmethod
+            def configure_geometric_bindings(_bindings):
+                return None
+
         @staticmethod
         def normalize_parameter(_name, value):
             return value
 
         @staticmethod
-        def compile(_context, _parameters, *, operations_override):
+        def compile(_context, _parameters):
             return ProcessPlan(
                 process="injection",
                 adapter_version="test",
                 scope_id="test",
                 scope_version="1",
                 rules={},
-                operations=list(operations_override),
+                operations=[],
                 accepted_inputs=set(),
                 rule_bindings=[],
             )
@@ -352,24 +309,9 @@ def test_occt_plan_drops_operations_when_no_rule_binding_is_executable(context):
 
 def test_occt_supported_binding_requires_available_runtime_operations():
     scope = _occt_geometric_scope()
-    scope["operations"][1]["status"] = "unavailable"
+    scope["geometrics"][0]["scope_modes"] = []
 
     with pytest.raises(DFMError) as exc_info:
         geometry_binding_index(scope)
 
     assert exc_info.value.code == "process_scope_invalid"
-
-
-def test_occt_binding_is_loaded_through_capabilities_api(tmp_path, monkeypatch):
-    executable = tmp_path / "dfm-geometry.exe"
-    executable.parent.mkdir(parents=True, exist_ok=True)
-    executable.touch()
-    monkeypatch.setattr(
-        "tools.dfm.processes.occt_injection.probe_geometry_executable",
-        lambda resolved: _occt_geometric_scope(),
-    )
-
-    loaded = probe_occt_geometry_capability(str(executable))
-
-    assert loaded is not None
-    assert loaded["geometric_bindings"][0]["concept_id"] == "G_WALL_THK_MIN"

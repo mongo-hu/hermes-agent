@@ -129,6 +129,7 @@ _RUN_TRANSITIONS = {
         RunStatus.CANCELLED,
         RunStatus.BLOCKED,
     },
+    RunStatus.FAILED: {RunStatus.REPORTING},
 }
 
 
@@ -212,11 +213,16 @@ class FeatureRecord:
     status: str = "detected"
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        values = asdict(self)
+        if not self.region_refs:
+            values.pop("region_refs")
+        return values
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "FeatureRecord":
-        return cls(**payload)
+        values = dict(payload)
+        values.setdefault("region_refs", [])
+        return cls(**values)
 
 
 @dataclass(frozen=True)
@@ -284,13 +290,20 @@ class DiscoverySnapshotRecord:
     topology_snapshot_id: str = ""
     render_mesh_snapshot_id: str = ""
     artifact_refs: list[str] = field(default_factory=list)
+    worker_snapshot_id: str = ""
+    coverage: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        values = asdict(self)
+        if not self.region_refs:
+            values.pop("region_refs")
+        return values
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DiscoverySnapshotRecord":
-        return cls(**payload)
+        values = dict(payload)
+        values.setdefault("region_refs", [])
+        return cls(**values)
 
 
 @dataclass(frozen=True)
@@ -309,7 +322,9 @@ class PlanRecord:
     input_ids: list[str] = field(default_factory=list)
     input_hashes: dict[str, str] = field(default_factory=dict)
     rules: dict[str, "EffectiveRule"] = field(default_factory=dict)
-    rule_bindings: list["RuleBinding"] = field(default_factory=list)
+    rule_bindings: list["RuleBinding | GeometricRuleBinding"] = field(
+        default_factory=list
+    )
     operations: list["PlanOperation"] = field(default_factory=list)
     parent_plan_id: str | None = None
     invalidated_by: str | None = None
@@ -317,10 +332,30 @@ class PlanRecord:
     phase: str = "analysis"
     discovery_snapshot_refs: list[str] = field(default_factory=list)
     regions: list["RegionRecord"] = field(default_factory=list)
+    plan_fragments: list["PlanFragmentRecord"] = field(default_factory=list)
+    coverage_gaps: list[dict[str, Any]] = field(default_factory=list)
+
+    def active_plan_fragments(
+        self, *, statuses: set[str] | None = None
+    ) -> tuple["PlanFragmentRecord", ...]:
+        """Return the unsuperseded immutable fragments selected by this plan."""
+
+        superseded = {
+            item.supersedes
+            for item in self.plan_fragments
+            if item.supersedes is not None
+        }
+        return tuple(
+            item
+            for item in self.plan_fragments
+            if item.fragment_id not in superseded
+            and item.status not in {"stale", "cancelled"}
+            and (statuses is None or item.status in statuses)
+        )
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
-        return {
+        values = {
             "plan_id": self.plan_id,
             "input_mode": self.input_mode,
             "analyzer_keys": list(self.analyzer_keys),
@@ -334,18 +369,22 @@ class PlanRecord:
             "ontology_snapshot_sha256": self.ontology_snapshot_sha256,
             "input_ids": list(self.input_ids),
             "input_hashes": dict(self.input_hashes),
-            "rules": {
-                key: value.to_dict() for key, value in self.rules.items()
-            },
+            "rules": {key: value.to_dict() for key, value in self.rules.items()},
             "rule_bindings": [item.to_dict() for item in self.rule_bindings],
-            "operations": [operation.to_dict() for operation in self.operations],
             "parent_plan_id": self.parent_plan_id,
             "invalidated_by": self.invalidated_by,
-            "affected_operation_ids": list(self.affected_operation_ids),
             "phase": self.phase,
             "discovery_snapshot_refs": list(self.discovery_snapshot_refs),
-            "regions": [item.to_dict() for item in self.regions],
+            "plan_fragments": [item.to_dict() for item in self.plan_fragments],
+            "coverage_gaps": [dict(item) for item in self.coverage_gaps],
         }
+        if not self.plan_fragments:
+            values["operations"] = [
+                operation.to_dict() for operation in self.operations
+            ]
+            values["affected_operation_ids"] = list(self.affected_operation_ids)
+            values["regions"] = [item.to_dict() for item in self.regions]
+        return values
 
     def validate(self) -> None:
         if self.phase not in {"discovery", "analysis"}:
@@ -369,6 +408,48 @@ class PlanRecord:
                 "plan_rule_binding_invalid",
                 "Plan rule binding IDs must be unique.",
             )
+        if self.plan_fragments and (
+            self.operations or self.regions or self.affected_operation_ids
+        ):
+            raise DFMError(
+                "plan_fragment_invalid",
+                "A Geometric v2 plan cannot retain legacy operations or Regions.",
+                {"plan_id": self.plan_id},
+            )
+        seen_fragment_ids: set[str] = set()
+        for fragment in self.plan_fragments:
+            fragment.validate()
+            if fragment.fragment_id in seen_fragment_ids:
+                raise DFMError(
+                    "plan_fragment_invalid",
+                    "Plan fragment IDs must be unique within one plan.",
+                    {"fragment_id": fragment.fragment_id},
+                )
+            if fragment.supersedes is not None and (
+                fragment.supersedes not in seen_fragment_ids
+                or fragment.supersedes == fragment.fragment_id
+            ):
+                raise DFMError(
+                    "plan_fragment_invalid",
+                    "A replacement fragment must supersede an earlier fragment.",
+                    {
+                        "fragment_id": fragment.fragment_id,
+                        "supersedes": fragment.supersedes,
+                    },
+                )
+            seen_fragment_ids.add(fragment.fragment_id)
+        if (
+            any(
+                isinstance(binding, GeometricRuleBinding)
+                for binding in self.rule_bindings
+            )
+            and not self.plan_fragments
+        ):
+            raise DFMError(
+                "plan_fragment_invalid",
+                "A public G binding must be frozen into a Geometric plan fragment.",
+                {"plan_id": self.plan_id},
+            )
         operations = {item.operation_id: item for item in self.operations}
         regions = {item.region_id: item for item in self.regions}
         if len(regions) != len(self.regions):
@@ -383,6 +464,12 @@ class PlanRecord:
                 )
         for binding in self.rule_bindings:
             binding.validate()
+            if self.plan_fragments and not isinstance(binding, GeometricRuleBinding):
+                raise DFMError(
+                    "plan_rule_binding_invalid",
+                    "A Geometric v2 plan accepts only Feature/G/context operands.",
+                    {"binding_id": binding.binding_id},
+                )
             if binding.rule_id not in self.rules:
                 raise DFMError(
                     "plan_rule_binding_invalid",
@@ -390,6 +477,27 @@ class PlanRecord:
                     {"binding_id": binding.binding_id},
                 )
             for operand in binding.measurement_operands():
+                if isinstance(operand, GeometricRuleOperand):
+                    if not any(
+                        operand.geometric_id in item.geometric_ids
+                        and (
+                            not operand.feature_refs
+                            or set(operand.feature_refs) == {item.feature_id}
+                        )
+                        and operand.context == item.context
+                        for fragment in self.plan_fragments
+                        for item in fragment.items
+                    ):
+                        raise DFMError(
+                            "plan_rule_binding_invalid",
+                            "A Geometric operand does not resolve within a plan fragment.",
+                            {
+                                "binding_id": binding.binding_id,
+                                "operand_alias": operand.alias,
+                                "geometric_id": operand.geometric_id,
+                            },
+                        )
+                    continue
                 operation = operations.get(operand.operation_id)
                 if (
                     operation is None
@@ -413,7 +521,11 @@ class PlanRecord:
             for key, value in values.get("rules", {}).items()
         }
         values["rule_bindings"] = [
-            RuleBinding.from_dict(value)
+            (
+                GeometricRuleBinding.from_dict(value)
+                if "geometric_id" in value
+                else RuleBinding.from_dict(value)
+            )
             for value in values.get("rule_bindings", [])
         ]
         values["operations"] = [
@@ -421,6 +533,10 @@ class PlanRecord:
         ]
         values["regions"] = [
             RegionRecord.from_dict(value) for value in values.get("regions", [])
+        ]
+        values["plan_fragments"] = [
+            PlanFragmentRecord.from_dict(value)
+            for value in values.get("plan_fragments", [])
         ]
         plan = cls(**values)
         plan.validate()
@@ -536,7 +652,11 @@ def _acceptance_criteria_groups(
 ) -> list[list[dict[str, Any]]]:
     """Read legacy flat criteria or the Schema 4 OR-of-AND representation."""
     if not isinstance(criteria, list) or not criteria:
-        raise DFMError("plan_rule_binding_invalid", "Acceptance criteria must be a nonempty array.", {"binding_id": binding_id})
+        raise DFMError(
+            "plan_rule_binding_invalid",
+            "Acceptance criteria must be a nonempty array.",
+            {"binding_id": binding_id},
+        )
     if all(isinstance(item, dict) for item in criteria):
         return [criteria]
     if all(
@@ -559,53 +679,97 @@ def _validate_acceptance_criteria(criteria: Any, *, binding_id: str) -> set[str]
     identifiers: set[str] = set()
     aliases: set[str] = set()
     for item in (criterion for group in groups for criterion in group):
-        if not isinstance(item, dict) or set(item) != {"criterion_id", "expression", "comparator", "threshold", "result_unit"}:
-            raise DFMError("plan_rule_binding_invalid", "An acceptance criterion has invalid fields.", {"binding_id": binding_id})
+        if not isinstance(item, dict) or set(item) != {
+            "criterion_id",
+            "expression",
+            "comparator",
+            "threshold",
+            "result_unit",
+        }:
+            raise DFMError(
+                "plan_rule_binding_invalid",
+                "An acceptance criterion has invalid fields.",
+                {"binding_id": binding_id},
+            )
         criterion_id = item["criterion_id"]
-        if not isinstance(criterion_id, str) or not criterion_id.strip() or criterion_id in identifiers:
-            raise DFMError("plan_rule_binding_invalid", "Acceptance criterion IDs must be unique and nonempty.", {"binding_id": binding_id})
+        if (
+            not isinstance(criterion_id, str)
+            or not criterion_id.strip()
+            or criterion_id in identifiers
+        ):
+            raise DFMError(
+                "plan_rule_binding_invalid",
+                "Acceptance criterion IDs must be unique and nonempty.",
+                {"binding_id": binding_id},
+            )
         identifiers.add(criterion_id)
-        item_aliases = _expression_operand_aliases(item["expression"], binding_id=binding_id)
+        item_aliases = _expression_operand_aliases(
+            item["expression"], binding_id=binding_id
+        )
         if not item_aliases:
-            raise DFMError("plan_rule_binding_invalid", "Each acceptance criterion must reference an Operand.", {"binding_id": binding_id, "criterion_id": criterion_id})
+            raise DFMError(
+                "plan_rule_binding_invalid",
+                "Each acceptance criterion must reference an Operand.",
+                {"binding_id": binding_id, "criterion_id": criterion_id},
+            )
         aliases.update(item_aliases)
         comparator = item["comparator"]
         threshold = item["threshold"]
-        if not isinstance(comparator, str) or comparator not in {"GT", "GTE", "LT", "LTE", "EQ", "NE", "BETWEEN"}:
-            raise DFMError("plan_rule_binding_invalid", "An acceptance comparator is unsupported.", {"binding_id": binding_id, "criterion_id": criterion_id})
+        if not isinstance(comparator, str) or comparator not in {
+            "GT",
+            "GTE",
+            "LT",
+            "LTE",
+            "EQ",
+            "NE",
+            "BETWEEN",
+        }:
+            raise DFMError(
+                "plan_rule_binding_invalid",
+                "An acceptance comparator is unsupported.",
+                {"binding_id": binding_id, "criterion_id": criterion_id},
+            )
         finite = lambda value: type(value) in {int, float} and math.isfinite(value)
         if comparator == "BETWEEN":
-            valid_threshold = (isinstance(threshold, dict) and set(threshold) == {"lower", "upper"}
-                and finite(threshold["lower"]) and finite(threshold["upper"])
-                and threshold["lower"] <= threshold["upper"])
+            valid_threshold = (
+                isinstance(threshold, dict)
+                and set(threshold) == {"lower", "upper"}
+                and finite(threshold["lower"])
+                and finite(threshold["upper"])
+                and threshold["lower"] <= threshold["upper"]
+            )
         else:
             valid_threshold = finite(threshold)
         if not valid_threshold or not isinstance(item["result_unit"], str):
-            raise DFMError("plan_rule_binding_invalid", "An acceptance threshold or unit is invalid.", {"binding_id": binding_id, "criterion_id": criterion_id})
+            raise DFMError(
+                "plan_rule_binding_invalid",
+                "An acceptance threshold or unit is invalid.",
+                {"binding_id": binding_id, "criterion_id": criterion_id},
+            )
     if not aliases:
-        raise DFMError("plan_rule_binding_invalid", "Acceptance criteria must reference at least one Operand.", {"binding_id": binding_id})
+        raise DFMError(
+            "plan_rule_binding_invalid",
+            "Acceptance criteria must reference at least one Operand.",
+            {"binding_id": binding_id},
+        )
     return aliases
 
 
 @dataclass(frozen=True)
 class RuleOperand:
-    """Resolve and aggregate one named Measurement input to a rule expression."""
+    """Legacy non-v2 Measurement input retained for explicit old backends."""
 
     alias: str
     operation_id: str
     metric_id: str
     quantity_id: str
-    geometric_id: str = ""
     aggregation: str = "identity"
     feature_refs: list[str] = field(default_factory=list)
     region_refs: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
-        values = asdict(self)
-        if not self.geometric_id:
-            values.pop("geometric_id")
-        return values
+        return asdict(self)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "RuleOperand":
@@ -618,13 +782,7 @@ class RuleOperand:
         if any(not isinstance(value, str) or not value for value in identities):
             raise DFMError(
                 "plan_rule_binding_invalid",
-                "Rule operands require non-empty stable identities.",
-            )
-        if self.geometric_id and not re.fullmatch(r"G_[A-Z0-9_]+", self.geometric_id):
-            raise DFMError(
-                "plan_rule_binding_invalid",
-                "Rule operand Geometric IDs must use the published stable identity.",
-                {"operand_alias": self.alias, "geometric_id": self.geometric_id},
+                "Legacy rule operands require complete operation, metric, and quantity identities.",
             )
         if self.aggregation not in _RULE_AGGREGATIONS:
             raise DFMError(
@@ -648,7 +806,7 @@ class RuleOperand:
 
 @dataclass(frozen=True)
 class RuleBinding:
-    """Bind one or more objective Measurements to one engineering rule."""
+    """Legacy non-v2 rule binding retained for explicit old backends."""
 
     binding_id: str
     operation_id: str
@@ -657,7 +815,6 @@ class RuleBinding:
     rule_id: str
     operator: str
     aggregation: str
-    geometric_id: str = ""
     required_fact_names: list[str] = field(default_factory=list)
     feature_refs: list[str] = field(default_factory=list)
     region_refs: list[str] = field(default_factory=list)
@@ -666,7 +823,9 @@ class RuleBinding:
     additional_operands: list[RuleOperand] = field(default_factory=list)
     expression: dict[str, Any] | None = None
     rule_selection: dict[str, Any] | None = None
-    acceptance_criteria_json: list[dict[str, Any]] | list[list[dict[str, Any]]] = field(default_factory=list)
+    acceptance_criteria_json: list[dict[str, Any]] | list[list[dict[str, Any]]] = field(
+        default_factory=list
+    )
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
@@ -678,8 +837,6 @@ class RuleBinding:
         }
         if self.rule_selection is None:
             values.pop("rule_selection")
-        if not self.geometric_id:
-            values.pop("geometric_id")
         return values
 
     @classmethod
@@ -700,7 +857,6 @@ class RuleBinding:
                 operation_id=self.operation_id,
                 metric_id=self.metric_id,
                 quantity_id=self.quantity_id,
-                geometric_id=self.geometric_id,
                 aggregation=self.aggregation,
                 feature_refs=self.feature_refs,
                 region_refs=self.region_refs,
@@ -720,7 +876,7 @@ class RuleBinding:
         if any(not isinstance(value, str) or not value for value in identities):
             raise DFMError(
                 "plan_rule_binding_invalid",
-                "Rule bindings require non-empty stable identities.",
+                "Legacy rule bindings require complete stable routing identities.",
             )
         if not isinstance(self.check_id, str):
             raise DFMError(
@@ -775,7 +931,8 @@ class RuleBinding:
             selection = self.rule_selection
             valid = (
                 isinstance(selection, dict)
-                and set(selection) == {"conditions", "priority", "specificity", "is_default"}
+                and set(selection)
+                == {"conditions", "priority", "specificity", "is_default"}
                 and isinstance(selection.get("conditions"), list)
                 and type(selection.get("priority")) is int
                 and type(selection.get("specificity")) is int
@@ -784,7 +941,10 @@ class RuleBinding:
                 and bool(self.check_id)
             )
             if not valid:
-                raise DFMError("plan_rule_binding_invalid", "Deferred rule selection metadata is invalid.")
+                raise DFMError(
+                    "plan_rule_binding_invalid",
+                    "Deferred rule selection metadata is invalid.",
+                )
             for condition in selection["conditions"]:
                 if (
                     not isinstance(condition, dict)
@@ -797,7 +957,10 @@ class RuleBinding:
                     or isinstance(condition["value"], bool)
                     or not math.isfinite(condition["value"])
                 ):
-                    raise DFMError("plan_rule_binding_invalid", "Deferred geometric condition is invalid.")
+                    raise DFMError(
+                        "plan_rule_binding_invalid",
+                        "Deferred geometric condition is invalid.",
+                    )
                 condition_aliases.add(condition["geometric_id"])
         if self.additional_operands and (not self.check_id or self.expression is None):
             raise DFMError(
@@ -810,13 +973,36 @@ class RuleBinding:
                 self.acceptance_criteria_json, binding_id=self.binding_id
             )
             first = groups[0][0]
-            comparators = {"GT": ">", "GTE": ">=", "LT": "<", "LTE": "<=", "EQ": "==", "NE": "!=", "BETWEEN": "between"}
-            if (not isinstance(first, dict) or not self.check_id or self.expression != first.get("expression")
-                    or self.operator != comparators.get(first.get("comparator"))):
-                raise DFMError("plan_rule_binding_invalid", "The primary binding must match the first acceptance criterion.", {"binding_id": self.binding_id})
+            comparators = {
+                "GT": ">",
+                "GTE": ">=",
+                "LT": "<",
+                "LTE": "<=",
+                "EQ": "==",
+                "NE": "!=",
+                "BETWEEN": "between",
+            }
+            if (
+                not isinstance(first, dict)
+                or not self.check_id
+                or self.expression != first.get("expression")
+                or self.operator != comparators.get(first.get("comparator"))
+            ):
+                raise DFMError(
+                    "plan_rule_binding_invalid",
+                    "The primary binding must match the first acceptance criterion.",
+                    {"binding_id": self.binding_id},
+                )
         if self.expression is not None:
-            referenced = (_validate_acceptance_criteria(self.acceptance_criteria_json, binding_id=self.binding_id)
-                if self.acceptance_criteria_json else _expression_operand_aliases(self.expression, binding_id=self.binding_id))
+            referenced = (
+                _validate_acceptance_criteria(
+                    self.acceptance_criteria_json, binding_id=self.binding_id
+                )
+                if self.acceptance_criteria_json
+                else _expression_operand_aliases(
+                    self.expression, binding_id=self.binding_id
+                )
+            )
             if referenced | condition_aliases != set(aliases):
                 raise DFMError(
                     "plan_rule_binding_invalid",
@@ -827,6 +1013,364 @@ class RuleBinding:
                         "referenced_aliases": sorted(referenced),
                     },
                 )
+
+
+@dataclass(frozen=True)
+class GeometricRuleOperand:
+    """One rule variable bound only by Feature + published G + context."""
+
+    alias: str
+    geometric_id: str
+    aggregation: str = "identity"
+    feature_refs: list[str] = field(default_factory=list)
+    context: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "GeometricRuleOperand":
+        operand = cls(**payload)
+        operand.validate()
+        return operand
+
+    def validate(self) -> None:
+        if (
+            not isinstance(self.alias, str)
+            or not self.alias
+            or re.fullmatch(r"G_[A-Z0-9_]+", self.geometric_id) is None
+        ):
+            raise DFMError(
+                "plan_rule_binding_invalid",
+                "Geometric operands require an alias and a published G identity.",
+                {"operand_alias": self.alias, "geometric_id": self.geometric_id},
+            )
+        if self.aggregation not in _RULE_AGGREGATIONS:
+            raise DFMError(
+                "plan_rule_binding_invalid",
+                "Rule operand aggregation is unsupported.",
+                {"operand_alias": self.alias, "aggregation": self.aggregation},
+            )
+        if len(self.feature_refs) != len(set(self.feature_refs)) or any(
+            not isinstance(ref, str) or not ref for ref in self.feature_refs
+        ):
+            raise DFMError(
+                "plan_rule_binding_invalid",
+                "Geometric operand feature_refs must contain unique stable identities.",
+                {"operand_alias": self.alias},
+            )
+        if not isinstance(self.context, dict):
+            raise DFMError(
+                "plan_rule_binding_invalid",
+                "Geometric operand context must be an object.",
+                {"operand_alias": self.alias},
+            )
+
+
+@dataclass(frozen=True)
+class GeometricRuleBinding:
+    """Bind a rule directly to published G operands without Worker route IDs."""
+
+    binding_id: str
+    geometric_id: str
+    rule_id: str
+    operator: str
+    aggregation: str
+    required_fact_names: list[str] = field(default_factory=list)
+    feature_refs: list[str] = field(default_factory=list)
+    context: dict[str, Any] = field(default_factory=dict)
+    check_id: str = ""
+    operand_alias: str = "actual"
+    additional_operands: list[GeometricRuleOperand] = field(default_factory=list)
+    expression: dict[str, Any] | None = None
+    rule_selection: dict[str, Any] | None = None
+    acceptance_criteria_json: list[dict[str, Any]] | list[list[dict[str, Any]]] = field(
+        default_factory=list
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        values = {
+            **asdict(self),
+            "additional_operands": [
+                operand.to_dict() for operand in self.additional_operands
+            ],
+        }
+        if self.rule_selection is None:
+            values.pop("rule_selection")
+        return values
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "GeometricRuleBinding":
+        values = dict(payload)
+        values["additional_operands"] = [
+            GeometricRuleOperand.from_dict(item)
+            for item in values.get("additional_operands", [])
+        ]
+        binding = cls(**values)
+        binding.validate()
+        return binding
+
+    def measurement_operands(self) -> tuple[GeometricRuleOperand, ...]:
+        return (
+            GeometricRuleOperand(
+                alias=self.operand_alias,
+                geometric_id=self.geometric_id,
+                aggregation=self.aggregation,
+                feature_refs=self.feature_refs,
+                context=self.context,
+            ),
+            *self.additional_operands,
+        )
+
+    def validate(self) -> None:
+        identities = (self.binding_id, self.rule_id, self.operand_alias)
+        if any(not isinstance(value, str) or not value for value in identities):
+            raise DFMError(
+                "plan_rule_binding_invalid",
+                "Geometric rule bindings require non-empty stable identities.",
+            )
+        primary = self.measurement_operands()[0]
+        primary.validate()
+        if not isinstance(self.check_id, str):
+            raise DFMError(
+                "plan_rule_binding_invalid",
+                "Rule binding check_id must be a stable string identity.",
+                {"binding_id": self.binding_id},
+            )
+        if self.operator not in _RULE_OPERATORS:
+            raise DFMError(
+                "plan_rule_binding_invalid",
+                "Rule binding operator is unsupported.",
+                {"binding_id": self.binding_id, "operator": self.operator},
+            )
+        if self.aggregation not in _RULE_AGGREGATIONS:
+            raise DFMError(
+                "plan_rule_binding_invalid",
+                "Rule binding aggregation is unsupported.",
+                {"binding_id": self.binding_id, "aggregation": self.aggregation},
+            )
+        if len(self.required_fact_names) != len(set(self.required_fact_names)) or any(
+            not isinstance(name, str) or not name for name in self.required_fact_names
+        ):
+            raise DFMError(
+                "plan_rule_binding_invalid",
+                "Rule binding required_fact_names must contain unique names.",
+                {"binding_id": self.binding_id},
+            )
+        operands = self.measurement_operands()
+        for operand in operands:
+            operand.validate()
+        aliases = [operand.alias for operand in operands]
+        if len(aliases) != len(set(aliases)):
+            raise DFMError(
+                "plan_rule_binding_invalid",
+                "Rule operand aliases must be unique within one binding.",
+                {"binding_id": self.binding_id},
+            )
+        condition_aliases: set[str] = set()
+        if self.rule_selection is not None:
+            selection = self.rule_selection
+            valid = (
+                isinstance(selection, dict)
+                and set(selection)
+                == {"conditions", "priority", "specificity", "is_default"}
+                and isinstance(selection.get("conditions"), list)
+                and type(selection.get("priority")) is int
+                and type(selection.get("specificity")) is int
+                and selection["specificity"] >= len(selection["conditions"])
+                and isinstance(selection.get("is_default"), bool)
+                and bool(self.check_id)
+            )
+            if not valid:
+                raise DFMError(
+                    "plan_rule_binding_invalid",
+                    "Deferred rule selection metadata is invalid.",
+                )
+            for condition in selection["conditions"]:
+                if (
+                    not isinstance(condition, dict)
+                    or set(condition) != {"geometric_id", "operator", "value", "unit"}
+                    or not isinstance(condition.get("geometric_id"), str)
+                    or condition["geometric_id"] not in aliases
+                    or condition.get("operator") not in ("GT", "GTE", "LT", "LTE")
+                    or not isinstance(condition.get("unit"), str)
+                    or not isinstance(condition.get("value"), (int, float))
+                    or isinstance(condition["value"], bool)
+                    or not math.isfinite(condition["value"])
+                ):
+                    raise DFMError(
+                        "plan_rule_binding_invalid",
+                        "Deferred geometric condition is invalid.",
+                    )
+                condition_aliases.add(condition["geometric_id"])
+        if self.additional_operands and (not self.check_id or self.expression is None):
+            raise DFMError(
+                "plan_rule_binding_invalid",
+                "Multi-Geometric bindings require check_id and an explicit expression.",
+                {"binding_id": self.binding_id},
+            )
+        if self.acceptance_criteria_json:
+            groups = _acceptance_criteria_groups(
+                self.acceptance_criteria_json, binding_id=self.binding_id
+            )
+            first = groups[0][0]
+            comparators = {
+                "GT": ">",
+                "GTE": ">=",
+                "LT": "<",
+                "LTE": "<=",
+                "EQ": "==",
+                "NE": "!=",
+                "BETWEEN": "between",
+            }
+            if (
+                not isinstance(first, dict)
+                or not self.check_id
+                or self.expression != first.get("expression")
+                or self.operator != comparators.get(first.get("comparator"))
+            ):
+                raise DFMError(
+                    "plan_rule_binding_invalid",
+                    "The primary binding must match the first acceptance criterion.",
+                    {"binding_id": self.binding_id},
+                )
+        if self.expression is not None:
+            referenced = (
+                _validate_acceptance_criteria(
+                    self.acceptance_criteria_json, binding_id=self.binding_id
+                )
+                if self.acceptance_criteria_json
+                else _expression_operand_aliases(
+                    self.expression, binding_id=self.binding_id
+                )
+            )
+            if referenced | condition_aliases != set(aliases):
+                raise DFMError(
+                    "plan_rule_binding_invalid",
+                    "Rule expressions must reference every declared operand exactly by alias.",
+                    {
+                        "binding_id": self.binding_id,
+                        "declared_aliases": sorted(aliases),
+                        "referenced_aliases": sorted(referenced),
+                    },
+                )
+
+
+@dataclass(frozen=True)
+class GeometricRequest:
+    """One public Worker v2 computation request inside an immutable plan fragment."""
+
+    feature_id: str
+    geometric_ids: list[str]
+    context: dict[str, Any] = field(default_factory=dict)
+
+    def validate(self) -> None:
+        if (
+            not isinstance(self.feature_id, str)
+            or not self.feature_id
+            or not self.geometric_ids
+            or len(self.geometric_ids) != len(set(self.geometric_ids))
+            or any(
+                not isinstance(value, str)
+                or re.fullmatch(r"G_[A-Z0-9_]+", value) is None
+                for value in self.geometric_ids
+            )
+            or not isinstance(self.context, dict)
+        ):
+            raise DFMError(
+                "plan_fragment_invalid",
+                "A plan fragment contains an invalid public Geometric request.",
+                {"feature_id": self.feature_id},
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "GeometricRequest":
+        request = cls(**payload)
+        request.validate()
+        return request
+
+
+@dataclass(frozen=True)
+class PlanFragmentRecord:
+    """Immutable Hermes scheduling record; never sent to the geometry Worker."""
+
+    fragment_id: str
+    snapshot_id: str
+    source_discovery_snapshot_id: str
+    capability_version: str
+    dependency_fingerprint: str
+    confirmed_fact_refs: list[str]
+    rule_binding_refs: list[str]
+    items: list[GeometricRequest]
+    status: str = "ready"
+    supersedes: str | None = None
+    review_group_refs: list[str] = field(default_factory=list)
+    blocking_reasons: list[dict[str, Any]] = field(default_factory=list)
+
+    def validate(self) -> None:
+        if (
+            not self.fragment_id
+            or not self.snapshot_id
+            or not self.source_discovery_snapshot_id
+            or not self.capability_version
+            or re.fullmatch(r"[0-9a-f]{64}", self.dependency_fingerprint) is None
+            or self.status
+            not in {
+                "waiting_input",
+                "pending_review",
+                "ready",
+                "running",
+                "completed",
+                "needs_attention",
+                "stale",
+                "cancelled",
+            }
+            or not self.items
+        ):
+            raise DFMError(
+                "plan_fragment_invalid",
+                "A Geometric plan fragment has an invalid immutable identity.",
+                {"fragment_id": self.fragment_id},
+            )
+        for refs, name in (
+            (self.confirmed_fact_refs, "confirmed_fact_refs"),
+            (self.rule_binding_refs, "rule_binding_refs"),
+            (self.review_group_refs, "review_group_refs"),
+        ):
+            if len(refs) != len(set(refs)) or any(not value for value in refs):
+                raise DFMError(
+                    "plan_fragment_invalid",
+                    f"Plan fragment {name} must contain unique stable identities.",
+                    {"fragment_id": self.fragment_id},
+                )
+        for item in self.items:
+            item.validate()
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        payload = {
+            **asdict(self),
+            "items": [item.to_dict() for item in self.items],
+        }
+        if self.supersedes is None:
+            payload.pop("supersedes")
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "PlanFragmentRecord":
+        values = dict(payload)
+        values["items"] = [
+            GeometricRequest.from_dict(item) for item in values.get("items", [])
+        ]
+        fragment = cls(**values)
+        fragment.validate()
+        return fragment
 
 
 @dataclass(frozen=True)
@@ -909,8 +1453,10 @@ class PlanOperation:
                 )
         for values in (self.arguments, self.algorithm_options):
             for name, argument in values.items():
-                if not isinstance(name, str) or not name or not isinstance(
-                    argument, ResolvedArgument
+                if (
+                    not isinstance(name, str)
+                    or not name
+                    or not isinstance(argument, ResolvedArgument)
                 ):
                     raise DFMError(
                         "plan_operation_invalid",
@@ -1021,7 +1567,8 @@ class RegionRecord:
             "whole_model",
         }:
             raise DFMError(
-                "region_invalid", "Region selection mode is unsupported.",
+                "region_invalid",
+                "Region selection mode is unsupported.",
                 {"region_id": self.region_id, "mode": self.mode},
             )
         if not re.fullmatch(r"[0-9a-f]{64}", self.input_sha256):
@@ -1045,7 +1592,12 @@ class RegionRecord:
             )
         for refs in (self.geometry_refs, self.excluded_geometry_refs):
             identities = {
-                (item.kind, item.entity_id, item.topology_snapshot_id, item.input_sha256)
+                (
+                    item.kind,
+                    item.entity_id,
+                    item.topology_snapshot_id,
+                    item.input_sha256,
+                )
                 for item in refs
             }
             if len(identities) != len(refs) or any(
@@ -1079,6 +1631,214 @@ class GeometryRef:
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "GeometryRef":
         return cls(**payload)
+
+
+@dataclass(frozen=True)
+class FormingScopeRecord:
+    """A reviewed direction domain inside one immutable Worker snapshot."""
+
+    forming_scope_id: str
+    snapshot_id: str
+    mode: str
+    draw_direction: list[float]
+    coordinate_system: str
+    direction_source: str
+    status: str
+    geometry_refs: list[GeometryRef] = field(default_factory=list)
+    diagnostics: dict[str, Any] = field(default_factory=dict)
+
+    def validate(self) -> None:
+        if (
+            not self.forming_scope_id
+            or not self.snapshot_id
+            or self.mode not in {"main", "local"}
+            or self.coordinate_system != "model"
+            or self.direction_source != "user_confirmed"
+            or self.status not in {"candidate", "confirmed", "stale"}
+            or len(self.draw_direction) != 3
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                for value in self.draw_direction
+            )
+            or math.sqrt(sum(float(value) ** 2 for value in self.draw_direction))
+            <= 1e-12
+        ):
+            raise DFMError(
+                "forming_scope_invalid",
+                "A forming scope violates the dfm.geometry/v2 direction contract.",
+                {"forming_scope_id": self.forming_scope_id},
+            )
+        if any(
+            ref.kind != "face" or ref.index < 1 or not ref.input_sha256
+            for ref in self.geometry_refs
+        ):
+            raise DFMError(
+                "forming_scope_invalid",
+                "Forming scope geometry must contain valid face references.",
+                {"forming_scope_id": self.forming_scope_id},
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        return {
+            **asdict(self),
+            "geometry_refs": [item.to_dict() for item in self.geometry_refs],
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "FormingScopeRecord":
+        values = dict(payload)
+        values["geometry_refs"] = [
+            GeometryRef.from_dict(item) for item in values.get("geometry_refs", [])
+        ]
+        record = cls(**values)
+        record.validate()
+        return record
+
+
+@dataclass(frozen=True)
+class ReviewGroupRecord:
+    """Hermes-owned user confirmation; never sent as a Worker calculation ID."""
+
+    review_group_id: str
+    kind: str
+    target_refs: list[str]
+    content_sha256: str
+    source: str
+    status: str
+    created_at: str
+    confirmed_at: str | None = None
+    snapshot_id: str = ""
+
+    def validate(self) -> None:
+        if (
+            not self.review_group_id
+            or self.kind
+            not in {
+                "ordinary_structure",
+                "product_forming",
+                "undercut_scope",
+                "local_structure",
+                "local_direction",
+            }
+            or not self.target_refs
+            or len(self.target_refs) != len(set(self.target_refs))
+            or re.fullmatch(r"[0-9a-f]{64}", self.content_sha256) is None
+            or self.source not in {"user", "user_batch"}
+            or self.status not in {"pending_review", "confirmed", "stale", "cancelled"}
+        ):
+            raise DFMError(
+                "review_group_invalid",
+                "A DFM review group has an invalid immutable identity.",
+                {"review_group_id": self.review_group_id},
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "ReviewGroupRecord":
+        record = cls(**payload)
+        record.validate()
+        return record
+
+
+@dataclass(frozen=True)
+class GeometricResultRecord:
+    """One public dfm.geometry/v2 result, without legacy Worker routing fields."""
+
+    result_id: str
+    snapshot_id: str
+    feature_id: str
+    geometric_id: str
+    status: str
+    value: Any
+    unit: str | None
+    context: dict[str, Any]
+    evidence: dict[str, Any]
+    quality: dict[str, Any] | None
+    reason: str | None
+    provenance: dict[str, Any]
+    input_sha256: str
+
+    @property
+    def measurement_id(self) -> str:
+        return self.result_id
+
+    @property
+    def feature_refs(self) -> list[str]:
+        return [self.feature_id]
+
+    @property
+    def region_refs(self) -> list[str]:
+        return []
+
+    @property
+    def geometry_refs(self) -> list[GeometryRef]:
+        refs = self.evidence.get("geometry_refs", [])
+        return [GeometryRef.from_dict(item) for item in refs if isinstance(item, dict)]
+
+    @property
+    def field_refs(self) -> list[str]:
+        refs = self.evidence.get("field_refs", [])
+        return [str(item) for item in refs if isinstance(item, str)]
+
+    @property
+    def diagnostics(self) -> dict[str, Any]:
+        return {}
+
+    def validate(self) -> None:
+        if (
+            not self.result_id
+            or not self.snapshot_id
+            or not self.feature_id
+            or re.fullmatch(r"G_[A-Z0-9_]+", self.geometric_id) is None
+            or self.status
+            not in {
+                "ok",
+                "unsupported",
+                "not_applicable",
+                "missing_context",
+                "ambiguous_scope",
+                "failed",
+            }
+            or not isinstance(self.context, dict)
+            or not isinstance(self.evidence, dict)
+            or not isinstance(self.provenance, dict)
+            or not isinstance(self.provenance.get("plan_fragment_ref"), str)
+            or not self.provenance["plan_fragment_ref"]
+            or re.fullmatch(r"[0-9a-f]{64}", self.input_sha256) is None
+        ):
+            raise DFMError(
+                "geometric_result_invalid",
+                "A Worker Geometric result violates dfm.geometry/v2.",
+                {"result_id": self.result_id},
+            )
+        if self.status == "ok" and self.value is None:
+            raise DFMError(
+                "geometric_result_invalid",
+                "A successful Geometric result must contain a value.",
+                {"result_id": self.result_id},
+            )
+        if self.status != "ok" and self.value is not None:
+            raise DFMError(
+                "geometric_result_invalid",
+                "An unavailable Geometric result cannot contain a fabricated value.",
+                {"result_id": self.result_id},
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "GeometricResultRecord":
+        result = cls(**payload)
+        result.validate()
+        return result
 
 
 @dataclass(frozen=True)
@@ -1120,7 +1880,7 @@ class MeasurementRecord:
 
 @dataclass(frozen=True)
 class EvaluationRecord:
-    """A versioned comparison between measurements and an effective parameter."""
+    """Legacy non-v2 comparison retained for explicit old backends."""
 
     evaluation_id: str
     operation_id: str
@@ -1152,8 +1912,39 @@ class EvaluationRecord:
 
 
 @dataclass(frozen=True)
+class GeometricEvaluationRecord:
+    """Rule verdict over published G results, without legacy routing identity."""
+
+    evaluation_id: str
+    geometric_id: str
+    measurement_ids: list[str]
+    rule_id: str
+    rule_version: str
+    rule_hash: str
+    operator: str
+    expected: Any
+    actual: Any
+    outcome: str
+    feature_refs: list[str] = field(default_factory=list)
+    check_id: str = ""
+    actual_unit: str | None = None
+    expression: dict[str, Any] | None = None
+    operand_values: dict[str, Any] = field(default_factory=dict)
+    severity: str = "unclassified"
+    severity_rationale: str | None = None
+    criterion_results: list[dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "GeometricEvaluationRecord":
+        return cls(**payload)
+
+
+@dataclass(frozen=True)
 class EvidenceRecord:
-    """Bind one Hermes-rendered image to the exact evaluated geometry."""
+    """Legacy evidence binding retained for explicit old backends."""
 
     evidence_id: str
     run_id: str
@@ -1176,6 +1967,36 @@ class EvidenceRecord:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "EvidenceRecord":
+        values = dict(payload)
+        values["geometry_refs"] = [
+            GeometryRef.from_dict(item) for item in values.get("geometry_refs", [])
+        ]
+        return cls(**values)
+
+
+@dataclass(frozen=True)
+class GeometricEvidenceRecord:
+    """Evidence for a G evaluation, scoped by Feature and geometry references."""
+
+    evidence_id: str
+    run_id: str
+    input_sha256: str
+    geometric_id: str
+    measurement_ids: list[str]
+    evaluation_ids: list[str]
+    geometry_refs: list[GeometryRef]
+    artifact_ref: str
+    render: dict[str, Any]
+    feature_refs: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            **asdict(self),
+            "geometry_refs": [item.to_dict() for item in self.geometry_refs],
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "GeometricEvidenceRecord":
         values = dict(payload)
         values["geometry_refs"] = [
             GeometryRef.from_dict(item) for item in values.get("geometry_refs", [])
@@ -1246,7 +2067,9 @@ class ObjectiveTaskRequest:
             raise ValueError("Objective task region identities are not unique.")
         for operation in self.operations:
             if set(operation.region_refs) - set(regions):
-                raise ValueError("Objective task operation has unresolved region references.")
+                raise ValueError(
+                    "Objective task operation has unresolved region references."
+                )
         for region in self.regions:
             region.validate()
 
@@ -1396,7 +2219,9 @@ class WorkerEvent:
             or not isinstance(event.measured_feature_count, int)
             or event.measured_feature_count < 0
         ):
-            raise DFMError("worker_event_invalid", "DFM measured feature count is invalid.")
+            raise DFMError(
+                "worker_event_invalid", "DFM measured feature count is invalid."
+            )
         if event.unavailable_features is not None and (
             event.type != "progress"
             or not isinstance(event.unavailable_features, list)
@@ -1410,7 +2235,9 @@ class WorkerEvent:
                 for item in event.unavailable_features
             )
         ):
-            raise DFMError("worker_event_invalid", "DFM unavailable features are invalid.")
+            raise DFMError(
+                "worker_event_invalid", "DFM unavailable features are invalid."
+            )
         return event
 
 
@@ -1471,7 +2298,11 @@ class GeometryDiscoveryTaskRequest:
         ):
             raise ValueError("Geometry discovery task identity is invalid.")
         for name, fact in self.facts.items():
-            if not name or not isinstance(fact, ResolvedArgument) or not fact.source_ref:
+            if (
+                not name
+                or not isinstance(fact, ResolvedArgument)
+                or not fact.source_ref
+            ):
                 raise ValueError("Geometry discovery facts require stable provenance.")
 
     def to_dict(self) -> dict[str, Any]:
@@ -1528,7 +2359,9 @@ class RecognizerExecutionResult:
         if self.status == "blocked" and not self.missing_fact_names:
             raise ValueError("A blocked geometry recognizer must name missing facts.")
         if self.status != "blocked" and self.missing_fact_names:
-            raise ValueError("Only a blocked geometry recognizer may name missing facts.")
+            raise ValueError(
+                "Only a blocked geometry recognizer may name missing facts."
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -1590,7 +2423,9 @@ class GeometryDiscoveryResultManifest:
                 or set(observation.feature_refs) - feature_ids
                 or set(observation.region_refs) - region_ids
             ):
-                raise ValueError("Geometry discovery observation references are invalid.")
+                raise ValueError(
+                    "Geometry discovery observation references are invalid."
+                )
         for feature in self.features:
             if (
                 feature.input_sha256 != self.input_sha256
@@ -1625,7 +2460,9 @@ class GeometryDiscoveryResultManifest:
                 or set(recognizer.region_refs) - region_ids
                 or set(recognizer.observation_refs) - observation_ids
             ):
-                raise ValueError("Geometry recognizer output references are unresolved.")
+                raise ValueError(
+                    "Geometry recognizer output references are unresolved."
+                )
 
         artifact_by_id = {item.artifact_id: item for item in self.artifacts}
         artifact_ids = set(artifact_by_id)
@@ -1642,7 +2479,9 @@ class GeometryDiscoveryResultManifest:
             or artifact_by_id[self.geometry_snapshot_ref].kind != "geometry_snapshot"
             or any(count != 1 for count in kind_counts.values())
         ):
-            raise ValueError("Geometry discovery artifacts are incomplete or ambiguous.")
+            raise ValueError(
+                "Geometry discovery artifacts are incomplete or ambiguous."
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1667,8 +2506,7 @@ class GeometryDiscoveryResultManifest:
     def from_dict(cls, payload: dict[str, Any]) -> "GeometryDiscoveryResultManifest":
         values = dict(payload)
         values["observations"] = [
-            ObservationRecord.from_dict(item)
-            for item in values.get("observations", [])
+            ObservationRecord.from_dict(item) for item in values.get("observations", [])
         ]
         values["features"] = [
             FeatureRecord.from_dict(item) for item in values.get("features", [])
@@ -1716,9 +2554,8 @@ class ObjectiveResultManifest:
             raise ValueError("Objective result manifest identity is invalid.")
         artifact_ids = [item.artifact_id for item in self.artifacts]
         filenames = [item.filename for item in self.artifacts]
-        if (
-            len(artifact_ids) != len(set(artifact_ids))
-            or len(filenames) != len(set(filenames))
+        if len(artifact_ids) != len(set(artifact_ids)) or len(filenames) != len(
+            set(filenames)
         ):
             raise ValueError("Objective result artifacts must be unique.")
 
@@ -1743,6 +2580,8 @@ class ObjectiveResultManifest:
 
 @dataclass(frozen=True)
 class FindingRecord:
+    """Legacy finding retained for explicit old backends."""
+
     finding_id: str
     title: str
     severity: str
@@ -1764,6 +2603,36 @@ class FindingRecord:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "FindingRecord":
+        return cls(**payload)
+
+
+@dataclass(frozen=True)
+class GeometricFindingRecord:
+    """Published issue derived only from Check, Feature, G, rule and evidence IDs."""
+
+    finding_id: str
+    title: str
+    severity: str
+    status: str
+    evaluation_ids: list[str]
+    measurement_ids: list[str]
+    geometric_ids: list[str]
+    evidence_refs: list[str]
+    rule_refs: list[str]
+    recommendation: str
+    feature_refs: list[str] = field(default_factory=list)
+    check_ids: list[str] = field(default_factory=list)
+    severity_rationale: str | None = None
+    criterion_results: list[dict[str, Any]] = field(default_factory=list)
+    validity_status: str = "current"
+    stale_reason: str | None = None
+    location_status: str = "preliminary"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "GeometricFindingRecord":
         return cls(**payload)
 
 
@@ -1912,9 +2781,11 @@ class ProjectManifest:
     observations: list[ObservationRecord] = field(default_factory=list)
     fusion_links: list[FusionLinkRecord] = field(default_factory=list)
     discovery_snapshots: list[DiscoverySnapshotRecord] = field(default_factory=list)
+    forming_scopes: list[FormingScopeRecord] = field(default_factory=list)
+    review_groups: list[ReviewGroupRecord] = field(default_factory=list)
     plans: list[PlanRecord] = field(default_factory=list)
     runs: list[RunRecord] = field(default_factory=list)
-    findings: list[FindingRecord] = field(default_factory=list)
+    findings: list[FindingRecord | GeometricFindingRecord] = field(default_factory=list)
     artifacts: list[ArtifactRecord] = field(default_factory=list)
     capabilities: dict[str, dict[str, Any]] = field(default_factory=dict)
     schema_version: int = MANIFEST_SCHEMA_VERSION
@@ -1944,6 +2815,8 @@ class ProjectManifest:
             "discovery_snapshots": [
                 item.to_dict() for item in self.discovery_snapshots
             ],
+            "forming_scopes": [item.to_dict() for item in self.forming_scopes],
+            "review_groups": [item.to_dict() for item in self.review_groups],
             "plans": [item.to_dict() for item in self.plans],
             "runs": [run.to_dict() for run in self.runs],
             "findings": [item.to_dict() for item in self.findings],
@@ -1971,23 +2844,34 @@ class ProjectManifest:
             FeatureRecord.from_dict(item) for item in values.get("features", [])
         ]
         values["observations"] = [
-            ObservationRecord.from_dict(item)
-            for item in values.get("observations", [])
+            ObservationRecord.from_dict(item) for item in values.get("observations", [])
         ]
         values["fusion_links"] = [
-            FusionLinkRecord.from_dict(item)
-            for item in values.get("fusion_links", [])
+            FusionLinkRecord.from_dict(item) for item in values.get("fusion_links", [])
         ]
         values["discovery_snapshots"] = [
             DiscoverySnapshotRecord.from_dict(item)
             for item in values.get("discovery_snapshots", [])
+        ]
+        values["forming_scopes"] = [
+            FormingScopeRecord.from_dict(item)
+            for item in values.get("forming_scopes", [])
+        ]
+        values["review_groups"] = [
+            ReviewGroupRecord.from_dict(item)
+            for item in values.get("review_groups", [])
         ]
         values["plans"] = [
             PlanRecord.from_dict(item) for item in values.get("plans", [])
         ]
         values["runs"] = [RunRecord.from_dict(item) for item in values.get("runs", [])]
         values["findings"] = [
-            FindingRecord.from_dict(item) for item in values.get("findings", [])
+            (
+                GeometricFindingRecord.from_dict(item)
+                if "geometric_ids" in item
+                else FindingRecord.from_dict(item)
+            )
+            for item in values.get("findings", [])
         ]
         values["artifacts"] = [
             ArtifactRecord.from_dict(item) for item in values.get("artifacts", [])

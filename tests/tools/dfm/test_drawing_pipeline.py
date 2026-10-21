@@ -306,7 +306,7 @@ def test_configured_geometry_backend_does_not_silently_fall_back(tmp_path):
         service.close()
 
 
-def test_mixed_input_uses_agent_observation_and_fusion_submission_flow(tmp_path):
+def test_mixed_input_does_not_fabricate_geometry_for_agent_fusion(tmp_path):
     registry = AnalyzerRegistry()
     registry.register(StepAnalyzer(dependency_probe=lambda: False))
     registry.register(DrawingAnalyzer(pipeline=_result, capability_probe=_available))
@@ -387,50 +387,9 @@ def test_mixed_input_uses_agent_observation_and_fusion_submission_flow(tmp_path)
             for item in fusion_context["observations"]
             if item["kind"] == "wall_thickness"
         )
-        feature = fusion_context["features"][0]
-        region = fusion_context["regions"][0]
-        fusion_submission = service.analysis(
-            "submit_fusion_links",
-            project_id=project_id,
-            expected_revision=fusion_context["revision"],
-            fusion_links=[
-                {
-                    "observation_refs": [wall["observation_id"]],
-                    "feature_refs": [feature["feature_id"]],
-                    "region_refs": [region["region_id"]],
-                    "confidence": 0.8,
-                    "rationale": "Explicit wall callout.",
-                }
-            ],
-        )
-        assert fusion_submission["fusion_links"][0]["status"] == "ambiguous"
-
-        discovery = service.analysis("discover", project_id=project_id)
-        assert discovery["ok"] is True
-        assert {item["kind"] for item in discovery["observations"]} == {
-            "material",
-            "wall_thickness",
-        }
-        assert len(discovery["fusion_links"]) == 1
-        assert discovery["drawing_discovery"]["status"] == "completed"
-        if discovery.get("status") == "discovery_review_required":
-            service.analysis("confirm_discovery", project_id=project_id)
-
-        for fact_name, fact_value in {
-            "material": "ABS",
-            "pull_dir": [0, 0, 1],
-        }.items():
-            service.project(
-                "confirm_fact",
-                project_id=project_id,
-                fact_name=fact_name,
-                fact_value=fact_value,
-            )
-        plan = service.analysis("plan", project_id=project_id)
-
-        assert plan["plan"]["input_mode"] == "fusion"
-        assert plan["plan"]["analyzer_keys"] == ["step"]
-        assert plan["plan"]["operations"]
+        assert wall["observation_id"]
+        assert fusion_context["features"] == []
+        assert fusion_context["regions"] == []
     finally:
         service.close()
 

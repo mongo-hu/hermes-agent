@@ -11,11 +11,13 @@ def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path):
     payloads = {
         "measurements.json": {
             "input_sha256": "a" * 64,
-            "measurements": [{
-                "measurement_id": "measurement-draft",
-                "algorithm_version": "pythonocc-objective-v4",
-                "quality": {"backend": "pythonocc_demo", "certified": False},
-            }],
+            "measurements": [
+                {
+                    "measurement_id": "measurement-draft",
+                    "algorithm_version": "pythonocc-objective-v4",
+                    "quality": {"backend": "pythonocc_demo", "certified": False},
+                }
+            ],
         },
         "evaluations.json": {
             "evaluations": [
@@ -34,7 +36,9 @@ def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path):
                     "outcome": "fail",
                     "severity": "warning",
                     "severity_rationale": "Draft angle affects release.",
-                    "criterion_results": [{"criterion_id": "draft_min", "outcome": "fail"}],
+                    "criterion_results": [
+                        {"criterion_id": "draft_min", "outcome": "fail"}
+                    ],
                 },
                 {
                     "evaluation_id": "evaluation-wall",
@@ -46,7 +50,9 @@ def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path):
                     "check_id": "check.boss_wall",
                     "rule_id": "R_BOSS_WALL",
                     "outcome": "indeterminate",
-                    "criterion_results": [{"criterion_id": "wall_ratio", "outcome": "indeterminate"}],
+                    "criterion_results": [
+                        {"criterion_id": "wall_ratio", "outcome": "indeterminate"}
+                    ],
                 },
             ]
         },
@@ -61,11 +67,13 @@ def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path):
                 "covered_sample_count": 2,
                 "uncovered_sample_refs": [],
             },
-            "records": [{
-                "evidence_id": "evidence-draft",
-                "evaluation_ids": ["evaluation-draft"],
-                "artifact_ref": "image-draft",
-            }]
+            "records": [
+                {
+                    "evidence_id": "evidence-draft",
+                    "evaluation_ids": ["evaluation-draft"],
+                    "artifact_ref": "image-draft",
+                }
+            ],
         },
     }
     artifacts = []
@@ -130,7 +138,10 @@ def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path):
     assert report["issues"][0]["check_id"] == "check.main_wall_minimum_draft"
     assert report["issues"][0]["issue_type_id"] == "check.main_wall_minimum_draft"
     assert report["issues"][0]["issue_type_label"] == "拔模角问题"
-    assert report["issues"][0]["metric"]["criterion_results"][0]["criterion_id"] == "draft_min"
+    assert (
+        report["issues"][0]["metric"]["criterion_results"][0]["criterion_id"]
+        == "draft_min"
+    )
     assert report["stats"]["issue_type_counts"] == [
         {
             "issue_type_id": "check.main_wall_minimum_draft",
@@ -141,3 +152,84 @@ def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path):
     assert report["stats"]["indeterminate_count"] == 1
     assert report["indeterminate_checks"][0]["check_id"] == "check.boss_wall"
     assert report["evidence_coverage"]["coverage_ratio"] == 1.0
+
+
+def test_geometric_report_uses_g_identity_without_region_or_metric_routes(tmp_path):
+    run_id = "run_v2"
+    output = tmp_path / "runs" / run_id / "artifacts"
+    output.mkdir(parents=True)
+    (output / "geometric_results.json").write_text(
+        json.dumps({
+            "input_sha256": "d" * 64,
+            "results": [
+                {
+                    "result_id": "result-wall",
+                    "feature_id": "MAIN_WALL_0001",
+                    "geometric_id": "G_WALL_THK_MIN",
+                    "quality": {"backend": "occt", "certified": False},
+                }
+            ],
+        }),
+        encoding="utf-8",
+    )
+    (output / "evaluations.json").write_text(
+        json.dumps({
+            "evaluations": [
+                {
+                    "evaluation_id": "evaluation-wall",
+                    "check_id": "C_WALL_MIN",
+                    "geometric_id": "G_WALL_THK_MIN",
+                    "measurement_ids": ["result-wall"],
+                    "feature_refs": ["MAIN_WALL_0001"],
+                    "rule_id": "R_WALL_MIN",
+                    "rule_version": "2",
+                    "rule_hash": "e" * 64,
+                    "operator": ">=",
+                    "actual": 0.7,
+                    "actual_unit": "mm",
+                    "expected": 1.0,
+                    "outcome": "fail",
+                    "severity": "warning",
+                }
+            ]
+        }),
+        encoding="utf-8",
+    )
+    artifacts = [
+        ArtifactRecord(
+            "g",
+            "geometric_results",
+            (output / "geometric_results.json").relative_to(tmp_path).as_posix(),
+            "application/json",
+            "now",
+        ),
+        ArtifactRecord(
+            "e",
+            "evaluations",
+            (output / "evaluations.json").relative_to(tmp_path).as_posix(),
+            "application/json",
+            "now",
+        ),
+    ]
+    plan = PlanRecord("plan_v2", "step", ["occt_cpp"], "ready", "now")
+
+    result_assembler.materialize_result_reports(tmp_path, run_id, plan, artifacts)
+    report = json.loads((output / "dfm_report.json").read_text(encoding="utf-8"))
+    issue = report["issues"][0]
+
+    assert report["producer_contract"] == "evaluated_geometric_result"
+    assert report["stats"]["geometric_result_count"] == 1
+    assert issue["code"] == "G_WALL_THK_MIN"
+    assert issue["metric"]["geometric_id"] == "G_WALL_THK_MIN"
+    assert "region_refs" not in issue
+
+    def contains_key(value, key):
+        if isinstance(value, dict):
+            return key in value or any(
+                contains_key(item, key) for item in value.values()
+            )
+        if isinstance(value, list):
+            return any(contains_key(item, key) for item in value)
+        return False
+
+    assert not contains_key(report, "metric_id")

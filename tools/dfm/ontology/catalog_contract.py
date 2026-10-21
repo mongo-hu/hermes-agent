@@ -20,8 +20,8 @@ from ..errors import DFMError
 
 PROPERTY_FIELDS = {
     "process": set(),
-    "feature_type": {"worker_kind"},
-    "geometric": {"worker_geometric_id", "quantity_id", "dimension", "canonical_unit"},
+    "feature_type": {"feature_kind"},
+    "geometric": {"dimension", "canonical_unit"},
     "factor": {
         "runtime_key",
         "default_value",
@@ -169,7 +169,7 @@ def validate_catalog(payload: Mapping[str, Any], validate_source_policy) -> None
                 concept_id=concept_id,
             )
         bindings = {
-            "feature_type": ("worker_kind",),
+            "feature_type": ("feature_kind",),
             "factor": ("runtime_key",),
         }
         for name in bindings.get(kind, ()):
@@ -179,11 +179,20 @@ def validate_catalog(payload: Mapping[str, Any], validate_source_policy) -> None
                     concept_id=concept_id,
                     field=name,
                 )
-        if kind == "geometric" and any(
-            not isinstance(properties[name], str)
-            for name in PROPERTY_FIELDS["geometric"]
-        ):
-            invalid("Geometric runtime metadata must use string values.", concept_id=concept_id)
+        if kind == "geometric":
+            if not concept_id.startswith("G_"):
+                invalid(
+                    "A Geometric concept_id must be the authoritative public G ID.",
+                    concept_id=concept_id,
+                )
+            if any(
+                not isinstance(properties[name], str) or not properties[name].strip()
+                for name in PROPERTY_FIELDS["geometric"]
+            ):
+                invalid(
+                    "Geometric dimension and canonical_unit must be non-empty strings.",
+                    concept_id=concept_id,
+                )
         if kind == "factor":
             impact_scope = properties.get("impact_scope")
             if impact_scope is not None and impact_scope not in FACTOR_IMPACT_SCOPES:
@@ -292,10 +301,6 @@ def validate_catalog(payload: Mapping[str, Any], validate_source_policy) -> None
                 except (KeyError, ValueError) as exc:
                     invalid("Acceptance expression units are invalid.", rule_id=rule["rule_id"], criterion_id=criterion["criterion_id"], reason=str(exc))
                 declared = criterion["result_unit"]
-                # Geometric bindings may remain unresolved in a management
-                # publication.  Defer unit compatibility until a Capability
-                # binding exists; compilation still rejects an unresolved
-                # metric/quantity before producing an executable plan.
                 if unit not in {None, ""} and unit != declared and not ({unit, declared} <= DIMENSIONLESS_UNITS):
                     invalid("Acceptance threshold unit does not match the expression.", rule_id=rule["rule_id"], criterion_id=criterion["criterion_id"])
         else:

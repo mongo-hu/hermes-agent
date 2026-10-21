@@ -1,41 +1,17 @@
-"""Production OCCT main-wall and screw-boss discovery adapter."""
+"""Persistent dfm.geometry/v2 feature discovery provider."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
-import json
 from pathlib import Path
-import shutil
-import subprocess
 from typing import Any, Mapping
 
 from .base import FeatureRecognitionResult
-from ..analyzers.occt import (
-    ENGINE_VERSION,
-    GEOMETRY_REQUEST_CONTRACT,
-    discover_geometry_executable,
-    probe_geometry_executable,
-)
-from ..contracts import (
-    DISCOVERY_SCHEMA_VERSION,
-    OBJECTIVE_SCHEMA_VERSION,
-    WORKER_SCHEMA_VERSION,
-    ArtifactRecord,
-    FeatureRecord,
-    GeometryDiscoveryResultManifest,
-    GeometryDiscoveryTaskRequest,
-    GeometryRef,
-    InputRecord,
-    LocalObjectiveWorkerRequest,
-    ObjectiveArtifactManifest,
-    ObjectiveTaskRequest,
-    PlanOperation,
-    RecognizerExecutionResult,
-    RegionRecord,
-    ResolvedArgument,
-)
+from ..analyzers.occt import discover_geometry_executable
+from ..contracts import ArtifactRecord, FeatureRecord, InputRecord
 from ..errors import DFMError
+from ..runtime.process import SESSION_CONTRACT
 
 
 def _utc_now() -> str:
@@ -50,109 +26,146 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _content_hash(payload: dict[str, Any]) -> str:
-    encoded = json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode("ascii")
-    return hashlib.sha256(encoded).hexdigest()
-
-
 class OCCTCppFeatureRecognitionProvider:
     key = "occt_cpp_feature_recognition"
-    version = "occt-injection-features-adapter-3.0.0"
+    version = "dfm.geometry-v2-feature-provider-1"
 
     def __init__(
         self,
         executable: str | None = None,
         *,
         timeout_seconds: float = 900,
+        session_pool=None,
+        lease_seconds: int = 900,
     ) -> None:
         self.executable = executable
         self.timeout_seconds = timeout_seconds
+        self.session_pool = session_pool
+        self.lease_seconds = lease_seconds
+        self._capability: dict[str, Any] | None = None
 
-    def capability(self) -> dict[str, Any]:
+    def capability(self, project_id: str = "") -> dict[str, Any]:
         base: dict[str, Any] = {
             "provider": self.key,
             "version": self.version,
-            "deployment": "external_project",
+            "deployment": "persistent_external_worker",
             "primary_production_target": True,
             "supported_formats": ["step"],
             "required_fact_names": ["process", "model_units"],
-            "discovery_contract_version": DISCOVERY_SCHEMA_VERSION,
-            "recognizer_ids": ["injection-main-wall"],
-            "output_contracts": [
-                "ObservationRecord[]",
-                "FeatureRecord[]",
-                "RegionRecord[]",
-                "GeometryDiscoveryResultManifest",
-            ],
+            "output_contracts": ["FeatureRecord[]", SESSION_CONTRACT],
         }
         if self.executable is None:
             return {**base, "status": "dependency_missing"}
-        try:
-            payload = probe_geometry_executable(self.executable)
-        except DFMError as exc:
-            return {**base, "status": "unhealthy", "error_code": exc.code}
-        operations = {
-            str(item.get("operation_id")): item
-            for item in payload.get("operations", [])
-            if isinstance(item, dict) and item.get("operation_id")
-        }
-        supported_discovery_ids = {
-            str(execution.get("discovery_operation_id"))
-            for binding in payload.get("geometric_bindings", [])
-            if isinstance(binding, dict)
-            and binding.get("support_status") == "supported"
-            and isinstance((execution := binding.get("execution")), dict)
-        }
-        discovery_ids = []
-        main_wall_operation = operations.get("recognize_main_wall", {})
-        if main_wall_operation and main_wall_operation.get("status") in {
-            None,
-            "available",
-        }:
-            # Main-wall discovery predates the Geometric-ID binding contract;
-            # keep it available while an older deployed worker is replaced.
-            discovery_ids.append("recognize_main_wall")
-        if (
-            "recognize_screw_boss" in supported_discovery_ids
-            and operations.get("recognize_screw_boss", {}).get("status")
-            == "available"
-        ):
-            discovery_ids.append("recognize_screw_boss")
-        recognizer_ids = [
-            {
-                "recognize_main_wall": "injection-main-wall",
-                "recognize_screw_boss": "injection-screw-boss",
-            }[operation_id]
-            for operation_id in discovery_ids
-        ]
-        compatible = (
-            payload.get("engine_version") == ENGINE_VERSION
-            and payload.get("status") == "available"
-            and "recognize_main_wall" in discovery_ids
-        )
+        if self.session_pool is None:
+            return {
+                **base,
+                "status": "unhealthy",
+                "error_code": "geometry_session_required",
+            }
+        if not project_id and self._capability is None:
+            return {
+                **base,
+                "status": "unhealthy",
+                "error_code": "geometry_project_required",
+            }
+        if self._capability is None:
+            try:
+                self._capability = dict(
+                    self.session_pool.acquire(project_id).session.capability
+                )
+            except DFMError as exc:
+                return {**base, "status": "unhealthy", "error_code": exc.code}
         return {
             **base,
-            "status": "available" if compatible else "unhealthy",
-            "engine_version": payload.get("engine_version"),
-            "recognizer_ids": recognizer_ids,
-            "discovery_operation_ids": discovery_ids,
+            "status": "available",
+            "contract_version": self._capability["contract_version"],
+            "engine_version": self._capability.get("engine_version"),
+            "schema_bundle_version": self._capability.get("schema_bundle_version"),
+            "methods": dict(self._capability.get("methods") or {}),
+            "feature_kinds": list(self._capability.get("feature_kinds", [])),
+            "coverage_statuses": list(
+                self._capability.get("coverage_statuses", [])
+            ),
+            "geometrics": list(self._capability.get("geometrics", [])),
         }
 
-    @staticmethod
-    def _operation(
-        operation_id: str,
-        calculator_id: str,
-        dependencies: list[str],
-        artifact: str,
-    ) -> PlanOperation:
-        return PlanOperation(
-            operation_id=operation_id,
-            calculator_id=calculator_id,
-            depends_on=dependencies,
-            required_artifacts=[artifact],
+    def _artifact(
+        self, project_dir: Path, input_sha256: str, kind: str, raw_path: object
+    ) -> ArtifactRecord:
+        path = Path(str(raw_path)).resolve()
+        if not path.is_file() or not path.is_relative_to(project_dir):
+            raise DFMError(
+                "geometry_artifact_invalid",
+                "The Worker returned an artifact outside the owning DFM project.",
+                {"kind": kind},
+            )
+        return ArtifactRecord(
+            artifact_id=f"artifact_geometry_{input_sha256[:16]}_{kind}",
+            kind=kind,
+            relative_path=path.relative_to(project_dir).as_posix(),
+            media_type="application/json",
+            created_at=_utc_now(),
+            size_bytes=path.stat().st_size,
+            sha256=_sha256(path),
         )
+
+    def _feature_records(
+        self,
+        raw_features: object,
+        *,
+        input_record: InputRecord,
+        snapshot_id: str,
+    ) -> list[FeatureRecord]:
+        if not isinstance(raw_features, list):
+            raise DFMError(
+                "geometry_protocol_invalid",
+                "Feature discovery omitted its feature array.",
+            )
+        features: list[FeatureRecord] = []
+        for raw in raw_features:
+            if not isinstance(raw, Mapping):
+                raise DFMError(
+                    "geometry_protocol_invalid",
+                    "Feature discovery returned a non-object feature.",
+                )
+            feature_id = str(raw.get("feature_id") or "")
+            feature_kind = str(raw.get("kind") or "")
+            if not feature_id or not feature_kind:
+                raise DFMError(
+                    "geometry_protocol_invalid",
+                    "Feature discovery returned an unidentifiable feature.",
+                )
+            features.append(
+                FeatureRecord(
+                    feature_id=feature_id,
+                    kind=feature_kind,
+                    source_refs=[
+                        f"worker_snapshot:{snapshot_id}",
+                        f"input:{input_record.input_id}",
+                    ],
+                    confidence=float(raw.get("confidence", 0.0)),
+                    input_sha256=input_record.sha256,
+                    properties={
+                        "subtype": raw.get("subtype"),
+                        "parameters": dict(raw.get("parameters") or {}),
+                        "geometry_refs": list(raw.get("geometry_refs") or []),
+                        "method": raw.get("method"),
+                        "diagnostics": dict(raw.get("diagnostics") or {}),
+                        "worker_snapshot_id": snapshot_id,
+                    },
+                    relationships=list(raw.get("relationships") or []),
+                    recognizer=self.key,
+                    recognizer_version=self.version,
+                    status="detected",
+                )
+            )
+        return features
+
+    @staticmethod
+    def _discovery_batches(feature_kinds: list[str]) -> list[list[str]]:
+        primary = [kind for kind in feature_kinds if kind == "main_wall"]
+        structures = [kind for kind in feature_kinds if kind != "main_wall"]
+        return [batch for batch in (primary, structures) if batch]
 
     def recognize(
         self,
@@ -162,476 +175,191 @@ class OCCTCppFeatureRecognitionProvider:
         facts: Mapping[str, Any] | None = None,
         project_dir: Path | None = None,
     ) -> FeatureRecognitionResult:
-        capability = self.capability()
-        if capability["status"] != "available":
-            raise DFMError(
-                capability.get("error_code", "unsupported_capability"),
-                "The production OCCT C++ feature recognizer is unavailable.",
-                capability,
-            )
         if process != "injection" or input_record.kind != "step":
             raise DFMError(
                 "unsupported_capability",
-                "OCCT injection feature discovery supports STEP inputs only.",
+                "The OCCT v2 feature provider supports injection STEP inputs only.",
             )
         if project_dir is None:
             raise DFMError(
                 "discovery_workspace_required",
-                "OCCT injection feature discovery requires the containing DFM project path.",
+                "Feature discovery requires the owning DFM project directory.",
+            )
+        if self.session_pool is None:
+            raise DFMError(
+                "geometry_session_required",
+                "Feature discovery requires the project-owned persistent session pool.",
             )
         project_dir = project_dir.resolve()
+        capability = self.capability(project_dir.name)
+        if capability["status"] != "available":
+            raise DFMError(
+                capability.get("error_code", "geometry_dependency_missing"),
+                "The dfm.geometry/v2 feature provider is unavailable.",
+                capability,
+            )
         input_path = (project_dir / input_record.relative_path).resolve()
         if not input_path.is_relative_to(project_dir) or not input_path.is_file():
             raise DFMError("input_missing", "The discovery STEP input is unavailable.")
+        artifact_dir = (
+            project_dir / "artifacts" / "geometry_sessions" / input_record.sha256[:16]
+        )
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        project_id = project_dir.name
 
-        suffix = input_record.sha256[:16]
-        run_id = f"discovery_{suffix}"
-        run_dir = project_dir / "runs" / run_id
-        output_dir = project_dir / "artifacts" / "geometry_discovery" / suffix
-        run_dir.mkdir(parents=True, exist_ok=True)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        discovery_operations = [
-            self._operation(
-                "recognize_main_wall",
-                "recognize_main_wall",
-                ["topology.index"],
-                "features",
-            )
-        ]
-        if "recognize_screw_boss" in capability.get("discovery_operation_ids", []):
-            discovery_operations.append(
-                self._operation(
-                    "recognize_screw_boss",
-                    "recognize_screw_boss",
-                    ["topology.aag"],
-                    "features",
-                )
-            )
-        task = ObjectiveTaskRequest(
-            schema_version=OBJECTIVE_SCHEMA_VERSION,
-            run_id=run_id,
+        opened = self.session_pool.open_model(
+            project_id,
+            input_path=input_path,
             input_sha256=input_record.sha256,
-            input_format="step",
-            process=process,
-            scope_id="injection.geometry-core",
-            scope_version="4.0.0",
-            operations=[
-                self._operation(
-                    "geometry.preflight", "geometry_preflight", [], "preflight"
-                ),
-                self._operation(
-                    "topology.index",
-                    "index_topology",
-                    ["geometry.preflight"],
-                    "topology_map",
-                ),
-                self._operation(
-                    "topology.aag",
-                    "build_aag",
-                    ["topology.index"],
-                    "topology_map",
-                ),
-                *discovery_operations,
-            ],
+            artifact_dir=artifact_dir,
+            lease_seconds=self.lease_seconds,
         )
-        request = LocalObjectiveWorkerRequest(
-            schema_version=WORKER_SCHEMA_VERSION,
-            contract_version=GEOMETRY_REQUEST_CONTRACT,
-            backend_version=ENGINE_VERSION,
-            input_path=str(input_path),
-            output_dir=str(output_dir),
-            task=task,
-        )
-        request_path = run_dir / "discovery_request.json"
-        request_path.write_text(
-            json.dumps(request.to_dict(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        assert self.executable is not None
-        try:
-            completed = subprocess.run(
-                [self.executable, "analyze", "--request", str(request_path)],
-                cwd=project_dir,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=self.timeout_seconds,
-                check=False,
-                shell=False,
+        submissions = [
+            self.session_pool.call(
+                project_id,
+                "features.discover",
+                {
+                    "snapshot_id": opened["snapshot_id"],
+                    "feature_kinds": batch,
+                    "context": {},
+                },
             )
-        except subprocess.TimeoutExpired as exc:
-            raise DFMError(
-                "geometry_operation_timeout",
-                "OCCT injection feature discovery exceeded its process timeout.",
-                {"timeout_seconds": self.timeout_seconds},
-            ) from exc
-        except OSError as exc:
-            raise DFMError(
-                "geometry_engine_unhealthy",
-                "OCCT injection feature discovery could not start.",
-            ) from exc
-        (run_dir / "discovery.stdout.log").write_text(
-            completed.stdout, encoding="utf-8"
+            for batch in self._discovery_batches(capability["feature_kinds"])
+        ]
+        branches = [
+            self.session_pool.wait_job(project_id, submitted["job_id"])
+            for submitted in submissions
+        ]
+        result = (
+            branches[0]
+            if len(branches) == 1
+            else self.session_pool.call(
+                project_id,
+                "snapshots.merge",
+                {
+                    "base_snapshot_id": opened["snapshot_id"],
+                    "snapshot_ids": [item["snapshot_id"] for item in branches],
+                },
+            )
         )
-        (run_dir / "discovery.stderr.log").write_text(
-            completed.stderr, encoding="utf-8"
+        self.session_pool.update_snapshot(
+            project_id, input_record.sha256, opened, result
         )
-        if completed.returncode != 0:
-            error_code = "feature_recognition_failed"
-            error_message = "OCCT injection feature discovery failed."
-            for line in completed.stdout.splitlines():
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if event.get("type") == "error":
-                    error_code = event.get("code") or error_code
-                    error_message = event.get("message") or error_message
-            raise DFMError(error_code, error_message)
 
-        topology_path = output_dir / "topology_map.json"
-        scene_path = output_dir / "render_scene.json"
-        features_path = output_dir / "features.json"
-        try:
-            topology = json.loads(topology_path.read_text(encoding="utf-8"))
-            scene = json.loads(scene_path.read_text(encoding="utf-8"))
-            native_features = json.loads(
-                features_path.read_text(encoding="utf-8")
-            )["features"]
-        except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        features = self._feature_records(
+            result.get("features"),
+            input_record=input_record,
+            snapshot_id=str(result["snapshot_id"]),
+        )
+
+        opened_artifacts = opened.get("artifacts")
+        if not isinstance(opened_artifacts, Mapping):
             raise DFMError(
                 "geometry_protocol_invalid",
-                "OCCT injection feature discovery artifacts are incomplete.",
-            ) from exc
-        main_walls = [item for item in native_features if item.get("kind") == "main_wall"]
-        if len(main_walls) != 1:
-            raise DFMError(
-                "feature_recognition_failed",
-                "OCCT main-wall discovery must return exactly one main-wall feature.",
+                "Opening the Worker snapshot did not return geometry artifacts.",
             )
-        native = main_walls[0]
-        topology_snapshot_id = topology["topology_snapshot"]["topology_snapshot_id"]
-        render_mesh_snapshot_id = scene["render_mesh_snapshot"][
-            "render_mesh_snapshot_id"
-        ]
-        geometry_refs = [
-            GeometryRef.from_dict(item)
-            for item in native["geometry_refs"]
-            if item.get("kind") == "face"
-        ]
-        if not geometry_refs or any(
-            ref.topology_snapshot_id != topology_snapshot_id
-            for ref in geometry_refs
-        ):
-            raise DFMError(
-                "geometry_protocol_invalid",
-                "OCCT main-wall refs do not match the topology snapshot.",
-            )
-
-        feature_id = native["feature_id"].replace("feature-", "feature.", 1)
-        region_id = f"region.main_wall.{suffix}.wall"
-        source_refs = [
-            f"recognizer:{self.key}@{self.version}",
-            f"input:{input_record.input_id}",
-            f"native_feature:{native['feature_id']}",
-        ]
-        region_identity = {
-            "region_id": region_id,
-            "input_sha256": input_record.sha256,
-            "mode": "topology_refs",
-            "role": "wall",
-            "feature_refs": [feature_id],
-            "geometry_refs": [item.to_dict() for item in geometry_refs],
-        }
-        region = RegionRecord(
-            region_id=region_id,
-            input_sha256=input_record.sha256,
-            coordinate_system="model",
-            mode="topology_refs",
-            semantic_label="main_wall",
-            source_refs=source_refs,
-            version=self.version,
-            content_sha256=_content_hash(region_identity),
-            role="wall",
-            feature_refs=[feature_id],
-            geometry_refs=geometry_refs,
-        )
-        feature = FeatureRecord(
-            feature_id=feature_id,
-            kind="main_wall",
-            source_refs=source_refs,
-            confidence=float(native["confidence"]),
-            input_sha256=input_record.sha256,
-            region_refs=[region_id],
-            properties={
-                **native.get("parameters", {}),
-                "method": native.get("method"),
-                "quality": native.get("quality", {}),
-                "diagnostics": native.get("diagnostics", {}),
-            },
-            recognizer=self.key,
-            recognizer_version=self.version,
-            status="detected",
-        )
-        features = [feature]
-        regions = [region]
-        recognizers = [
-            RecognizerExecutionResult(
-                recognizer_id="injection-main-wall",
-                status="completed",
-                implementation_version=f"{self.version}+{ENGINE_VERSION}",
-                feature_refs=[feature_id],
-                region_refs=[region_id],
-                diagnostics={"native_method": native.get("method")},
-            )
-        ]
-
-        if "recognize_screw_boss" in capability.get("discovery_operation_ids", []):
-            screw_feature_refs: list[str] = []
-            screw_region_refs: list[str] = []
-            screw_bosses = [
-                item for item in native_features if item.get("kind") == "screw_boss"
-            ]
-            for ordinal, screw_native in enumerate(screw_bosses, start=1):
-                screw_geometry_refs = [
-                    GeometryRef.from_dict(item)
-                    for item in screw_native.get("geometry_refs", [])
-                    if item.get("kind") == "face"
-                ]
-                if any(
-                    ref.topology_snapshot_id != topology_snapshot_id
-                    for ref in screw_geometry_refs
-                ):
-                    raise DFMError(
-                        "geometry_protocol_invalid",
-                        "OCCT screw-boss refs do not match the topology snapshot.",
-                    )
-                screw_feature_id = str(screw_native["feature_id"]).replace(
-                    "feature-", "feature.", 1
-                )
-                screw_source_refs = [
-                    f"recognizer:{self.key}@{self.version}",
-                    f"input:{input_record.input_id}",
-                    f"native_feature:{screw_native['feature_id']}",
-                ]
-                role_face_indices = screw_native.get("parameters", {}).get(
-                    "role_face_indices", {}
-                )
-                if not isinstance(role_face_indices, Mapping):
-                    raise DFMError(
-                        "geometry_protocol_invalid",
-                        "OCCT screw-boss output lacks role_face_indices.",
-                    )
-                role_face_indices = dict(role_face_indices)
-                recognition_roles = screw_native.get("parameters", {}).get(
-                    "recognition_role_face_indices", {}
-                )
-                if not isinstance(recognition_roles, Mapping):
-                    raise DFMError(
-                        "geometry_protocol_invalid",
-                        "OCCT screw-boss recognition roles must be an object.",
-                    )
-                body_indices = {
-                    index
-                    for values in recognition_roles.values()
-                    if isinstance(values, list)
-                    for index in values
-                    if isinstance(index, int)
-                }
-                # Body keeps detected geometry visible even when no metric region is ready.
-                role_face_indices["body"] = sorted(body_indices) or [
-                    ref.index for ref in screw_geometry_refs
-                ]
-                feature_region_refs: list[str] = []
-                refs_by_index = {ref.index: ref for ref in screw_geometry_refs}
-                for role in (
-                    "body",
-                    "outer_side",
-                    "inner_side",
-                    "top",
-                    "bottom",
-                    "transition",
-                    "adjacent_main_wall",
-                ):
-                    raw_indices = role_face_indices.get(role, [])
-                    if not isinstance(raw_indices, list):
-                        raise DFMError(
-                            "geometry_protocol_invalid",
-                            "OCCT screw-boss role faces must be arrays.",
-                            {"feature_id": screw_feature_id, "role": role},
-                        )
-                    role_refs = [
-                        refs_by_index[index]
-                        for index in raw_indices
-                        if isinstance(index, int) and index in refs_by_index
-                    ]
-                    if not role_refs:
-                        continue
-                    screw_region_id = (
-                        f"region.screw_boss.{suffix}.{ordinal}.{role}"
-                    )
-                    region_identity = {
-                        "region_id": screw_region_id,
-                        "input_sha256": input_record.sha256,
-                        "mode": "topology_refs",
-                        "role": role,
-                        "feature_refs": [screw_feature_id],
-                        "geometry_refs": [item.to_dict() for item in role_refs],
-                    }
-                    regions.append(
-                        RegionRecord(
-                            region_id=screw_region_id,
-                            input_sha256=input_record.sha256,
-                            coordinate_system="model",
-                            mode="topology_refs",
-                            semantic_label=f"screw_boss_{role}",
-                            source_refs=screw_source_refs,
-                            version=self.version,
-                            content_sha256=_content_hash(region_identity),
-                            role=role,
-                            feature_refs=[screw_feature_id],
-                            geometry_refs=role_refs,
-                        )
-                    )
-                    feature_region_refs.append(screw_region_id)
-                    screw_region_refs.append(screw_region_id)
-                features.append(
-                    FeatureRecord(
-                        feature_id=screw_feature_id,
-                        kind="screw_boss",
-                        source_refs=screw_source_refs,
-                        confidence=float(screw_native["confidence"]),
-                        input_sha256=input_record.sha256,
-                        region_refs=feature_region_refs,
-                        properties={
-                            **screw_native.get("parameters", {}),
-                            "method": screw_native.get("method"),
-                            "quality": screw_native.get("quality", {}),
-                            "diagnostics": screw_native.get("diagnostics", {}),
-                        },
-                        recognizer=self.key,
-                        recognizer_version=self.version,
-                        status="detected",
-                    )
-                )
-                screw_feature_refs.append(screw_feature_id)
-            recognizers.append(
-                RecognizerExecutionResult(
-                    recognizer_id="injection-screw-boss",
-                    status="completed",
-                    implementation_version=f"{self.version}+{ENGINE_VERSION}",
-                    feature_refs=screw_feature_refs,
-                    region_refs=screw_region_refs,
-                    diagnostics={"detected_count": len(screw_feature_refs)},
-                )
-            )
-
-        geometry_path = output_dir / "geometry_snapshot.step"
-        shutil.copyfile(input_path, geometry_path)
-        discovery_artifacts = [
-            ObjectiveArtifactManifest(
-                artifact_id=f"artifact.discovery.geometry.{suffix}",
-                kind="geometry_snapshot",
-                filename=geometry_path.name,
-                media_type="model/step",
-                size_bytes=geometry_path.stat().st_size,
-                sha256=_sha256(geometry_path),
-            ),
-            ObjectiveArtifactManifest(
-                artifact_id=f"artifact.discovery.topology.{suffix}",
-                kind="topology_map",
-                filename=topology_path.name,
-                media_type="application/json",
-                size_bytes=topology_path.stat().st_size,
-                sha256=_sha256(topology_path),
-            ),
-            ObjectiveArtifactManifest(
-                artifact_id=f"artifact.discovery.scene.{suffix}",
-                kind="render_scene",
-                filename=scene_path.name,
-                media_type="application/json",
-                size_bytes=scene_path.stat().st_size,
-                sha256=_sha256(scene_path),
-            ),
-        ]
-        discovery_task = GeometryDiscoveryTaskRequest(
-            schema_version=DISCOVERY_SCHEMA_VERSION,
-            request_id=f"discovery.request.{suffix}",
-            input_id=input_record.input_id,
-            input_sha256=input_record.sha256,
-            input_format="step",
-            process=process,
-            recognizer_ids=list(capability["recognizer_ids"]),
-            facts={
-                name: value
-                for name, value in (facts or {}).items()
-                if isinstance(value, ResolvedArgument)
-            },
-        )
-        result = GeometryDiscoveryResultManifest(
-            schema_version=DISCOVERY_SCHEMA_VERSION,
-            producer_version=f"{self.version}+{ENGINE_VERSION}",
-            request_id=discovery_task.request_id,
-            input_id=input_record.input_id,
-            input_sha256=input_record.sha256,
-            process=process,
-            topology_snapshot_id=topology_snapshot_id,
-            render_mesh_snapshot_id=render_mesh_snapshot_id,
-            geometry_snapshot_ref=discovery_artifacts[0].artifact_id,
-            features=features,
-            regions=regions,
-            recognizers=recognizers,
-            artifacts=discovery_artifacts,
-            diagnostics={"objective_run_id": run_id},
-        )
-        result_path = output_dir / "geometry_discovery_result.json"
-        result_path.write_text(
-            json.dumps(result.to_dict(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        relative_dir = output_dir.relative_to(project_dir)
-        now = _utc_now()
         artifacts = [
-            ArtifactRecord(
-                artifact_id=item.artifact_id,
-                logical_id=item.artifact_id,
-                kind=item.kind,
-                relative_path=(relative_dir / item.filename).as_posix(),
-                media_type=item.media_type,
-                created_at=now,
-                size_bytes=item.size_bytes,
-                sha256=item.sha256,
+            self._artifact(
+                project_dir, input_record.sha256, kind, opened_artifacts[kind]
             )
-            for item in discovery_artifacts
+            for kind in ("preflight", "topology_map", "render_scene")
         ]
-        artifacts.append(
-            ArtifactRecord(
-                artifact_id=f"artifact.discovery.result.{suffix}",
-                logical_id=f"artifact.discovery.result.{suffix}",
-                kind="geometry_discovery_result",
-                relative_path=(relative_dir / result_path.name).as_posix(),
-                media_type="application/json",
-                created_at=now,
-                size_bytes=result_path.stat().st_size,
-                sha256=_sha256(result_path),
-            )
-        )
         return FeatureRecognitionResult(
             features=features,
-            regions=regions,
-            diagnostics={"task": discovery_task.to_dict(), "result": result.to_dict()},
+            diagnostics={
+                "contract_version": SESSION_CONTRACT,
+                "base_snapshot_id": result.get("base_snapshot_id"),
+                "worker_snapshot_id": result["snapshot_id"],
+                "coverage": list(result.get("coverage") or []),
+                "model_import_count": opened.get("diagnostics", {}).get(
+                    "model_import_count"
+                ),
+            },
             artifacts=artifacts,
-            topology_snapshot_id=topology_snapshot_id,
-            render_mesh_snapshot_id=render_mesh_snapshot_id,
-            geometry_snapshot_ref=discovery_artifacts[0].artifact_id,
+            topology_snapshot_id=str(opened_artifacts["topology_snapshot_id"]),
+            render_mesh_snapshot_id=str(opened_artifacts["render_mesh_snapshot_id"]),
+            geometry_snapshot_ref=artifacts[0].artifact_id,
+            worker_snapshot_id=str(result["snapshot_id"]),
+        )
+
+    def recognize_scope(
+        self,
+        input_record: InputRecord,
+        *,
+        snapshot_id: str,
+        forming_scope_id: str,
+        project_dir: Path,
+    ) -> tuple[list[FeatureRecord], list[dict[str, Any]], str]:
+        """Supplement one confirmed local scope without rerunning model-wide discovery."""
+
+        if self.session_pool is None:
+            raise DFMError(
+                "geometry_session_required",
+                "Scoped feature discovery requires the project-owned session.",
+            )
+        capability = self.capability(project_dir.name)
+        feature_kinds = list(capability.get("feature_kinds") or [])
+        if capability.get("status") != "available" or not feature_kinds:
+            raise DFMError(
+                "geometry_capability_missing",
+                "Scoped feature discovery has no available Feature capability.",
+            )
+        project_dir = project_dir.resolve()
+        opened = self.session_pool.open_model(
+            project_dir.name,
+            input_path=(project_dir / input_record.relative_path).resolve(),
+            input_sha256=input_record.sha256,
+            artifact_dir=(
+                project_dir
+                / "artifacts"
+                / "geometry_sessions"
+                / input_record.sha256[:16]
+            ),
+            lease_seconds=self.lease_seconds,
+        )
+        live_snapshot_id = self.session_pool.resolve_snapshot_id(
+            project_dir.name, snapshot_id
+        )
+        submitted = self.session_pool.call(
+            project_dir.name,
+            "features.discover",
+            {
+                "snapshot_id": live_snapshot_id,
+                "feature_kinds": feature_kinds,
+                "context": {"forming_scope_id": forming_scope_id},
+            },
+        )
+        result = self.session_pool.wait_job(
+            project_dir.name, str(submitted["job_id"])
+        )
+        self.session_pool.update_snapshot(
+            project_dir.name, input_record.sha256, opened, result
+        )
+        return (
+            self._feature_records(
+                result.get("features"),
+                input_record=input_record,
+                snapshot_id=str(result["snapshot_id"]),
+            ),
+            [
+                dict(item)
+                for item in result.get("coverage", [])
+                if isinstance(item, Mapping)
+            ],
+            str(result["snapshot_id"]),
         )
 
 
 def build_occt_feature_recognition_provider(
-    configured_executable: str = "", *, timeout_seconds: float = 900
+    configured_executable: str = "",
+    *,
+    timeout_seconds: float = 900,
+    session_pool=None,
+    lease_seconds: int = 900,
 ) -> OCCTCppFeatureRecognitionProvider:
     return OCCTCppFeatureRecognitionProvider(
         discover_geometry_executable(configured_executable),
         timeout_seconds=timeout_seconds,
+        session_pool=session_pool,
+        lease_seconds=lease_seconds,
     )

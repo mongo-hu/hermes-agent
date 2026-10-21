@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .contracts import ArtifactRecord, PlanRecord, ProjectManifest
+from .contracts import ArtifactRecord, FeatureRecord, PlanRecord, ProjectManifest
 from .errors import DFMError
 from .issue_types import classify_issue_type, summarize_issue_types
 
@@ -39,22 +39,37 @@ def materialize_viewer_manifest(
     run_id: str,
     plan: PlanRecord,
     artifacts: list[ArtifactRecord],
+    features: list[FeatureRecord] | None = None,
 ) -> ArtifactRecord | None:
     """Link the shared render scene, findings and topology for Desktop."""
 
     by_kind = {item.kind: item for item in artifacts}
-    required = {
-        "render_scene",
-        "topology_map",
-        "measurements",
-        "features",
-        "evaluations",
-    }
-    if not required.issubset(by_kind):
+    objective_artifact = by_kind.get("geometric_results") or by_kind.get("measurements")
+    required = {"render_scene", "topology_map", "evaluations"}
+    if (
+        objective_artifact is None
+        or not required.issubset(by_kind)
+        or ("features" not in by_kind and features is None)
+    ):
         return None
 
-    measurements_payload = _read(project_dir, by_kind["measurements"])
-    features_payload = _read(project_dir, by_kind["features"])
+    geometric_run = objective_artifact.kind == "geometric_results"
+    measurements_payload = _read(project_dir, objective_artifact)
+    features_payload = (
+        _read(project_dir, by_kind["features"])
+        if "features" in by_kind
+        else {
+            "features": [
+                {
+                    "feature_id": item.feature_id,
+                    "kind": item.kind,
+                    "confidence": item.confidence,
+                    **dict(item.properties),
+                }
+                for item in features or []
+            ]
+        }
+    )
     evaluations_payload = _read(project_dir, by_kind["evaluations"])
     scene_payload = _read(project_dir, by_kind["render_scene"])
     mesh_snapshot_id = (
@@ -69,12 +84,34 @@ def materialize_viewer_manifest(
             if not isinstance(patch, dict) or not patch.get("evaluation_id"):
                 continue
             patch_snapshot = patch.get("render_mesh_snapshot_ref")
-            if mesh_snapshot_id and patch_snapshot and patch_snapshot != mesh_snapshot_id:
+            if (
+                mesh_snapshot_id
+                and patch_snapshot
+                and patch_snapshot != mesh_snapshot_id
+            ):
                 continue
-            patches_by_evaluation.setdefault(str(patch["evaluation_id"]), []).append(patch)
+            patches_by_evaluation.setdefault(str(patch["evaluation_id"]), []).append(
+                patch
+            )
+    objective_rows = (
+        [
+            {
+                **item,
+                "measurement_id": item.get("result_id"),
+                "feature_refs": [item.get("feature_id")],
+                "geometry_refs": list(
+                    (item.get("evidence") or {}).get("geometry_refs") or []
+                ),
+            }
+            for item in measurements_payload.get("results", [])
+            if isinstance(item, dict) and item.get("result_id")
+        ]
+        if geometric_run
+        else measurements_payload.get("measurements", [])
+    )
     measurements = {
         str(item.get("measurement_id")): item
-        for item in measurements_payload.get("measurements", [])
+        for item in objective_rows
         if isinstance(item, dict) and item.get("measurement_id")
     }
 
@@ -86,7 +123,9 @@ def materialize_viewer_manifest(
         linked = [
             measurements[item] for item in measurement_ids if item in measurements
         ]
-        patches = patches_by_evaluation.get(str(evaluation.get("evaluation_id") or ""), [])
+        patches = patches_by_evaluation.get(
+            str(evaluation.get("evaluation_id") or ""), []
+        )
         refs: list[dict[str, Any]] = []
         seen: set[tuple[str, Any]] = set()
         for source in patches or linked:
@@ -112,7 +151,11 @@ def materialize_viewer_manifest(
                     or not primitive_id
                     or not isinstance(triangle_id, int)
                     or triangle_id < 0
-                    or (mesh_snapshot_id and ref_snapshot and ref_snapshot != mesh_snapshot_id)
+                    or (
+                        mesh_snapshot_id
+                        and ref_snapshot
+                        and ref_snapshot != mesh_snapshot_id
+                    )
                 ):
                     continue
                 key = (primitive_id, triangle_id)
@@ -120,15 +163,16 @@ def materialize_viewer_manifest(
                     continue
                 seen_triangles.add(key)
                 triangle_refs.append(ref)
-        metric_id = str(evaluation.get("metric_id") or "dfm")
+        metric_id = str(
+            evaluation.get("geometric_id") or evaluation.get("metric_id") or "dfm"
+        )
         check_id = str(evaluation.get("check_id") or "")
         issue_type_id, issue_type_label = classify_issue_type(check_id, metric_id)
-        issues.append({
+        issue = {
             "evaluation_id": str(evaluation.get("evaluation_id") or ""),
             "title": str(evaluation.get("rule_id") or "DFM rule")
             .replace("_", " ")
             .title(),
-            "metric_id": metric_id,
             "check_id": check_id,
             "issue_type_id": issue_type_id,
             "issue_type_label": issue_type_label,
@@ -138,7 +182,11 @@ def materialize_viewer_manifest(
             "measurement_ids": measurement_ids,
             "geometry_refs": refs,
             "triangle_refs": triangle_refs,
-        })
+        }
+        issue["geometric_id" if evaluation.get("geometric_id") else "metric_id"] = (
+            metric_id
+        )
+        issues.append(issue)
 
     features: list[dict[str, Any]] = []
     for item in features_payload.get("features", []):
@@ -169,6 +217,7 @@ def materialize_viewer_manifest(
 
     output_dir = project_dir / "runs" / run_id / "artifacts"
     output_path = output_dir / "dfm_viewer.json"
+    output_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "schema_version": 2,
         "contract_version": "hermes.dfm.viewer/v2",
@@ -183,7 +232,11 @@ def materialize_viewer_manifest(
         ),
         "scene_path": Path(by_kind["render_scene"].relative_path).name,
         "topology_path": Path(by_kind["topology_map"].relative_path).name,
-        "measurements_path": Path(by_kind["measurements"].relative_path).name,
+        **(
+            {"geometric_results_path": Path(objective_artifact.relative_path).name}
+            if geometric_run
+            else {"measurements_path": Path(objective_artifact.relative_path).name}
+        ),
         "issue_count": len(issues),
         "issue_type_counts": summarize_issue_types(issues),
         "issues": issues,
@@ -216,6 +269,7 @@ def materialize_preview_manifest(
 
     output_dir = project_dir / "runs" / run_id / "artifacts"
     output_path = output_dir / "dfm_viewer.json"
+    output_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "schema_version": 2,
         "contract_version": "hermes.dfm.viewer/v2",
@@ -263,7 +317,9 @@ def materialize_discovery_viewer_manifest(
     input_sha256, metadata = next(iter(discovery_inputs.items()))
     artifact_ids = set(metadata.get("artifact_refs", []))
     by_kind = {
-        item.kind: item for item in manifest.artifacts if item.artifact_id in artifact_ids
+        item.kind: item
+        for item in manifest.artifacts
+        if item.artifact_id in artifact_ids
     }
     if not {"render_scene", "topology_map"}.issubset(by_kind):
         return None
@@ -281,24 +337,35 @@ def materialize_discovery_viewer_manifest(
             for ref in region.geometry_refs:
                 refs[(ref.kind, ref.index, ref.input_sha256)] = ref.to_dict()
         properties = feature.properties if isinstance(feature.properties, dict) else {}
-        features.append(
-            {
-                "feature_id": feature.feature_id,
-                "kind": feature.kind,
-                "subtype": str(properties.get("subtype") or ""),
-                "confidence": feature.confidence,
-                "geometry_refs": sorted(
-                    refs.values(), key=lambda item: (str(item["kind"]), int(item["index"]))
-                ),
-                "parameters": properties,
-                "method": str(properties.get("method") or feature.recognizer or ""),
-                "diagnostics": (
-                    properties.get("diagnostics")
-                    if isinstance(properties.get("diagnostics"), dict)
-                    else {}
-                ),
-            }
-        )
+        for raw_ref in properties.get("geometry_refs", []):
+            if not isinstance(raw_ref, dict):
+                continue
+            kind = str(raw_ref.get("kind") or "")
+            index = raw_ref.get("index")
+            if kind and isinstance(index, int) and not isinstance(index, bool):
+                normalized = {
+                    **raw_ref,
+                    "input_sha256": str(
+                        raw_ref.get("input_sha256") or feature.input_sha256
+                    ),
+                }
+                refs[(kind, index, normalized["input_sha256"])] = normalized
+        features.append({
+            "feature_id": feature.feature_id,
+            "kind": feature.kind,
+            "subtype": str(properties.get("subtype") or ""),
+            "confidence": feature.confidence,
+            "geometry_refs": sorted(
+                refs.values(), key=lambda item: (str(item["kind"]), int(item["index"]))
+            ),
+            "parameters": properties,
+            "method": str(properties.get("method") or feature.recognizer or ""),
+            "diagnostics": (
+                properties.get("diagnostics")
+                if isinstance(properties.get("diagnostics"), dict)
+                else {}
+            ),
+        })
 
     output_dir = project_dir / Path(by_kind["render_scene"].relative_path).parent
     output_path = output_dir / "dfm_discovery_viewer.json"

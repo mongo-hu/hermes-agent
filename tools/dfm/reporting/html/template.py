@@ -178,6 +178,7 @@ def normalize_contracts(llm_path, runtime_path):
         field_ids.add(field_id)
         resolved_fields.append({
             "id": field_id,
+            "geometric_id": str(field.get("geometric_id") or ""),
             "metric_id": str(field.get("metric_id") or ""),
             "quantity_id": str(field.get("quantity_id") or ""),
             "unit": str(field.get("unit") or ""),
@@ -498,6 +499,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
             payload = json.load(source)
         scalar_field_data.append({
             "id": field["id"],
+            "geometric_id": field["geometric_id"],
             "metric_id": field["metric_id"],
             "quantity_id": field["quantity_id"],
             "unit": field["unit"],
@@ -585,7 +587,11 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
             "issue_type_id": issue_type_id,
             "issue_type_label": issue_type_label,
             "mode": next(
-                (field["id"] for field in scalar_field_data if field["metric_id"] == code),
+                (
+                    field["id"]
+                    for field in scalar_field_data
+                    if (field["geometric_id"] or field["metric_id"]) == code
+                ),
                 "issues",
             ),
             "triangle_refs": triangle_refs,
@@ -1194,7 +1200,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
     html += f'<div class="webgl-wrapper" style="left:{inch2px(0.65)}px; top:{inch2px(1.48)}px; width:{inch2px(8.35)}px; height:{inch2px(5.38)}px;">'
     field_options = ''.join(
         f'<option value="{html_lib.escape(field["id"], quote=True)}">'
-        f'{html_lib.escape(" / ".join(part for part in (field["metric_id"], field["quantity_id"]) if part) or field["id"])}'
+        f'{html_lib.escape(" / ".join(part for part in (field["geometric_id"], field["metric_id"], field["quantity_id"]) if part) or field["id"])}'
         f'{html_lib.escape(" (" + field["unit"] + ")" if field["unit"] else "")}</option>'
         for field in field_catalog
     )
@@ -1724,7 +1730,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         }}
 
         const fieldMaps = Object.fromEntries(scalarFields.map(field => [field.id, fieldValuesByTriangle(field)]));
-        const fieldLabels = Object.fromEntries(scalarFields.map(field => [field.id, [field.metric_id, field.quantity_id].filter(Boolean).join(' / ')]));
+        const fieldLabels = Object.fromEntries(scalarFields.map(field => [field.id, [field.geometric_id, field.metric_id, field.quantity_id].filter(Boolean).join(' / ')]));
 
         let heatmapMesh = null; // Store reference to the summary mesh for switching
 

@@ -91,11 +91,18 @@ def _html_field_catalog(
     artifacts: list[ArtifactRecord],
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
     grouped: dict[
-        tuple[str, str, str], list[tuple[ArtifactRecord, dict[str, Any]]]
+        tuple[str, str, str, str], list[tuple[ArtifactRecord, dict[str, Any]]]
     ] = {}
     for artifact in artifacts:
         payload = _read_object(project_dir, artifact)
+        geometric_ids = payload.get("geometric_ids")
+        geometric_id = (
+            ",".join(str(value) for value in geometric_ids)
+            if isinstance(geometric_ids, list)
+            else ""
+        )
         identity = (
+            geometric_id,
             str(payload.get("metric_id") or ""),
             str(payload.get("quantity_id") or ""),
             str(payload.get("unit") or ""),
@@ -105,14 +112,17 @@ def _html_field_catalog(
     catalog: list[dict[str, Any]] = []
     legacy: dict[str, str] = {}
     for index, (identity, sources) in enumerate(sorted(grouped.items()), start=1):
-        metric_id, quantity_id, unit = identity
+        geometric_id, metric_id, quantity_id, unit = identity
         if len(sources) == 1:
             path = _artifact_path(project_dir, sources[0][0])
         else:
             merged = {
                 "schema_version": 2,
-                "metric_id": metric_id,
-                "quantity_id": quantity_id,
+                **(
+                    {"geometric_ids": geometric_id.split(",")}
+                    if geometric_id
+                    else {"metric_id": metric_id, "quantity_id": quantity_id}
+                ),
                 "unit": unit,
                 "samples": [sample for _, payload in sources for sample in payload.get("samples", [])],
                 "cells": [cell for _, payload in sources for cell in payload.get("cells", [])],
@@ -122,11 +132,14 @@ def _html_field_catalog(
             path.write_text(json.dumps(merged, ensure_ascii=False), encoding="utf-8")
         entry = {
             "id": f"field_{index:03d}",
-            "metric_id": metric_id,
-            "quantity_id": quantity_id,
             "unit": unit,
             "path": _relative(path, output_dir),
             "source_count": len(sources),
+            **(
+                {"geometric_id": geometric_id}
+                if geometric_id
+                else {"metric_id": metric_id, "quantity_id": quantity_id}
+            ),
         }
         catalog.append(entry)
         if metric_id == "injection.geometry.wall_thickness":

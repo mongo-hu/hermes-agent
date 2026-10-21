@@ -1,4 +1,4 @@
-"""Deterministic discovery orchestration with an honest ordinary-region fallback."""
+"""Deterministic discovery orchestration for immutable v2 feature snapshots."""
 
 from __future__ import annotations
 
@@ -14,8 +14,6 @@ from .contracts import (
     FeatureRecord,
     InputRecord,
     ProjectManifest,
-    RegionRecord,
-    GeometryRef,
     ResolvedArgument,
 )
 from .errors import DFMError
@@ -23,11 +21,6 @@ from .feature_recognition import (
     OCCTCppFeatureRecognitionProvider,
 )
 from .ontology import LocalOntologyStore
-from .ontology.targets import resolve_catalog_targets, resolve_catalog_scopes
-
-
-FALLBACK_RECOGNIZER = "ordinary-region-fallback"
-FALLBACK_VERSION = "1.0.0"
 
 
 def _utc_now() -> str:
@@ -41,8 +34,59 @@ def _content_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _normalize_coverage(raw: Any) -> list[dict[str, Any]]:
+    """Validate the public discovery-coverage rows used by planning gates."""
+
+    if not isinstance(raw, list):
+        raise DFMError(
+            "geometry_protocol_invalid",
+            "Feature discovery coverage must be an array.",
+        )
+    rows: list[dict[str, Any]] = []
+    identities: set[tuple[str, str]] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            raise DFMError(
+                "geometry_protocol_invalid",
+                "Feature discovery returned a non-object coverage row.",
+            )
+        feature_kind = str(item.get("feature_kind") or "")
+        context = item.get("context", {})
+        status = str(item.get("status") or "")
+        if not feature_kind or not isinstance(context, dict) or status not in {
+            "complete",
+            "partial",
+            "failed",
+        }:
+            raise DFMError(
+                "geometry_protocol_invalid",
+                "Feature discovery returned an invalid coverage row.",
+                {"feature_kind": feature_kind, "status": status},
+            )
+        identity = (
+            feature_kind,
+            json.dumps(context, sort_keys=True, separators=(",", ":")),
+        )
+        if identity in identities:
+            raise DFMError(
+                "geometry_protocol_invalid",
+                "Feature discovery returned duplicate coverage identities.",
+                {"feature_kind": feature_kind, "context": context},
+            )
+        identities.add(identity)
+        rows.append({
+            "feature_kind": feature_kind,
+            "context": dict(context),
+            "status": status,
+            "covered_geometry_ref": item.get("covered_geometry_ref"),
+            "unresolved_geometry_ref": item.get("unresolved_geometry_ref"),
+            "diagnostics": dict(item.get("diagnostics") or {}),
+        })
+    return rows
+
+
 class DiscoveryEngine:
-    """Own immutable discovery identities and the ordinary-region fallback."""
+    """Own immutable discovery identities and fail closed without a provider."""
 
     version = "hermes-discovery-v2"
 
@@ -81,39 +125,40 @@ class DiscoveryEngine:
     def refresh_candidates(
         self, manifest: ProjectManifest, *, project_dir: Path | None = None
     ) -> ProjectManifest:
-        """Run available geometry discovery, then maintain the honest fallback."""
+        """Run v2 geometry discovery; an unavailable selected backend is an error."""
 
         geometry_inputs = [
             item
             for item in self.active_inputs(manifest)
             if item.kind in {"step", "parasolid"}
         ]
-        active_hashes = {item.sha256 for item in geometry_inputs}
-        features = [
-            item
-            for item in manifest.features
-            if item.recognizer != FALLBACK_RECOGNIZER
-            or item.input_sha256 in active_hashes
-        ]
-        regions = [
-            item
-            for item in manifest.regions
-            if not item.source_refs
-            or not item.source_refs[0].startswith(f"recognizer:{FALLBACK_RECOGNIZER}")
-            or item.input_sha256 in active_hashes
-        ]
+        features = list(manifest.features)
+        regions = list(manifest.regions)
         artifacts = list(manifest.artifacts)
         capabilities = dict(manifest.capabilities)
         discovery_state = dict(capabilities.get("geometry_discovery") or {})
         by_input = dict(discovery_state.get("inputs") or {})
-        provider_capability = self.geometry_provider.capability()
+        provider_capability = self.geometry_provider.capability(manifest.project_id)
         provider_capability_signature = _content_hash({
+            "contract_version": provider_capability.get("contract_version"),
             "engine_version": provider_capability.get("engine_version"),
-            "recognizer_ids": provider_capability.get("recognizer_ids", []),
-            "discovery_operation_ids": provider_capability.get(
-                "discovery_operation_ids", []
-            ),
+            "schema_bundle_version": provider_capability.get("schema_bundle_version"),
+            "feature_kinds": provider_capability.get("feature_kinds", []),
+            "geometrics": provider_capability.get("geometrics", []),
         })
+        if (
+            geometry_inputs
+            and project_dir is not None
+            and provider_capability.get("status") != "available"
+        ):
+            raise DFMError(
+                str(
+                    provider_capability.get("error_code")
+                    or "geometry_dependency_missing"
+                ),
+                "The selected OCCT geometry provider cannot establish dfm.geometry/v2.",
+                provider_capability,
+            )
         if provider_capability.get("status") == "available" and project_dir is not None:
             for input_record in geometry_inputs:
                 cached_discovery = by_input.get(input_record.sha256, {})
@@ -153,7 +198,12 @@ class DiscoveryEngine:
                     project_dir=project_dir,
                 )
                 replaced_feature_ids = {item.feature_id for item in result.features}
-                replaced_region_ids = {item.region_id for item in result.regions}
+                previous_feature_ids = {
+                    item.feature_id
+                    for item in features
+                    if item.input_sha256 == input_record.sha256
+                    and item.recognizer == self.geometry_provider.key
+                }
                 features = [
                     item
                     for item in features
@@ -166,18 +216,19 @@ class DiscoveryEngine:
                 regions = [
                     item
                     for item in regions
-                    if item.region_id not in replaced_region_ids
-                    and not (
+                    if not (
                         item.input_sha256 == input_record.sha256
                         and any(
-                            ref in replaced_feature_ids for ref in item.feature_refs
+                            ref in previous_feature_ids | replaced_feature_ids
+                            for ref in item.feature_refs
                         )
                     )
-                ] + result.regions
+                ]
                 artifact_ids = {item.artifact_id for item in result.artifacts}
                 artifacts = [
                     item for item in artifacts if item.artifact_id not in artifact_ids
                 ] + result.artifacts
+                coverage = _normalize_coverage(result.diagnostics.get("coverage", []))
                 by_input[input_record.sha256] = {
                     "provider": self.geometry_provider.key,
                     "provider_version": self.geometry_provider.version,
@@ -185,73 +236,15 @@ class DiscoveryEngine:
                     "topology_snapshot_id": result.topology_snapshot_id,
                     "render_mesh_snapshot_id": result.render_mesh_snapshot_id,
                     "geometry_snapshot_ref": result.geometry_snapshot_ref,
+                    "worker_snapshot_id": result.worker_snapshot_id,
                     "artifact_refs": [item.artifact_id for item in result.artifacts],
+                    "coverage": coverage,
                 }
         discovery_state.update({
             "status": provider_capability.get("status"),
             "inputs": by_input,
         })
         capabilities["geometry_discovery"] = discovery_state
-        feature_ids = {item.feature_id for item in features}
-        region_ids = {item.region_id for item in regions}
-        for input_record in geometry_inputs:
-            suffix = input_record.sha256[:16]
-            feature_id = f"feature.ordinary.{suffix}"
-            region_id = f"region.ordinary.{suffix}"
-            source_refs = [
-                f"recognizer:{FALLBACK_RECOGNIZER}@{FALLBACK_VERSION}",
-                f"input:{input_record.input_id}",
-            ]
-            if region_id not in region_ids:
-                identity = {
-                    "region_id": region_id,
-                    "input_sha256": input_record.sha256,
-                    "mode": "whole_model",
-                    "role": "ordinary",
-                    "feature_refs": [feature_id],
-                }
-                regions.append(
-                    RegionRecord(
-                        region_id=region_id,
-                        input_sha256=input_record.sha256,
-                        coordinate_system="model",
-                        mode="whole_model",
-                        semantic_label="ordinary_model_region",
-                        source_refs=source_refs,
-                        version=FALLBACK_VERSION,
-                        content_sha256=_content_hash(identity),
-                        role="ordinary",
-                        feature_refs=[feature_id],
-                    )
-                )
-                region_ids.add(region_id)
-            if feature_id not in feature_ids:
-                features.append(
-                    FeatureRecord(
-                        feature_id=feature_id,
-                        kind="ordinary_part",
-                        source_refs=source_refs,
-                        confidence=1.0,
-                        input_sha256=input_record.sha256,
-                        region_refs=[region_id],
-                        properties={
-                            "fallback": True,
-                            "coverage": "whole_model",
-                            "requested_feature_recognizers": [
-                                item["recognizer_id"]
-                                for item in self.catalog["recognizers"]
-                                if item["status"] == "placeholder"
-                            ],
-                        },
-                        recognizer=FALLBACK_RECOGNIZER,
-                        recognizer_version=FALLBACK_VERSION,
-                        status="confirmed",
-                    )
-                )
-                feature_ids.add(feature_id)
-        regions = self._partition_ordinary_regions(
-            features, regions, manifest.process or "injection"
-        )
         return replace(
             manifest,
             features=features,
@@ -260,205 +253,6 @@ class DiscoveryEngine:
             capabilities=capabilities,
             updated_at=_utc_now(),
         )
-
-    @staticmethod
-    def _geometry_key(ref: GeometryRef) -> tuple[str, int, str]:
-        return ref.kind, ref.index, ref.input_sha256
-
-    def _partition_ordinary_regions(
-        self,
-        features: list[FeatureRecord],
-        regions: list[RegionRecord],
-        process: str,
-    ) -> list[RegionRecord]:
-        """Turn whole-model fallback into the complement of concrete feature faces."""
-
-        feature_by_id = {item.feature_id: item for item in features}
-        specs = (
-            self.ontology_store.analysis_target_specs(process)
-            if self.ontology_store
-            else ()
-        )
-        catalog_region_ids = None
-        if specs and "operand_text" in specs[0]:
-            catalog_region_ids = {
-                item["region"].region_id
-                for item in resolve_catalog_scopes(specs, features, regions)
-            }
-        metric_bindings = {
-            (item["feature_kind"], item["region_role"])
-            for item in self._metric_bindings(process)
-            if item.get("status") in {"available", "placeholder", "released"}
-        }
-        claimed_by_input: dict[str, dict[tuple[str, int, str], GeometryRef]] = {}
-        for region in regions:
-            if region.role == "ordinary":
-                continue
-            concrete_features = [
-                feature_by_id[ref]
-                for ref in region.feature_refs
-                if ref in feature_by_id
-                and feature_by_id[ref].kind != "ordinary_part"
-                and feature_by_id[ref].status in {"confirmed", "detected"}
-            ]
-            if not concrete_features:
-                continue
-            if catalog_region_ids is not None:
-                if region.region_id not in catalog_region_ids:
-                    continue
-            elif not any(
-                (feature.kind, region.role) in metric_bindings
-                for feature in concrete_features
-            ):
-                continue
-            if region.mode != "topology_refs" or not region.geometry_refs:
-                raise DFMError(
-                    "feature_region_not_computable",
-                    "A concrete feature region must resolve to immutable topology refs.",
-                    {"region_id": region.region_id, "mode": region.mode},
-                )
-            claimed = claimed_by_input.setdefault(region.input_sha256, {})
-            for ref in region.geometry_refs:
-                if ref.input_sha256 != region.input_sha256:
-                    raise DFMError(
-                        "feature_region_not_computable",
-                        "Feature region topology belongs to another geometry input.",
-                        {"region_id": region.region_id},
-                    )
-                claimed[self._geometry_key(ref)] = ref
-
-        output = []
-        for region in regions:
-            if region.role != "ordinary":
-                output.append(region)
-                continue
-            excluded = sorted(
-                claimed_by_input.get(region.input_sha256, {}).values(),
-                key=self._geometry_key,
-            )
-            identity = {
-                "region_id": region.region_id,
-                "input_sha256": region.input_sha256,
-                "mode": "topology_complement" if excluded else "whole_model",
-                "role": "ordinary",
-                "feature_refs": region.feature_refs,
-                "excluded_geometry_refs": [item.to_dict() for item in excluded],
-            }
-            output.append(
-                replace(
-                    region,
-                    mode=identity["mode"],
-                    excluded_geometry_refs=excluded,
-                    content_sha256=_content_hash(identity),
-                )
-            )
-        return output
-
-    def analysis_targets(
-        self, manifest: ProjectManifest, snapshot: DiscoverySnapshotRecord
-    ) -> list[dict[str, Any]]:
-        """Resolve one non-overlapping region target for each supported metric."""
-
-        if self.ontology_store is not None:
-            specs = self.ontology_store.analysis_target_specs(
-                manifest.process or "injection"
-            )
-            if specs and "operand_text" in specs[0]:
-                return resolve_catalog_targets(specs, manifest, snapshot)
-        features = {
-            item.feature_id: item
-            for item in manifest.features
-            if item.feature_id in snapshot.feature_refs
-        }
-        bindings = self._metric_bindings(manifest.process or "injection")
-        main_wall_inputs = {
-            item.input_sha256
-            for item in features.values()
-            if item.kind == "main_wall" and item.status in {"confirmed", "detected"}
-        }
-        targets: list[dict[str, Any]] = []
-        claims: dict[
-            tuple[str, tuple[str, int, str]], tuple[str, str]
-        ] = {}
-        for region in manifest.regions:
-            if region.region_id not in snapshot.region_refs:
-                continue
-            matching_features = [
-                features[ref]
-                for ref in region.feature_refs
-                if ref in features and region.region_id in features[ref].region_refs
-            ]
-            if len(matching_features) != 1:
-                raise DFMError(
-                    "analysis_region_invalid",
-                    "Every analysis region must belong to exactly one feature.",
-                    {"region_id": region.region_id},
-                )
-            feature = matching_features[0]
-            binding = next(
-                (
-                    item
-                    for item in bindings
-                    if item["feature_kind"] == feature.kind
-                    and item["region_role"] == region.role
-                ),
-                None,
-            )
-            if binding is None:
-                continue
-            for metric_id in binding["metrics"]:
-                if (
-                    metric_id == "injection.geometry.wall_thickness"
-                    and feature.kind == "ordinary_part"
-                    and feature.input_sha256 in main_wall_inputs
-                ):
-                    continue
-                for ref in region.geometry_refs:
-                    key = (metric_id, self._geometry_key(ref))
-                    owner = claims.get(key)
-                    if owner is not None and owner[0] != feature.feature_id:
-                        raise DFMError(
-                            "analysis_region_overlap",
-                            "Two feature regions claim the same topology for one metric.",
-                            {
-                                "metric_id": metric_id,
-                                "region_ids": [owner[1], region.region_id],
-                            },
-                        )
-                    claims[key] = (feature.feature_id, region.region_id)
-                targets.append({
-                    "feature": feature,
-                    "region": region,
-                    "metric_id": metric_id,
-                    "check_ids": list(binding.get("check_ids", [])),
-                    "rule_profile": binding.get("rule_profile"),
-                    "fallback_to": binding.get("fallback_to"),
-                })
-        return targets
-
-    def _metric_bindings(self, process: str) -> list[dict[str, Any]]:
-        catalog_bindings = [
-            dict(item) for item in self.catalog["feature_metric_bindings"]
-        ]
-        if self.ontology_store is not None:
-            published = self.ontology_store.analysis_target_specs(process)
-            if published and "operand_text" in published[0]:
-                # Current catalog scopes are resolved from actual Discovery data,
-                # never projected back into ontology Region selectors.
-                return []
-            if published:
-                combined = [dict(item) for item in published]
-                keys = {
-                    (item["feature_kind"], item["region_role"]) for item in combined
-                }
-                combined.extend(
-                    item
-                    for item in catalog_bindings
-                    if item.get("status") in {"available", "released"}
-                    and (item["feature_kind"], item["region_role"]) not in keys
-                )
-                return combined
-        return catalog_bindings
 
     def freeze(
         self, manifest: ProjectManifest
@@ -520,6 +314,15 @@ class DiscoveryEngine:
         geometry_metadata = (
             discovery_inputs.get(active[0].sha256, {}) if len(active) == 1 else {}
         )
+        identity["worker_snapshot_id"] = geometry_metadata.get(
+            "worker_snapshot_id", ""
+        )
+        identity["feature_geometry"] = {
+            item.feature_id: item.properties.get("geometry_refs", [])
+            for item in features
+        }
+        identity["coverage"] = list(geometry_metadata.get("coverage", []))
+        content_sha256 = _content_hash(identity)
         existing = next(
             (
                 item
@@ -548,6 +351,8 @@ class DiscoveryEngine:
                 "render_mesh_snapshot_id", ""
             ),
             artifact_refs=list(geometry_metadata.get("artifact_refs", [])),
+            worker_snapshot_id=geometry_metadata.get("worker_snapshot_id", ""),
+            coverage=list(geometry_metadata.get("coverage", [])),
         )
         return (
             replace(
@@ -558,32 +363,37 @@ class DiscoveryEngine:
             snapshot,
         )
 
-    def provider_versions(self) -> dict[str, str]:
+    def provider_versions(self, project_id: str = "") -> dict[str, str]:
         versions = {
             "hermes_discovery": self.version,
-            "ordinary_region": FALLBACK_VERSION,
             "drawing": self.drawing_provider_version,
             "drawing_geometry_fusion": self.fusion_provider_version,
         }
         versions.update({
-            provider.key: f"{provider.version}:{provider.capability().get('status')}"
+            provider.key: (
+                f"{provider.version}:{provider.capability(project_id).get('status')}"
+            )
             for provider in self.geometry_providers
         })
         return versions
 
-    def capability(self) -> dict[str, Any]:
+    def capability(self, project_id: str = "") -> dict[str, Any]:
+        provider_capabilities = [
+            provider.capability(project_id) for provider in self.geometry_providers
+        ]
+        provider_status = (
+            provider_capabilities[0].get("status")
+            if provider_capabilities
+            else "dependency_missing"
+        )
         return {
-            "status": "available_with_fallback",
+            "status": provider_status,
             "catalog_id": self.catalog["catalog_id"],
             "catalog_version": self.catalog["version"],
-            "providers": self.provider_versions(),
-            "provider_capabilities": [
-                provider.capability() for provider in self.geometry_providers
-            ],
+            "providers": self.provider_versions(project_id),
+            "provider_capabilities": provider_capabilities,
             "recognizers": self.catalog["recognizers"],
             "placeholder_policy": self.catalog["placeholder_policy"],
-            "fallback_feature_kind": "ordinary_part",
-            "fallback_region_role": "ordinary",
         }
 
     def _load_catalog(self) -> dict[str, Any]:
@@ -598,7 +408,6 @@ class DiscoveryEngine:
         if (
             payload.get("catalog_id") != "injection.wall-draft.features"
             or not isinstance(payload.get("recognizers"), list)
-            or not isinstance(payload.get("feature_metric_bindings"), list)
             or not isinstance(payload.get("placeholder_policy"), dict)
         ):
             raise DFMError(
@@ -618,7 +427,6 @@ class DiscoveryEngine:
                 or (not recognizer.get("feature_kind") and not observation_kinds)
                 or not isinstance(observation_kinds, list)
                 or any(not item for item in observation_kinds)
-                or not isinstance(recognizer.get("region_roles"), list)
                 or not isinstance(recognizer.get("required_fact_names"), list)
                 or recognizer.get("status") not in {"available", "placeholder"}
             ):
@@ -629,9 +437,7 @@ class DiscoveryEngine:
                 )
         policy = payload["placeholder_policy"]
         if (
-            policy.get("behavior") != "treat_as_ordinary"
-            or policy.get("fallback_feature_kind") != "ordinary_part"
-            or policy.get("fallback_region_role") != "ordinary"
+            policy.get("behavior") != "fail_closed"
             or policy.get("emit_synthetic_process_features") is not False
         ):
             raise DFMError(

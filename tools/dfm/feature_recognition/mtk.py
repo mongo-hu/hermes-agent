@@ -13,14 +13,14 @@ class MTKFeatureRecognitionProvider:
     key = "mtk_feature_recognition"
     version = "placeholder-1"
 
-    def capability(self) -> dict:
+    def capability(self, project_id: str = "") -> dict:
         return {
             "provider": self.key,
             "version": self.version,
             "status": "not_implemented",
             "supported_formats": ["step", "parasolid_xt"],
             "required_fact_names": ["process", "model_units"],
-            "output_contracts": ["FeatureRecord[]", "RegionRecord[]"],
+            "output_contracts": ["FeatureRecord[]"],
         }
 
     def recognize(

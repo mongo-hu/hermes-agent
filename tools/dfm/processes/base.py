@@ -6,7 +6,14 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Protocol, runtime_checkable
 
 from ..analyzers.base import AnalyzerContext
-from ..contracts import Capability, EffectiveRule, PlanOperation, RuleBinding
+from ..contracts import (
+    Capability,
+    EffectiveRule,
+    GeometricRuleBinding,
+    PlanOperation,
+    RuleBinding,
+)
+from ..ontology.store import SkippedCheck
 
 
 @dataclass(frozen=True)
@@ -18,12 +25,15 @@ class ProcessPlan:
     rules: dict[str, EffectiveRule]
     operations: list[PlanOperation]
     accepted_inputs: set[str]
-    rule_bindings: list[RuleBinding] = field(default_factory=list)
+    rule_bindings: list[RuleBinding | GeometricRuleBinding] = field(
+        default_factory=list
+    )
     binding_selectors: dict[str, dict[str, dict[str, Any]]] = field(
         default_factory=dict
     )
     ontology_snapshot_id: str = ""
     ontology_snapshot_sha256: str = ""
+    skipped_checks: list[SkippedCheck] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

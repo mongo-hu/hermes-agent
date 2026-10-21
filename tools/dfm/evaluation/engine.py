@@ -15,6 +15,10 @@ from typing import Any
 from ..contracts import (
     ArtifactRecord,
     EvaluationRecord,
+    GeometricEvaluationRecord,
+    GeometricResultRecord,
+    GeometricRuleBinding,
+    GeometricRuleOperand,
     MeasurementRecord,
     PlanRecord,
     RuleBinding,
@@ -36,8 +40,13 @@ _OPERATORS = {
 }
 _DIMENSIONLESS_UNITS = {None, "", "1", "ratio", "%", "percent"}
 _CRITERION_OPERATORS = {
-    "GT": ">", "GTE": ">=", "LT": "<", "LTE": "<=",
-    "EQ": "==", "NE": "!=", "BETWEEN": "between",
+    "GT": ">",
+    "GTE": ">=",
+    "LT": "<",
+    "LTE": "<=",
+    "EQ": "==",
+    "NE": "!=",
+    "BETWEEN": "between",
 }
 _COMPARISON_TOLERANCE = 1e-12
 
@@ -54,7 +63,7 @@ class _ResolvedOperand:
     value: Any
     unit: str | None
     aggregation: str
-    measurements: tuple[MeasurementRecord, ...]
+    measurements: tuple[Any, ...]
 
 
 def _utc_now() -> str:
@@ -74,7 +83,12 @@ class EvaluationEngine:
         artifacts: list[ArtifactRecord],
     ) -> ArtifactRecord:
         measurement_artifact = next(
-            (item for item in artifacts if item.kind == "measurements"), None
+            (
+                item
+                for item in artifacts
+                if item.kind in {"geometric_results", "measurements"}
+            ),
+            None,
         )
         if measurement_artifact is None:
             raise DFMError(
@@ -87,10 +101,16 @@ class EvaluationEngine:
                     encoding="utf-8"
                 )
             )
-            measurements = [
-                MeasurementRecord.from_dict(item)
-                for item in payload.get("measurements", [])
-            ]
+            if measurement_artifact.kind == "geometric_results":
+                measurements = [
+                    GeometricResultRecord.from_dict(item)
+                    for item in payload.get("results", [])
+                ]
+            else:
+                measurements = [
+                    MeasurementRecord.from_dict(item)
+                    for item in payload.get("measurements", [])
+                ]
         except (OSError, TypeError, ValueError) as exc:
             raise DFMError(
                 "measurements_invalid",
@@ -128,9 +148,14 @@ class EvaluationEngine:
         )
 
     def evaluate(
-        self, measurements: list[MeasurementRecord], plan: PlanRecord
-    ) -> tuple[list[EvaluationRecord], dict[str, dict[str, Any]]]:
-        results: list[EvaluationRecord] = []
+        self,
+        measurements: list[MeasurementRecord | GeometricResultRecord],
+        plan: PlanRecord,
+    ) -> tuple[
+        list[EvaluationRecord | GeometricEvaluationRecord],
+        dict[str, dict[str, Any]],
+    ]:
+        results: list[EvaluationRecord | GeometricEvaluationRecord] = []
         provenance: dict[str, dict[str, Any]] = {}
         if plan.rule_bindings:
             for binding in self._select_measured_rules(measurements, plan):
@@ -156,16 +181,38 @@ class EvaluationEngine:
         Missing/invalid measurements are errors, never a reason to fall back to
         a less-specific threshold. Selection reads only the pinned Plan.
         """
+        active_binding_refs = {
+            binding_ref
+            for fragment in plan.active_plan_fragments(
+                statuses={"ready", "running", "completed", "needs_attention"}
+            )
+            for binding_ref in fragment.rule_binding_refs
+        }
         direct = []
         groups = {}
         for binding in plan.rule_bindings:
             binding.validate()
+            if plan.plan_fragments and binding.binding_id not in active_binding_refs:
+                continue
             if binding.rule_selection is None:
                 direct.append(binding)
                 continue
-            key = (binding.check_id, tuple(sorted(binding.feature_refs)), tuple(sorted(binding.region_refs)))
+            key = (
+                binding.check_id,
+                tuple(sorted(binding.feature_refs)),
+                (
+                    ()
+                    if isinstance(binding, GeometricRuleBinding)
+                    else tuple(sorted(binding.region_refs))
+                ),
+            )
             groups.setdefault(key, []).append(binding)
-        comparisons = {"GT": operator.gt, "GTE": operator.ge, "LT": operator.lt, "LTE": operator.le}
+        comparisons = {
+            "GT": operator.gt,
+            "GTE": operator.ge,
+            "LT": operator.lt,
+            "LTE": operator.le,
+        }
         for candidates in groups.values():
             matched = []
             for binding in candidates:
@@ -174,19 +221,43 @@ class EvaluationEngine:
                 applicable = True
                 for condition in conditions:
                     alias = condition["geometric_id"]
-                    resolved = self._resolve_operand(measurements, plan, binding, operands[alias])
+                    resolved = self._resolve_operand(
+                        measurements, plan, binding, operands[alias]
+                    )
                     if resolved.unit != condition["unit"]:
-                        raise DFMError("evaluation_unit_invalid", "A Geometric condition must use the measured canonical unit.", {"binding_id": binding.binding_id, "operand_alias": alias})
-                    value = self._finite_number(resolved.value, binding_id=binding.binding_id, operand_alias=alias)
-                    applicable = comparisons[condition["operator"]](value, condition["value"]) and applicable
+                        raise DFMError(
+                            "evaluation_unit_invalid",
+                            "A Geometric condition must use the measured canonical unit.",
+                            {"binding_id": binding.binding_id, "operand_alias": alias},
+                        )
+                    value = self._finite_number(
+                        resolved.value,
+                        binding_id=binding.binding_id,
+                        operand_alias=alias,
+                    )
+                    applicable = (
+                        comparisons[condition["operator"]](value, condition["value"])
+                        and applicable
+                    )
                 if applicable:
                     matched.append(binding)
-            preferred = [item for item in matched if not item.rule_selection["is_default"]] or matched
+            preferred = [
+                item for item in matched if not item.rule_selection["is_default"]
+            ] or matched
             if not preferred:
                 continue
-            preferred.sort(key=lambda item: (-item.rule_selection["priority"], -item.rule_selection["specificity"], item.rule_id))
+            preferred.sort(
+                key=lambda item: (
+                    -item.rule_selection["priority"],
+                    -item.rule_selection["specificity"],
+                    item.rule_id,
+                )
+            )
             winner = preferred[0]
-            rank = lambda item: (item.rule_selection["priority"], item.rule_selection["specificity"])
+            rank = lambda item: (
+                item.rule_selection["priority"],
+                item.rule_selection["specificity"],
+            )
             signature = lambda item: (
                 plan.rules[item.rule_id].value,
                 plan.rules[item.rule_id].unit,
@@ -194,17 +265,31 @@ class EvaluationEngine:
                 item.expression,
                 item.acceptance_criteria_json,
             )
-            if any(rank(item) == rank(winner) and signature(item) != signature(winner) for item in preferred[1:]):
-                raise DFMError("ontology_rule_conflict", "Measured conditions select conflicting equally specific rules.", {"check_id": winner.check_id, "rule_ids": [item.rule_id for item in preferred if rank(item) == rank(winner)]})
+            if any(
+                rank(item) == rank(winner) and signature(item) != signature(winner)
+                for item in preferred[1:]
+            ):
+                raise DFMError(
+                    "ontology_rule_conflict",
+                    "Measured conditions select conflicting equally specific rules.",
+                    {
+                        "check_id": winner.check_id,
+                        "rule_ids": [
+                            item.rule_id
+                            for item in preferred
+                            if rank(item) == rank(winner)
+                        ],
+                    },
+                )
             direct.append(winner)
         return direct
 
     def _evaluate_binding(
         self,
-        measurements: list[MeasurementRecord],
+        measurements: list[MeasurementRecord | GeometricResultRecord],
         plan: PlanRecord,
-        binding: RuleBinding,
-    ) -> tuple[EvaluationRecord, dict[str, Any]]:
+        binding: RuleBinding | GeometricRuleBinding,
+    ) -> tuple[EvaluationRecord | GeometricEvaluationRecord, dict[str, Any]]:
         binding.validate()
         parameter = plan.rules.get(binding.rule_id)
         if parameter is None:
@@ -224,7 +309,10 @@ class EvaluationEngine:
                 binding.acceptance_criteria_json, binding_id=binding.binding_id
             )
             first = groups[0][0]
-            if parameter.value != first["threshold"] or parameter.unit != first["result_unit"]:
+            if (
+                parameter.value != first["threshold"]
+                or parameter.unit != first["result_unit"]
+            ):
                 raise DFMError(
                     "evaluation_rule_invalid",
                     "The pinned primary rule parameter does not match its first acceptance criterion.",
@@ -232,24 +320,40 @@ class EvaluationEngine:
                 )
 
         resolved = {}
-        unavailable = {}
+        unavailable: dict[str, dict[str, Any]] = {}
+        geometric_binding = isinstance(binding, GeometricRuleBinding)
         for operand in binding.measurement_operands():
             try:
-                resolved[operand.alias] = self._resolve_operand(measurements, plan, binding, operand)
+                resolved[operand.alias] = self._resolve_operand(
+                    measurements, plan, binding, operand
+                )
             except DFMError as exc:
-                if not binding.acceptance_criteria_json or exc.code not in {
-                    "evaluation_operand_missing", "evaluation_operand_ambiguous",
-                    "evaluation_value_invalid", "evaluation_unit_invalid",
+                if (
+                    not binding.acceptance_criteria_json and not geometric_binding
+                ) or exc.code not in {
+                    "evaluation_operand_missing",
+                    "evaluation_operand_ambiguous",
+                    "evaluation_operand_unavailable",
+                    "evaluation_value_invalid",
+                    "evaluation_unit_invalid",
                 }:
                     raise
-                unavailable[operand.alias] = exc.code
+                unavailable[operand.alias] = {
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": exc.details or {},
+                }
         linked = [
             measurement
             for operand in resolved.values()
             for measurement in operand.measurements
         ]
         input_hashes = {item.input_sha256 for item in linked}
-        if len(input_hashes) > 1 or (not binding.acceptance_criteria_json and len(input_hashes) != 1):
+        if len(input_hashes) > 1 or (
+            not binding.acceptance_criteria_json
+            and not unavailable
+            and len(input_hashes) != 1
+        ):
             raise DFMError(
                 "evaluation_operand_invalid",
                 "A rule expression cannot combine Measurements from different inputs.",
@@ -270,7 +374,9 @@ class EvaluationEngine:
             for group_index, group in enumerate(groups):
                 current_group = []
                 for criterion in group:
-                    aliases = _expression_operand_aliases(criterion["expression"], binding_id=binding.binding_id)
+                    aliases = _expression_operand_aliases(
+                        criterion["expression"], binding_id=binding.binding_id
+                    )
                     missing = sorted(aliases.intersection(unavailable))
                     criterion_measurements = [
                         measurement
@@ -285,31 +391,63 @@ class EvaluationEngine:
                         "unit": criterion["result_unit"],
                         "actual": None,
                         "outcome": "indeterminate" if missing else "pass",
-                        "measurement_ids": list(dict.fromkeys(
-                            measurement.measurement_id for measurement in criterion_measurements
-                        )),
+                        "measurement_ids": list(
+                            dict.fromkeys(
+                                measurement.measurement_id
+                                for measurement in criterion_measurements
+                            )
+                        ),
                         "feature_refs": sorted({
-                            ref for measurement in criterion_measurements
+                            ref
+                            for measurement in criterion_measurements
                             for ref in measurement.feature_refs
                         }),
-                        "region_refs": sorted({
-                            ref for measurement in criterion_measurements
-                            for ref in measurement.region_refs
-                        }),
                     }
+                    if not geometric_binding:
+                        result["region_refs"] = sorted({
+                            ref
+                            for measurement in criterion_measurements
+                            for ref in measurement.region_refs
+                        })
                     if grouped_contract:
                         result["group_index"] = group_index
                     if missing:
                         result["unavailable_operands"] = missing
+                        result["unavailable_reasons"] = {
+                            alias: unavailable[alias] for alias in missing
+                        }
                     else:
                         try:
-                            value = self._evaluate_expression(criterion["expression"], resolved, binding.binding_id)
-                            self._validate_result_unit(value.unit, criterion["result_unit"], binding_id=binding.binding_id)
-                            number = self._finite_number(value.value, binding_id=binding.binding_id, operand_alias=criterion["criterion_id"])
+                            value = self._evaluate_expression(
+                                criterion["expression"], resolved, binding.binding_id
+                            )
+                            self._validate_result_unit(
+                                value.unit,
+                                criterion["result_unit"],
+                                binding_id=binding.binding_id,
+                            )
+                            number = self._finite_number(
+                                value.value,
+                                binding_id=binding.binding_id,
+                                operand_alias=criterion["criterion_id"],
+                            )
                             result["actual"] = value.value
-                            result["outcome"] = "pass" if self._compare(result["operator"], number, criterion["threshold"], binding_id=binding.binding_id) else "fail"
+                            result["outcome"] = (
+                                "pass"
+                                if self._compare(
+                                    result["operator"],
+                                    number,
+                                    criterion["threshold"],
+                                    binding_id=binding.binding_id,
+                                )
+                                else "fail"
+                            )
                         except DFMError as exc:
-                            if exc.code not in {"evaluation_expression_invalid", "evaluation_value_invalid", "evaluation_unit_invalid"}:
+                            if exc.code not in {
+                                "evaluation_expression_invalid",
+                                "evaluation_value_invalid",
+                                "evaluation_unit_invalid",
+                            }:
                                 raise
                             result["outcome"] = "indeterminate"
                             result["error_code"] = exc.code
@@ -317,14 +455,18 @@ class EvaluationEngine:
                     criterion_results.append(result)
                 group_results.append(current_group)
             group_outcomes = [
-                "fail" if any(item["outcome"] == "fail" for item in group)
-                else "indeterminate" if any(item["outcome"] == "indeterminate" for item in group)
+                "fail"
+                if any(item["outcome"] == "fail" for item in group)
+                else "indeterminate"
+                if any(item["outcome"] == "indeterminate" for item in group)
                 else "pass"
                 for group in group_results
             ]
             outcome = (
-                "pass" if "pass" in group_outcomes
-                else "fail" if all(item == "fail" for item in group_outcomes)
+                "pass"
+                if "pass" in group_outcomes
+                else "fail"
+                if all(item == "fail" for item in group_outcomes)
                 else "indeterminate"
             )
             if outcome == "pass":
@@ -336,7 +478,8 @@ class EvaluationEngine:
                 )
             else:
                 representative = next(
-                    item for item in criterion_results
+                    item
+                    for item in criterion_results
                     if item["outcome"] == "indeterminate"
                 )
             expression = representative["expression"]
@@ -344,9 +487,31 @@ class EvaluationEngine:
             expected = representative["expected"]
             operator_name = representative["operator"]
         else:
-            actual = self._evaluate_expression(expression, resolved, binding.binding_id)
-            self._validate_result_unit(actual.unit, parameter.unit, binding_id=binding.binding_id)
-            outcome = "pass" if self._compare(binding.operator, actual.value, parameter.value, binding_id=binding.binding_id) else "fail"
+            missing = sorted(
+                _expression_operand_aliases(
+                    expression, binding_id=binding.binding_id
+                ).intersection(unavailable)
+            )
+            if missing:
+                actual = _ExpressionValue(None, None)
+                outcome = "indeterminate"
+            else:
+                actual = self._evaluate_expression(
+                    expression, resolved, binding.binding_id
+                )
+                self._validate_result_unit(
+                    actual.unit, parameter.unit, binding_id=binding.binding_id
+                )
+                outcome = (
+                    "pass"
+                    if self._compare(
+                        binding.operator,
+                        actual.value,
+                        parameter.value,
+                        binding_id=binding.binding_id,
+                    )
+                    else "fail"
+                )
             expected = parameter.value
             operator_name = binding.operator
         measurement_ids = list(dict.fromkeys(item.measurement_id for item in linked))
@@ -357,7 +522,12 @@ class EvaluationEngine:
             expected=parameter.value,
             expected_unit=parameter.unit,
         )
-        if binding.expression is None and not binding.additional_operands and linked:
+        if (
+            not geometric_binding
+            and binding.expression is None
+            and not binding.additional_operands
+            and linked
+        ):
             primary = linked[0]
             stable_id = str(
                 primary.diagnostics.get("legacy_issue_id") or primary.measurement_id
@@ -385,22 +555,35 @@ class EvaluationEngine:
             }
             for alias, item in resolved.items()
         }
-        evaluation = EvaluationRecord(
-            evaluation_id=f"evaluation-{stable_id}",
-            operation_id=binding.operation_id,
-            metric_id=binding.metric_id,
-            measurement_ids=measurement_ids,
-            rule_id=binding.rule_id,
-            rule_version=rule_version,
-            rule_hash=rule_hash,
-            operator=operator_name,
-            expected=expected,
-            actual=actual.value,
-            outcome=outcome,
-            severity=parameter.severity,
-            severity_rationale=parameter.severity_rationale,
-            criterion_results=criterion_results,
-            feature_refs=sorted(
+        operand_values.update({
+            alias: {
+                "value": None,
+                "unit": None,
+                "aggregation": next(
+                    operand.aggregation
+                    for operand in binding.measurement_operands()
+                    if operand.alias == alias
+                ),
+                "measurement_ids": [],
+                "status": "unavailable",
+                "reason": reason,
+            }
+            for alias, reason in unavailable.items()
+        })
+        common_evaluation = {
+            "evaluation_id": f"evaluation-{stable_id}",
+            "measurement_ids": measurement_ids,
+            "rule_id": binding.rule_id,
+            "rule_version": rule_version,
+            "rule_hash": rule_hash,
+            "operator": operator_name,
+            "expected": expected,
+            "actual": actual.value,
+            "outcome": outcome,
+            "severity": parameter.severity,
+            "severity_rationale": parameter.severity_rationale,
+            "criterion_results": criterion_results,
+            "feature_refs": sorted(
                 set(binding.feature_refs)
                 | {
                     ref
@@ -409,20 +592,31 @@ class EvaluationEngine:
                 }
                 | {ref for item in linked for ref in item.feature_refs}
             ),
-            region_refs=sorted(
-                set(binding.region_refs)
-                | {
-                    ref
-                    for operand in binding.additional_operands
-                    for ref in operand.region_refs
-                }
-                | {ref for item in linked for ref in item.region_refs}
-            ),
-            check_id=binding.check_id,
-            actual_unit=actual.unit,
-            expression=expression,
-            operand_values=operand_values,
-        )
+            "check_id": binding.check_id,
+            "actual_unit": actual.unit,
+            "expression": expression,
+            "operand_values": operand_values,
+        }
+        if isinstance(binding, GeometricRuleBinding):
+            evaluation = GeometricEvaluationRecord(
+                geometric_id=binding.geometric_id,
+                **common_evaluation,
+            )
+        else:
+            evaluation = EvaluationRecord(
+                operation_id=binding.operation_id,
+                metric_id=binding.metric_id,
+                region_refs=sorted(
+                    set(binding.region_refs)
+                    | {
+                        ref
+                        for operand in binding.additional_operands
+                        for ref in operand.region_refs
+                    }
+                    | {ref for item in linked for ref in item.region_refs}
+                ),
+                **common_evaluation,
+            )
         source = {
             "type": "effective_rule",
             "binding_id": binding.binding_id,
@@ -434,52 +628,128 @@ class EvaluationEngine:
             "operands": operand_values,
             "rule_selection": binding.rule_selection,
             "criterion_results": criterion_results,
+            "unavailable_operands": unavailable,
             "severity_rationale": parameter.severity_rationale,
         }
         return evaluation, source
 
     def _resolve_operand(
         self,
-        measurements: list[MeasurementRecord],
+        measurements: list[Any],
         plan: PlanRecord,
-        binding: RuleBinding,
-        operand: RuleOperand,
+        binding: RuleBinding | GeometricRuleBinding,
+        operand: RuleOperand | GeometricRuleOperand,
     ) -> _ResolvedOperand:
-        allow_unscoped_whole_model = self._allows_unscoped_whole_model(
-            plan, operand
-        )
-        matches = sorted(
-            (
-                measurement
-                for measurement in measurements
-                if measurement.status == "measured"
-                and measurement.operation_id == operand.operation_id
-                and measurement.metric_id == operand.metric_id
-                and measurement.quantity_id == operand.quantity_id
-                and (
-                    (
-                        set(operand.feature_refs).issubset(measurement.feature_refs)
-                        and set(operand.region_refs).issubset(measurement.region_refs)
-                    )
-                    or (
-                        allow_unscoped_whole_model
-                        and not measurement.feature_refs
-                        and not measurement.region_refs
-                    )
+        allow_unscoped_whole_model = self._allows_unscoped_whole_model(plan, operand)
+        if isinstance(operand, GeometricRuleOperand):
+            fragment_refs = {
+                fragment.fragment_id
+                for fragment in plan.active_plan_fragments(
+                    statuses={"ready", "running", "completed", "needs_attention"}
                 )
-            ),
-            key=lambda item: item.measurement_id,
-        )
+                if (
+                    not fragment.rule_binding_refs
+                    or binding.binding_id in fragment.rule_binding_refs
+                )
+                and any(
+                    (
+                        not operand.feature_refs
+                        or item.feature_id in operand.feature_refs
+                    )
+                    and operand.geometric_id in item.geometric_ids
+                    and item.context == operand.context
+                    for item in fragment.items
+                )
+            }
+            matches = sorted(
+                (
+                    result
+                    for result in measurements
+                    if isinstance(result, GeometricResultRecord)
+                    and result.status == "ok"
+                    and result.geometric_id == operand.geometric_id
+                    and result.context == operand.context
+                    and set(operand.feature_refs).issubset(result.feature_refs)
+                    and (
+                        not fragment_refs
+                        or result.provenance.get("plan_fragment_ref") in fragment_refs
+                    )
+                ),
+                key=lambda item: item.measurement_id,
+            )
+        else:
+            matches = sorted(
+                (
+                    measurement
+                    for measurement in measurements
+                    if isinstance(measurement, MeasurementRecord)
+                    and measurement.status == "measured"
+                    and measurement.operation_id == operand.operation_id
+                    and measurement.metric_id == operand.metric_id
+                    and measurement.quantity_id == operand.quantity_id
+                    and (
+                        (
+                            set(operand.feature_refs).issubset(measurement.feature_refs)
+                            and set(operand.region_refs).issubset(
+                                measurement.region_refs
+                            )
+                        )
+                        or (
+                            allow_unscoped_whole_model
+                            and not measurement.feature_refs
+                            and not measurement.region_refs
+                        )
+                    )
+                ),
+                key=lambda item: item.measurement_id,
+            )
         if not matches:
+            if isinstance(operand, GeometricRuleOperand):
+                unavailable = [
+                    result
+                    for result in measurements
+                    if isinstance(result, GeometricResultRecord)
+                    and result.geometric_id == operand.geometric_id
+                    and result.context == operand.context
+                    and set(operand.feature_refs).issubset(result.feature_refs)
+                    and (
+                        not fragment_refs
+                        or result.provenance.get("plan_fragment_ref") in fragment_refs
+                    )
+                ]
+                if unavailable:
+                    raise DFMError(
+                        "evaluation_operand_unavailable",
+                        "The Worker could not produce a required Geometric operand.",
+                        {
+                            "binding_id": binding.binding_id,
+                            "operand_alias": operand.alias,
+                            "geometric_id": operand.geometric_id,
+                            "results": [
+                                {
+                                    "result_id": item.result_id,
+                                    "status": item.status,
+                                    "reason": item.reason,
+                                }
+                                for item in unavailable
+                            ],
+                        },
+                    )
             raise DFMError(
                 "evaluation_operand_missing",
                 "A required Measurement operand is absent from the objective result.",
                 {
                     "binding_id": binding.binding_id,
                     "operand_alias": operand.alias,
-                    "operation_id": operand.operation_id,
-                    "metric_id": operand.metric_id,
-                    "quantity_id": operand.quantity_id,
+                    **(
+                        {"geometric_id": operand.geometric_id}
+                        if isinstance(operand, GeometricRuleOperand)
+                        else {
+                            "operation_id": operand.operation_id,
+                            "metric_id": operand.metric_id,
+                            "quantity_id": operand.quantity_id,
+                        }
+                    ),
                 },
             )
         units = {item.unit for item in matches}
@@ -532,10 +802,12 @@ class EvaluationEngine:
 
     @staticmethod
     def _allows_unscoped_whole_model(
-        plan: PlanRecord, operand: RuleOperand
+        plan: PlanRecord, operand: RuleOperand | GeometricRuleOperand
     ) -> bool:
         """Allow the OCCT v2 bridge only for the explicit whole-model region."""
 
+        if isinstance(operand, GeometricRuleOperand):
+            return False
         if not operand.region_refs:
             return False
         regions = {region.region_id: region for region in plan.regions}
@@ -683,8 +955,11 @@ class EvaluationEngine:
         *,
         binding_id: str,
     ) -> None:
-        if (expected_unit is not None and actual_unit != expected_unit
-                and not ({actual_unit, expected_unit} <= _DIMENSIONLESS_UNITS)):
+        if (
+            expected_unit is not None
+            and actual_unit != expected_unit
+            and not ({actual_unit, expected_unit} <= _DIMENSIONLESS_UNITS)
+        ):
             raise DFMError(
                 "evaluation_unit_invalid",
                 "The rule threshold unit does not match the expression result unit.",
@@ -731,12 +1006,14 @@ class EvaluationEngine:
                 )
             try:
                 lower_ok = lower <= actual or math.isclose(
-                    lower, actual,
+                    lower,
+                    actual,
                     rel_tol=_COMPARISON_TOLERANCE,
                     abs_tol=_COMPARISON_TOLERANCE,
                 )
                 upper_ok = actual <= upper or math.isclose(
-                    actual, upper,
+                    actual,
+                    upper,
                     rel_tol=_COMPARISON_TOLERANCE,
                     abs_tol=_COMPARISON_TOLERANCE,
                 )
@@ -762,7 +1039,8 @@ class EvaluationEngine:
                 for value in (actual, expected)
             ):
                 close = math.isclose(
-                    actual, expected,
+                    actual,
+                    expected,
                     rel_tol=_COMPARISON_TOLERANCE,
                     abs_tol=_COMPARISON_TOLERANCE,
                 )
@@ -781,7 +1059,7 @@ class EvaluationEngine:
     @staticmethod
     def _rule_hash(
         *,
-        binding: RuleBinding,
+        binding: RuleBinding | GeometricRuleBinding,
         rule_version: str,
         expected: Any,
         expected_unit: str | None,

@@ -25,9 +25,11 @@ def materialize_result_reports(
     """Create one final result shape for every compliant objective backend."""
 
     by_kind = {item.kind: item for item in artifacts}
-    if "measurements" not in by_kind or "evaluations" not in by_kind:
+    objective_artifact = by_kind.get("geometric_results") or by_kind.get("measurements")
+    if objective_artifact is None or "evaluations" not in by_kind:
         return []
-    measurements_payload = _read(project_dir, by_kind["measurements"])
+    geometric_run = objective_artifact.kind == "geometric_results"
+    measurements_payload = _read(project_dir, objective_artifact)
     evaluations_payload = _read(project_dir, by_kind["evaluations"])
     evidence_payload = (
         _read(project_dir, by_kind["evidence_records"])
@@ -46,9 +48,22 @@ def materialize_result_reports(
             "covered_sample_count": 0,
             "uncovered_sample_refs": [],
         }
+    objective_rows = (
+        [
+            {
+                **item,
+                "measurement_id": item.get("result_id"),
+                "feature_refs": [item.get("feature_id")],
+            }
+            for item in measurements_payload.get("results", [])
+            if isinstance(item, dict) and item.get("result_id")
+        ]
+        if geometric_run
+        else measurements_payload.get("measurements", [])
+    )
     measurements = {
         str(item.get("measurement_id")): item
-        for item in measurements_payload.get("measurements", [])
+        for item in objective_rows
         if isinstance(item, dict) and item.get("measurement_id")
     }
     artifact_by_id = {item.artifact_id: item for item in artifacts}
@@ -60,9 +75,10 @@ def materialize_result_reports(
         if image is None or image.kind != "evidence_image":
             continue
         for evaluation_id in record.get("evaluation_ids", []):
-            evidence_by_evaluation.setdefault(str(evaluation_id), []).append(
-                {**record, "image": Path(image.relative_path).name}
-            )
+            evidence_by_evaluation.setdefault(str(evaluation_id), []).append({
+                **record,
+                "image": Path(image.relative_path).name,
+            })
 
     issues: list[dict[str, Any]] = []
     indeterminate_checks = [
@@ -89,67 +105,67 @@ def materialize_result_reports(
         ]
         quality = linked[0].get("quality", {}) if linked else {}
         feature_refs = sorted(
-            {
-                str(ref)
-                for item in linked
-                for ref in item.get("feature_refs", [])
-            }
+            {str(ref) for item in linked for ref in item.get("feature_refs", [])}
             | {str(ref) for ref in evaluation.get("feature_refs", [])}
         )
         region_refs = sorted(
-            {
-                str(ref)
-                for item in linked
-                for ref in item.get("region_refs", [])
-            }
+            {str(ref) for item in linked for ref in item.get("region_refs", [])}
             | {str(ref) for ref in evaluation.get("region_refs", [])}
         )
-        metric_id = str(evaluation.get("metric_id") or "dfm")
+        metric_id = str(
+            evaluation.get("geometric_id") or evaluation.get("metric_id") or "dfm"
+        )
         check_id = str(evaluation.get("check_id") or "")
         rule = plan.rules.get(str(evaluation.get("rule_id") or ""))
         issue_type_id, issue_type_label = classify_issue_type(check_id, metric_id)
-        issues.append(
-            {
-                "id": evaluation_id,
-                "code": metric_id,
-                "check_id": check_id,
-                "issue_type_id": issue_type_id,
-                "issue_type_label": issue_type_label,
-                "title": (
-                    rule.name if rule and rule.name
-                    else str(evaluation.get("rule_id") or "DFM rule").replace("_", " ").title()
+        issue = {
+            "id": evaluation_id,
+            "code": metric_id,
+            "check_id": check_id,
+            "issue_type_id": issue_type_id,
+            "issue_type_label": issue_type_label,
+            "title": (
+                rule.name
+                if rule and rule.name
+                else str(evaluation.get("rule_id") or "DFM rule")
+                .replace("_", " ")
+                .title()
+            ),
+            "severity": str(evaluation.get("severity") or "unclassified"),
+            "severity_rationale": evaluation.get("severity_rationale"),
+            "message": (
+                f"Actual {evaluation.get('actual')} does not satisfy "
+                f"{evaluation.get('operator')} {evaluation.get('expected')}."
+            ),
+            "metric": {
+                "actual": evaluation.get("actual"),
+                "actual_unit": evaluation.get("actual_unit"),
+                "expected": evaluation.get("expected"),
+                "operator": evaluation.get("operator"),
+                "rule_id": evaluation.get("rule_id"),
+                "rule_version": evaluation.get("rule_version"),
+                "rule_hash": evaluation.get("rule_hash"),
+                "measurement_ids": evaluation.get("measurement_ids", []),
+                "criterion_results": evaluation.get("criterion_results", []),
+                "backend": quality.get("backend"),
+                "certified": quality.get("certified"),
+                "algorithm_version": linked[0].get("algorithm_version")
+                if linked
+                else None,
+                **(
+                    {"geometric_id": metric_id}
+                    if evaluation.get("geometric_id")
+                    else {}
                 ),
-                "severity": str(evaluation.get("severity") or "unclassified"),
-                "severity_rationale": evaluation.get("severity_rationale"),
-                "message": (
-                    f"Actual {evaluation.get('actual')} does not satisfy "
-                    f"{evaluation.get('operator')} {evaluation.get('expected')}."
-                ),
-                "metric": {
-                    "actual": evaluation.get("actual"),
-                    "actual_unit": evaluation.get("actual_unit"),
-                    "expected": evaluation.get("expected"),
-                    "operator": evaluation.get("operator"),
-                    "rule_id": evaluation.get("rule_id"),
-                    "rule_version": evaluation.get("rule_version"),
-                    "rule_hash": evaluation.get("rule_hash"),
-                    "measurement_ids": evaluation.get("measurement_ids", []),
-                    "criterion_results": evaluation.get("criterion_results", []),
-                    "backend": quality.get("backend"),
-                    "certified": quality.get("certified"),
-                    "algorithm_version": linked[0].get("algorithm_version")
-                    if linked
-                    else None,
-                },
-                "images": images,
-                "image": images[0] if images else None,
-                "feature_refs": feature_refs,
-                "region_refs": region_refs,
-                "recommendation": (
-                    rule.recommendation_template if rule else None
-                ),
-            }
-        )
+            },
+            "images": images,
+            "image": images[0] if images else None,
+            "feature_refs": feature_refs,
+            "recommendation": (rule.recommendation_template if rule else None),
+        }
+        if not geometric_run:
+            issue["region_refs"] = region_refs
+        issues.append(issue)
 
     output_dir = project_dir / "runs" / run_id / "artifacts"
     result = {
@@ -160,9 +176,17 @@ def materialize_result_reports(
         "scope_id": plan.scope_id,
         "scope_version": plan.scope_version,
         "producer": "hermes-result-assembler-v1",
-        "producer_contract": "evaluated_objective_result",
+        "producer_contract": (
+            "evaluated_geometric_result"
+            if geometric_run
+            else "evaluated_objective_result"
+        ),
         "stats": {
-            "measurement_count": len(measurements),
+            **(
+                {"geometric_result_count": len(measurements)}
+                if geometric_run
+                else {"measurement_count": len(measurements)}
+            ),
             "evaluation_count": len(evaluations_payload.get("evaluations", [])),
             "failed_count": len(issues),
             "issue_type_counts": summarize_issue_types(issues),
@@ -192,17 +216,15 @@ def materialize_result_reports(
         "",
     ]
     for issue in issues:
-        lines.extend(
-            [
-                f"## {issue['title']}",
-                "",
-                issue["message"],
-                "",
-                f"- Rule: {issue['metric']['rule_id']}@{issue['metric']['rule_version']}",
-                f"- Evidence: {', '.join(issue['images']) or 'none'}",
-                "",
-            ]
-        )
+        lines.extend([
+            f"## {issue['title']}",
+            "",
+            issue["message"],
+            "",
+            f"- Rule: {issue['metric']['rule_id']}@{issue['metric']['rule_version']}",
+            f"- Evidence: {', '.join(issue['images']) or 'none'}",
+            "",
+        ])
     markdown_path.write_text("\n".join(lines), encoding="utf-8")
     generated = [
         ArtifactRecord(

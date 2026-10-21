@@ -275,7 +275,7 @@ def test_republished_rule_changes_threshold_without_runtime_code_change(tmp_path
     assert updated.identity.rule_set_version == "1.2.0"
 
 
-def test_new_feature_check_compiles_from_ontology_and_worker_capability_only():
+def test_legacy_package_does_not_expose_removed_region_analysis_targets():
     payload = _package()
     payload["concepts"].extend([
         {
@@ -386,22 +386,18 @@ def test_new_feature_check_compiles_from_ontology_and_worker_capability_only():
         compiled.binding_selectors[binding.binding_id]["actual"]["feature_kind"]
         == "screw_boss"
     )
-    assert any(
-        item["feature_kind"] == "screw_boss"
-        and item["region_role"] == "wall"
-        and item["metrics"] == ["injection.geometry.wall_thickness"]
-        for item in store.analysis_target_specs("injection")
-    )
+    assert not hasattr(store, "analysis_target_specs")
+    assert store.geometric_scope_specs("injection") == ()
 
 
-def test_ontology_check_skips_operand_absent_from_worker_capability():
+def test_legacy_check_skips_operand_without_an_internal_operation():
     store = LocalOntologyStore.from_package(PACKAGE_PATH)
 
     result = store.compile("injection", {"material": "ABS"}, [])
 
     # The check should be skipped, not raise an error
     assert len(result.skipped_checks) > 0
-    assert any(sc.reason == "feature_not_found" for sc in result.skipped_checks)
+    assert any(sc.reason == "operand_unresolvable" for sc in result.skipped_checks)
 
 
 def test_multi_measurement_operands_resolve_distinct_regions_by_relation():

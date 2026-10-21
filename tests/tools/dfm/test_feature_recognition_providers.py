@@ -7,7 +7,6 @@ from tools.dfm.contracts import (
     GeometryRef,
     InputRecord,
     ProjectManifest,
-    RegionRecord,
 )
 from tools.dfm.discovery import DiscoveryEngine
 from tools.dfm.errors import DFMError
@@ -41,7 +40,7 @@ def test_pending_feature_providers_are_explicit_non_executing_placeholders(provi
     assert capability["status"] == "not_implemented"
     assert "process" in capability["required_fact_names"]
     assert "model_units" in capability["required_fact_names"]
-    assert capability["output_contracts"] == ["FeatureRecord[]", "RegionRecord[]"]
+    assert capability["output_contracts"] == ["FeatureRecord[]"]
     with pytest.raises(DFMError) as exc_info:
         provider.recognize(_input(), process="injection")
 
@@ -53,14 +52,34 @@ def test_occt_cpp_is_the_explicit_external_production_provider():
     capability = provider.capability()
 
     assert capability["status"] == "dependency_missing"
-    assert capability["deployment"] == "external_project"
+    assert capability["deployment"] == "persistent_external_worker"
     assert capability["primary_production_target"] is True
     assert capability["supported_formats"] == ["step"]
-    assert "GeometryDiscoveryResultManifest" in capability["output_contracts"]
+    assert "dfm.geometry/v2" in capability["output_contracts"]
     with pytest.raises(DFMError) as exc_info:
         provider.recognize(_input(), process="injection")
 
-    assert exc_info.value.code == "unsupported_capability"
+    assert exc_info.value.code == "discovery_workspace_required"
+
+
+def test_occt_cpp_discovery_rejects_a_short_lived_session_fallback(tmp_path):
+    provider = OCCTCppFeatureRecognitionProvider("C:/dfm/dfm-geometry.exe")
+    input_record = _input()
+    input_path = tmp_path / input_record.relative_path
+    input_path.parent.mkdir(parents=True)
+    input_path.write_bytes(b"step")
+
+    assert provider.capability("dfm_project")["error_code"] == (
+        "geometry_session_required"
+    )
+    with pytest.raises(DFMError) as exc_info:
+        provider.recognize(
+            input_record,
+            process="injection",
+            project_dir=tmp_path,
+        )
+
+    assert exc_info.value.code == "geometry_session_required"
 
 
 def test_feature_catalog_declares_executable_facts_and_honest_placeholder_fallback():
@@ -68,11 +87,9 @@ def test_feature_catalog_declares_executable_facts_and_honest_placeholder_fallba
     capability = engine.capability()
 
     assert engine.required_fact_names() == {"model_units"}
+    assert capability["status"] == "dependency_missing"
     assert capability["placeholder_policy"] == {
-        "behavior": "treat_as_ordinary",
-        "fallback_feature_kind": "ordinary_part",
-        "fallback_region_role": "ordinary",
-        "coverage": "whole_model",
+        "behavior": "fail_closed",
         "emit_synthetic_process_features": False,
     }
     placeholders = [
@@ -100,11 +117,10 @@ def test_feature_catalog_declares_executable_facts_and_honest_placeholder_fallba
     assert "mtk_feature_recognition" not in capability["providers"]
 
 
-def test_main_wall_region_exclusively_owns_wall_thickness_target():
+def test_feature_geometry_is_frozen_without_constructing_regions():
     input_record = _input()
     topology_id = "topology.snapshot.main-wall"
     feature_id = "feature.main_wall.1"
-    region_id = "region.main_wall.1.wall"
     geometry_ref = GeometryRef(
         "face",
         1,
@@ -125,51 +141,26 @@ def test_main_wall_region_exclusively_owns_wall_thickness_target():
                 source_refs=["recognizer:test"],
                 confidence=0.9,
                 input_sha256=input_record.sha256,
-                region_refs=[region_id],
+                properties={"geometry_refs": [geometry_ref.to_dict()]},
                 recognizer="test",
                 recognizer_version="1",
-            )
-        ],
-        regions=[
-            RegionRecord(
-                region_id=region_id,
-                input_sha256=input_record.sha256,
-                coordinate_system="model",
-                mode="topology_refs",
-                semantic_label="main_wall",
-                source_refs=["recognizer:test"],
-                version="1",
-                content_sha256="b" * 64,
-                geometry_refs=[geometry_ref],
-                role="wall",
-                feature_refs=[feature_id],
             )
         ],
     )
     engine = DiscoveryEngine()
     refreshed, snapshot = engine.freeze(manifest)
-    targets = engine.analysis_targets(refreshed, snapshot)
 
-    wall_targets = [
-        item
-        for item in targets
-        if item["metric_id"] == "injection.geometry.wall_thickness"
+    assert refreshed.regions == []
+    assert snapshot.feature_refs == [feature_id]
+    assert snapshot.region_refs == []
+    assert refreshed.features[0].properties["geometry_refs"] == [
+        geometry_ref.to_dict()
     ]
-    assert len(wall_targets) == 1
-    assert wall_targets[0]["feature"].kind == "main_wall"
-    assert wall_targets[0]["region"].region_id == region_id
-    ordinary = next(item for item in refreshed.regions if item.role == "ordinary")
-    assert ordinary.mode == "topology_complement"
-    assert ordinary.excluded_geometry_refs == [geometry_ref]
 
 
-def test_one_feature_may_reuse_topology_across_measurement_roles():
+def test_one_feature_carries_geometry_once_without_measurement_role_regions():
     input_record = _input()
     feature_id = "feature.screw_boss.1"
-    region_ids = {
-        "transition": "region.screw_boss.1.transition",
-        "adjacent_main_wall": "region.screw_boss.1.adjacent_main_wall",
-    }
     geometry_ref = GeometryRef(
         "face",
         209,
@@ -177,22 +168,6 @@ def test_one_feature_may_reuse_topology_across_measurement_roles():
         topology_snapshot_id="topology.snapshot.screw-boss",
         entity_id="face-209",
     )
-    regions = [
-        RegionRecord(
-            region_id=region_id,
-            input_sha256=input_record.sha256,
-            coordinate_system="model",
-            mode="topology_refs",
-            semantic_label=f"screw_boss_{role}",
-            source_refs=["recognizer:occt_cpp"],
-            version="1",
-            content_sha256=character * 64,
-            geometry_refs=[geometry_ref],
-            role=role,
-            feature_refs=[feature_id],
-        )
-        for (role, region_id), character in zip(region_ids.items(), ("b", "c"))
-    ]
     manifest = ProjectManifest(
         project_id="dfm_bbbbbbbbbbbb",
         name="overlapping screw-boss measurement roles",
@@ -206,21 +181,18 @@ def test_one_feature_may_reuse_topology_across_measurement_roles():
                 source_refs=["recognizer:occt_cpp"],
                 confidence=0.9,
                 input_sha256=input_record.sha256,
-                region_refs=list(region_ids.values()),
+                properties={"geometry_refs": [geometry_ref.to_dict()]},
                 recognizer="occt_cpp",
                 recognizer_version="1",
             )
         ],
-        regions=regions,
     )
     engine = DiscoveryEngine()
     refreshed, snapshot = engine.freeze(manifest)
 
-    targets = engine.analysis_targets(refreshed, snapshot)
-
-    fillet_roles = {
-        target["region"].role
-        for target in targets
-        if target["metric_id"] == "injection.geometry.screw_boss.fillet"
-    }
-    assert fillet_roles == {"transition", "adjacent_main_wall"}
+    assert refreshed.regions == []
+    assert snapshot.region_refs == []
+    assert snapshot.feature_refs == [feature_id]
+    assert refreshed.features[0].properties["geometry_refs"] == [
+        geometry_ref.to_dict()
+    ]
