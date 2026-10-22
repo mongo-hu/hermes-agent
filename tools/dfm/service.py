@@ -61,7 +61,7 @@ from .processes.occt_injection import (
 from .reporting.html import render_html_report
 from .reporting.html.template import ContractError, normalize_editorial_content
 from .runtime.jobs import JobManager
-from .runtime.process import GeometrySessionPool
+from .runtime.process import GeometrySessionPool, geometry_capability_identity
 from .viewer import (
     materialize_discovery_viewer_manifest,
     materialize_preview_manifest,
@@ -269,15 +269,19 @@ class DFMService:
         )
 
     def _ensure_occt_geometry_capability(self, project_id: str) -> dict[str, Any]:
-        if self.occt_geometry_capability is None:
-            owned = self.geometry_sessions.acquire(project_id)
-            capability = dict(owned.session.capability)
-            geometry_binding_index(capability)
+        owned = self.geometry_sessions.acquire(project_id)
+        capability = dict(owned.session.capability)
+        geometry_binding_index(capability)
+        if (
+            self.occt_geometry_capability is None
+            or geometry_capability_identity(self.occt_geometry_capability)
+            != geometry_capability_identity(capability)
+        ):
             self.occt_geometry_capability = capability
             self.ontology_store.configure_geometric_bindings(
                 geometry_binding_index(capability)
             )
-        return self.occt_geometry_capability
+        return capability
 
     def _materialize_step_preview(
         self,
@@ -1461,7 +1465,7 @@ class DFMService:
             ),
             lease_seconds=self.config.geometry_session_lease_seconds,
         )
-        self.geometry_sessions.update_snapshot(
+        revised = self.geometry_sessions.update_snapshot(
             project_id, feature.input_sha256, opened, revised
         )
         updated_feature = replace(
@@ -2048,7 +2052,7 @@ class DFMService:
             },
         )
         result = self.geometry_sessions.wait_job(project_id, str(submitted["job_id"]))
-        self.geometry_sessions.update_snapshot(
+        result = self.geometry_sessions.update_snapshot(
             project_id, input_record.sha256, opened, result
         )
         analyzed_scope_ids = {
@@ -2203,7 +2207,7 @@ class DFMService:
             "forming_scopes.revise",
             {"snapshot_id": snapshot_id, "scopes": scopes},
         )
-        self.geometry_sessions.update_snapshot(
+        result = self.geometry_sessions.update_snapshot(
             project_id, input_record.sha256, opened, result
         )
         scope_ids = {str(item["forming_scope_id"]) for item in scopes}
@@ -5054,27 +5058,8 @@ class DFMService:
                         for reason in blocking_reasons:
                             if reason not in blocking_by_group.setdefault(group_key, []):
                                 blocking_by_group[group_key].append(reason)
-                capability_version = ":".join(
-                    value
-                    for value in (
-                        str(
-                            (self.occt_geometry_capability or {}).get(
-                                "schema_bundle_version"
-                            )
-                            or ""
-                        ),
-                        str(
-                            (self.occt_geometry_capability or {}).get("engine_version")
-                            or ""
-                        ),
-                        str(
-                            (self.occt_geometry_capability or {}).get(
-                                "dependency_fingerprint"
-                            )
-                            or ""
-                        ),
-                    )
-                    if value
+                capability_version = geometry_capability_identity(
+                    self.occt_geometry_capability or {}
                 )
                 for group_key in sorted(requests_by_group):
                     fragment_status, _scope_key = group_key

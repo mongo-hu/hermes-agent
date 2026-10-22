@@ -3308,6 +3308,12 @@ class AIAgent:
         NOT called per-turn — only at CLI exit, /reset, gateway
         session expiry, etc.
         """
+        try:
+            from tools.dfm_tool import release_dfm_session_reference
+
+            release_dfm_session_reference(self.session_id)
+        except Exception:
+            pass
         if self._memory_manager:
             try:
                 self._memory_manager.on_session_end(messages or [])

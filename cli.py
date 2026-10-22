@@ -6931,11 +6931,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         Non-blocking — errors are caught and logged.  Safe to call from any
         lifecycle point (shutdown, /new, /reset).
         """
+        session_id = self.agent.session_id if self.agent else self.session_id
+        if event_type == "on_session_finalize":
+            try:
+                from tools.dfm_tool import release_dfm_session_reference
+
+                release_dfm_session_reference(session_id)
+            except Exception:
+                pass
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _invoke_hook(
                 event_type,
-                session_id=self.agent.session_id if self.agent else None,
+                session_id=session_id,
                 platform=getattr(self, "platform", None) or "cli",
                 reason="new_session" if event_type == "on_session_reset" else "session_boundary",
             )

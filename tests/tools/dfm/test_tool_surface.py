@@ -237,6 +237,54 @@ def test_dfm_project_create_is_allowed_after_session_run_finishes(monkeypatch):
     assert dfm_tool.active_dfm_project_id("session-one") == "dfm_next"
 
 
+def test_dfm_chat_reference_moves_between_projects_and_releases_on_finalize(
+    monkeypatch,
+):
+    from tools import dfm_tool
+
+    monkeypatch.setattr(dfm_tool, "_session_projects", {})
+
+    class FakePool:
+        def __init__(self):
+            self.calls = []
+
+        def retain_project(self, project_id, reference_id):
+            self.calls.append(("retain", project_id, reference_id))
+
+        def release_project(self, project_id, reference_id):
+            self.calls.append(("release", project_id, reference_id))
+
+    class FakeService:
+        def __init__(self):
+            self.geometry_sessions = FakePool()
+
+        def project(self, action, **params):
+            return {"ok": True, "project_id": params.get("project_id") or "dfm_one"}
+
+    service = FakeService()
+    monkeypatch.setattr(dfm_tool, "get_dfm_service", lambda: service)
+
+    dfm_tool._call(
+        "project",
+        {"action": "status", "project_id": "dfm_one"},
+        session_id="chat-one",
+    )
+    dfm_tool._call(
+        "project",
+        {"action": "status", "project_id": "dfm_two"},
+        session_id="chat-one",
+    )
+    dfm_tool.release_dfm_session_reference("chat-one")
+
+    assert service.geometry_sessions.calls == [
+        ("retain", "dfm_one", "chat-one"),
+        ("release", "dfm_one", "chat-one"),
+        ("retain", "dfm_two", "chat-one"),
+        ("release", "dfm_two", "chat-one"),
+    ]
+    assert dfm_tool.active_dfm_project_id("chat-one") == "dfm_two"
+
+
 def test_discovery_tool_returns_bounded_counts_without_geometry_payload(monkeypatch):
     from tools import dfm_tool
 

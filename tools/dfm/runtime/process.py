@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 import ctypes
+import hashlib
 import json
 import os
 import queue
@@ -41,6 +42,56 @@ _RECOVERABLE_SNAPSHOT_METHODS = frozenset({
     "snapshots.merge",
 })
 _ASYNC_SNAPSHOT_METHODS = frozenset({"features.discover", "forming_scopes.analyze"})
+
+
+def geometry_capability_identity(capability: Mapping[str, Any]) -> str:
+    """Return the build identity pinned by plans and recovery records."""
+
+    values = (
+        str(capability.get("schema_bundle_version") or ""),
+        str(capability.get("engine_version") or ""),
+        str(capability.get("dependency_fingerprint") or ""),
+    )
+    if not all(values) or re.fullmatch(r"[0-9a-f]{64}", values[2]) is None:
+        raise DFMError(
+            "geometry_capability_identity_invalid",
+            "The OCCT geometry Worker build identity is incomplete.",
+        )
+    return ":".join(values)
+
+
+def _snapshot_state_sha256(payload: Mapping[str, Any]) -> str:
+    """Fingerprint the semantic state recreated by a snapshot mutation."""
+
+    state: dict[str, list[Any]] = {}
+    for key in ("features", "forming_scopes", "coverage"):
+        if key not in payload:
+            continue
+        values = payload.get(key)
+        if not isinstance(values, list):
+            raise DFMError(
+                "geometry_protocol_invalid",
+                "A snapshot-producing Worker method returned invalid semantic state.",
+                {"field": key},
+            )
+        state[key] = sorted(
+            values,
+            key=lambda value: json.dumps(
+                value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ),
+        )
+    if not state:
+        raise DFMError(
+            "geometry_protocol_invalid",
+            "A snapshot-producing Worker method omitted its semantic state.",
+        )
+    encoded = json.dumps(
+        state,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _resident_bytes(pid: int) -> int:
@@ -164,18 +215,17 @@ class GeometrySession:
                     "actual": capability.get("schema_bundle_version"),
                 },
             )
-        if (
-            capability.get("backend") != "analysis_situs+occt"
-            or re.fullmatch(
-                r"[0-9a-f]{64}", str(capability.get("dependency_fingerprint") or "")
-            )
-            is None
-        ):
+        if capability.get("backend") != "analysis_situs+occt":
             self.close()
             raise DFMError(
-                "geometry_dependency_fingerprint_invalid",
-                "The OCCT geometry Worker omitted its verified build dependency fingerprint.",
+                "geometry_backend_invalid",
+                "The geometry Worker does not provide the required Analysis Situs + OCCT backend.",
             )
+        try:
+            geometry_capability_identity(capability)
+        except DFMError:
+            self.close()
+            raise
         methods = capability.get("methods")
         required_methods = {
             "snapshots.open",
@@ -476,6 +526,7 @@ class ProjectGeometrySession:
     active_job_ids: set[str] = field(default_factory=set)
     snapshot_lease_seconds: dict[str, int] = field(default_factory=dict)
     snapshot_last_renewed: dict[str, float] = field(default_factory=dict)
+    reference_ids: set[str] = field(default_factory=set)
     close_requested: bool = False
     last_used: float = field(default_factory=time.monotonic)
 
@@ -488,6 +539,9 @@ class SnapshotRecoveryState:
     lease_seconds: int
     opened_snapshot_id: str
     current_snapshot_id: str
+    schema_bundle_version: str
+    engine_version: str
+    dependency_fingerprint: str
     steps: list[dict[str, Any]] = field(default_factory=list)
 
     @property
@@ -503,6 +557,9 @@ class SnapshotRecoveryState:
             "lease_seconds": self.lease_seconds,
             "opened_snapshot_id": self.opened_snapshot_id,
             "current_snapshot_id": self.current_snapshot_id,
+            "schema_bundle_version": self.schema_bundle_version,
+            "engine_version": self.engine_version,
+            "dependency_fingerprint": self.dependency_fingerprint,
             "steps": list(self.steps),
         }
 
@@ -522,6 +579,9 @@ class SnapshotRecoveryState:
             lease_seconds=int(payload["lease_seconds"]),
             opened_snapshot_id=str(payload["opened_snapshot_id"]),
             current_snapshot_id=str(payload["current_snapshot_id"]),
+            schema_bundle_version=str(payload["schema_bundle_version"]),
+            engine_version=str(payload["engine_version"]),
+            dependency_fingerprint=str(payload["dependency_fingerprint"]),
             steps=[dict(item) for item in steps],
         )
         if (
@@ -530,6 +590,10 @@ class SnapshotRecoveryState:
             or len(state.input_sha256) != 64
         ):
             raise ValueError("recovery identity is incomplete")
+        try:
+            geometry_capability_identity(state.to_dict())
+        except DFMError as exc:
+            raise ValueError("recovery build identity is incomplete") from exc
         return state
 
 
@@ -556,6 +620,7 @@ class GeometrySessionPool:
         self.memory_budget_bytes = memory_budget_mb * 1024 * 1024
         self._lock = threading.RLock()
         self._projects: dict[str, ProjectGeometrySession] = {}
+        self._references: dict[str, set[str]] = {}
         self._recovery: dict[str, dict[str, SnapshotRecoveryState]] = {}
         self._maintenance_stop = threading.Event()
         self._maintenance = threading.Thread(
@@ -574,7 +639,8 @@ class GeometrySessionPool:
                     for owned in self._projects.values()
                     if owned.session.alive
                     and (
-                        owned.active_job_ids
+                        owned.reference_ids
+                        or owned.active_job_ids
                         or now - owned.last_used < self.idle_timeout_seconds
                     )
                     for snapshot_id, lease_seconds in (
@@ -605,6 +671,9 @@ class GeometrySessionPool:
                 else:
                     with self._lock:
                         owned.snapshot_last_renewed[snapshot_id] = time.monotonic()
+            with self._lock:
+                self._evict_idle()
+                self._evict_for_memory()
 
     @staticmethod
     def _write_recovery(state: SnapshotRecoveryState) -> None:
@@ -633,9 +702,22 @@ class GeometrySessionPool:
         if not path.is_file():
             return None
         try:
-            state = SnapshotRecoveryState.from_dict(
-                json.loads(path.read_text(encoding="utf-8"))
-            )
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not {
+                "schema_bundle_version",
+                "engine_version",
+                "dependency_fingerprint",
+            }.issubset(payload):
+                return None
+            state = SnapshotRecoveryState.from_dict(payload)
+            if any(
+                re.fullmatch(
+                    r"[0-9a-f]{64}", str(step.get("result_state_sha256") or "")
+                )
+                is None
+                for step in state.steps
+            ):
+                return None
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
             raise DFMError(
                 "geometry_recovery_invalid",
@@ -700,6 +782,7 @@ class GeometrySessionPool:
             "method": method,
             "params": logical_params,
             "result_snapshot_id": logical_result_id,
+            "result_state_sha256": _snapshot_state_sha256(result),
         })
         state.current_snapshot_id = logical_result_id
         owned.snapshot_aliases[logical_result_id] = result_snapshot_id
@@ -792,6 +875,17 @@ class GeometrySessionPool:
         owned: ProjectGeometrySession,
         state: SnapshotRecoveryState,
     ) -> dict[str, Any]:
+        persisted_identity = geometry_capability_identity(state.to_dict())
+        live_identity = geometry_capability_identity(owned.session.capability)
+        if persisted_identity != live_identity:
+            raise DFMError(
+                "geometry_recovery_dependency_changed",
+                "The persisted geometry state belongs to a different Worker build.",
+                {
+                    "persisted_identity": persisted_identity,
+                    "live_identity": live_identity,
+                },
+            )
         opened = owned.session.call(
             "snapshots.open",
             {
@@ -834,6 +928,18 @@ class GeometrySessionPool:
                     "A replayed recovery step did not produce a snapshot.",
                     {"method": method},
                 )
+            expected_state_sha256 = str(step.get("result_state_sha256") or "")
+            actual_state_sha256 = _snapshot_state_sha256(response)
+            if actual_state_sha256 != expected_state_sha256:
+                raise DFMError(
+                    "geometry_recovery_review_required",
+                    "Replayed geometry state differs from the persisted reviewed state.",
+                    {
+                        "method": method,
+                        "expected_state_sha256": expected_state_sha256,
+                        "actual_state_sha256": actual_state_sha256,
+                    },
+                )
             aliases[logical_result_id] = live_result_id
             owned.snapshot_ids.add(live_result_id)
             owned.snapshot_lease_seconds[live_result_id] = state.lease_seconds
@@ -860,18 +966,89 @@ class GeometrySessionPool:
             if current is not None and current.session is session:
                 self._projects.pop(project_id, None)
 
+    def retain_project(self, project_id: str, reference_id: str) -> None:
+        """Retain a project's Worker resources for one live chat/session."""
+
+        if not project_id or not reference_id:
+            return
+        with self._lock:
+            references = self._references.setdefault(project_id, set())
+            references.add(reference_id)
+            owned = self._projects.get(project_id)
+            if owned is not None:
+                owned.reference_ids.add(reference_id)
+                owned.last_used = time.monotonic()
+
+    def release_project(self, project_id: str, reference_id: str) -> None:
+        """Release one chat/session reference without interrupting active jobs."""
+
+        if not project_id or not reference_id:
+            return
+        with self._lock:
+            references = self._references.get(project_id)
+            if references is not None:
+                references.discard(reference_id)
+                if not references:
+                    self._references.pop(project_id, None)
+            owned = self._projects.get(project_id)
+            if owned is not None:
+                owned.reference_ids.discard(reference_id)
+                owned.last_used = time.monotonic()
+
+    @staticmethod
+    def _is_evictable(owned: ProjectGeometrySession) -> bool:
+        return not owned.reference_ids and not owned.active_job_ids
+
+    def _evict_projects(self, project_ids: Sequence[str]) -> None:
+        for project_id in project_ids:
+            owned = self._projects.get(project_id)
+            if owned is not None and self._is_evictable(owned):
+                self._close_project_now(project_id, owned)
+
     def _evict_idle(self, *, exclude: str = "") -> None:
         now = time.monotonic()
         expired = [
             key
             for key, value in self._projects.items()
             if key != exclude
-            and not value.active_job_ids
+            and self._is_evictable(value)
             and now - value.last_used >= self.idle_timeout_seconds
         ]
-        for key in expired:
-            owned = self._projects.pop(key)
-            owned.session.close()
+        self._evict_projects(expired)
+
+    def _evict_for_capacity(self, *, exclude: str = "") -> None:
+        candidates = sorted(
+            (
+                (owned.last_used, project_id)
+                for project_id, owned in self._projects.items()
+                if project_id != exclude and self._is_evictable(owned)
+            )
+        )
+        while len(self._projects) >= self.max_sessions and candidates:
+            _, project_id = candidates.pop(0)
+            self._evict_projects([project_id])
+
+    def _evict_for_memory(
+        self, *, required_bytes: int = 0, exclude: str = ""
+    ) -> int:
+        resident = sum(
+            _resident_bytes(item.session.pid) for item in self._projects.values()
+        )
+        candidates = sorted(
+            (
+                (owned.last_used, project_id)
+                for project_id, owned in self._projects.items()
+                if project_id != exclude and self._is_evictable(owned)
+            )
+        )
+        while resident + required_bytes > self.memory_budget_bytes and candidates:
+            _, project_id = candidates.pop(0)
+            owned = self._projects.get(project_id)
+            if owned is None:
+                continue
+            resident -= _resident_bytes(owned.session.pid)
+            self._evict_projects([project_id])
+        return max(0, resident)
 
     def acquire(self, project_id: str) -> ProjectGeometrySession:
         with self._lock:
@@ -883,15 +1060,14 @@ class GeometrySessionPool:
             if current is not None:
                 self._projects.pop(project_id, None)
                 current.session.close()
+            self._evict_for_capacity(exclude=project_id)
             if len(self._projects) >= self.max_sessions:
                 raise DFMError(
                     "geometry_session_limit",
                     "No project-owned OCCT geometry session slot is available.",
                     {"max_sessions": self.max_sessions},
                 )
-            resident = sum(
-                _resident_bytes(item.session.pid) for item in self._projects.values()
-            )
+            resident = self._evict_for_memory(exclude=project_id)
             if resident >= self.memory_budget_bytes:
                 raise DFMError(
                     "geometry_memory_budget",
@@ -912,8 +1088,16 @@ class GeometrySessionPool:
                 request_timeout_seconds=self.request_timeout_seconds,
                 on_disconnect=disconnected,
             )
-            holder = ProjectGeometrySession(project_id, session)
-            projected = resident + _resident_bytes(session.pid)
+            holder = ProjectGeometrySession(
+                project_id,
+                session,
+                reference_ids=set(self._references.get(project_id, set())),
+            )
+            session_resident = _resident_bytes(session.pid)
+            resident = self._evict_for_memory(
+                required_bytes=session_resident, exclude=project_id
+            )
+            projected = resident + session_resident
             if projected > self.memory_budget_bytes:
                 session.close()
                 raise DFMError(
@@ -977,27 +1161,48 @@ class GeometrySessionPool:
         """Advance one project's current immutable snapshot after a v2 mutation."""
 
         owned = self.acquire(project_id)
-        snapshot_id = str(derived.get("snapshot_id") or "")
-        if not snapshot_id:
-            raise DFMError(
-                "geometry_protocol_invalid",
-                "A snapshot-producing Worker method omitted snapshot_id.",
+        with self._lock:
+            result = dict(derived)
+            snapshot_id = str(result.get("snapshot_id") or "")
+            opened_snapshot_id = str(opened.get("snapshot_id") or "")
+            branch_base_id = str(result.get("base_snapshot_id") or "")
+            if not snapshot_id or not branch_base_id:
+                raise DFMError(
+                    "geometry_protocol_invalid",
+                    "A snapshot-producing Worker method omitted its snapshot identity.",
+                )
+            cached = owned.snapshots_by_input_sha256.get(input_sha256)
+            cached_snapshot_id = str((cached or {}).get("snapshot_id") or "")
+            if cached_snapshot_id and cached_snapshot_id not in {
+                branch_base_id,
+                snapshot_id,
+            }:
+                result = self.call(
+                    project_id,
+                    "snapshots.merge",
+                    {
+                        "base_snapshot_id": branch_base_id,
+                        "snapshot_ids": [cached_snapshot_id, snapshot_id],
+                    },
+                )
+                snapshot_id = str(result["snapshot_id"])
+            current = {
+                **dict(opened),
+                "snapshot_id": snapshot_id,
+                "base_snapshot_id": result.get("base_snapshot_id"),
+            }
+            owned.snapshot_ids.add(snapshot_id)
+            lease_seconds = owned.snapshot_lease_seconds.get(
+                branch_base_id,
+                owned.snapshot_lease_seconds.get(opened_snapshot_id),
             )
-        current = {
-            **dict(opened),
-            "snapshot_id": snapshot_id,
-            "base_snapshot_id": derived.get("base_snapshot_id"),
-        }
-        owned.snapshot_ids.add(snapshot_id)
-        previous_snapshot_id = str(opened.get("snapshot_id") or "")
-        lease_seconds = owned.snapshot_lease_seconds.get(previous_snapshot_id)
-        if lease_seconds is not None:
-            owned.snapshot_lease_seconds[snapshot_id] = lease_seconds
-            owned.snapshot_last_renewed[snapshot_id] = time.monotonic()
-        owned.input_by_snapshot_id[snapshot_id] = input_sha256
-        owned.snapshots_by_input_sha256[input_sha256] = current
-        owned.last_used = time.monotonic()
-        return dict(current)
+            if lease_seconds is not None:
+                owned.snapshot_lease_seconds[snapshot_id] = lease_seconds
+                owned.snapshot_last_renewed[snapshot_id] = time.monotonic()
+            owned.input_by_snapshot_id[snapshot_id] = input_sha256
+            owned.snapshots_by_input_sha256[input_sha256] = current
+            owned.last_used = time.monotonic()
+            return result
 
     def open_model(
         self,
@@ -1039,9 +1244,15 @@ class GeometrySessionPool:
             lease_seconds=lease_seconds,
         )
         if recovery is not None:
-            recovered = self._recover_model(owned, recovery)
-            owned.last_used = time.monotonic()
-            return recovered
+            try:
+                recovered = self._recover_model(owned, recovery)
+            except DFMError as exc:
+                if exc.code != "geometry_recovery_dependency_changed":
+                    raise
+                self._recovery.get(project_id, {}).pop(input_sha256, None)
+            else:
+                owned.last_used = time.monotonic()
+                return recovered
         opened = owned.session.call(
             "snapshots.open",
             {
@@ -1064,6 +1275,13 @@ class GeometrySessionPool:
             lease_seconds=lease_seconds,
             opened_snapshot_id=str(opened["snapshot_id"]),
             current_snapshot_id=str(opened["snapshot_id"]),
+            schema_bundle_version=str(
+                owned.session.capability["schema_bundle_version"]
+            ),
+            engine_version=str(owned.session.capability["engine_version"]),
+            dependency_fingerprint=str(
+                owned.session.capability["dependency_fingerprint"]
+            ),
         )
         self._recovery.setdefault(project_id, {})[input_sha256] = state
         self._write_recovery(state)
@@ -1159,7 +1377,10 @@ class GeometrySessionPool:
 
     def close_project(self, project_id: str) -> None:
         with self._lock:
+            self._references.pop(project_id, None)
             owned = self._projects.get(project_id)
+            if owned is not None:
+                owned.reference_ids.clear()
             if owned is not None and owned.active_job_ids:
                 owned.close_requested = True
                 return
@@ -1174,6 +1395,8 @@ class GeometrySessionPool:
             project_ids = list(self._projects)
         for project_id in project_ids:
             self.close_project(project_id)
+        with self._lock:
+            self._references.clear()
 
 
 @dataclass(frozen=True)

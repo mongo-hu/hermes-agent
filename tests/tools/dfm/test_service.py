@@ -781,6 +781,11 @@ def test_occt_plan_stops_when_no_supported_rule_is_applicable(service, monkeypat
         geometry_binding_index(capability)
     )
     monkeypatch.setattr(
+        dfm,
+        "_ensure_occt_geometry_capability",
+        lambda _project_id: capability,
+    )
+    monkeypatch.setattr(
         "tools.dfm.service.compile_occt_injection_plan",
         lambda adapter, context, raw_parameters, capability: replace(
             adapter.compile(context, raw_parameters),

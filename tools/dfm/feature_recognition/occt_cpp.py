@@ -242,7 +242,7 @@ class OCCTCppFeatureRecognitionProvider:
                 },
             )
         )
-        self.session_pool.update_snapshot(
+        result = self.session_pool.update_snapshot(
             project_id, input_record.sha256, opened, result
         )
 
@@ -332,7 +332,7 @@ class OCCTCppFeatureRecognitionProvider:
         result = self.session_pool.wait_job(
             project_dir.name, str(submitted["job_id"])
         )
-        self.session_pool.update_snapshot(
+        result = self.session_pool.update_snapshot(
             project_dir.name, input_record.sha256, opened, result
         )
         return (

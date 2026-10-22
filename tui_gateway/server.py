@@ -410,6 +410,13 @@ def _notify_session_boundary(
     event_type: str, session_id: str | None, platform: str | None = None
 ) -> None:
     """Fire session lifecycle hooks with CLI parity."""
+    if event_type == "on_session_finalize":
+        try:
+            from tools.dfm_tool import release_dfm_session_reference
+
+            release_dfm_session_reference(session_id)
+        except Exception:
+            pass
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
 

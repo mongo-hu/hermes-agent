@@ -1,6 +1,7 @@
 """Thin Hermes registration adapter for the built-in DFM capability."""
 
 import json
+import threading
 from collections import Counter
 
 from tools.dfm.errors import DFMError
@@ -9,6 +10,7 @@ from tools.registry import registry
 
 
 _session_projects: dict[str, str] = {}
+_session_projects_lock = threading.RLock()
 _TOOL_PREVIEW_LIMIT = 50
 _ACTIVE_RUN_STATUSES = {"queued", "running", "reporting"}
 
@@ -260,7 +262,37 @@ def _run_tool_summary(result: dict, action: str) -> dict:
 
 def active_dfm_project_id(session_id: str | None) -> str | None:
     """Return the project used by this conversation's DFM tool calls."""
-    return _session_projects.get(session_id) if session_id else None
+    if not session_id:
+        return None
+    with _session_projects_lock:
+        return _session_projects.get(session_id)
+
+
+def release_dfm_session_reference(session_id: str | None) -> None:
+    """Release live geometry ownership while preserving the chat/project binding."""
+
+    if not session_id:
+        return
+    with _session_projects_lock:
+        project_id = _session_projects.get(session_id)
+    if not project_id:
+        return
+    service = get_dfm_service()
+    pool = getattr(service, "geometry_sessions", None)
+    if pool is not None:
+        pool.release_project(project_id, session_id)
+
+
+def _bind_dfm_session_project(service, session_id: str, project_id: str) -> None:
+    with _session_projects_lock:
+        previous_project_id = _session_projects.get(session_id)
+        _session_projects[session_id] = project_id
+    pool = getattr(service, "geometry_sessions", None)
+    if pool is None:
+        return
+    if previous_project_id and previous_project_id != project_id:
+        pool.release_project(previous_project_id, session_id)
+    pool.retain_project(project_id, session_id)
 
 
 def _active_session_run(service, session_id: object) -> tuple[str, dict] | None:
@@ -273,7 +305,8 @@ def _active_session_run(service, session_id: object) -> tuple[str, dict] | None:
 
     if not isinstance(session_id, str):
         return None
-    project_id = _session_projects.get(session_id)
+    with _session_projects_lock:
+        project_id = _session_projects.get(session_id)
     if not project_id:
         return None
     try:
@@ -281,7 +314,9 @@ def _active_session_run(service, session_id: object) -> tuple[str, dict] | None:
     except DFMError:
         # The in-memory binding can outlive a deleted test/development
         # workspace. Do not prevent a legitimate replacement project.
-        _session_projects.pop(session_id, None)
+        release_dfm_session_reference(session_id)
+        with _session_projects_lock:
+            _session_projects.pop(session_id, None)
         return None
     project = status.get("project", {}) if isinstance(status, dict) else {}
     runs = project.get("runs", []) if isinstance(project, dict) else []
@@ -352,7 +387,7 @@ def _call(kind: str, args: dict, **context) -> str:
             if isinstance(result, dict) and result.get("ok") is True else None
         )
         if isinstance(session_id, str) and isinstance(project_id, str):
-            _session_projects[session_id] = project_id
+            _bind_dfm_session_project(service, session_id, project_id)
         if kind == "project" and args.get("action") == "status" and isinstance(result, dict) and "project" in result:
             result = _project_status_summary(result)
         if kind == "analysis" and isinstance(result, dict):

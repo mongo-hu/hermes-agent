@@ -20,7 +20,13 @@ from tools.dfm.contracts import (
     PlanRecord,
 )
 from tools.dfm.errors import DFMError
-from tools.dfm.runtime.process import GeometrySession, SESSION_CONTRACT
+from tools.dfm.runtime.process import (
+    GeometrySession,
+    GeometrySessionPool,
+    ProjectGeometrySession,
+    SESSION_CONTRACT,
+    geometry_capability_identity,
+)
 
 
 CAPABILITIES = {
@@ -157,6 +163,117 @@ def test_analysis_requires_the_project_owned_persistent_session(tmp_path):
         )
 
     assert exc_info.value.code == "geometry_session_required"
+
+
+def test_analysis_rejects_a_plan_pinned_to_another_worker_build(tmp_path):
+    class FakePool:
+        @staticmethod
+        def acquire(_project_id):
+            return type(
+                "Owned",
+                (),
+                {"session": type("Session", (), {"capability": CAPABILITIES})()},
+            )()
+
+    analyzer = OcctAnalyzer(
+        "C:/dfm/dfm-geometry.exe",
+        session_pool=FakePool(),
+    )
+
+    with pytest.raises(DFMError) as exc_info:
+        analyzer.run(
+            AnalyzerContext("dfm-1", tmp_path, "step", [], plan=_plan()),
+            CancellationToken(),
+        )
+
+    assert exc_info.value.code == "geometry_capability_changed"
+    assert exc_info.value.details["live_capability_version"] == (
+        geometry_capability_identity(CAPABILITIES)
+    )
+
+
+def test_snapshot_update_merges_sibling_branches_instead_of_overwriting():
+    class FakeSession:
+        alive = True
+        pid = 1
+
+    pool = object.__new__(GeometrySessionPool)
+    pool._lock = threading.RLock()
+    owned = ProjectGeometrySession("dfm-1", FakeSession())
+    owned.snapshots_by_input_sha256["a" * 64] = {"snapshot_id": "snapshot-left"}
+    owned.snapshot_lease_seconds["snapshot-base"] = 900
+    pool.acquire = lambda _project_id: owned
+    calls = []
+
+    def call(_project_id, method, params):
+        calls.append((method, params))
+        return {
+            "base_snapshot_id": "snapshot-base",
+            "snapshot_id": "snapshot-merged",
+            "features": [],
+            "forming_scopes": [],
+            "coverage": [],
+        }
+
+    pool.call = call
+    result = pool.update_snapshot(
+        "dfm-1",
+        "a" * 64,
+        {"snapshot_id": "snapshot-base", "artifacts": {}},
+        {"base_snapshot_id": "snapshot-base", "snapshot_id": "snapshot-right"},
+    )
+
+    assert result["snapshot_id"] == "snapshot-merged"
+    assert calls == [
+        (
+            "snapshots.merge",
+            {
+                "base_snapshot_id": "snapshot-base",
+                "snapshot_ids": ["snapshot-left", "snapshot-right"],
+            },
+        )
+    ]
+    assert owned.snapshots_by_input_sha256["a" * 64]["snapshot_id"] == (
+        "snapshot-merged"
+    )
+
+
+def test_idle_reclamation_waits_for_chat_reference_then_closes_snapshot():
+    class FakeSession:
+        alive = True
+        pid = 1
+
+        def __init__(self):
+            self.calls = []
+            self.closed = False
+
+        def call(self, method, params):
+            self.calls.append((method, params))
+            return {}
+
+        def close(self):
+            self.closed = True
+
+    pool = object.__new__(GeometrySessionPool)
+    pool._lock = threading.RLock()
+    pool.idle_timeout_seconds = 0
+    pool._references = {}
+    session = FakeSession()
+    owned = ProjectGeometrySession("dfm-1", session)
+    owned.snapshot_ids.add("snapshot-one")
+    pool._projects = {"dfm-1": owned}
+
+    pool.retain_project("dfm-1", "chat-one")
+    pool._evict_idle()
+    assert not session.closed
+
+    pool.release_project("dfm-1", "chat-one")
+    pool._evict_idle()
+    assert session.calls == [
+        ("snapshots.close", {"snapshot_id": "snapshot-one"})
+    ]
+    assert session.closed
+    assert "dfm-1" not in pool._projects
 
 
 def _session_with_recorded_job_calls(statuses):

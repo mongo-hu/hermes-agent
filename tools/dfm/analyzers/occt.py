@@ -17,11 +17,14 @@ from ..contracts import (
     WorkerEvent,
 )
 from ..errors import DFMError
-from ..runtime.process import GeometrySession, SESSION_CONTRACT
+from ..runtime.process import (
+    GeometrySession,
+    SESSION_CONTRACT,
+    geometry_capability_identity,
+)
 from .base import AnalyzerContext, CancellationToken
 
 
-ENGINE_VERSION = "occt-dfm-geometry-1.10.1"
 _V2_SCALAR_REQUIRED = {
     "schema_version",
     "contract_version",
@@ -176,7 +179,7 @@ def probe_geometry_executable(executable: str) -> dict[str, Any]:
 
 class OcctAnalyzer:
     key = "occt_cpp"
-    version = ENGINE_VERSION
+    version = SESSION_CONTRACT
     supported_inputs = ("step",)
 
     def __init__(
@@ -193,6 +196,7 @@ class OcctAnalyzer:
         self.timeout_seconds = timeout_seconds
         self.session_pool = session_pool
         self.lease_seconds = lease_seconds
+        self.version = SESSION_CONTRACT
 
     def _capability_payload(self, project_id: str = "") -> dict[str, Any]:
         if self.executable is None:
@@ -228,6 +232,7 @@ class OcctAnalyzer:
                 exc.code,
                 exc.details or {},
             )
+        self.version = geometry_capability_identity(payload)
         return Capability(
             self.key,
             CapabilityStatus.AVAILABLE,
@@ -288,6 +293,25 @@ class OcctAnalyzer:
             raise DFMError(
                 "plan_fragment_required",
                 "OCCT analysis requires immutable Geometric plan fragments.",
+            )
+        live_capability = dict(
+            self.session_pool.acquire(context.project_id).session.capability
+        )
+        live_capability_version = geometry_capability_identity(live_capability)
+        self.version = live_capability_version
+        mismatched_fragments = [
+            fragment.fragment_id
+            for fragment in context.plan.active_plan_fragments(statuses={"ready"})
+            if fragment.capability_version != live_capability_version
+        ]
+        if mismatched_fragments:
+            raise DFMError(
+                "geometry_capability_changed",
+                "The Worker build changed after this Geometric plan was fixed.",
+                {
+                    "fragment_ids": mismatched_fragments,
+                    "live_capability_version": live_capability_version,
+                },
             )
         input_record = self._active_step(context)
         output_dir = context.project_dir / "runs" / context.run_id / "artifacts"

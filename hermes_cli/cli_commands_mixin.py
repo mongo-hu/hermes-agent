@@ -763,6 +763,12 @@ class CLICommandsMixin:
             self._session_db.end_session(self.session_id, "resumed_other")
         except Exception:
             pass
+        try:
+            from tools.dfm_tool import release_dfm_session_reference
+
+            release_dfm_session_reference(old_session_id)
+        except Exception:
+            pass
 
         # Switch to the target session
         self.session_id = target_id
@@ -955,6 +961,12 @@ class CLICommandsMixin:
             pass
 
         # Switch to the new session
+        try:
+            from tools.dfm_tool import release_dfm_session_reference
+
+            release_dfm_session_reference(self.session_id)
+        except Exception:
+            pass
         self._transfer_session_yolo(self.session_id, new_session_id)
         self.session_id = new_session_id
         self.session_start = now

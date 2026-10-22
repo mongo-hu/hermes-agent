@@ -25,7 +25,10 @@ from tools.dfm.contracts import (
 from tools.dfm.evaluation import EvaluationEngine
 from tools.dfm.config import DFMConfig
 from tools.dfm.feature_recognition.occt_cpp import OCCTCppFeatureRecognitionProvider
-from tools.dfm.runtime.process import GeometrySessionPool
+from tools.dfm.runtime.process import (
+    GeometrySessionPool,
+    geometry_capability_identity,
+)
 from tools.dfm.runtime.jobs import JobManager
 from tools.dfm.service import DFMService
 
@@ -381,6 +384,10 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
             },
         )
         analyzed_scope = pool.wait_job("project-v2", str(analyzed_scope["job_id"]))
+        opened = pool.acquire("project-v2").snapshots_by_input_sha256[input_sha256]
+        analyzed_scope = pool.update_snapshot(
+            "project-v2", input_sha256, opened, analyzed_scope
+        )
         candidate = next(
             item
             for item in analyzed_scope["forming_scopes"]
@@ -420,7 +427,9 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
         )
         assert confirmed["status"] == "confirmed"
         opened = pool.acquire("project-v2").snapshots_by_input_sha256[input_sha256]
-        pool.update_snapshot("project-v2", input_sha256, opened, confirmed_scope)
+        confirmed_scope = pool.update_snapshot(
+            "project-v2", input_sha256, opened, confirmed_scope
+        )
         forming_context = {
             "forming_scope_id": "MAIN_POS",
             "draw_direction": confirmed["draw_direction"],
@@ -442,12 +451,13 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
             )
             for suffix in ("a", "b")
         ]
+        worker_capability = pool.acquire("project-v2").session.capability
         fragment = PlanFragmentRecord(
             fragment_id="fragment-v2",
             snapshot_id=confirmed_scope["snapshot_id"],
             source_discovery_snapshot_id="discovery.snapshot.v2",
-            capability_version="test",
-            dependency_fingerprint="a" * 64,
+            capability_version=geometry_capability_identity(worker_capability),
+            dependency_fingerprint=worker_capability["dependency_fingerprint"],
             confirmed_fact_refs=[],
             rule_binding_refs=[item.binding_id for item in shared_g_bindings],
             items=[request, direction_request],
@@ -563,6 +573,9 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
             / "session-recovery.json"
         )
         recovery_payload = json.loads(recovery_log.read_text(encoding="utf-8"))
+        assert geometry_capability_identity(recovery_payload) == (
+            geometry_capability_identity(worker_capability)
+        )
         assert [item["method"] for item in recovery_payload["steps"]] == [
             "features.discover",
             "features.discover",
@@ -570,6 +583,11 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
             "forming_scopes.analyze",
             "forming_scopes.revise",
         ]
+        assert all(
+            len(item["result_state_sha256"]) == 64
+            and set(item["result_state_sha256"]) <= set("0123456789abcdef")
+            for item in recovery_payload["steps"]
+        )
 
         other_project_dir = tmp_path / "project-v2-other"
         other_project_dir.mkdir()
