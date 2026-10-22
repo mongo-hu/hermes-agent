@@ -8,7 +8,12 @@ import os
 from pathlib import Path
 from typing import Any
 
-from ...contracts import ArtifactRecord, InputRecord, PlanRecord
+from ...contracts import (
+    ArtifactRecord,
+    InputRecord,
+    PlanRecord,
+    validate_result_manifest_mesh_binding,
+)
 from ...errors import DFMError
 
 
@@ -22,7 +27,7 @@ def _utc_now() -> str:
 
 
 def _read_object(project_dir: Path, artifact: ArtifactRecord) -> dict[str, Any]:
-    path = (project_dir / artifact.relative_path).resolve()
+    path = _artifact_path(project_dir, artifact)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -169,7 +174,9 @@ def materialize_html_runtime(
         by_kind.setdefault(artifact.kind, []).append(artifact)
 
     report_artifact = _one(by_kind, "report_json")
+    result_manifest_artifact = _one(by_kind, "result_manifest")
     scene_artifact = _one(by_kind, "render_scene")
+    topology_artifact = _one(by_kind, "topology_map")
     geometry_artifact = _one(by_kind, "evidence_geometry")
     active_ids = set(plan.input_ids)
     drawings = [
@@ -226,6 +233,45 @@ def materialize_html_runtime(
         raise DFMError(
             "report_input_invalid",
             "The JSON report belongs to a different DFM run.",
+        )
+    result_manifest = (
+        _read_object(project_dir, result_manifest_artifact)
+        if result_manifest_artifact is not None
+        else None
+    )
+    if result_manifest is not None and str(result_manifest.get("run_id") or "") != run_id:
+        raise DFMError(
+            "report_input_invalid",
+            "The result manifest belongs to a different DFM run.",
+        )
+    report_manifest = report.get("result_manifest")
+    if result_manifest is not None and (
+        not isinstance(report_manifest, dict)
+        or report_manifest.get("artifact_id") != result_manifest_artifact.artifact_id
+        or any(
+            report_manifest.get(key) != result_manifest.get(key)
+            for key in (
+                "render_mesh_snapshot_id",
+                "topology_snapshot_id",
+            )
+        )
+    ):
+        raise DFMError(
+            "report_input_invalid",
+            "The JSON report is not pinned to this run's result manifest.",
+        )
+    if result_manifest is not None:
+        if topology_artifact is None:
+            raise DFMError(
+                "report_input_invalid",
+                "A result-manifest report requires its pinned topology map.",
+            )
+        validate_result_manifest_mesh_binding(
+            result_manifest,
+            _read_object(project_dir, scene_artifact),
+            _read_object(project_dir, topology_artifact),
+            scene_artifact_id=scene_artifact.artifact_id,
+            topology_artifact_id=topology_artifact.artifact_id,
         )
 
     output_dir = project_dir / "runs" / run_id / "artifacts"
@@ -296,6 +342,14 @@ def materialize_html_runtime(
         "evidence_geometry_path": _relative(geometry_path, output_dir),
         "rule_library_path": _relative(rule_snapshot_path, output_dir),
     }
+    if topology_artifact is not None:
+        resources["topology_map_path"] = _relative(
+            _artifact_path(project_dir, topology_artifact), output_dir
+        )
+    if result_manifest_artifact is not None:
+        resources["result_manifest_path"] = _relative(
+            _artifact_path(project_dir, result_manifest_artifact), output_dir
+        )
     if drawing_path is not None and observation_artifact is not None:
         resources.update(
             {
@@ -312,6 +366,7 @@ def materialize_html_runtime(
             "rule_scope": f"{plan.scope_id}@{plan.scope_version}",
         },
         "report": report,
+        "result_manifest": result_manifest,
         "drawing_semantics": drawing_semantics,
         "global_issue_metadata": global_issue_metadata,
         "model_metrics": model_metrics,

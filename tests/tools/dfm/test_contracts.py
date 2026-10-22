@@ -13,7 +13,9 @@ from tools.dfm.contracts import (
     FeatureRecord,
     FusionLinkRecord,
     FindingRecord,
+    FormingScopeRecord,
     InputRecord,
+    GeometryRef,
     MeasurementRecord,
     ObservationRecord,
     PlanOperation,
@@ -24,6 +26,7 @@ from tools.dfm.contracts import (
     RunRecord,
     RunStatus,
     ensure_run_transition,
+    validate_result_manifest_mesh_binding,
 )
 from tools.dfm.errors import DFMError
 
@@ -37,6 +40,52 @@ def test_contract_state_values_are_stable():
         "disabled",
         "unhealthy",
     }
+
+
+def test_local_forming_candidate_can_wait_for_direction_but_confirmation_cannot():
+    candidate = FormingScopeRecord(
+        forming_scope_id="SIDE_01",
+        snapshot_id="snapshot_1",
+        mode="local",
+        draw_direction=None,
+        coordinate_system="model",
+        direction_source=None,
+        status="candidate",
+        geometry_refs=[GeometryRef("face", 7, "a" * 64)],
+    )
+
+    assert candidate.to_dict()["draw_direction"] is None
+
+    with pytest.raises(DFMError, match="direction contract"):
+        FormingScopeRecord(
+            **{**candidate.__dict__, "status": "confirmed"}
+        ).validate()
+
+
+def test_result_manifest_rejects_a_different_viewer_mesh_version():
+    manifest = {
+        "mesh_refs": ["scene-1", "topology-1"],
+        "render_mesh_snapshot_id": "mesh-1",
+        "topology_snapshot_id": "topology-snapshot-1",
+    }
+    scene = {
+        "render_mesh_snapshot": {"render_mesh_snapshot_id": "mesh-1"}
+    }
+    topology = {
+        "topology_snapshot": {
+            "topology_snapshot_id": "topology-snapshot-1"
+        },
+        "render_mesh_snapshot_ref": "mesh-other",
+    }
+
+    with pytest.raises(DFMError, match="does not pin"):
+        validate_result_manifest_mesh_binding(
+            manifest,
+            scene,
+            topology,
+            scene_artifact_id="scene-1",
+            topology_artifact_id="topology-1",
+        )
     assert {item.value for item in RunStatus} == {
         "queued",
         "running",

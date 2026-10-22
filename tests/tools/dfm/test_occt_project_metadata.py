@@ -1,15 +1,42 @@
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
 
 
 ROOT = Path(__file__).resolve().parents[3]
-NATIVE = ROOT / "dfm-geometry"
+
+
+def _native_project_root() -> Path | None:
+    candidates: list[Path] = []
+    schema_root = os.environ.get("DFM_GEOMETRY_SCHEMA_ROOT")
+    if schema_root:
+        candidates.append(Path(schema_root).expanduser().resolve().parent)
+
+    executable = os.environ.get("DFM_GEOMETRY_E2E_EXECUTABLE")
+    if executable:
+        executable_path = Path(executable).expanduser().resolve()
+        candidates.extend(executable_path.parents)
+
+    candidates.extend(
+        (
+            ROOT.parent.parent / "模具项目" / "occt-worker",
+            ROOT.parent / "occt-worker",
+            ROOT.parent.parent / "occt-worker",
+        )
+    )
+    return next(
+        (candidate for candidate in candidates if (candidate / "CMakeLists.txt").is_file()),
+        None,
+    )
+
+
+NATIVE = _native_project_root()
 pytestmark = pytest.mark.skipif(
-    not (NATIVE / "CMakeLists.txt").is_file(),
-    reason="external DFMAnalysis_OCCT checkout is not available",
+    NATIVE is None,
+    reason="standalone occt-worker checkout is not available",
 )
 
 
@@ -33,8 +60,8 @@ def test_vcpkg_manifest_locks_occt_793_and_dynamic_triplet():
     )
     assert '"VCPKG_TARGET_TRIPLET": "x64-windows"' in presets
     assert "x64-windows-static" not in presets
-    assert '"generator": "Ninja"' in presets
-    assert "windows-vcpkg-vs2026-ninja-release" in presets
+    assert '"generator": "Visual Studio 18 2026"' in presets
+    assert "windows-vcpkg-vs2026-sln" in presets
     assert "status --porcelain --untracked-files=all" in bootstrap
     assert "fetch --depth" not in bootstrap
     assert "fetch --unshallow origin" in bootstrap
@@ -56,7 +83,8 @@ def test_native_project_has_exact_targets_and_occt_version():
     assert "target_link_options(dfm-geometry PRIVATE /STACK:8388608)" in cmake
     assert "target_link_options(dfm_geometry_tests PRIVATE /STACK:8388608)" in cmake
     assert "cmake_policy(SET CMP0207 NEW)" in cmake
-    assert "RUNTIME_DEPENDENCIES" in cmake
+    assert "DFM_APPLOCAL_RUNTIME_NAMES" in cmake
+    assert "copy_if_different" in cmake
     assert "OpenCASCADE_BINARY_DIR" in cmake
     assert "${DFM_OCCT_TOOLKITS}" in cmake
     assert "${OpenCASCADE_LIBRARIES}" not in cmake.split("target_link_libraries", 1)[1]
@@ -67,23 +95,33 @@ def test_native_project_has_exact_targets_and_occt_version():
 
 
 def test_step_import_is_strict_first_with_audited_fixshape_fallback():
-    reader = (NATIVE / "src" / "io" / "step_reader.cpp").read_text(encoding="utf-8")
+    reader = (NATIVE / "src" / "geometry" / "io" / "step_reader.cpp").read_text(
+        encoding="utf-8"
+    )
+    normalizer = (
+        NATIVE / "src" / "geometry" / "healing" / "step_shape_normalizer.cpp"
+    ).read_text(encoding="utf-8")
+    preflight = (NATIVE / "src" / "artifacts" / "preflight_builder.cpp").read_text(
+        encoding="utf-8"
+    )
+    geometry_context = (
+        NATIVE / "src" / "geometry" / "geometry_context.cpp"
+    ).read_text(encoding="utf-8")
     engine = (NATIVE / "src" / "engine.cpp").read_text(encoding="utf-8")
     assert "reader.SetShapeProcessFlags(ShapeProcess::OperationsFlags{});" in reader
-    assert "LoadedModel strict = transfer_step(path, true);" in reader
-    assert "LoadedModel processed = transfer_step(path, false);" in reader
-    assert '"shape_process_attempted", model.shape_process_attempted' in reader
-    assert '"geometry_healing_applied", model.shape_process_attempted' in reader
-    assert '"strict_validation", model.strict_validation' in reader
-    assert '"post_shape_process_validation"' in reader
-    assert 'case ShapeProcess::FixShape: return "FixShape";' in reader
-    assert "ShapeFix_" not in reader
-    assert 'invalid("empty_model"' in engine
-    assert "detail::build_aag(model);" in engine
-    assert engine.index("write_json_atomic(preflight_path") < engine.index(
-        "detail::build_aag(model);"
-    )
-    assert "build_aag(model);" not in reader
+    assert "model.strict_validation = validation_summary(model);" in reader
+    assert "return normalize_step_shape(std::move(model), parameters);" in reader
+    assert "BRepBuilderAPI_Copy(model.shape, true, false)" in normalizer
+    assert 'model.shape_process_operations.push_back("FixShape")' in normalizer
+    assert "model.post_shape_process_validation = validation_summary(model);" in normalizer
+    assert '"shape_process_attempted", model.shape_process_attempted' in preflight
+    assert '"geometry_healing_applied", model.shape_process_attempted' in preflight
+    assert '"strict_validation", model.strict_validation' in preflight
+    assert '"post_shape_process_validation", model.post_shape_process_validation' in preflight
+    assert "if (model_.aag.IsNull())" in geometry_context
+    assert "build_aag(model_);" in geometry_context
+    assert "make_preflight(live_model->model" in engine
+    assert "build_aag" not in reader
 
 
 def test_cli_routes_occt_default_messages_away_from_jsonl_stdout():
@@ -93,11 +131,13 @@ def test_cli_routes_occt_default_messages_away_from_jsonl_stdout():
     assert 'new Message_PrinterOStream("cerr", Standard_False)' in cli
 
 
-def test_engine_translates_occt_and_unknown_native_failures_to_jsonl_errors():
+def test_engine_translates_native_failures_to_json_rpc_errors():
     engine = (NATIVE / "src" / "engine.cpp").read_text(encoding="utf-8")
-    assert "catch (const Standard_Failure &failure)" in engine
-    assert "catch (...)" in engine
-    assert engine.count('emit(event_stream, "error"') >= 4
+    assert "catch (const Standard_Failure& exception)" in engine
+    assert 'fail("step_read_failed"' in engine
+    assert "catch (const std::exception& exception)" in engine
+    assert '"worker_internal_error", exception.what()' in engine
+    assert "error_response(id, -32000, \"Server error\"" in engine
 
 
 def test_licenses_and_upstream_provenance_are_pinned():

@@ -61,6 +61,16 @@ def test_dfm_doctor_reports_workspace_config_and_capabilities(tmp_path, capsys, 
         assert "adapter_task_schema_version" not in geometry_backend
         assert "experimental" in geometry_backend["note"]
         assert report["production_backend"] == geometry_backend
+        session = report["geometry_session"]
+        assert session["applicable"] is True
+        assert session["ready"] is (
+            report["capabilities"]["occt_cpp"]["status"] == "available"
+        )
+        if session["ready"]:
+            assert session["contract_version"] == "dfm.geometry/v2"
+            assert session["required_methods_available"] is True
+        assert session["config"]["lease_seconds"] == 900
+        assert report["config"]["values"]["geometry_session_max_processes"] == 2
         assert set(report["processes"]["supported"]) == {
             "die_casting",
             "injection",
@@ -86,6 +96,7 @@ def test_dfm_doctor_reports_workspace_config_and_capabilities(tmp_path, capsys, 
     assert "HTML report Playwright installed: True" in text_output
     assert "HTML report Chromium usable: True" in text_output
     assert "Configured geometry backend: occt_cpp_external [occt_cpp]" in text_output
+    assert "Persistent geometry session ready:" in text_output
 
 
 def test_dfm_doctor_reports_the_configured_internal_pythonocc_backend(
@@ -118,6 +129,8 @@ def test_dfm_doctor_reports_the_configured_internal_pythonocc_backend(
     assert backend["analyzer_key"] == "step"
     assert backend["status"] == report["capabilities"]["step"]["status"]
     assert "reference backend" in backend["note"]
+    assert report["geometry_session"]["applicable"] is False
+    assert report["geometry_session"]["ready"] is False
 
 
 def test_html_report_diagnostics_missing_playwright(monkeypatch):

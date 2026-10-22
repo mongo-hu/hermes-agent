@@ -217,6 +217,16 @@ def normalize_contracts(llm_path, runtime_path):
         if drawing_pdf_value is not None
         else None
     )
+    topology_map_value = resources.get("topology_map_path")
+    resolved["topology_map_path"] = (
+        resolve_file(
+            require_text(resources, "topology_map_path", "runtime.resources"),
+            base_dir,
+            "runtime.resources.topology_map_path",
+        )
+        if topology_map_value is not None
+        else None
+    )
 
     copy_by_id = {}
     for item in issues_copy:
@@ -520,6 +530,10 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
     scene_data_str = "{}"
     with open(scene_path, 'r', encoding='utf-8') as f:
         scene_data_str = f.read()
+    topology_data_str = "{}"
+    if resources.get("topology_map_path"):
+        with open(resources["topology_map_path"], "r", encoding="utf-8") as f:
+            topology_data_str = f.read()
 
     # Fetch traceability info
     ontology_path = resources["rule_library_path"]
@@ -595,6 +609,20 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
                 "issues",
             ),
             "triangle_refs": triangle_refs,
+            "geometry_refs": (
+                issue.get("localization", {}).get("geometry_refs", [])
+                if isinstance(issue.get("localization"), dict)
+                else []
+            ),
+            "localization": (
+                issue.get("localization")
+                if isinstance(issue.get("localization"), dict)
+                else {
+                    "status": "unlocated",
+                    "label": "暂无定位证据",
+                    "color": "neutral",
+                }
+            ),
             "actual": compact_number(metric.get("actual", "N/A")),
             "expected": _metric_expected(metric),
             "operator": metric.get("operator", ""),
@@ -1212,7 +1240,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
     html += f'<div class="glass-panel"><button class="glass-btn active" onclick="activateSummary3D(\'issues\')">问题定位</button>{field_selector}</div>'
     html += '<div id="activeModeLabel" class="cover-model-label">FAILED CHECKS · GEOMETRY EVIDENCE</div>'
     html += '<div id="modelIssueCallout" class="model-issue-callout"><div class="callout-title"></div><div class="callout-metric"></div></div>'
-    html += f'<div class="legend"><div class="legend-item"><div class="legend-color" style="background:#F21F12"></div><span class="legend-text">未通过判定区域</span></div><div class="legend-item"><div class="legend-color" style="background:#9AA6B2"></div><span class="legend-text">半透明结构外壳</span></div></div>'
+    html += f'<div class="legend"><div class="legend-item"><div class="legend-color" style="background:#F21F12"></div><span class="legend-text">精确区域已更新</span></div><div class="legend-item"><div class="legend-color" style="background:#F5B700"></div><span class="legend-text">初步定位</span></div><div class="legend-item"><div class="legend-color" style="background:#9AA6B2"></div><span class="legend-text">结构外壳</span></div></div>'
     html += f'<div class="summary-stat-strip" style="--summary-stat-columns:{max(1, len(summary_cards))};">'
     for label, value, color in summary_cards:
         html += f'<div class="summary-stat-item"><div style="width:4px; align-self:stretch; border-radius:4px; background:#{color};"></div><div class="stat-value" data-target="{value}">{value}</div><div class="stat-label">{label}</div></div>'
@@ -1231,11 +1259,20 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         nav_operator = {">=": "≥", "<=": "≤", "==": "=", "between": "∈"}.get(nav_issue["operator"], nav_issue["operator"])
         nav_unit = f' {nav_issue["unit"]}' if nav_issue["unit"] else ''
         nav_metric = f'实测 {nav_issue["actual"]}{nav_unit} · 要求 {nav_operator} {nav_issue["expected"]}{nav_unit}'
+        nav_localization = nav_issue["localization"].get("label", "暂无定位证据")
+        nav_localization_color = (
+            "#B54708"
+            if nav_issue["localization"].get("status") == "preliminary"
+            else "#D92D20"
+            if nav_issue["localization"].get("status") == "precise"
+            else "#667085"
+        )
         issue_nav_html += f'''
         <div class="issue-nav-card" data-issue-nav="{nav_id}">
             <button class="issue-nav-select" aria-pressed="false" onclick="selectIssueFromSummary('{nav_id}', true)">
                 <div style="font-size:9.5pt; color:#17202A; font-weight:800; line-height:1.25;">{nav_issue["title"]}</div>
                 <div style="margin-top:4px; color:#D92D20; font-size:8pt; font-weight:700;">{nav_metric}</div>
+                <div style="margin-top:3px; color:{nav_localization_color}; font-size:7.5pt; font-weight:700;">{nav_localization}</div>
             </button>
             <div class="issue-nav-actions">
                 <button onclick="event.stopPropagation(); goToEvidence('{nav_id}')">查看问题</button>
@@ -1461,7 +1498,19 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         page += 1
 
     # --- FINAL SLIDE: SUMMARY GROUNDED IN THE EVALUATED RUN ---
-    assessment_level = "存在未通过项" if issues else "未发现未通过项"
+    analysis_coverage = (
+        data.get("analysis_coverage")
+        if isinstance(data.get("analysis_coverage"), dict)
+        else {}
+    )
+    coverage_partial = analysis_coverage.get("status") == "partial"
+    assessment_level = (
+        "阶段结果：存在未完成项"
+        if coverage_partial
+        else "存在未通过项"
+        if issues
+        else "已覆盖范围未发现未通过项"
+    )
     html += '<div class="slide conclusion-slide" id="report-conclusion">\n'
     html += add_shape(0, 0, 13.333, 7.5, "F7F8FA", radius=False)
     html += f'<div class="page-ghost">{page:02d}</div>\n'
@@ -1478,6 +1527,11 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         f"{stats.get('evaluation_count', 0)} 项规则评估，"
         f"其中 {len(issues)} 项未通过。每个问题页均列出本次实测值、单位、"
         "规则阈值和对应的模型溯源；无截图不代表没有测量结果。"
+        + (
+            " 本报告为阶段结果，仍有待确认、未覆盖或无法判定的检查项，不能视为全部通过。"
+            if coverage_partial
+            else ""
+        )
     )
     core_risks_html = "".join(
         f'<li style="margin-bottom:8px;"><strong>{html_lib.escape(str(issue.get("title") or issue.get("check_id") or issue.get("code") or "DFM"))}</strong>：'
@@ -1490,8 +1544,16 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         for issue in issues
     )
     if not issues:
-        core_risks_html = '<li>本次规则评估未发现不合格项。</li>'
-        optimization_roadmap_html = '<li>保留本次报告与模型，按工程变更情况重新评估。</li>'
+        core_risks_html = (
+            '<li>已完成的规则评估未发现不合格项，但仍存在未完成范围。</li>'
+            if coverage_partial
+            else '<li>本次规则评估未发现不合格项。</li>'
+        )
+        optimization_roadmap_html = (
+            '<li>完成待确认方向与未覆盖检查后生成新的结果清单和报告版本。</li>'
+            if coverage_partial
+            else '<li>保留本次报告与模型，按工程变更情况重新评估。</li>'
+        )
 
     llm_mock_text = f'''
 <div class="conclusion-summary">
@@ -1686,6 +1748,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
         }});
 
         const sceneData = {scene_data_str};
+        const topologyData = {topology_data_str};
         const scalarFields = {scalar_fields_json};
         const ISSUE_UI_MAP = {json.dumps(issue_ui_data, ensure_ascii=False)};
 
@@ -1744,6 +1807,22 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
                     if (snapshotId && ref.render_mesh_snapshot_id && ref.render_mesh_snapshot_id !== snapshotId) continue;
                     if (ref.primitive_id && Number.isInteger(ref.triangle_id) && ref.triangle_id >= 0) {{
                         keys.add(`${{ref.primitive_id}}-t${{ref.triangle_id}}`);
+                    }}
+                }}
+                if (!(issue.triangle_refs || []).length) {{
+                    for (const face of topologyData.faces || []) {{
+                        const ref = face.geometry_ref || {{}};
+                        const matches = (issue.geometry_refs || []).some(candidate =>
+                            candidate.kind === ref.kind && candidate.index === ref.index &&
+                            (!candidate.entity_id || candidate.entity_id === ref.entity_id));
+                        if (!matches) continue;
+                        for (const triangle of face.triangle_refs || []) {{
+                            const snapshotId = sceneData.render_mesh_snapshot?.render_mesh_snapshot_id;
+                            if (snapshotId && triangle.render_mesh_snapshot_id && triangle.render_mesh_snapshot_id !== snapshotId) continue;
+                            if (triangle.primitive_id && Number.isInteger(triangle.triangle_id) && triangle.triangle_id >= 0) {{
+                                keys.add(`${{triangle.primitive_id}}-t${{triangle.triangle_id}}`);
+                            }}
+                        }}
                     }}
                 }}
             }}
@@ -1891,8 +1970,12 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
             defectGeometry.computeVertexNormals();
             defectGeometry.computeBoundingBox();
             defectGeometry.boundingBox.getCenter(activeDefectCenter);
+            const selectedIssue = ISSUE_UI_MAP[window.dfmSelectedIssueId] || null;
+            const preliminary = selectedIssue?.localization?.status === 'preliminary';
             const defectMaterial = new THREE.MeshPhysicalMaterial({{
-                color: 0xFF2F18, emissive: 0x5A0903, emissiveIntensity: 0.72,
+                color: preliminary ? 0xF5B700 : 0xFF2F18,
+                emissive: preliminary ? 0x5A3C00 : 0x5A0903,
+                emissiveIntensity: 0.72,
                 side: THREE.DoubleSide, roughness: 0.28, metalness: 0.04,
                 clearcoat: 0.82, clearcoatRoughness: 0.18,
                 transparent: true, opacity: 0.97, depthTest: true, depthWrite: true,
@@ -2332,7 +2415,7 @@ def generate_html(llm_jsonl_path, runtime_jsonl_path, output_html_path, vendor_d
             const callout = document.getElementById('modelIssueCallout');
             if (callout) {{
                 callout.querySelector('.callout-title').textContent = item.title;
-                callout.querySelector('.callout-metric').textContent = `实测 ${{item.actual}} ${{item.unit}} · 要求 ${{getOperatorLabel(item.operator)}} ${{item.expected}} ${{item.unit}}`;
+                callout.querySelector('.callout-metric').textContent = `${{item.localization?.label || '暂无定位证据'}} · 实测 ${{item.actual}} ${{item.unit}} · 要求 ${{getOperatorLabel(item.operator)}} ${{item.expected}} ${{item.unit}}`;
                 callout.classList.add('visible');
             }}
             history.replaceState(null, '', `#selected-${{encodeURIComponent(issueId)}}`);

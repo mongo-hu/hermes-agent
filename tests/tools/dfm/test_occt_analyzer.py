@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import threading
 
 import pytest
 from jsonschema import Draft202012Validator
@@ -19,7 +20,7 @@ from tools.dfm.contracts import (
     PlanRecord,
 )
 from tools.dfm.errors import DFMError
-from tools.dfm.runtime.process import SESSION_CONTRACT
+from tools.dfm.runtime.process import GeometrySession, SESSION_CONTRACT
 
 
 CAPABILITIES = {
@@ -156,6 +157,62 @@ def test_analysis_requires_the_project_owned_persistent_session(tmp_path):
         )
 
     assert exc_info.value.code == "geometry_session_required"
+
+
+def _session_with_recorded_job_calls(statuses):
+    session = object.__new__(GeometrySession)
+    session._job_event_lock = threading.Lock()
+    session._job_event_callbacks = {}
+    calls = []
+
+    def call(method, params, **_kwargs):
+        calls.append((method, dict(params)))
+        if method == "jobs.cancel":
+            return {"contract_version": SESSION_CONTRACT, "status": "cancelled"}
+        return {
+            "contract_version": SESSION_CONTRACT,
+            "status": statuses.pop(0),
+        }
+
+    session.call = call
+    return session, calls
+
+
+def test_persistent_job_cancellation_cancels_only_the_worker_job():
+    session, calls = _session_with_recorded_job_calls(["cancelled"])
+    cancellation = CancellationToken()
+    cancellation.cancel()
+
+    with pytest.raises(DFMError) as exc_info:
+        session.wait_job(
+            "job-1",
+            timeout_seconds=10,
+            poll_interval_seconds=0,
+            cancellation=cancellation,
+        )
+
+    assert exc_info.value.code == "run_cancelled"
+    assert calls == [
+        ("jobs.cancel", {"job_id": "job-1"}),
+        ("jobs.status", {"job_id": "job-1"}),
+    ]
+
+
+def test_persistent_job_timeout_cancels_job_without_closing_shared_session():
+    session, calls = _session_with_recorded_job_calls(["running"])
+
+    with pytest.raises(DFMError) as exc_info:
+        session.wait_job(
+            "job-2",
+            timeout_seconds=0,
+            poll_interval_seconds=0,
+        )
+
+    assert exc_info.value.code == "geometry_operation_timeout"
+    assert calls == [
+        ("jobs.status", {"job_id": "job-2"}),
+        ("jobs.cancel", {"job_id": "job-2"}),
+    ]
 
 
 def test_scalar_field_accepts_only_feature_g_context_identity():

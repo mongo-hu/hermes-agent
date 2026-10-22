@@ -1,7 +1,7 @@
 ---
 title: "DFM 本体、规则库与 Agent 运行快照设计"
-status: mixed-reference
-updated: 2026-10-19
+status: implementation-reference
+updated: 2026-10-21
 type: architecture-database-design
 ---
 
@@ -9,9 +9,13 @@ type: architecture-database-design
 
 [开发导航](README.md)
 
-本文是本体、规则字段、发布物与 Hermes 本地消费的维护位置。中心九张表保留供跨仓评审，Mold 实际迁移和发布实现由其团队负责；不在本次文档收敛中改数据库。
+本文是本体、规则字段、发布物与 Hermes 本地消费的维护位置，并按当前 Mold 管理端、Excel 导入器、
+Schema 4 发布器和 Hermes 运行代码描述已经落地的应用。生产数据库中的实际数据和部署开关仍须在目标环境验收。
 
-已静态核对：Agent 可读取规则包 Schema 2/3/4，Schema 4 使用两层 OR-of-AND 判定。目标调整：Worker 直接使用 G ID、常驻模型与分组增量编排，公共 v2 Schema 及接入尚待实施。两者不是同一个版本体系。完整流程只在[主流程](dfm-main-workflow-explained.md)维护，几何接入只在[会话设计](dfm-geometric-session-contract.md)维护。
+当前实现已经包含：Mold 九张中心表及管理界面、`V2.2.3.xlsx` 导入、Schema 4 两层 OR-of-AND
+发布、四个只读运行接口、Hermes Schema 2/3/4 安装与求值，以及 Worker 直接使用 G ID 的常驻会话。
+规则包 Schema 版本与几何会话协议版本是两个独立版本体系。完整流程只在[主流程](dfm-main-workflow-explained.md)维护，
+几何接入只在[会话设计](dfm-geometric-session-contract.md)维护。
 
 ## 1. 设计目标
 
@@ -25,8 +29,9 @@ type: architecture-database-design
 `dfm-occt-worker` 的 C++ 实现和 Capability Manifest 负责。数据库只描述这些能力的业务语义、
 组合关系和规则。
 
-`V2.2.xlsx` 是不可修改的人工业务权威来源；导入器只读取其中明确存在的 ID、名称、关系和规则，
-数据库模型与运行快照不反向修改该工作簿。
+当前导入器的人工业务权威来源是 `D:\item\模具项目\Rule_base\V2.2.3.xlsx`。导入器只读取其中明确存在的
+ID、名称、关系、影响范围和规则，数据库模型与运行快照不反向修改该工作簿。工作簿文件版本与导入命令的
+`--rule-version` 是两个字段：当前代码默认工作簿为 `V2.2.3.xlsx`，默认规则版本参数仍为 `V2.2.2`。
 
 ## 2. 为什么这些数据需要落库
 
@@ -75,7 +80,8 @@ GET /v1/dfm/publications/latest?process=...&organization_id=...
 GET /v1/dfm/publications/{snapshot_id}/artifact
 ```
 
-Web 使用字典/Context API，Agent 下载签名发布物，OCCT 只交换 Capability 和几何任务契约。
+Web 使用字典/Context API，Agent 下载带 SHA-256 内容身份的发布物，OCCT 只交换 Capability 和几何任务契约。
+当前实现校验内容哈希，但没有实现发布物数字签名，不能把 SHA-256 描述成签名认证。
 
 中心管理库固定采用 MySQL 8.0+、InnoDB 和 `utf8mb4`。Django `UUIDField` 在 MySQL 中按
 `char(32)` 落库，所有时间使用 UTC `datetime(6)`；`JSONField` 映射为 MySQL `json`。高频过滤条件
@@ -118,12 +124,13 @@ Web 使用字典/Context API，Agent 下载签名发布物，OCCT 只交换 Capa
 | Factor | `runtime_key/default_value/question/impact_scope/source_policy` |
 | Check | `report_group`；历史 `default_severity` 仅作 Draft 起草提示，不作为运行时定级来源 |
 
-以上是 `properties_json` 的完整字段白名单。字段有可靠来源时填写实际内容，没有来源时保留空字符串、
+以上是新发布契约的 `properties_json` 字段白名单。字段有可靠来源时填写实际内容，没有来源时保留空字符串、
 `null` 或空对象；除此之外的来源追踪、显示分组、导入版本和关系缓存等字段不写入
 `properties_json`。Excel 来源追踪由 Rule Citation、导入日志和发布物哈希承担。
-白名单内字段均在规则库管理界面完整展示，但只读，包括 Feature Type 的 `worker_kind`、Geometric 的
-`dimension/canonical_unit` 和 Factor 的 `runtime_key`。这些字段仅由
-工作簿导入或能力同步流程维护；普通管理 API 不接受改写，发布时再依据认证 Capability 和规则完整性要求校验这些值。
+白名单内字段均在规则库管理界面完整展示。Feature Type 的 `worker_kind`、Geometric 的
+`dimension/canonical_unit`，以及 Factor 的 `runtime_key/default_value/question/source_policy` 只读，
+由工作簿导入或能力同步流程维护。`impact_scope` 是唯一允许普通管理 API 和界面人工修正的 Factor
+运行属性；再次导入工作簿时，以 Excel 的“影响范围”列覆盖该修正。发布时再依据 Capability 和规则完整性要求校验这些值。
 
 新契约中，Geometric 值的类型继续由 `data_schema_json` 描述；部位、参考对象及聚合口径
 由该 G 的定义与对应 Worker Capability 明确声明。Worker 仅在私有执行描述中选择
@@ -143,13 +150,16 @@ Check 的 `default_severity` 不得自动填入 Rule Version，也不得在规�
 
 #### Factor 的 `impact_scope`
 
-`impact_scope` 定义影响因子在分析与追问中的作用范围，使用受控中文值：
+`impact_scope` 对应 `V2.2.3.xlsx` 的 `02_前置影响因子` 工作表“影响范围”列。导入器按表头定位该列，
+去除换行和空白后写入 `dfm_concept.properties_json.impact_scope`。旧工作簿没有该列时允许为空。
+它定义影响因子在分析与追问中的作用范围，当前使用四个受控中文值：
 
 - `整件级`：同一项目整件共用，追问时不按 Check 或特征重复询问；
 - `特征实例级`：结合当前 Check 和已识别特征展示追问范围；
 - `非前置（特征识别）`：优先由特征识别产生 Observation，不作为几何识别前的必填项；
 - `非前置（系统推导）+用户确认`：先由系统推导候选值，再按 `source_policy` 请用户确认。
 
+当前工作簿、Django Serializer、规则库管理界面、Schema 4 发布物和 Hermes 均已落地该字段。
 历史快照可以不包含该字段；新发布包携带时，Hermes 必须保留并将其传入
 `FactRequirement`。它只控制事实的作用范围和追问语义，不参与 Rule Version 唯一选择，
 也不改变 `conditions_json` 的判定含义。
@@ -157,29 +167,22 @@ Check 的 `default_severity` 不得自动填入 Rule Version，也不得在规�
 #### Factor 的 `source_policy`
 
 `source_policy` 保存于 `concept_type=factor` 的 `dfm_concept.properties_json`，用于声明影响因子的允许
-来源和采信策略。它不保存项目中的实际值；实际值仍保存为 Agent 项目 Manifest 中的 `FactRecord`，
-候选识别结果保存为 `ObservationRecord`。
+来源和采信策略。它不是 Excel 中的独立 JSON 字段，而是导入器根据每个 Factor 的“取值来源”代码生成。
+“影响范围”单独写入同级 `impact_scope`；“来源优先级”目前会被解析并记录源单元格，但尚未写入
+`properties_json`，也没有参与 Hermes 的来源选择。`source_policy` 不保存项目中的实际值；实际值仍保存为
+Agent 项目 Manifest 中的 `FactRecord`，候选识别结果保存为 `ObservationRecord`。
+
+以下是 `V2.2.3.xlsx` 中 `F_SURF_FINISH_REQ`（表面状态要求）的当前实际导入结果，不是通用于所有 Factor 的模板：
 
 ```json
 {
-  "runtime_key": "surface_texture",
-  "question": "产品表面采用什么皮纹？",
+  "runtime_key": "surf_finish_req",
+  "question": "请确认表面状态要求。",
+  "impact_scope": "特征实例级",
   "source_policy": {
-    "allowed_sources": [
-      "USR",
-      "DWG",
-      "CAD",
-      "GEO",
-      "DOC",
-      "DB",
-      "DER",
-      "DEF"
-    ],
-    "auto_accept_sources": ["CAD", "DOC", "DB", "DER", "DEF"],
-    "confirmation_required_sources": [
-      "DWG",
-      "GEO"
-    ],
+    "allowed_sources": ["USR", "DWG", "CAD", "DOC"],
+    "auto_accept_sources": ["CAD", "DOC"],
+    "confirmation_required_sources": ["DWG"],
     "min_confidence": 0.9,
     "evidence_required": true,
     "conflict_policy": "ask_user",
@@ -200,7 +203,8 @@ Check 的 `default_severity` 不得自动填入 Rule Version，也不得在规�
 | `conflict_policy` | string | 多来源值冲突时的策略；第一期固定支持 `ask_user` |
 | `missing_policy` | string | 所有允许来源均无有效值时的策略；第一期固定支持 `ask_user` |
 
-来源码直接沿用 `V2.2.xlsx` 的“取值来源”代码，导入和发布过程中不得改名、合并或派生为其他来源码：
+来源码直接沿用 `V2.2.3.xlsx` 的“取值来源”代码。下表是导入器允许的全集；每个 Factor 只保存自己在
+工作簿中声明的子集，不能把全集作为该 Factor 的实际来源。导入和发布过程中不得改名、合并或派生为其他来源码：
 
 | 来源码 | 含义 |
 | --- | --- |
@@ -715,7 +719,9 @@ Check 通过 USES_OPERAND 绑定公式 alias 与 G；Operand 是现有关系及�
 
 ## 9. 实现核对与迁移边界
 
-核对日期：2026-10-19；基于 HEAD `3c6dd9536` 及工作区源码，未连接 Mold 生产服务，也未执行工程 E2E。
+核对日期：2026-10-21；基于 Hermes HEAD `9fa1eae19`、Mold HEAD `f6b9b28a3`、当前工作区源码及
+`D:\item\模具项目\Rule_base\V2.2.3.xlsx`。本次核对未连接 Mold 生产数据库，因此描述的是仓库已落地能力，
+不代表目标环境已经执行迁移、导入和发布。
 
 | 内容 | 核对入口 | 状态与边界 |
 | --- | --- | --- |
@@ -723,8 +729,11 @@ Check 通过 USES_OPERAND 绑定公式 alias 与 G；Operand 是现有关系及�
 | SQLite 安装、固定身份、有界 Check Context | `tools/dfm/ontology/store.py` | 现有代码入口；实际选中版本读元数据 |
 | 同步、历史包、撤销与回滚入口 | `tools/dfm/ontology/sync.py` | 现有代码入口；远端鉴权、发布内容与运行策略需部署验证 |
 | 示例规则包 | `tools/dfm/scopes/injection/ontology_snapshot_v2.json` | Schema 2 示例，不代表远程最新发布 |
-| 新 Worker 直接 G ID 与常驻会话 | 会话设计及后续公共 v2 Schema | 待实施，不保留旧 Metric／Quantity／Region 请求路由兼容层 |
-| 中心表、导入与发布器迁移 | Mold 团队 | 本文保留设计，不声称本次已部署或逐条完成数据评审 |
+| Worker 直接 G ID 与常驻会话 | `tools/dfm/runtime/process.py`、OCCT Worker 公共 v2 Schema | 已落地；普通计算不使用旧 Metric／Quantity／Region 请求路由 |
+| 中心九表与管理界面 | Mold `aimold_app/models/dfm_*`、`views/dfm_management.py`、Web `ruleCatalog` | 已落地模型、审核生命周期、规则集编排、发布和撤销界面；生产数据状态需部署核对 |
+| Excel 导入与新增“影响范围” | Mold `import_dfm_v2.py`、`sync_dfm_workbook_ontology.py`、`V2.2.3.xlsx` | 已按表头读取并写入 `Factor.properties_json.impact_scope`；界面允许修正，重导入以 Excel 为准 |
+| Schema 4 发布与四个运行接口 | Mold `dfm_publication_service.py`、`dfm_runtime_urls.py` | 已落地不可变 Artifact、SHA-256 校验、latest/dictionary/context/artifact；未实现数字签名 |
+| Mold Geometric 旧绑定字段 | Mold `dfm_concept_property_service.py`、`dfm_geometric_backfill_service.py` | 当前应用代码仍保留 `worker_geometric_id/quantity_id` 及旧 Capability 回填；它们不是新公共计算路由，仍需与 G ID 契约继续收敛 |
 
 迁移时逐条辨别旧 conditions_json 内的几何条件：合格要求进入 acceptance_criteria_json；真正的几何适用条件另行设计与审核，不伪装成 Factor。判定项 ID、单位、比较符、引用和 AND／OR 语义均需验证，不能按字段形状机械搬迁。
 

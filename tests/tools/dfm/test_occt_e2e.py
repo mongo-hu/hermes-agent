@@ -356,7 +356,7 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
         job_timeout_seconds=120,
         poll_interval_seconds=0.02,
         idle_timeout_seconds=300,
-        max_sessions=1,
+        max_sessions=2,
         memory_budget_mb=4096,
     )
     try:
@@ -367,7 +367,7 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
         assert not hasattr(discovery, "regions")
         assert all("region_refs" not in item.to_dict() for item in discovery.features)
         wall = next(item for item in discovery.features if item.kind == "main_wall")
-        proposed_direction = [0.0, 0.0, 1.0]
+        proposed_direction = [1.0, 0.0, 0.0]
         analyzed_scope = pool.call(
             "project-v2",
             "forming_scopes.analyze",
@@ -387,6 +387,15 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
             if item["forming_scope_id"] == "MAIN_POS"
         )
         assert candidate["status"] == "candidate"
+        local_candidate = next(
+            item
+            for item in analyzed_scope["forming_scopes"]
+            if item["forming_scope_id"] == "SIDE_01"
+        )
+        assert local_candidate["mode"] == "local"
+        assert local_candidate["draw_direction"] is None
+        assert local_candidate["direction_source"] is None
+        assert local_candidate["geometry_refs"]
         confirmed_scope = pool.call(
             "project-v2",
             "forming_scopes.revise",
@@ -422,6 +431,17 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
         direction_request = GeometricRequest(
             wall.feature_id, ["G_WALL_IN_DRAFT"], forming_context
         )
+        shared_g_bindings = [
+            GeometricRuleBinding(
+                binding_id=f"binding-shared-{suffix}",
+                geometric_id="G_WALL_THK_MIN",
+                rule_id=f"rule-shared-{suffix}",
+                operator=">=",
+                aggregation="identity",
+                feature_refs=[wall.feature_id],
+            )
+            for suffix in ("a", "b")
+        ]
         fragment = PlanFragmentRecord(
             fragment_id="fragment-v2",
             snapshot_id=confirmed_scope["snapshot_id"],
@@ -429,7 +449,7 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
             capability_version="test",
             dependency_fingerprint="a" * 64,
             confirmed_fact_refs=[],
-            rule_binding_refs=[],
+            rule_binding_refs=[item.binding_id for item in shared_g_bindings],
             items=[request, direction_request],
         )
         plan = PlanRecord(
@@ -438,6 +458,11 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
             analyzer_keys=["occt_cpp"],
             status="ready",
             created_at="2026-01-01T00:00:00Z",
+            rules={
+                "rule-shared-a": EffectiveRule(-1.0, "mm", "ontology:test-a"),
+                "rule-shared-b": EffectiveRule(100.0, "mm", "ontology:test-b"),
+            },
+            rule_bindings=shared_g_bindings,
             plan_fragments=[fragment],
         )
         artifacts = OcctAnalyzer(EXECUTABLE, session_pool=pool).run(
@@ -459,6 +484,10 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
         )
         assert payload["contract_version"] == "dfm.geometry/v2"
         assert len(payload["results"]) == 2
+        assert sum(
+            item["geometric_id"] == "G_WALL_THK_MIN"
+            for item in payload["results"]
+        ) == 1
         result = next(
             item
             for item in payload["results"]
@@ -492,6 +521,21 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
         # ambiguous) and the unavailable value must stay explicit.
         assert direction_result["status"] in {"ok", "not_applicable"}
         assert direction_result["context"] == forming_context
+        evaluations_artifact = EvaluationEngine().materialize(
+            project_dir,
+            "run-v2",
+            plan,
+            [result_artifact],
+        )
+        evaluations_payload = json.loads(
+            (project_dir / evaluations_artifact.relative_path).read_text(
+                encoding="utf-8"
+            )
+        )
+        assert {
+            item["rule_id"]: item["outcome"]
+            for item in evaluations_payload["evaluations"]
+        } == {"rule-shared-a": "pass", "rule-shared-b": "fail"}
         scalar = next(item for item in artifacts if item.kind == "scalar_field")
         scalar_payload = json.loads(
             (project_dir / scalar.relative_path).read_text(encoding="utf-8")
@@ -527,11 +571,41 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
             "forming_scopes.revise",
         ]
 
-        # Closing the Worker invalidates every in-memory handle.  The next run
-        # must reopen the STEP, replay and verify discovery, map the pinned
-        # logical snapshot to its new live handle, and compute without silently
-        # reusing the dead handle.
-        pool.close_project("project-v2")
+        other_project_dir = tmp_path / "project-v2-other"
+        other_project_dir.mkdir()
+        other_input_path = other_project_dir / "model.step"
+        shutil.copy2(source, other_input_path)
+        other_input = InputRecord(
+            input_id="input-v2-other",
+            kind="step",
+            source_name=other_input_path.name,
+            relative_path=other_input_path.name,
+            size_bytes=other_input_path.stat().st_size,
+            sha256=input_sha256,
+            created_at="2026-01-01T00:00:00Z",
+        )
+        other_discovery = OCCTCppFeatureRecognitionProvider(
+            EXECUTABLE, session_pool=pool
+        ).recognize(
+            other_input,
+            process="injection",
+            project_dir=other_project_dir,
+        )
+        other_session = pool.acquire("project-v2-other").session
+        other_pid = other_session.pid
+        assert other_discovery.worker_snapshot_id.startswith("snapshot_")
+
+        # An unexpected Worker exit invalidates every in-memory handle owned by
+        # this project.  The next run must reopen the STEP, replay and verify
+        # discovery, map the pinned logical snapshot to its new live handle,
+        # and compute without silently reusing the dead handle.
+        crashed_session = pool.acquire("project-v2").session
+        crashed_pid = crashed_session.pid
+        crashed_session._process.terminate()
+        crashed_session._process.wait(timeout=5)
+        assert not crashed_session.alive
+        assert pool.acquire("project-v2-other").session.pid == other_pid
+        assert other_session.alive
         recovered_artifacts = OcctAnalyzer(EXECUTABLE, session_pool=pool).run(
             AnalyzerContext(
                 "project-v2",
@@ -556,6 +630,7 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
         recovered_cache = pool.acquire("project-v2").snapshots_by_input_sha256[
             input_sha256
         ]
+        assert pool.acquire("project-v2").session.pid != crashed_pid
         assert recovered_cache["diagnostics"]["model_import_count"] == 1
     finally:
         pool.close()
@@ -586,7 +661,7 @@ def test_service_compiles_only_ready_v2_fragments_after_scope_review(tmp_path):
         for name, value in {
             "process": "injection",
             "model_units": "mm",
-            "pull_dir": [0, 0, 1],
+            "pull_dir": [1, 0, 0],
             "material": "ABS",
         }.items():
             service.project(
@@ -616,12 +691,23 @@ def test_service_compiles_only_ready_v2_fragments_after_scope_review(tmp_path):
         scope = service.analysis(
             "analyze_forming_scope",
             project_id=project_id,
-            forming_scope_id="MAIN_POS",
-            scope_mode="main",
-            draw_direction=[0, 0, 1],
         )
         candidate = scope["forming_scope"]
-        service.analysis(
+        assert candidate["forming_scope_id"] == "MAIN"
+        local_candidate = next(
+            item
+            for item in scope["forming_scopes"]
+            if item["forming_scope_id"] == "SIDE_01"
+        )
+        assert local_candidate["draw_direction"] is None
+        assert local_candidate["direction_source"] is None
+        assert local_candidate["geometry_refs"]
+        undercut_group = next(
+            item
+            for item in scope["review_groups"]
+            if item["kind"] == "undercut_scope"
+        )
+        main_revised = service.analysis(
             "revise_forming_scopes",
             project_id=project_id,
             forming_scopes=[
@@ -638,23 +724,10 @@ def test_service_compiles_only_ready_v2_fragments_after_scope_review(tmp_path):
                 }
             ],
         )
-        local = service.analysis(
-            "analyze_forming_scope",
-            project_id=project_id,
-            forming_scope_id="SIDE_01",
-            scope_mode="local",
-            draw_direction=[1, 0, 0],
-        )
-        local_candidate = local["forming_scope"]
-        undercut_group = next(
-            item
-            for item in local["review_groups"]
-            if item["kind"] == "undercut_scope"
-        )
         supplemented = service.analysis(
             "confirm_discovery",
             project_id=project_id,
-            expected_revision=local["revision"],
+            expected_revision=main_revised["revision"],
             review_group_ids=[undercut_group["review_group_id"]],
         )
         pending_by_kind = {
@@ -672,23 +745,32 @@ def test_service_compiles_only_ready_v2_fragments_after_scope_review(tmp_path):
         )
         assert structure_confirmed["status"] == "forming_scope_review_required"
         assert structure_confirmed["next_action"] == "revise_forming_scopes"
-        service.analysis(
+        local_revised = service.analysis(
             "revise_forming_scopes",
             project_id=project_id,
             forming_scopes=[
                 {
-                    key: local_candidate[key]
-                    for key in (
-                        "forming_scope_id",
-                        "mode",
-                        "draw_direction",
-                        "coordinate_system",
-                        "direction_source",
-                        "geometry_refs",
-                    )
+                    "forming_scope_id": local_candidate["forming_scope_id"],
+                    "mode": local_candidate["mode"],
+                    "draw_direction": [0, 1, 0],
+                    "coordinate_system": local_candidate["coordinate_system"],
+                    "direction_source": "user_confirmed",
+                    "geometry_refs": local_candidate["geometry_refs"],
                 }
             ],
         )
+        review_groups = service._store(project_id).load().review_groups
+        assert [
+            item.status
+            for item in review_groups
+            if item.kind == "product_forming" and "MAIN" in item.target_refs
+        ] == ["confirmed"]
+        assert {
+            item.status
+            for item in review_groups
+            if item.kind == "local_direction" and "SIDE_01" in item.target_refs
+        } == {"stale", "confirmed"}
+        assert local_revised["forming_scopes"][0]["draw_direction"] == [0.0, 1.0, 0.0]
         planned = service.analysis("plan", project_id=project_id)
         plan = planned["plan"]
         assert plan["status"] == "ready"

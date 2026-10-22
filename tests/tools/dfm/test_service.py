@@ -21,12 +21,19 @@ from tools.dfm.contracts import (
     ClarificationRecord,
     Capability,
     CapabilityStatus,
+    EffectiveRule,
     FactRecord,
+    FeatureRecord,
     GeometricRequest,
+    GeometricRuleBinding,
+    FormingScopeRecord,
+    GeometryRef,
     ObservationRecord,
     PlanFragmentRecord,
     PlanRecord,
+    ReviewGroupRecord,
 )
+from tools.dfm.processes.base import ProcessPlan
 from tools.dfm.processes.occt_injection import geometry_binding_index
 
 
@@ -799,6 +806,127 @@ def test_occt_plan_stops_when_no_supported_rule_is_applicable(service, monkeypat
     assert "plan" not in result
     manifest = dfm.project("status", project_id=project_id)["project"]
     assert all(item["phase"] == "discovery" for item in manifest["plans"])
+
+
+def test_geometric_binding_keeps_one_local_scope_waiting_while_another_is_ready(
+    service,
+):
+    dfm, _temp = service
+    input_sha256 = "a" * 64
+    geometry_ref = GeometryRef("face", 7, input_sha256)
+    feature = FeatureRecord(
+        "feature-wall",
+        "main_wall",
+        [],
+        1.0,
+        input_sha256=input_sha256,
+        properties={"geometry_refs": [geometry_ref.to_dict()]},
+        status="confirmed",
+    )
+    scopes = [
+        FormingScopeRecord(
+            "SIDE_01",
+            "snapshot_model_2",
+            "local",
+            None,
+            "model",
+            None,
+            "candidate",
+            [geometry_ref],
+        ),
+        FormingScopeRecord(
+            "SIDE_02",
+            "snapshot_model_3",
+            "local",
+            [0.0, 1.0, 0.0],
+            "model",
+            "user_confirmed",
+            "confirmed",
+            [geometry_ref],
+        ),
+    ]
+    review_groups = [
+        ReviewGroupRecord(
+            f"review.structure.{scope_id}",
+            "local_structure",
+            [scope_id, feature.feature_id],
+            character * 64,
+            "user",
+            "confirmed",
+            "2026-10-21T00:00:00Z",
+        )
+        for scope_id, character in (("SIDE_01", "b"), ("SIDE_02", "c"))
+    ]
+    process_plan = ProcessPlan(
+        process="injection",
+        adapter_version="test",
+        scope_id="injection.geometry-core",
+        scope_version="test",
+        rules={"rule-draft": EffectiveRule(1.0, "deg", "test")},
+        operations=[],
+        accepted_inputs={"step"},
+        rule_bindings=[
+            GeometricRuleBinding(
+                "binding-draft",
+                "G_WALL_IN_DRAFT",
+                "rule-draft",
+                ">=",
+                "identity",
+            )
+        ],
+        binding_selectors={
+            "binding-draft": {"actual": {"feature_kind": "main_wall"}}
+        },
+    )
+    dfm.occt_geometry_capability = {
+        "contract_version": "dfm.geometry/v2",
+        "geometrics": [
+            {
+                "geometric_id": "G_WALL_IN_DRAFT",
+                "feature_kind": "main_wall",
+                "support_status": "supported",
+                "scope_modes": ["feature"],
+                "direction_modes": ["local"],
+                "requires_complete_inventory": False,
+                "context_schema": {
+                    "required": [
+                        "forming_scope_id",
+                        "draw_direction",
+                        "coordinate_system",
+                        "direction_source",
+                    ]
+                },
+            }
+        ]
+    }
+
+    bound = dfm._bind_geometric_scope(
+        process_plan,
+        SimpleNamespace(
+            features=[feature],
+            forming_scopes=scopes,
+            review_groups=review_groups,
+        ),
+        SimpleNamespace(
+            worker_snapshot_id="snapshot_model_4",
+            feature_refs=[feature.feature_id],
+        ),
+    )
+
+    contexts = {
+        item.context["forming_scope_id"]: item.context
+        for item in bound.rule_bindings
+    }
+    assert contexts == {
+        "SIDE_01": {"forming_scope_id": "SIDE_01"},
+        "SIDE_02": {
+            "forming_scope_id": "SIDE_02",
+            "draw_direction": [0.0, 1.0, 0.0],
+            "coordinate_system": "model",
+            "direction_source": "user_confirmed",
+        },
+    }
+
 
 def test_input_or_confirmed_fact_invalidates_prior_plan(service):
     dfm, temp = service

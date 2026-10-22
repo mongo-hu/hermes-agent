@@ -75,6 +75,39 @@ def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path):
                 }
             ],
         },
+        "evidence_geometry.json": {
+            "failed_patches": [
+                {
+                    "evaluation_id": "evaluation-draft",
+                    "geometry_refs": [{"kind": "face", "index": 7}],
+                    "triangle_refs": [
+                        {
+                            "primitive_id": "face-7",
+                            "triangle_id": 0,
+                            "render_mesh_snapshot_id": "mesh-1",
+                        }
+                    ],
+                }
+            ]
+        },
+        "result_manifest.json": {
+            "run_id": run_id,
+            "plan_id": "plan_1",
+            "created_at": "now",
+            "plan_fragments": [],
+            "result_refs": ["measurement-draft"],
+            "rule_refs": ["min_draft_deg"],
+            "final_confirmation_refs": [],
+            "coverage_gaps": [{"reason": "local_direction_pending"}],
+            "incomplete_results": [],
+            "incomplete_fragments": [
+                {"fragment_id": "fragment-side-1", "status": "waiting_input"}
+            ],
+            "mesh_refs": ["scene", "topology"],
+            "render_mesh_snapshot_id": "mesh-1",
+            "topology_snapshot_id": "topology-1",
+            "evidence_refs": ["evidence-draft"],
+        },
     }
     artifacts = []
     for index, (name, payload) in enumerate(payloads.items()):
@@ -135,6 +168,8 @@ def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path):
     assert report["issues"][0]["metric"]["certified"] is False
     assert report["issues"][0]["severity"] == "warning"
     assert report["issues"][0]["severity_rationale"] == "Draft angle affects release."
+    assert report["issues"][0]["localization"]["status"] == "precise"
+    assert report["issues"][0]["localization"]["color"] == "red"
     assert report["issues"][0]["check_id"] == "check.main_wall_minimum_draft"
     assert report["issues"][0]["issue_type_id"] == "check.main_wall_minimum_draft"
     assert report["issues"][0]["issue_type_label"] == "拔模角问题"
@@ -152,6 +187,12 @@ def test_shared_report_assembles_failed_evaluation_and_evidence(tmp_path):
     assert report["stats"]["indeterminate_count"] == 1
     assert report["indeterminate_checks"][0]["check_id"] == "check.boss_wall"
     assert report["evidence_coverage"]["coverage_ratio"] == 1.0
+    assert report["analysis_coverage"]["status"] == "partial"
+    assert report["analysis_coverage"]["coverage_gaps"] == [
+        {"reason": "local_direction_pending"}
+    ]
+    assert report["result_manifest"]["artifact_id"] == "artifact-4"
+    assert report["result_manifest"]["render_mesh_snapshot_id"] == "mesh-1"
 
 
 def test_geometric_report_uses_g_identity_without_region_or_metric_routes(tmp_path):

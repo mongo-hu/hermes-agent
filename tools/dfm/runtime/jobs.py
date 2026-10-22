@@ -710,6 +710,32 @@ class JobManager:
                 "geometric_result_invalid",
                 "The Geometric result artifact cannot be pinned for reporting.",
             ) from exc
+        artifact_by_kind = {item.kind: item for item in artifacts}
+
+        def artifact_payload(kind: str) -> dict[str, Any]:
+            artifact = artifact_by_kind.get(kind)
+            if artifact is None:
+                return {}
+            try:
+                value = json.loads(
+                    (project_dir / artifact.relative_path).read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError, TypeError) as exc:
+                raise DFMError(
+                    "result_manifest_input_invalid",
+                    f"The {kind} artifact cannot be pinned for reporting.",
+                ) from exc
+            if not isinstance(value, dict):
+                raise DFMError(
+                    "result_manifest_input_invalid",
+                    f"The {kind} artifact must contain an object.",
+                )
+            return value
+
+        scene_payload = artifact_payload("render_scene")
+        topology_payload = artifact_payload("topology_map")
+        render_mesh_snapshot = scene_payload.get("render_mesh_snapshot")
+        topology_snapshot = topology_payload.get("topology_snapshot")
         selected_fragments = plan.active_plan_fragments()
         selected_fragment_refs = {item.fragment_id for item in selected_fragments}
         selected_results = [
@@ -787,10 +813,27 @@ class JobManager:
                 for item in artifacts
                 if item.kind in {"render_scene", "topology_map"}
             ],
+            "render_mesh_snapshot_id": (
+                render_mesh_snapshot.get("render_mesh_snapshot_id")
+                if isinstance(render_mesh_snapshot, dict)
+                else None
+            ),
+            "topology_snapshot_id": (
+                topology_snapshot.get("topology_snapshot_id")
+                if isinstance(topology_snapshot, dict)
+                else None
+            ),
             "evidence_refs": [
                 item.artifact_id
                 for item in artifacts
-                if item.kind in {"scalar_field", "evidence"}
+                if item.kind
+                in {
+                    "scalar_field",
+                    "evidence",
+                    "evidence_geometry",
+                    "evidence_records",
+                    "evidence_image",
+                }
             ],
             "incomplete_results": incomplete,
             "incomplete_fragments": [

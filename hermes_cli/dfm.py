@@ -97,6 +97,15 @@ def collect_diagnostics() -> dict:
             "geometry_analyzer_key": config.geometry_analyzer_key,
             "geometry_executable": config.geometry_executable,
             "geometry_timeout_seconds": config.geometry_timeout_seconds,
+            "geometry_job_poll_interval_ms": config.geometry_job_poll_interval_ms,
+            "geometry_session_lease_seconds": config.geometry_session_lease_seconds,
+            "geometry_session_idle_timeout_seconds": (
+                config.geometry_session_idle_timeout_seconds
+            ),
+            "geometry_session_max_processes": config.geometry_session_max_processes,
+            "geometry_session_memory_budget_mb": (
+                config.geometry_session_memory_budget_mb
+            ),
             "max_concurrent_runs": config.max_concurrent_runs,
             "timeout_seconds": config.timeout_seconds,
             "max_file_size_mb": config.max_file_size_mb,
@@ -139,6 +148,53 @@ def collect_diagnostics() -> dict:
     html_report = _html_report_diagnostics()
     geometry_analyzer_key = effective_config.geometry_analyzer_key
     geometry_capability = capabilities[geometry_analyzer_key]
+    geometry_details = (
+        geometry_capability.get("details")
+        if isinstance(geometry_capability.get("details"), dict)
+        else {}
+    )
+    session_methods = geometry_details.get("methods")
+    if not isinstance(session_methods, dict):
+        session_methods = {}
+    geometry_session = {
+        "applicable": geometry_analyzer_key == "occt_cpp",
+        "ready": (
+            geometry_analyzer_key == "occt_cpp"
+            and geometry_capability["status"] == "available"
+        ),
+        "contract_version": geometry_details.get("contract_version"),
+        "schema_bundle_version": geometry_details.get("schema_bundle_version"),
+        "transport": geometry_details.get("transport"),
+        "methods": session_methods,
+        "required_methods_available": all(
+            session_methods.get(name) == "available"
+            for name in (
+                "snapshots.open",
+                "snapshots.renew",
+                "snapshots.close",
+                "features.discover",
+                "features.revise",
+                "forming_scopes.analyze",
+                "forming_scopes.revise",
+                "snapshots.merge",
+                "geometrics.compute",
+                "jobs.status",
+                "jobs.cancel",
+            )
+        ),
+        "limits": geometry_details.get("limits", {}),
+        "config": {
+            "request_timeout_seconds": effective_config.geometry_timeout_seconds,
+            "job_poll_interval_ms": effective_config.geometry_job_poll_interval_ms,
+            "lease_seconds": effective_config.geometry_session_lease_seconds,
+            "idle_timeout_seconds": (
+                effective_config.geometry_session_idle_timeout_seconds
+            ),
+            "max_processes": effective_config.geometry_session_max_processes,
+            "memory_budget_mb": effective_config.geometry_session_memory_budget_mb,
+        },
+        "recovery_policy": "reopen_replay_validate",
+    }
     geometry_backend = {
         "backend_id": effective_config.geometry_backend,
         "analyzer_key": geometry_analyzer_key,
@@ -169,6 +225,7 @@ def collect_diagnostics() -> dict:
             "occt_available": capabilities["occt_cpp"]["status"] == "available",
         },
         "geometry_backend": geometry_backend,
+        "geometry_session": geometry_session,
         # Kept for consumers of the previous doctor JSON contract.
         "production_backend": geometry_backend,
         "processes": processes,
@@ -221,6 +278,11 @@ def dfm_command(args) -> int:
             f"{report['geometry_backend']['backend_id']} "
             f"[{report['geometry_backend']['analyzer_key']}] "
             f"({report['geometry_backend']['status']})"
+        )
+        print(
+            "Persistent geometry session ready: "
+            f"{report['geometry_session']['ready']} "
+            f"({report['geometry_session']['contract_version'] or 'not applicable'})"
         )
         print(f"Supported processes: {', '.join(report['processes']['supported'])}")
         for key in report["processes"]["supported"]:

@@ -36,6 +36,16 @@ def materialize_result_reports(
         if "evidence_records" in by_kind
         else {"records": []}
     )
+    result_manifest_payload = (
+        _read(project_dir, by_kind["result_manifest"])
+        if "result_manifest" in by_kind
+        else {}
+    )
+    evidence_geometry_payload = (
+        _read(project_dir, by_kind["evidence_geometry"])
+        if "evidence_geometry" in by_kind
+        else {"failed_patches": []}
+    )
     evidence_coverage = evidence_payload.get("coverage")
     if not isinstance(evidence_coverage, dict):
         evidence_coverage = {
@@ -79,6 +89,13 @@ def materialize_result_reports(
                 **record,
                 "image": Path(image.relative_path).name,
             })
+    patches_by_evaluation: dict[str, list[dict[str, Any]]] = {}
+    for patch in evidence_geometry_payload.get("failed_patches", []):
+        if not isinstance(patch, dict) or not patch.get("evaluation_id"):
+            continue
+        patches_by_evaluation.setdefault(str(patch["evaluation_id"]), []).append(
+            patch
+        )
 
     issues: list[dict[str, Any]] = []
     indeterminate_checks = [
@@ -103,6 +120,26 @@ def materialize_result_reports(
         images = [
             item["image"] for item in evidence_by_evaluation.get(evaluation_id, [])
         ]
+        patches = patches_by_evaluation.get(evaluation_id, [])
+        geometry_refs = [
+            ref
+            for source in patches or linked
+            for ref in source.get("geometry_refs", [])
+            if isinstance(ref, dict)
+        ]
+        triangle_refs = [
+            ref
+            for patch in patches
+            for ref in patch.get("triangle_refs", [])
+            if isinstance(ref, dict)
+        ]
+        localization_status = (
+            "precise"
+            if triangle_refs
+            else "preliminary"
+            if geometry_refs
+            else "unlocated"
+        )
         quality = linked[0].get("quality", {}) if linked else {}
         feature_refs = sorted(
             {str(ref) for item in linked for ref in item.get("feature_refs", [])}
@@ -161,6 +198,21 @@ def materialize_result_reports(
             "images": images,
             "image": images[0] if images else None,
             "feature_refs": feature_refs,
+            "localization": {
+                "status": localization_status,
+                "label": {
+                    "precise": "精确区域已更新",
+                    "preliminary": "初步定位",
+                    "unlocated": "暂无定位证据",
+                }[localization_status],
+                "color": {
+                    "precise": "red",
+                    "preliminary": "yellow",
+                    "unlocated": "neutral",
+                }[localization_status],
+                "geometry_refs": geometry_refs,
+                "triangle_refs": triangle_refs,
+            },
             "recommendation": (rule.recommendation_template if rule else None),
         }
         if not geometric_run:
@@ -168,6 +220,12 @@ def materialize_result_reports(
         issues.append(issue)
 
     output_dir = project_dir / "runs" / run_id / "artifacts"
+    coverage_gaps = result_manifest_payload.get("coverage_gaps", [])
+    incomplete_results = result_manifest_payload.get("incomplete_results", [])
+    incomplete_fragments = result_manifest_payload.get("incomplete_fragments", [])
+    coverage_complete = not any(
+        (coverage_gaps, incomplete_results, incomplete_fragments, indeterminate_checks)
+    )
     result = {
         "schema_version": 1,
         "run_id": run_id,
@@ -182,10 +240,11 @@ def materialize_result_reports(
             else "evaluated_objective_result"
         ),
         "stats": {
+            "measurement_count": len(measurements),
             **(
                 {"geometric_result_count": len(measurements)}
                 if geometric_run
-                else {"measurement_count": len(measurements)}
+                else {}
             ),
             "evaluation_count": len(evaluations_payload.get("evaluations", [])),
             "failed_count": len(issues),
@@ -193,6 +252,41 @@ def materialize_result_reports(
             "indeterminate_count": len(indeterminate_checks),
         },
         "evidence_coverage": evidence_coverage,
+        "analysis_coverage": {
+            "status": "complete" if coverage_complete else "partial",
+            "coverage_gaps": coverage_gaps,
+            "incomplete_results": incomplete_results,
+            "incomplete_fragments": incomplete_fragments,
+            "message": (
+                "全部已计划范围均已取得可判定结果。"
+                if coverage_complete
+                else "这是阶段结果；仍有待确认、未覆盖或无法判定的检查项。"
+            ),
+        },
+        "result_manifest": (
+            {
+                "artifact_id": by_kind["result_manifest"].artifact_id,
+                "path": by_kind["result_manifest"].relative_path,
+                "created_at": result_manifest_payload.get("created_at"),
+                "plan_id": result_manifest_payload.get("plan_id"),
+                "plan_fragments": result_manifest_payload.get("plan_fragments", []),
+                "result_refs": result_manifest_payload.get("result_refs", []),
+                "rule_refs": result_manifest_payload.get("rule_refs", []),
+                "final_confirmation_refs": result_manifest_payload.get(
+                    "final_confirmation_refs", []
+                ),
+                "mesh_refs": result_manifest_payload.get("mesh_refs", []),
+                "render_mesh_snapshot_id": result_manifest_payload.get(
+                    "render_mesh_snapshot_id"
+                ),
+                "topology_snapshot_id": result_manifest_payload.get(
+                    "topology_snapshot_id"
+                ),
+                "evidence_refs": result_manifest_payload.get("evidence_refs", []),
+            }
+            if "result_manifest" in by_kind
+            else None
+        ),
         "issues": issues,
         "indeterminate_checks": indeterminate_checks,
     }
@@ -208,6 +302,10 @@ def materialize_result_reports(
         f"- Scope: {plan.scope_id}@{plan.scope_version}",
         f"- Failed checks: {len(issues)}",
         f"- Indeterminate checks: {len(indeterminate_checks)}",
+        f"- Analysis coverage: {'complete' if coverage_complete else 'partial'}",
+        f"- Coverage gaps: {len(coverage_gaps)}",
+        f"- Incomplete fragments: {len(incomplete_fragments)}",
+        f"- Incomplete results: {len(incomplete_results)}",
         (
             "- Evidence coverage: "
             f"{evidence_coverage.get('covered_patch_count', 0)}/"

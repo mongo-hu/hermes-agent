@@ -1640,30 +1640,45 @@ class FormingScopeRecord:
     forming_scope_id: str
     snapshot_id: str
     mode: str
-    draw_direction: list[float]
+    draw_direction: list[float] | None
     coordinate_system: str
-    direction_source: str
+    direction_source: str | None
     status: str
     geometry_refs: list[GeometryRef] = field(default_factory=list)
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
+        direction_required = self.mode == "main" or self.status == "confirmed"
+        direction_valid = (
+            isinstance(self.draw_direction, list)
+            and len(self.draw_direction) == 3
+            and all(
+                not isinstance(value, bool)
+                and isinstance(value, (int, float))
+                and math.isfinite(float(value))
+                for value in self.draw_direction
+            )
+            and math.sqrt(sum(float(value) ** 2 for value in self.draw_direction))
+            > 1e-12
+        )
         if (
             not self.forming_scope_id
             or not self.snapshot_id
             or self.mode not in {"main", "local"}
             or self.coordinate_system != "model"
-            or self.direction_source != "user_confirmed"
             or self.status not in {"candidate", "confirmed", "stale"}
-            or len(self.draw_direction) != 3
-            or any(
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
-                or not math.isfinite(float(value))
-                for value in self.draw_direction
+            or (direction_required and not direction_valid)
+            or (direction_required and self.direction_source != "user_confirmed")
+            or (
+                not direction_required
+                and self.draw_direction is not None
+                and not direction_valid
             )
-            or math.sqrt(sum(float(value) ** 2 for value in self.draw_direction))
-            <= 1e-12
+            or (
+                not direction_required
+                and self.draw_direction is None
+                and self.direction_source not in {None, ""}
+            )
         ):
             raise DFMError(
                 "forming_scope_invalid",
@@ -2698,6 +2713,52 @@ class ArtifactRecord:
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ArtifactRecord":
         return cls(**payload)
+
+
+def validate_result_manifest_mesh_binding(
+    result_manifest: dict[str, Any],
+    scene: dict[str, Any],
+    topology: dict[str, Any],
+    *,
+    scene_artifact_id: str,
+    topology_artifact_id: str,
+) -> tuple[str, str]:
+    """Verify that a report/viewer consumes the mesh version pinned by its run."""
+
+    render_snapshot = scene.get("render_mesh_snapshot")
+    topology_snapshot = topology.get("topology_snapshot")
+    render_snapshot_id = (
+        str(render_snapshot.get("render_mesh_snapshot_id") or "")
+        if isinstance(render_snapshot, dict)
+        else ""
+    )
+    topology_snapshot_id = (
+        str(topology_snapshot.get("topology_snapshot_id") or "")
+        if isinstance(topology_snapshot, dict)
+        else ""
+    )
+    mesh_refs = result_manifest.get("mesh_refs")
+    valid = (
+        isinstance(mesh_refs, list)
+        and {scene_artifact_id, topology_artifact_id}.issubset(
+            {str(value) for value in mesh_refs}
+        )
+        and render_snapshot_id
+        and topology_snapshot_id
+        and result_manifest.get("render_mesh_snapshot_id") == render_snapshot_id
+        and result_manifest.get("topology_snapshot_id") == topology_snapshot_id
+        and topology.get("render_mesh_snapshot_ref") == render_snapshot_id
+    )
+    if not valid:
+        raise DFMError(
+            "result_manifest_invalid",
+            "The result manifest does not pin the supplied scene and topology versions.",
+            {
+                "render_mesh_snapshot_id": render_snapshot_id or None,
+                "topology_snapshot_id": topology_snapshot_id or None,
+            },
+        )
+    return render_snapshot_id, topology_snapshot_id
 
 
 @dataclass(frozen=True)

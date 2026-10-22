@@ -204,6 +204,11 @@ def test_runtime_adapter_maps_existing_dfm_artifacts_without_recomputation(tmp_p
                 "image": "evidence_001.png",
             }
         ],
+        "result_manifest": {
+            "artifact_id": "artifact_result_manifest.json",
+            "render_mesh_snapshot_id": "mesh-run-1",
+            "topology_snapshot_id": "topology-run-1",
+        },
     }
     artifacts = [
         _artifact(tmp_path, run_id, "dfm_report.json", "report_json", report),
@@ -212,7 +217,41 @@ def test_runtime_adapter_maps_existing_dfm_artifacts_without_recomputation(tmp_p
             run_id,
             "render_scene.json",
             "render_scene",
-            {"schema_version": 2, "primitives": []},
+            {
+                "schema_version": 2,
+                "render_mesh_snapshot": {
+                    "render_mesh_snapshot_id": "mesh-run-1"
+                },
+                "primitives": [],
+            },
+        ),
+        _artifact(
+            tmp_path,
+            run_id,
+            "topology_map.json",
+            "topology_map",
+            {
+                "topology_snapshot": {
+                    "topology_snapshot_id": "topology-run-1"
+                },
+                "render_mesh_snapshot_ref": "mesh-run-1",
+                "faces": [],
+            },
+        ),
+        _artifact(
+            tmp_path,
+            run_id,
+            "result_manifest.json",
+            "result_manifest",
+            {
+                "run_id": run_id,
+                "mesh_refs": [
+                    "artifact_render_scene.json",
+                    "artifact_topology_map.json",
+                ],
+                "render_mesh_snapshot_id": "mesh-run-1",
+                "topology_snapshot_id": "topology-run-1",
+            },
         ),
         _artifact(
             tmp_path,
@@ -318,6 +357,9 @@ def test_runtime_adapter_maps_existing_dfm_artifacts_without_recomputation(tmp_p
         "draft": "scalar_field_draft.json",
     }
     assert runtime["resources"]["scene_path"] == "render_scene.json"
+    assert runtime["resources"]["topology_map_path"] == "topology_map.json"
+    assert runtime["resources"]["result_manifest_path"] == "result_manifest.json"
+    assert runtime["result_manifest"]["render_mesh_snapshot_id"] == "mesh-run-1"
     assert runtime["resources"]["evidence_geometry_path"] == "evidence_geometry.json"
     assert runtime["resources"]["drawing_pdf_path"].endswith("inputs/drawing.pdf")
     assert runtime["resources"]["drawing_observations_path"].endswith(
@@ -589,6 +631,57 @@ def test_html_summary_embeds_failed_patch_locations_and_cell_based_scalar_fields
     assert 'const failed = failedTriangleKeys(mode);' in html
     assert 'sample_id.match(/face-' not in html
     assert "mode === 'thickness' ? 1.2 : 1.0" not in html
+
+
+def test_html_keeps_partial_coverage_and_preliminary_face_localization_explicit(tmp_path):
+    fixture = tmp_path / "fixture"
+    llm_path, runtime_path = _html_contract_fixture(fixture)
+    runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+    runtime["report"]["analysis_coverage"] = {
+        "status": "partial",
+        "coverage_gaps": [{"reason": "local_direction_pending"}],
+        "incomplete_results": [],
+        "incomplete_fragments": [{"fragment_id": "fragment-side-1"}],
+    }
+    runtime["report"]["issues"][0]["localization"] = {
+        "status": "preliminary",
+        "label": "初步定位",
+        "color": "yellow",
+        "geometry_refs": [{"kind": "face", "index": 7}],
+        "triangle_refs": [],
+    }
+    topology = {
+        "faces": [
+            {
+                "geometry_ref": {"kind": "face", "index": 7},
+                "triangle_refs": [
+                    {
+                        "primitive_id": "face-7",
+                        "triangle_id": 0,
+                        "render_mesh_snapshot_id": "mesh-current",
+                    }
+                ],
+            }
+        ]
+    }
+    (fixture / "topology_map.json").write_text(
+        json.dumps(topology), encoding="utf-8"
+    )
+    runtime["resources"]["topology_map_path"] = "topology_map.json"
+    runtime_path.write_text(
+        json.dumps(runtime, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+
+    output = tmp_path / "report.html"
+    generate_html(llm_path, runtime_path, output)
+    html = output.read_text(encoding="utf-8")
+
+    assert "阶段结果：存在未完成项" in html
+    assert "不能视为全部通过" in html
+    assert "初步定位" in html
+    assert '"geometry_refs": [{"kind": "face", "index": 7}]' in html
+    assert "const topologyData =" in html
+    assert "preliminary ? 0xF5B700 : 0xFF2F18" in html
 
 
 def test_html_shows_every_failed_check_with_evaluated_units_not_llm_verdict(tmp_path):

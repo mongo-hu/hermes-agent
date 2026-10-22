@@ -234,9 +234,13 @@ class OcctAnalyzer:
             "The persistent dfm.geometry/v2 Worker is available.",
             details={
                 "contract_version": payload["contract_version"],
+                "schema_bundle_version": payload.get("schema_bundle_version"),
                 "engine_version": payload.get("engine_version"),
                 "dependency_fingerprint": payload.get("dependency_fingerprint"),
                 "backend": payload.get("backend"),
+                "transport": payload.get("transport"),
+                "methods": dict(payload.get("methods") or {}),
+                "limits": dict(payload.get("limits") or {}),
                 "occt_version": payload.get("occt_version"),
                 "analysis_situs_version": payload.get("analysis_situs_version"),
                 "analysis_situs_commit": payload.get("analysis_situs_commit"),

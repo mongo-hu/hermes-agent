@@ -12,17 +12,22 @@ from dataclasses import dataclass, field
 import ctypes
 import json
 import os
+import queue
 import re
 from pathlib import Path
 from queue import Empty, Queue
+import signal
 import subprocess
 import threading
 import time
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 
+from ..analyzers.base import CancellationToken
+from ..contracts import WorkerEvent
 from ..errors import DFMError
+from .events import parse_worker_event
 
 
 SESSION_CONTRACT = "dfm.geometry/v2"
@@ -1117,6 +1122,7 @@ class GeometrySessionPool:
         finally:
             owned.active_job_ids.discard(job_id)
             owned.job_snapshot_ids.pop(job_id, None)
+            owned.pending_snapshot_jobs.pop(job_id, None)
             close_after = owned.close_requested and not owned.active_job_ids
             if close_after:
                 self._close_project_now(project_id, owned)
@@ -1168,21 +1174,6 @@ class GeometrySessionPool:
             project_ids = list(self._projects)
         for project_id in project_ids:
             self.close_project(project_id)
-
-from dataclasses import dataclass
-import os
-from pathlib import Path
-import queue
-import signal
-import subprocess
-import threading
-import time
-from typing import Callable, Sequence
-
-from ..analyzers.base import CancellationToken
-from ..contracts import WorkerEvent
-from ..errors import DFMError
-from .events import parse_worker_event
 
 
 @dataclass(frozen=True)

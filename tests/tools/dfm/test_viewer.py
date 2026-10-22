@@ -165,6 +165,12 @@ def test_viewer_manifest_maps_failed_evaluation_to_geometry_refs(tmp_path):
     ]
     assert payload["issues"][0]["check_id"] == "check.main_wall_minimum_draft"
     assert payload["issues"][0]["issue_type_label"] == "拔模角问题"
+    assert payload["issues"][0]["localization"] == {
+        "status": "preliminary",
+        "label": "初步定位",
+        "color": "yellow",
+        "render_mesh_snapshot_id": None,
+    }
     assert payload["issue_type_counts"] == [
         {
             "issue_type_id": "check.main_wall_minimum_draft",
@@ -280,7 +286,10 @@ def test_viewer_manifest_uses_failed_patches_instead_of_representative_measureme
         _artifact(tmp_path, "render_scene", "render_scene.json", {
             "render_mesh_snapshot": {"render_mesh_snapshot_id": "mesh-current"},
         }),
-        _artifact(tmp_path, "topology_map", "topology_map.json", {}),
+        _artifact(tmp_path, "topology_map", "topology_map.json", {
+            "topology_snapshot": {"topology_snapshot_id": "topology-current"},
+            "render_mesh_snapshot_ref": "mesh-current",
+        }),
         _artifact(tmp_path, "measurements", "measurements.json", {
             "measurements": [{"measurement_id": "measure-1", "geometry_refs": [{"kind": "face", "index": 7}]}],
         }),
@@ -310,6 +319,15 @@ def test_viewer_manifest_uses_failed_patches_instead_of_representative_measureme
                 },
             ],
         }),
+        _artifact(tmp_path, "result_manifest", "result_manifest.json", {
+            "run_id": "run_1",
+            "mesh_refs": ["artifact_render_scene", "artifact_topology_map"],
+            "render_mesh_snapshot_id": "mesh-current",
+            "topology_snapshot_id": "topology-current",
+            "coverage_gaps": [],
+            "incomplete_results": [],
+            "incomplete_fragments": [],
+        }),
     ]
     plan = PlanRecord("plan_1", "step", ["occt_cpp"], "ready", "now")
 
@@ -321,3 +339,12 @@ def test_viewer_manifest_uses_failed_patches_instead_of_representative_measureme
     assert payload["issues"][0]["triangle_refs"] == [
         {"primitive_id": "face-9", "triangle_id": 2, "render_mesh_snapshot_id": "mesh-current"}
     ]
+    assert payload["issues"][0]["localization"] == {
+        "status": "precise",
+        "label": "精确区域已更新",
+        "color": "red",
+        "render_mesh_snapshot_id": "mesh-current",
+    }
+    assert payload["render_mesh_snapshot_id"] == "mesh-current"
+    assert payload["topology_snapshot_id"] == "topology-current"
+    assert payload["result_manifest_path"] == "result_manifest.json"

@@ -1570,16 +1570,49 @@ class DFMService:
         ).hexdigest()
 
     @staticmethod
+    def _forming_scope_review_payload(scope: FormingScopeRecord) -> dict[str, Any]:
+        return {
+            "forming_scope_id": scope.forming_scope_id,
+            "mode": scope.mode,
+            "draw_direction": (
+                list(scope.draw_direction)
+                if scope.draw_direction is not None
+                else None
+            ),
+            "coordinate_system": scope.coordinate_system,
+            "direction_source": scope.direction_source,
+            "geometry_refs": sorted(
+                (item.to_dict() for item in scope.geometry_refs),
+                key=lambda item: (
+                    item["kind"],
+                    item["index"],
+                    item["input_sha256"],
+                    item["topology_snapshot_id"],
+                    item["entity_id"],
+                ),
+            ),
+        }
+
+    @staticmethod
     def _forming_scope_record(
         raw: dict[str, Any], snapshot_id: str
     ) -> FormingScopeRecord:
+        raw_direction = raw.get("draw_direction")
         record = FormingScopeRecord(
             forming_scope_id=str(raw.get("forming_scope_id") or ""),
             snapshot_id=snapshot_id,
             mode=str(raw.get("mode") or ""),
-            draw_direction=[float(value) for value in raw.get("draw_direction", [])],
+            draw_direction=(
+                [float(value) for value in raw_direction]
+                if isinstance(raw_direction, list)
+                else None
+            ),
             coordinate_system=str(raw.get("coordinate_system") or ""),
-            direction_source=str(raw.get("direction_source") or ""),
+            direction_source=(
+                str(raw["direction_source"])
+                if raw.get("direction_source") is not None
+                else None
+            ),
             status=str(raw.get("status") or "candidate"),
             geometry_refs=[
                 GeometryRef.from_dict(dict(value))
@@ -1641,46 +1674,54 @@ class DFMService:
             for scope in scopes:
                 if scope.forming_scope_id not in reviewed_scope_ids:
                     continue
-                scope_payload = scope.to_dict()
+                scope_payload = self._forming_scope_review_payload(scope)
                 digest = self._scope_content_sha256(scope_payload)
+                group_kind = (
+                    "product_forming"
+                    if scope.mode == "main"
+                    else "local_direction"
+                    if confirmed
+                    else "undercut_scope"
+                )
+                review_groups = [
+                    replace(item, status="stale")
+                    if item.kind == group_kind
+                    and scope.forming_scope_id in item.target_refs
+                    and item.status in {"pending_review", "confirmed"}
+                    and item.content_sha256 != digest
+                    else item
+                    for item in review_groups
+                ]
                 if confirmed:
-                    expected_kind = (
-                        "product_forming"
-                        if scope.mode == "main"
-                        else "local_direction"
-                    )
                     review_groups = [
                         replace(
                             item,
                             status="confirmed",
                             confirmed_at=_utc_now(),
                         )
-                        if item.kind == expected_kind
+                        if item.kind == group_kind
                         and item.status == "pending_review"
+                        and item.content_sha256 == digest
                         and scope.forming_scope_id in item.target_refs
                         else item
                         for item in review_groups
                     ]
-                    if any(
-                        item.kind == expected_kind
-                        and scope.forming_scope_id in item.target_refs
-                        and item.status == "confirmed"
-                        for item in review_groups
-                    ):
-                        continue
+                if any(
+                    item.kind == group_kind
+                    and scope.forming_scope_id in item.target_refs
+                    and item.content_sha256 == digest
+                    and item.status
+                    == ("confirmed" if confirmed else "pending_review")
+                    for item in review_groups
+                ):
+                    continue
                 status = "confirmed" if confirmed else "pending_review"
                 review_groups.append(
                     ReviewGroupRecord(
                         review_group_id=(
                             f"review.forming.{scope.forming_scope_id}.{digest[:16]}"
                         ),
-                        kind=(
-                            "product_forming"
-                            if scope.mode == "main"
-                            else "local_direction"
-                            if confirmed
-                            else "undercut_scope"
-                        ),
+                        kind=group_kind,
                         target_refs=[scope.forming_scope_id],
                         content_sha256=digest,
                         source="user",
@@ -1814,7 +1855,7 @@ class DFMService:
                 )
             )
             content = {
-                "forming_scope": scope.to_dict(),
+                "forming_scope": self._forming_scope_review_payload(scope),
                 "features": [
                     item.to_dict()
                     for item in merged_features
@@ -1832,14 +1873,7 @@ class DFMService:
                 created_at=_utc_now(),
                 snapshot_id=worker_snapshot_id,
             )
-            direction_payload = {
-                "forming_scope_id": scope.forming_scope_id,
-                "mode": scope.mode,
-                "draw_direction": scope.draw_direction,
-                "coordinate_system": scope.coordinate_system,
-                "direction_source": scope.direction_source,
-                "geometry_refs": [item.to_dict() for item in scope.geometry_refs],
-            }
+            direction_payload = self._forming_scope_review_payload(scope)
             direction_digest = self._scope_content_sha256(direction_payload)
             direction_group = ReviewGroupRecord(
                 review_group_id=(
@@ -1875,21 +1909,36 @@ class DFMService:
                 by_input[input_record.sha256] = input_state
                 geometry["inputs"] = by_input
                 capabilities["geometry_discovery"] = geometry
+                review_groups = list(current.review_groups)
+                for new_group in (structure_group, direction_group):
+                    review_groups = [
+                        replace(item, status="stale")
+                        if item.kind == new_group.kind
+                        and scope_id in item.target_refs
+                        and item.status in {"pending_review", "confirmed"}
+                        and item.content_sha256 != new_group.content_sha256
+                        else item
+                        for item in review_groups
+                    ]
+                    if not any(
+                        item.kind == new_group.kind
+                        and scope_id in item.target_refs
+                        and item.content_sha256 == new_group.content_sha256
+                        and item.status in {"pending_review", "confirmed"}
+                        for item in review_groups
+                    ):
+                        review_groups.append(new_group)
+                invalidation_reason = f"forming_scope:{scope_id}"
                 return replace(
                     current,
                     features=merged_features,
-                    review_groups=[
-                        *[
-                            replace(item, status="stale")
-                            if item.kind in {"local_structure", "local_direction"}
-                            and scope_id in item.target_refs
-                            and item.status == "pending_review"
-                            else item
-                            for item in current.review_groups
-                        ],
-                        structure_group,
-                        direction_group,
-                    ],
+                    review_groups=review_groups,
+                    plans=self._invalidate_plans_for_semantics(
+                        current, invalidation_reason
+                    ),
+                    findings=self._invalidate_findings_for_semantics(
+                        current, invalidation_reason
+                    ),
                     capabilities=capabilities,
                     updated_at=_utc_now(),
                 )
@@ -1920,12 +1969,27 @@ class DFMService:
         mode: object,
         draw_direction: object,
     ) -> dict[str, Any]:
-        scope_id = str(forming_scope_id or "").strip()
-        scope_mode = str(mode or "").strip()
+        scope_mode = str(mode or "main").strip()
+        scope_id = str(
+            forming_scope_id or ("MAIN" if scope_mode == "main" else "")
+        ).strip()
         if not scope_id or scope_mode not in {"main", "local"}:
             raise DFMError(
                 "forming_scope_invalid",
                 "Forming-scope analysis requires an ID and main/local mode.",
+            )
+        manifest = self._store(project_id).load()
+        if draw_direction is None and scope_mode == "main":
+            draw_direction = next(
+                (
+                    fact.value
+                    for fact in reversed(manifest.facts)
+                    if fact.status == "confirmed"
+                    and fact.check_id is None
+                    and fact.feature_id is None
+                    and self._canonical_fact_name(fact.name) == "pull_dir"
+                ),
+                None,
             )
         if (
             not isinstance(draw_direction, list)
@@ -1939,7 +2003,6 @@ class DFMService:
                 "direction_invalid",
                 "A forming-scope direction must contain three model-coordinate numbers.",
             )
-        manifest = self._store(project_id).load()
         inputs = [item for item in self._active_inputs(manifest) if item.kind == "step"]
         if len(inputs) != 1:
             raise DFMError(
@@ -1988,11 +2051,16 @@ class DFMService:
         self.geometry_sessions.update_snapshot(
             project_id, input_record.sha256, opened, result
         )
+        analyzed_scope_ids = {
+            str(item.get("forming_scope_id") or "")
+            for item in result.get("coverage", [])
+            if isinstance(item, dict) and item.get("forming_scope_id")
+        } or {scope_id}
         persisted, discovery_snapshot = self._persist_forming_snapshot(
             project_id,
             input_record.sha256,
             result,
-            reviewed_scope_ids={scope_id},
+            reviewed_scope_ids=analyzed_scope_ids,
             confirmed=False,
         )
         selected = next(
@@ -2006,11 +2074,17 @@ class DFMService:
             "project_id": project_id,
             "status": "forming_scope_review_required",
             "forming_scope": selected.to_dict(),
+            "forming_scopes": [
+                item.to_dict()
+                for item in persisted.forming_scopes
+                if item.snapshot_id == result["snapshot_id"]
+                and item.forming_scope_id in analyzed_scope_ids
+            ],
             "review_groups": [
                 item.to_dict()
                 for item in persisted.review_groups
                 if item.status == "pending_review"
-                and scope_id in item.target_refs
+                and any(value in item.target_refs for value in analyzed_scope_ids)
             ],
             "coverage": result.get("coverage", []),
             "snapshot": discovery_snapshot.to_dict(),
@@ -3269,6 +3343,21 @@ class DFMService:
                 if item.status == "confirmed"
                 and item.snapshot_id.startswith(snapshot_prefix + "_")
             ]
+            reviewed_local_scope_ids = {
+                scope_id
+                for group in manifest.review_groups
+                if group.kind == "local_structure" and group.status == "confirmed"
+                for scope_id in group.target_refs
+                if scope_id in latest_scopes
+                and latest_scopes[scope_id].mode == "local"
+            }
+            waiting_local_scopes = [
+                scope
+                for scope_id, scope in latest_scopes.items()
+                if scope_id in reviewed_local_scope_ids
+                and scope.status != "confirmed"
+                and scope.snapshot_id.startswith(snapshot_prefix + "_")
+            ]
 
             def geometry_keys(feature):
                 return {
@@ -3291,7 +3380,7 @@ class DFMService:
                 supported_modes = set(declaration.get("direction_modes", []))
                 feature_refs = geometry_keys(feature)
                 matching = []
-                for scope in confirmed_scopes:
+                for scope in [*confirmed_scopes, *waiting_local_scopes]:
                     scope_refs = {
                         (item.kind, item.index, item.input_sha256)
                         for item in scope.geometry_refs
@@ -3300,12 +3389,17 @@ class DFMService:
                         scope_refs and feature_refs.isdisjoint(scope_refs)
                     ):
                         continue
-                    matching.append({
-                        "forming_scope_id": scope.forming_scope_id,
-                        "draw_direction": list(scope.draw_direction),
-                        "coordinate_system": "model",
-                        "direction_source": "user_confirmed",
-                    })
+                    if scope.status == "confirmed":
+                        matching.append({
+                            "forming_scope_id": scope.forming_scope_id,
+                            "draw_direction": list(scope.draw_direction),
+                            "coordinate_system": "model",
+                            "direction_source": "user_confirmed",
+                        })
+                    else:
+                        matching.append({
+                            "forming_scope_id": scope.forming_scope_id,
+                        })
                 # Empty context is a deliberate waiting-input identity.  It is
                 # frozen into a non-runnable fragment and never sent to Worker.
                 return matching or [{}]

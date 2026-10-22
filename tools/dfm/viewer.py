@@ -7,7 +7,13 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .contracts import ArtifactRecord, FeatureRecord, PlanRecord, ProjectManifest
+from .contracts import (
+    ArtifactRecord,
+    FeatureRecord,
+    PlanRecord,
+    ProjectManifest,
+    validate_result_manifest_mesh_binding,
+)
 from .errors import DFMError
 from .issue_types import classify_issue_type, summarize_issue_types
 
@@ -17,10 +23,14 @@ def _utc_now() -> str:
 
 
 def _read(project_dir: Path, artifact: ArtifactRecord) -> dict[str, Any]:
-    try:
-        payload = json.loads(
-            (project_dir / artifact.relative_path).read_text(encoding="utf-8")
+    path = (project_dir / artifact.relative_path).resolve()
+    if not path.is_relative_to(project_dir.resolve()) or not path.is_file():
+        raise DFMError(
+            "viewer_input_invalid",
+            "A DFM viewer artifact is outside the project or missing.",
         )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise DFMError(
             "viewer_input_invalid",
@@ -72,11 +82,32 @@ def materialize_viewer_manifest(
     )
     evaluations_payload = _read(project_dir, by_kind["evaluations"])
     scene_payload = _read(project_dir, by_kind["render_scene"])
+    topology_payload = _read(project_dir, by_kind["topology_map"])
+    result_manifest_payload = (
+        _read(project_dir, by_kind["result_manifest"])
+        if "result_manifest" in by_kind
+        else {}
+    )
     mesh_snapshot_id = (
         scene_payload.get("render_mesh_snapshot", {}).get("render_mesh_snapshot_id")
         if isinstance(scene_payload.get("render_mesh_snapshot"), dict)
         else None
     )
+    topology_snapshot_id = (
+        topology_payload.get("topology_snapshot", {}).get("topology_snapshot_id")
+        if isinstance(topology_payload.get("topology_snapshot"), dict)
+        else None
+    )
+    if result_manifest_payload:
+        mesh_snapshot_id, topology_snapshot_id = (
+            validate_result_manifest_mesh_binding(
+                result_manifest_payload,
+                scene_payload,
+                topology_payload,
+                scene_artifact_id=by_kind["render_scene"].artifact_id,
+                topology_artifact_id=by_kind["topology_map"].artifact_id,
+            )
+        )
     patches_by_evaluation: dict[str, list[dict[str, Any]]] = {}
     if "evidence_geometry" in by_kind:
         evidence_payload = _read(project_dir, by_kind["evidence_geometry"])
@@ -182,6 +213,30 @@ def materialize_viewer_manifest(
             "measurement_ids": measurement_ids,
             "geometry_refs": refs,
             "triangle_refs": triangle_refs,
+            "localization": {
+                "status": (
+                    "precise"
+                    if triangle_refs
+                    else "preliminary"
+                    if refs
+                    else "unlocated"
+                ),
+                "label": (
+                    "精确区域已更新"
+                    if triangle_refs
+                    else "初步定位"
+                    if refs
+                    else "暂无定位证据"
+                ),
+                "color": (
+                    "red"
+                    if triangle_refs
+                    else "yellow"
+                    if refs
+                    else "neutral"
+                ),
+                "render_mesh_snapshot_id": mesh_snapshot_id,
+            },
         }
         issue["geometric_id" if evaluation.get("geometric_id") else "metric_id"] = (
             metric_id
@@ -232,6 +287,34 @@ def materialize_viewer_manifest(
         ),
         "scene_path": Path(by_kind["render_scene"].relative_path).name,
         "topology_path": Path(by_kind["topology_map"].relative_path).name,
+        "render_mesh_snapshot_id": mesh_snapshot_id,
+        "topology_snapshot_id": topology_snapshot_id,
+        "result_manifest_path": (
+            Path(by_kind["result_manifest"].relative_path).name
+            if "result_manifest" in by_kind
+            else None
+        ),
+        "analysis_coverage": {
+            "status": (
+                "partial"
+                if any(
+                    result_manifest_payload.get(key)
+                    for key in (
+                        "coverage_gaps",
+                        "incomplete_results",
+                        "incomplete_fragments",
+                    )
+                )
+                else "complete"
+            ),
+            "coverage_gaps": result_manifest_payload.get("coverage_gaps", []),
+            "incomplete_results": result_manifest_payload.get(
+                "incomplete_results", []
+            ),
+            "incomplete_fragments": result_manifest_payload.get(
+                "incomplete_fragments", []
+            ),
+        },
         **(
             {"geometric_results_path": Path(objective_artifact.relative_path).name}
             if geometric_run
