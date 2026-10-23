@@ -373,7 +373,20 @@ def test_report_rendering_failure_is_persisted_notified_and_retryable(job_env):
         json.dumps({"run_id": run_id, "result_refs": ["result-1"]}),
         encoding="utf-8",
     )
+    results_path = output_dir / "geometric_results.json"
+    results_path.write_text(
+        json.dumps({"results": [{"result_id": "result-1", "value": 1.2}]}),
+        encoding="utf-8",
+    )
+    frozen_result_bytes = results_path.read_bytes()
     frozen_artifacts = [
+        ArtifactRecord(
+            f"artifact_{run_id}_geometric_results",
+            "geometric_results",
+            results_path.relative_to(project_dir).as_posix(),
+            "application/json",
+            "2026-07-14T00:00:00Z",
+        ),
         ArtifactRecord(
             f"artifact_{run_id}_runtime",
             "report_html_runtime",
@@ -450,8 +463,13 @@ def test_report_rendering_failure_is_persisted_notified_and_retryable(job_env):
     retained_manifest = next(
         item for item in completed.artifacts if item.kind == "result_manifest"
     )
-    assert retained_manifest.artifact_id == frozen_artifacts[1].artifact_id
-    assert retained_manifest.relative_path == frozen_artifacts[1].relative_path
+    retained_results = next(
+        item for item in completed.artifacts if item.kind == "geometric_results"
+    )
+    assert retained_results.artifact_id == frozen_artifacts[0].artifact_id
+    assert results_path.read_bytes() == frozen_result_bytes
+    assert retained_manifest.artifact_id == frozen_artifacts[2].artifact_id
+    assert retained_manifest.relative_path == frozen_artifacts[2].relative_path
     assert any(item.kind == "report_html" for item in completed.artifacts)
 
 

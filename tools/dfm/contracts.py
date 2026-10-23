@@ -2637,6 +2637,7 @@ class GeometricFindingRecord:
     recommendation: str
     feature_refs: list[str] = field(default_factory=list)
     check_ids: list[str] = field(default_factory=list)
+    contexts: list[dict[str, Any]] = field(default_factory=list)
     severity_rationale: str | None = None
     criterion_results: list[dict[str, Any]] = field(default_factory=list)
     validity_status: str = "current"

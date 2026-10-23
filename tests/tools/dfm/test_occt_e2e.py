@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
 import time
 
 import pytest
@@ -18,11 +19,13 @@ from tools.dfm.contracts import (
     GeometricRequest,
     GeometricResultRecord,
     GeometricRuleBinding,
+    GeometricRuleOperand,
     InputRecord,
     PlanFragmentRecord,
     PlanRecord,
 )
 from tools.dfm.evaluation import EvaluationEngine
+from tools.dfm.findings import materialize_evaluated_findings
 from tools.dfm.config import DFMConfig
 from tools.dfm.feature_recognition.occt_cpp import OCCTCppFeatureRecognitionProvider
 from tools.dfm.runtime.process import (
@@ -34,6 +37,169 @@ from tools.dfm.service import DFMService
 
 
 EXECUTABLE = os.environ.get("DFM_GEOMETRY_E2E_EXECUTABLE", "")
+
+
+def test_screw_boss_wall_ratio_uses_two_public_g_results_for_one_finding(tmp_path):
+    feature_id = "BOSS_0007"
+    fragment_id = "fragment-screw-boss-wall"
+    binding = GeometricRuleBinding(
+        binding_id="binding-screw-boss-wall",
+        geometric_id="G_SCREW_BOSS_WALL_THK_MAX",
+        rule_id="R_SCREW_BOSS_WALL_THK_001",
+        operator="<=",
+        aggregation="identity",
+        feature_refs=[feature_id],
+        check_id="C_SCREW_BOSS_WALL_THK",
+        operand_alias="boss_wall_thickness",
+        additional_operands=[
+            GeometricRuleOperand(
+                alias="adjacent_main_wall_thickness",
+                geometric_id="G_SCREW_BOSS_WALL_REF_THK",
+                feature_refs=[feature_id],
+            )
+        ],
+        expression={
+            "op": "divide",
+            "args": [
+                {"operand": "boss_wall_thickness"},
+                {"operand": "adjacent_main_wall_thickness"},
+            ],
+        },
+    )
+    plan = PlanRecord(
+        plan_id="plan-screw-boss-wall",
+        input_mode="step",
+        analyzer_keys=["occt_cpp"],
+        status="ready",
+        created_at="2026-01-01T00:00:00Z",
+        process="injection",
+        rules={
+            binding.rule_id: EffectiveRule(
+                0.60,
+                "ratio",
+                "ontology:test",
+            )
+        },
+        rule_bindings=[binding],
+        plan_fragments=[
+            PlanFragmentRecord(
+                fragment_id=fragment_id,
+                snapshot_id="snapshot-screw-boss",
+                source_discovery_snapshot_id="discovery-screw-boss",
+                capability_version="2.0.0:test",
+                dependency_fingerprint="a" * 64,
+                confirmed_fact_refs=[],
+                rule_binding_refs=[binding.binding_id],
+                items=[
+                    GeometricRequest(
+                        feature_id,
+                        [
+                            "G_SCREW_BOSS_WALL_THK_MAX",
+                            "G_SCREW_BOSS_WALL_REF_THK",
+                        ],
+                        {},
+                    )
+                ],
+            )
+        ],
+    )
+
+    def result(result_id, geometric_id, value):
+        return GeometricResultRecord(
+            result_id=result_id,
+            snapshot_id="snapshot-screw-boss",
+            feature_id=feature_id,
+            geometric_id=geometric_id,
+            status="ok",
+            value=value,
+            unit="mm",
+            context={},
+            evidence={"geometry_refs": [], "field_refs": []},
+            quality={"fixture": True, "algorithm_certified": False},
+            reason=None,
+            provenance={
+                "source_snapshot_id": "snapshot-screw-boss",
+                "source_result_ref": result_id,
+                "dependency_fingerprint": "b" * 64,
+                "plan_fragment_ref": fragment_id,
+            },
+            input_sha256="c" * 64,
+        )
+
+    results = [
+        result(
+            "result-boss-wall",
+            "G_SCREW_BOSS_WALL_THK_MAX",
+            2.1,
+        ),
+        result(
+            "result-reference-wall",
+            "G_SCREW_BOSS_WALL_REF_THK",
+            3.0,
+        ),
+    ]
+    evaluations, _ = EvaluationEngine().evaluate(results, plan)
+
+    assert len(evaluations) == 1
+    assert evaluations[0].actual == pytest.approx(0.70)
+    assert evaluations[0].actual_unit == "ratio"
+    assert evaluations[0].outcome == "fail"
+    assert evaluations[0].measurement_ids == [
+        "result-boss-wall",
+        "result-reference-wall",
+    ]
+    serialized_plan = json.dumps(plan.to_dict(), sort_keys=True)
+    for forbidden in {
+        "worker_geometric_id",
+        "operation_id",
+        "calculator_id",
+        "metric_id",
+        "metric_ids",
+        "quantity_id",
+        "region_refs",
+        "face_indices",
+        "task_id",
+    }:
+        assert f'"{forbidden}"' not in serialized_plan
+
+    output_dir = tmp_path / "runs" / "run-screw-boss" / "artifacts"
+    output_dir.mkdir(parents=True)
+    results_path = output_dir / "geometric_results.json"
+    results_path.write_text(
+        json.dumps(
+            {
+                "contract_version": "dfm.geometry/v2",
+                "run_id": "run-screw-boss",
+                "input_sha256": "c" * 64,
+                "results": [item.to_dict() for item in results],
+            }
+        ),
+        encoding="utf-8",
+    )
+    results_artifact = ArtifactRecord(
+        "artifact-screw-boss-results",
+        "geometric_results",
+        results_path.relative_to(tmp_path).as_posix(),
+        "application/json",
+        "2026-01-01T00:00:00Z",
+    )
+    evaluations_artifact = EvaluationEngine().materialize(
+        tmp_path,
+        "run-screw-boss",
+        plan,
+        [results_artifact],
+    )
+    findings = materialize_evaluated_findings(
+        tmp_path, [results_artifact, evaluations_artifact]
+    )
+
+    assert len(findings) == 1
+    assert findings[0].check_ids == ["C_SCREW_BOSS_WALL_THK"]
+    assert findings[0].feature_refs == [feature_id]
+    assert findings[0].geometric_ids == [
+        "G_SCREW_BOSS_WALL_REF_THK",
+        "G_SCREW_BOSS_WALL_THK_MAX",
+    ]
 
 
 def test_evaluation_consumes_geometric_identity_without_legacy_routing(tmp_path):
@@ -328,6 +494,145 @@ def test_result_manifest_pins_waiting_fragments_and_non_ok_results(tmp_path):
         }
     ]
     assert payload["incomplete_results"][0]["status"] == "not_applicable"
+
+
+def test_followup_confirmation_creates_a_new_manifest_without_rewriting_stage_report(
+    tmp_path,
+):
+    ready = PlanFragmentRecord(
+        fragment_id="fragment-ordinary",
+        snapshot_id="snapshot-stage-1",
+        source_discovery_snapshot_id="discovery-stage-1",
+        capability_version="2.0.0:test",
+        dependency_fingerprint="a" * 64,
+        confirmed_fact_refs=[],
+        rule_binding_refs=["binding-ordinary"],
+        items=[GeometricRequest("feature-wall", ["G_WALL_THK_MIN"], {})],
+    )
+    waiting = PlanFragmentRecord(
+        fragment_id="fragment-side-waiting",
+        snapshot_id="snapshot-stage-1",
+        source_discovery_snapshot_id="discovery-stage-1",
+        capability_version="2.0.0:test",
+        dependency_fingerprint="b" * 64,
+        confirmed_fact_refs=[],
+        rule_binding_refs=["binding-side"],
+        items=[
+            GeometricRequest(
+                "feature-wall",
+                ["G_WALL_IN_DRAFT"],
+                {"forming_scope_id": "SIDE_01"},
+            )
+        ],
+        status="waiting_input",
+        blocking_reasons=[{"code": "missing_context"}],
+    )
+    stage_plan = PlanRecord(
+        plan_id="plan-stage-1",
+        input_mode="step",
+        analyzer_keys=["occt_cpp"],
+        status="ready",
+        created_at="2026-01-01T00:00:00Z",
+        plan_fragments=[ready, waiting],
+    )
+
+    def result_artifact(run_id, results):
+        path = tmp_path / "runs" / run_id / "artifacts" / "geometric_results.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            json.dumps(
+                {"contract_version": "dfm.geometry/v2", "results": results}
+            ),
+            encoding="utf-8",
+        )
+        return ArtifactRecord(
+            f"artifact-{run_id}-results",
+            "geometric_results",
+            path.relative_to(tmp_path).as_posix(),
+            "application/json",
+            "2026-01-01T00:00:00Z",
+        )
+
+    ordinary_result = {
+        "result_id": "result-ordinary",
+        "snapshot_id": "snapshot-stage-1",
+        "feature_id": "feature-wall",
+        "geometric_id": "G_WALL_THK_MIN",
+        "status": "ok",
+        "reason": None,
+        "provenance": {"plan_fragment_ref": ready.fragment_id},
+    }
+    first_artifact = JobManager._materialize_result_manifest(
+        tmp_path,
+        "run-stage-1",
+        stage_plan,
+        [result_artifact("run-stage-1", [ordinary_result])],
+    )
+    first_path = tmp_path / first_artifact.relative_path
+    first_bytes = first_path.read_bytes()
+    first_payload = json.loads(first_bytes)
+    assert [
+        item["fragment_id"] for item in first_payload["incomplete_fragments"]
+    ] == [waiting.fragment_id]
+
+    confirmed = PlanFragmentRecord(
+        fragment_id="fragment-side-confirmed",
+        snapshot_id="snapshot-stage-2",
+        source_discovery_snapshot_id="discovery-stage-2",
+        capability_version="2.0.0:test",
+        dependency_fingerprint="c" * 64,
+        confirmed_fact_refs=[],
+        rule_binding_refs=["binding-side"],
+        items=[
+            GeometricRequest(
+                "feature-wall",
+                ["G_WALL_IN_DRAFT"],
+                {
+                    "forming_scope_id": "SIDE_01",
+                    "draw_direction": [0.0, 1.0, 0.0],
+                    "coordinate_system": "model",
+                    "direction_source": "user_confirmed",
+                },
+            )
+        ],
+        supersedes=waiting.fragment_id,
+    )
+    followup_plan = PlanRecord(
+        plan_id="plan-stage-2",
+        input_mode="step",
+        analyzer_keys=["occt_cpp"],
+        status="ready",
+        created_at="2026-01-01T00:01:00Z",
+        parent_plan_id=stage_plan.plan_id,
+        plan_fragments=[ready, waiting, confirmed],
+    )
+    side_result = {
+        "result_id": "result-side",
+        "snapshot_id": "snapshot-stage-2",
+        "feature_id": "feature-wall",
+        "geometric_id": "G_WALL_IN_DRAFT",
+        "status": "ok",
+        "reason": None,
+        "provenance": {"plan_fragment_ref": confirmed.fragment_id},
+    }
+    second_artifact = JobManager._materialize_result_manifest(
+        tmp_path,
+        "run-stage-2",
+        followup_plan,
+        [result_artifact("run-stage-2", [ordinary_result, side_result])],
+    )
+    second_payload = json.loads(
+        (tmp_path / second_artifact.relative_path).read_text(encoding="utf-8")
+    )
+
+    assert first_path.read_bytes() == first_bytes
+    assert first_payload["run_id"] == "run-stage-1"
+    assert second_payload["run_id"] == "run-stage-2"
+    assert second_payload["incomplete_fragments"] == []
+    assert second_payload["result_refs"] == ["result-ordinary", "result-side"]
+    assert [
+        item["fragment_id"] for item in second_payload["plan_fragments"]
+    ] == [ready.fragment_id, confirmed.fragment_id]
 
 
 @pytest.mark.skipif(not EXECUTABLE, reason="DFM_GEOMETRY_E2E_EXECUTABLE is unset")
@@ -654,13 +959,240 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
         pool.close()
 
 
-@pytest.mark.skipif(not EXECUTABLE, reason="DFM_GEOMETRY_E2E_EXECUTABLE is unset")
-def test_service_compiles_only_ready_v2_fragments_after_scope_review(tmp_path):
+def _fixture_worker_executable(tmp_path: Path) -> str:
+    fixture = Path(__file__).resolve().parent / "fixtures" / "worker_fixture.py"
+    if os.name == "nt":
+        wrapper = tmp_path / "dfm-geometry-fixture.cmd"
+        wrapper.write_text(
+            f'@echo off\r\n"{sys.executable}" "{fixture}" session_v2 %*\r\n',
+            encoding="utf-8",
+        )
+    else:
+        wrapper = tmp_path / "dfm-geometry-fixture"
+        wrapper.write_text(
+            f'#!/bin/sh\nexec "{sys.executable}" "{fixture}" session_v2 "$@"\n',
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+    return str(wrapper)
+
+
+def test_ready_scopes_run_once_while_another_local_direction_waits(tmp_path):
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "fixtures"
+        / "dfm"
+        / "step"
+        / "injection_plate_with_hole.step"
+    )
+    project_dir = tmp_path / "independent-scope-project"
+    project_dir.mkdir()
+    input_path = project_dir / "model.step"
+    shutil.copy2(source, input_path)
+    input_sha256 = hashlib.sha256(input_path.read_bytes()).hexdigest()
+    input_record = InputRecord(
+        input_id="input-independent-scopes",
+        kind="step",
+        source_name=input_path.name,
+        relative_path=input_path.name,
+        size_bytes=input_path.stat().st_size,
+        sha256=input_sha256,
+        created_at="2026-01-01T00:00:00Z",
+    )
+    executable = _fixture_worker_executable(tmp_path)
+    pool = GeometrySessionPool(
+        executable,
+        request_timeout_seconds=30,
+        job_timeout_seconds=30,
+        poll_interval_seconds=0.01,
+        idle_timeout_seconds=300,
+        max_sessions=1,
+        memory_budget_mb=4096,
+    )
+    try:
+        discovery = OCCTCppFeatureRecognitionProvider(
+            executable, session_pool=pool
+        ).recognize(input_record, process="injection", project_dir=project_dir)
+        wall = next(item for item in discovery.features if item.kind == "main_wall")
+        ready_direction = {
+            "forming_scope_id": "SIDE_02",
+            "draw_direction": [0.0, 1.0, 0.0],
+            "coordinate_system": "model",
+            "direction_source": "user_confirmed",
+        }
+        waiting_direction = {"forming_scope_id": "SIDE_01"}
+        bindings = [
+            GeometricRuleBinding(
+                binding_id="binding-thickness-a",
+                geometric_id="G_WALL_THK_MIN",
+                rule_id="rule-thickness-a",
+                operator=">=",
+                aggregation="identity",
+                feature_refs=[wall.feature_id],
+                check_id="check-thickness-a",
+            ),
+            GeometricRuleBinding(
+                binding_id="binding-thickness-b",
+                geometric_id="G_WALL_THK_MIN",
+                rule_id="rule-thickness-b",
+                operator=">=",
+                aggregation="identity",
+                feature_refs=[wall.feature_id],
+                check_id="check-thickness-b",
+            ),
+            GeometricRuleBinding(
+                binding_id="binding-side-02",
+                geometric_id="G_WALL_IN_DRAFT",
+                rule_id="rule-side-02",
+                operator=">=",
+                aggregation="identity",
+                feature_refs=[wall.feature_id],
+                context=ready_direction,
+                check_id="check-side-02",
+            ),
+            GeometricRuleBinding(
+                binding_id="binding-side-01",
+                geometric_id="G_WALL_IN_DRAFT",
+                rule_id="rule-side-01",
+                operator=">=",
+                aggregation="identity",
+                feature_refs=[wall.feature_id],
+                context=waiting_direction,
+                check_id="check-side-01",
+            ),
+        ]
+        capability = pool.acquire(project_dir.name).session.capability
+        common = {
+            "snapshot_id": discovery.worker_snapshot_id,
+            "source_discovery_snapshot_id": "discovery-independent-scopes",
+            "capability_version": geometry_capability_identity(capability),
+            "confirmed_fact_refs": [],
+        }
+        fragments = [
+            PlanFragmentRecord(
+                fragment_id="fragment-ordinary-ready",
+                dependency_fingerprint="a" * 64,
+                rule_binding_refs=["binding-thickness-a", "binding-thickness-b"],
+                items=[
+                    GeometricRequest(
+                        wall.feature_id,
+                        ["G_WALL_THK_MIN"],
+                        {},
+                    )
+                ],
+                **common,
+            ),
+            PlanFragmentRecord(
+                fragment_id="fragment-side-02-ready",
+                dependency_fingerprint="b" * 64,
+                rule_binding_refs=["binding-side-02"],
+                items=[
+                    GeometricRequest(
+                        wall.feature_id,
+                        ["G_WALL_IN_DRAFT"],
+                        ready_direction,
+                    )
+                ],
+                **common,
+            ),
+            PlanFragmentRecord(
+                fragment_id="fragment-side-01-waiting",
+                dependency_fingerprint="c" * 64,
+                rule_binding_refs=["binding-side-01"],
+                items=[
+                    GeometricRequest(
+                        wall.feature_id,
+                        ["G_WALL_IN_DRAFT"],
+                        waiting_direction,
+                    )
+                ],
+                status="waiting_input",
+                blocking_reasons=[
+                    {
+                        "code": "missing_context",
+                        "geometric_id": "G_WALL_IN_DRAFT",
+                        "missing_fields": [
+                            "coordinate_system",
+                            "direction_source",
+                            "draw_direction",
+                        ],
+                    }
+                ],
+                **common,
+            ),
+        ]
+        plan = PlanRecord(
+            plan_id="plan-independent-scopes",
+            input_mode="step",
+            analyzer_keys=["occt_cpp"],
+            status="ready",
+            created_at="2026-01-01T00:00:00Z",
+            process="injection",
+            rules={
+                "rule-thickness-a": EffectiveRule(1.0, "mm", "fixture"),
+                "rule-thickness-b": EffectiveRule(2.0, "mm", "fixture"),
+                "rule-side-02": EffectiveRule(1.0, "degree", "fixture"),
+                "rule-side-01": EffectiveRule(1.0, "degree", "fixture"),
+            },
+            rule_bindings=bindings,
+            plan_fragments=fragments,
+        )
+        artifacts = OcctAnalyzer(executable, session_pool=pool).run(
+            AnalyzerContext(
+                project_dir.name,
+                project_dir,
+                "step",
+                [input_record],
+                "run-independent-scopes",
+                plan,
+            ),
+            CancellationToken(),
+        )
+        results_artifact = next(
+            item for item in artifacts if item.kind == "geometric_results"
+        )
+        results = json.loads(
+            (project_dir / results_artifact.relative_path).read_text(encoding="utf-8")
+        )["results"]
+        assert {
+            (item["geometric_id"], item["context"].get("forming_scope_id"))
+            for item in results
+        } == {
+            ("G_WALL_THK_MIN", None),
+            ("G_WALL_IN_DRAFT", "SIDE_02"),
+        }
+        assert sum(
+            item["geometric_id"] == "G_WALL_THK_MIN" for item in results
+        ) == 1
+
+        evaluations = json.loads(
+            (
+                project_dir
+                / EvaluationEngine().materialize(
+                    project_dir,
+                    "run-independent-scopes",
+                    plan,
+                    [results_artifact],
+                ).relative_path
+            ).read_text(encoding="utf-8")
+        )["evaluations"]
+        assert {item["rule_id"]: item["outcome"] for item in evaluations} == {
+            "rule-thickness-a": "pass",
+            "rule-thickness-b": "fail",
+            "rule-side-02": "pass",
+        }
+    finally:
+        pool.close()
+
+
+def _assert_complete_service_flow(
+    tmp_path: Path, executable: str, *, expect_fixture: bool
+) -> None:
     token = set_hermes_home_override(tmp_path / "home")
     service = DFMService(
         config=DFMConfig(
             geometry_backend="occt_cpp_external",
-            geometry_executable=EXECUTABLE,
+            geometry_executable=executable,
             geometry_timeout_seconds=120,
             geometry_job_poll_interval_ms=20,
         ),
@@ -828,10 +1360,139 @@ def test_service_compiles_only_ready_v2_fragments_after_scope_review(tmp_path):
         run_artifacts = [
             item for item in manifest["artifacts"] if item.get("run_id") == run_id
         ]
-        assert any(item["kind"] == "result_manifest" for item in run_artifacts)
-        assert any(item["kind"] == "report_json" for item in run_artifacts)
-        assert any(item["kind"] == "dfm_viewer" for item in run_artifacts)
-        assert any(item["kind"] == "report_html_runtime" for item in run_artifacts)
+        artifacts_by_kind = {item["kind"]: item for item in run_artifacts}
+        assert {
+            "geometric_results",
+            "evaluations",
+            "result_manifest",
+            "report_json",
+            "report_markdown",
+            "dfm_viewer",
+            "report_html_runtime",
+        }.issubset(artifacts_by_kind)
+        project_dir = service.workspace.project_dir(project_id)
+        result_manifest = json.loads(
+            (
+                project_dir
+                / artifacts_by_kind["result_manifest"]["relative_path"]
+            ).read_text(encoding="utf-8")
+        )
+        assert result_manifest["contract_version"] == "hermes.dfm.result-manifest/v1"
+        assert result_manifest["result_refs"]
+        assert result_manifest["incomplete_fragments"] == []
+        viewer = json.loads(
+            (project_dir / artifacts_by_kind["dfm_viewer"]["relative_path"]).read_text(
+                encoding="utf-8"
+            )
+        )
+        runtime = json.loads(
+            (
+                project_dir
+                / artifacts_by_kind["report_html_runtime"]["relative_path"]
+            ).read_text(encoding="utf-8")
+        )
+        assert viewer["run_id"] == runtime["report"]["run_id"] == run_id
+        assert viewer["render_mesh_snapshot_id"] == (
+            runtime["result_manifest"]["render_mesh_snapshot_id"]
+        )
+        assert viewer["topology_snapshot_id"] == (
+            runtime["result_manifest"]["topology_snapshot_id"]
+        )
+        input_sha256 = manifest["inputs"][0]["sha256"]
+        cached = service.geometry_sessions.acquire(
+            project_id
+        ).snapshots_by_input_sha256[input_sha256]
+        assert cached["diagnostics"]["model_import_count"] == 1
+        if expect_fixture:
+            assert result_manifest["incomplete_results"] == []
+            assert manifest["findings"]
+            assert all(
+                item["validity_status"] == "current"
+                for item in manifest["findings"]
+            )
+            assert viewer["issue_count"] == len(manifest["findings"])
+            assert viewer["analysis_coverage"]["status"] == "complete"
+            geometric_payload = json.loads(
+                (
+                    project_dir
+                    / artifacts_by_kind["geometric_results"]["relative_path"]
+                ).read_text(encoding="utf-8")
+            )
+            assert geometric_payload["results"]
+            assert all(
+                item["quality"]
+                == {
+                    "fixture": True,
+                    "certified": False,
+                    "algorithm_certified": False,
+                }
+                for item in geometric_payload["results"]
+            )
+
+        report_context = service.analysis(
+            "report_context",
+            project_id=project_id,
+            run_id=run_id,
+        )
+        assert report_context["ready"] is True
+        render = service.analysis(
+            "render_html",
+            project_id=project_id,
+            run_id=run_id,
+            llm_content={
+                "schema_version": "dfm-html-llm/v1",
+                "part": {
+                    "name": "v2 service flow",
+                    "general_tolerance": "Not provided",
+                    "technical_note": "Deterministic workflow acceptance data.",
+                },
+                "issues": [
+                    {
+                        "issue_id": issue_id,
+                        "title": issue_id,
+                        "description": "Review the deterministic DFM finding.",
+                    }
+                    for issue_id in report_context["required_issue_ids"]
+                ],
+                "conclusion": {
+                    "assessment_level": "以确定性规则结果为准",
+                    "summary": "The workflow completed with pinned deterministic results.",
+                    "risks": [],
+                    "actions": [],
+                },
+            },
+        )
+        assert render["accepted"] is True
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            final_status = service.analysis(
+                "status", project_id=project_id, run_id=run_id
+            )["run"]
+            if final_status["status"] != "reporting":
+                break
+            time.sleep(0.02)
+        assert final_status["status"] == "succeeded"
+        completed = service.analysis(
+            "result", project_id=project_id, run_id=run_id
+        )["run"]
+        final_artifacts = {item["kind"]: item for item in completed["artifacts"]}
+        assert "report_html" in final_artifacts
+        assert final_artifacts["result_manifest"]["artifact_id"] == (
+            artifacts_by_kind["result_manifest"]["artifact_id"]
+        )
     finally:
         service.close()
         reset_hermes_home_override(token)
+
+
+def test_complete_service_flow_with_deterministic_v2_worker_data(tmp_path):
+    _assert_complete_service_flow(
+        tmp_path,
+        _fixture_worker_executable(tmp_path),
+        expect_fixture=True,
+    )
+
+
+@pytest.mark.skipif(not EXECUTABLE, reason="DFM_GEOMETRY_E2E_EXECUTABLE is unset")
+def test_service_compiles_only_ready_v2_fragments_after_scope_review(tmp_path):
+    _assert_complete_service_flow(tmp_path, EXECUTABLE, expect_fixture=False)

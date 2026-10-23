@@ -101,9 +101,24 @@ def materialize_evaluated_findings(
             "criterion_results": list(evaluation.get("criterion_results") or []),
         }
         if evaluation.get("geometric_id"):
+            contexts = {
+                json.dumps(
+                    item["context"], sort_keys=True, separators=(",", ":")
+                ): dict(item["context"])
+                for item in linked
+                if isinstance(item.get("context"), dict)
+            }
             results.append(
                 GeometricFindingRecord(
-                    geometric_ids=[str(evaluation["geometric_id"])],
+                    geometric_ids=sorted(
+                        {
+                            str(item["geometric_id"])
+                            for item in linked
+                            if item.get("geometric_id")
+                        }
+                        | {str(evaluation["geometric_id"])}
+                    ),
+                    contexts=[contexts[key] for key in sorted(contexts)],
                     location_status=(
                         "precise"
                         if common_finding["evidence_refs"]

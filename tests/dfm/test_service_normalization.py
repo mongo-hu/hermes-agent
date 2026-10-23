@@ -3,6 +3,9 @@
 Run with: python tests/dfm/test_service_normalization.py
 """
 
+import pytest
+
+from tools.dfm.errors import DFMError
 from tools.dfm.service import DFMService
 
 
@@ -18,23 +21,23 @@ def test_all_normalization():
     result = service._normalize_fact_value("pull_dir", "[0.0, 0.0, 1.0]")
     assert result == [0.0, 0.0, 1.0] and isinstance(result, list), "Test 2 failed"
     
-    # Test 3: Already a list (should return same object)
+    # Test 3: Already a list
     input_value = [0.0, 0.0, 1.0]
     result = service._normalize_fact_value("pull_dir", input_value)
-    assert result == [0.0, 0.0, 1.0] and result is input_value, "Test 3 failed"
+    assert result == [0.0, 0.0, 1.0] and isinstance(result, list), "Test 3 failed"
     
-    # Test 4: Tuple (should return as-is)
+    # Test 4: Tuple is normalized to the canonical list representation
     input_value = (0, 0, 1)
     result = service._normalize_fact_value("pull_dir", input_value)
-    assert result == (0, 0, 1) and isinstance(result, tuple), "Test 4 failed"
+    assert result == [0.0, 0.0, 1.0] and isinstance(result, list), "Test 4 failed"
     
     # Test 5: Non-normalized fact
     result = service._normalize_fact_value("material", "TPU")
     assert result == "TPU" and isinstance(result, str), "Test 5 failed"
     
-    # Test 6: Invalid JSON string
-    result = service._normalize_fact_value("pull_dir", "invalid json")
-    assert result == "invalid json" and isinstance(result, str), "Test 6 failed"
+    # Test 6: Invalid direction is rejected
+    with pytest.raises(DFMError, match="pull_dir"):
+        service._normalize_fact_value("pull_dir", "invalid json")
     
     # Test 7: JSON with whitespace
     result = service._normalize_fact_value("pull_dir", "[ 0 , 0 , 1 ]")

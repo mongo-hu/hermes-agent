@@ -83,6 +83,7 @@ def test_geometric_results_create_findings_without_legacy_routing(tmp_path):
                     "result_id": "result-wall",
                     "feature_id": "MAIN_WALL_0001",
                     "geometric_id": "G_WALL_THK_MIN",
+                    "context": {"forming_scope_id": "SIDE_01"},
                 }
             ],
         }),
@@ -123,5 +124,6 @@ def test_geometric_results_create_findings_without_legacy_routing(tmp_path):
 
     assert payload["geometric_ids"] == ["G_WALL_THK_MIN"]
     assert payload["feature_refs"] == ["MAIN_WALL_0001"]
+    assert payload["contexts"] == [{"forming_scope_id": "SIDE_01"}]
     assert "metric_ids" not in payload
     assert "region_refs" not in payload

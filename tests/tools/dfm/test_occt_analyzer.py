@@ -20,6 +20,7 @@ from tools.dfm.contracts import (
     PlanRecord,
 )
 from tools.dfm.errors import DFMError
+from tools.dfm.runtime import process as process_module
 from tools.dfm.runtime.process import (
     GeometrySession,
     GeometrySessionPool,
@@ -238,6 +239,128 @@ def test_snapshot_update_merges_sibling_branches_instead_of_overwriting():
     )
 
 
+def test_snapshot_merge_conflict_preserves_the_current_branch():
+    class FakeSession:
+        alive = True
+        pid = 1
+
+    pool = object.__new__(GeometrySessionPool)
+    pool._lock = threading.RLock()
+    owned = ProjectGeometrySession("dfm-1", FakeSession())
+    input_sha256 = "a" * 64
+    cached = {"snapshot_id": "snapshot-left", "artifacts": {}}
+    owned.snapshots_by_input_sha256[input_sha256] = cached
+    pool.acquire = lambda _project_id: owned
+
+    def conflict(_project_id, method, params):
+        assert method == "snapshots.merge"
+        assert params == {
+            "base_snapshot_id": "snapshot-base",
+            "snapshot_ids": ["snapshot-left", "snapshot-right"],
+        }
+        raise DFMError("snapshot_conflict", "fixture conflict")
+
+    pool.call = conflict
+
+    with pytest.raises(DFMError) as exc_info:
+        pool.update_snapshot(
+            "dfm-1",
+            input_sha256,
+            {"snapshot_id": "snapshot-base", "artifacts": {}},
+            {
+                "base_snapshot_id": "snapshot-base",
+                "snapshot_id": "snapshot-right",
+            },
+        )
+
+    assert exc_info.value.code == "snapshot_conflict"
+    assert owned.snapshots_by_input_sha256[input_sha256] is cached
+
+
+def test_active_snapshot_is_renewed_without_replacing_its_session():
+    class StopAfterOnePass:
+        def __init__(self):
+            self.calls = 0
+
+        def wait(self, _seconds):
+            self.calls += 1
+            return self.calls > 1
+
+    class FakeSession:
+        alive = True
+        pid = 1
+
+        def __init__(self):
+            self.calls = []
+
+        def call(self, method, params):
+            self.calls.append((method, params))
+            return {"contract_version": SESSION_CONTRACT, "valid": True}
+
+    pool = object.__new__(GeometrySessionPool)
+    pool._lock = threading.RLock()
+    pool._maintenance_stop = StopAfterOnePass()
+    pool.idle_timeout_seconds = 300
+    pool.memory_budget_bytes = 2**63
+    pool._references = {"dfm-1": {"chat-1"}}
+    session = FakeSession()
+    owned = ProjectGeometrySession(
+        "dfm-1", session, reference_ids={"chat-1"}
+    )
+    owned.snapshot_ids.add("snapshot-one")
+    owned.snapshot_lease_seconds["snapshot-one"] = 3
+    owned.snapshot_last_renewed["snapshot-one"] = 0
+    pool._projects = {"dfm-1": owned}
+
+    pool._maintain_snapshot_leases()
+
+    assert pool._projects["dfm-1"].session is session
+    assert session.calls == [
+        (
+            "snapshots.renew",
+            {"snapshot_id": "snapshot-one", "lease_seconds": 3},
+        )
+    ]
+    assert owned.snapshot_last_renewed["snapshot-one"] > 0
+
+
+def test_memory_budget_evicts_only_an_unreferenced_project(monkeypatch):
+    class FakeSession:
+        alive = True
+
+        def __init__(self, pid):
+            self.pid = pid
+            self.closed = False
+
+        def call(self, _method, _params):
+            return {}
+
+        def close(self):
+            self.closed = True
+
+    pool = object.__new__(GeometrySessionPool)
+    pool._lock = threading.RLock()
+    pool.memory_budget_bytes = 150
+    pool._references = {"active": {"chat-1"}}
+    idle_session = FakeSession(1)
+    active_session = FakeSession(2)
+    idle = ProjectGeometrySession("idle", idle_session)
+    idle.last_used = 1
+    active = ProjectGeometrySession(
+        "active", active_session, reference_ids={"chat-1"}
+    )
+    active.last_used = 2
+    pool._projects = {"idle": idle, "active": active}
+    monkeypatch.setattr(process_module, "_resident_bytes", lambda _pid: 100)
+
+    resident = pool._evict_for_memory()
+
+    assert resident == 100
+    assert idle_session.closed is True
+    assert active_session.closed is False
+    assert set(pool._projects) == {"active"}
+
+
 def test_idle_reclamation_waits_for_chat_reference_then_closes_snapshot():
     class FakeSession:
         alive = True
@@ -267,7 +390,13 @@ def test_idle_reclamation_waits_for_chat_reference_then_closes_snapshot():
     pool._evict_idle()
     assert not session.closed
 
+    owned.active_job_ids.add("job-one")
     pool.release_project("dfm-1", "chat-one")
+    pool._evict_idle()
+    assert not session.closed
+    assert session.calls == []
+
+    owned.active_job_ids.remove("job-one")
     pool._evict_idle()
     assert session.calls == [
         ("snapshots.close", {"snapshot_id": "snapshot-one"})
@@ -378,9 +507,24 @@ def test_scalar_field_accepts_only_feature_g_context_identity():
 
 
 def test_native_capability_schema_validates_real_executable():
-    schema_dir = Path(os.environ.get("DFM_GEOMETRY_SCHEMA_ROOT", "dfm-geometry/schemas"))
+    root = Path(__file__).resolve().parents[3]
+    configured_schema_root = os.environ.get("DFM_GEOMETRY_SCHEMA_ROOT")
+    schema_candidates = [
+        *(
+            [Path(configured_schema_root).expanduser()]
+            if configured_schema_root
+            else []
+        ),
+        root / "dfm-geometry" / "schemas",
+        root.parent.parent / "模具项目" / "occt-worker" / "schemas",
+        root.parent / "occt-worker" / "schemas",
+        root.parent.parent / "occt-worker" / "schemas",
+    ]
+    schema_dir = next(
+        (item.resolve() for item in schema_candidates if item.is_dir()), None
+    )
     executable = os.environ.get("DFM_GEOMETRY_E2E_EXECUTABLE")
-    if not schema_dir.is_dir() or not executable:
+    if schema_dir is None or not executable:
         pytest.skip("external DFMAnalysis_OCCT checkout is not available")
     schema = json.loads(
         (schema_dir / "capabilities.schema.json").read_text(encoding="utf-8")

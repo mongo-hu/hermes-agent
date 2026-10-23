@@ -24,6 +24,7 @@ from tools.dfm.contracts import (
     EffectiveRule,
     FactRecord,
     FeatureRecord,
+    GeometricFindingRecord,
     GeometricRequest,
     GeometricRuleBinding,
     FormingScopeRecord,
@@ -931,6 +932,92 @@ def test_geometric_binding_keeps_one_local_scope_waiting_while_another_is_ready(
             "direction_source": "user_confirmed",
         },
     }
+
+
+def test_local_direction_change_stales_only_findings_from_that_scope():
+    side_01 = PlanFragmentRecord(
+        "fragment-side-01",
+        "snapshot-model-1",
+        "discovery-1",
+        "v2:test",
+        "a" * 64,
+        [],
+        ["binding-side-01"],
+        [
+            GeometricRequest(
+                "feature-wall",
+                ["G_WALL_IN_DRAFT"],
+                {"forming_scope_id": "SIDE_01"},
+            )
+        ],
+    )
+    side_02 = replace(
+        side_01,
+        fragment_id="fragment-side-02",
+        rule_binding_refs=["binding-side-02"],
+        dependency_fingerprint="b" * 64,
+        items=[
+            GeometricRequest(
+                "feature-wall",
+                ["G_WALL_IN_DRAFT"],
+                {"forming_scope_id": "SIDE_02"},
+            )
+        ],
+    )
+    ordinary = replace(
+        side_01,
+        fragment_id="fragment-ordinary",
+        rule_binding_refs=["binding-thickness"],
+        dependency_fingerprint="c" * 64,
+        items=[GeometricRequest("feature-wall", ["G_WALL_THK_MIN"], {})],
+    )
+    plan = PlanRecord(
+        "plan-scoped-findings",
+        "step",
+        ["occt_cpp"],
+        "ready",
+        "2026-10-21T00:00:00Z",
+        plan_fragments=[ordinary, side_01, side_02],
+    )
+
+    def finding(finding_id, geometric_id, forming_scope_id=None):
+        return GeometricFindingRecord(
+            finding_id=finding_id,
+            title=finding_id,
+            severity="unclassified",
+            status="open",
+            evaluation_ids=[f"evaluation-{finding_id}"],
+            measurement_ids=[f"result-{finding_id}"],
+            geometric_ids=[geometric_id],
+            evidence_refs=[],
+            rule_refs=[f"rule-{finding_id}"],
+            recommendation="review",
+            feature_refs=["feature-wall"],
+            check_ids=[f"check-{finding_id}"],
+            contexts=(
+                [{"forming_scope_id": forming_scope_id}]
+                if forming_scope_id is not None
+                else [{}]
+            ),
+        )
+
+    updated = DFMService._invalidate_findings_for_semantics(
+        SimpleNamespace(
+            plans=[plan],
+            findings=[
+                finding("side-01", "G_WALL_IN_DRAFT", "SIDE_01"),
+                finding("side-02", "G_WALL_IN_DRAFT", "SIDE_02"),
+                finding("ordinary", "G_WALL_THK_MIN"),
+            ],
+        ),
+        "forming_scope:SIDE_01",
+    )
+
+    by_id = {item.finding_id: item for item in updated}
+    assert by_id["side-01"].validity_status == "stale"
+    assert by_id["side-01"].stale_reason == "forming_scope:SIDE_01"
+    assert by_id["side-02"].validity_status == "current"
+    assert by_id["ordinary"].validity_status == "current"
 
 
 def test_input_or_confirmed_fact_invalidates_prior_plan(service):
