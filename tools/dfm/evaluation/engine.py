@@ -752,6 +752,14 @@ class EvaluationEngine:
                     ),
                 },
             )
+        if isinstance(operand, GeometricRuleOperand) and any(
+            not isinstance(item.unit, str) or not item.unit.strip() for item in matches
+        ):
+            raise DFMError(
+                "evaluation_unit_invalid",
+                "A successful Geometric result requires an explicit measured unit.",
+                {"binding_id": binding.binding_id, "operand_alias": operand.alias},
+            )
         units = {item.unit for item in matches}
         if len(units) != 1:
             raise DFMError(

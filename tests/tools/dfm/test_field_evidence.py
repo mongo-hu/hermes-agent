@@ -1,4 +1,6 @@
 import json
+import hashlib
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -347,6 +349,60 @@ def test_field_evidence_rejects_cross_run_scene(tmp_path):
     scene = json.loads(scene_path.read_text(encoding="utf-8"))
     scene["run_id"] = "run_other"
     scene_path.write_text(json.dumps(scene), encoding="utf-8")
+
+    with pytest.raises(DFMError) as exc_info:
+        FieldEvidenceEngine().materialize(tmp_path, "run_1", artifacts)
+
+    assert exc_info.value.code == "evidence_field_invalid"
+
+
+def test_field_evidence_resolves_payload_ids_without_rewriting_artifacts(tmp_path):
+    artifacts = _write_pipeline_inputs(tmp_path)
+    before = {item.relative_path: (tmp_path / item.relative_path).read_bytes()
+              for item in artifacts}
+    artifacts = [replace(item, artifact_id=f"artifact_run_1_{item.kind}",
+                         sha256=hashlib.sha256(before[item.relative_path]).hexdigest())
+                 if item.kind in {"render_scene", "topology_map"} else item
+                 for item in artifacts]
+    records_before = [item.to_dict() for item in artifacts]
+
+    generated = FieldEvidenceEngine().materialize(tmp_path, "run_1", artifacts)
+
+    assert any(item.kind == "evidence_image" for item in generated)
+    assert [item.to_dict() for item in artifacts] == records_before
+    assert {name: (tmp_path / name).read_bytes() for name in before} == before
+
+
+@pytest.mark.parametrize("kind,id_key", [("render_scene", "scene_id"),
+                                         ("topology_map", "map_id")])
+@pytest.mark.parametrize("collision", ["payload_alias", "artifact_id"])
+def test_field_evidence_rejects_ambiguous_payload_ids(tmp_path, kind, id_key, collision):
+    artifacts = _write_pipeline_inputs(tmp_path)
+    original = next(item for item in artifacts if item.kind == kind)
+    artifacts = [replace(item, artifact_id=f"artifact_run_1_{item.kind}")
+                 if item.kind == kind else item for item in artifacts]
+    payload = json.loads((tmp_path / original.relative_path).read_text())
+    duplicate_path = tmp_path / f"duplicate_{kind}.json"
+    duplicate_path.write_text(json.dumps(payload))
+    artifacts.append(replace(original,
+        artifact_id="second_payload" if collision == "payload_alias" else payload[id_key],
+        relative_path=duplicate_path.name))
+
+    with pytest.raises(DFMError) as exc_info:
+        FieldEvidenceEngine().materialize(tmp_path, "run_1", artifacts)
+
+    assert exc_info.value.code == "evidence_artifact_invalid"
+    assert exc_info.value.details["reference"] == payload[id_key]
+
+
+@pytest.mark.parametrize("ref_key", ["scene_ref", "topology_map_ref"])
+def test_field_evidence_rejects_unknown_shared_reference(tmp_path, ref_key):
+    artifacts = _write_pipeline_inputs(tmp_path)
+    field_artifact = next(item for item in artifacts if item.kind == "scalar_field")
+    path = tmp_path / field_artifact.relative_path
+    payload = json.loads(path.read_text())
+    payload[ref_key] = "unknown_payload_id"
+    path.write_text(json.dumps(payload))
 
     with pytest.raises(DFMError) as exc_info:
         FieldEvidenceEngine().materialize(tmp_path, "run_1", artifacts)

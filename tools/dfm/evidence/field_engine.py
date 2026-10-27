@@ -113,6 +113,29 @@ class FieldEvidenceEngine:
             if isinstance(item, dict) and item.get("measurement_id")
         }
         artifact_by_id = {item.artifact_id: item for item in artifacts}
+        # Worker payload references are distinct from Hermes run artifact IDs.
+        # Keep both identities without rewriting immutable geometry artifacts.
+        for artifact in artifacts:
+            id_key = {"render_scene": "scene_id", "topology_map": "map_id"}.get(
+                artifact.kind
+            )
+            if id_key is None:
+                continue
+            payload = _read_json(project_dir, artifact, payload_cache)
+            reference = payload.get(id_key)
+            if not isinstance(reference, str) or not reference:
+                raise DFMError(
+                    "evidence_artifact_invalid",
+                    f"The {artifact.kind} artifact has no valid {id_key}.",
+                )
+            existing = artifact_by_id.get(reference)
+            if existing is not None and existing != artifact:
+                raise DFMError(
+                    "evidence_artifact_invalid",
+                    "A shared geometry reference resolves to multiple artifacts.",
+                    {"reference": reference},
+                )
+            artifact_by_id[reference] = artifact
         pull_direction = _field_pull_direction(project_dir, artifacts, payload_cache)
         patches: list[dict[str, Any]] = []
         for evaluation in evaluations_payload.get("evaluations", []):
@@ -447,10 +470,7 @@ class FieldEvidenceEngine:
             (field.get("scene_ref"), "render_scene"),
             (field.get("topology_map_ref"), "topology_map"),
         ):
-            artifact = artifact_by_id.get(str(ref)) or next(
-                (item for item in artifact_by_id.values() if item.kind == kind),
-                None,
-            )
+            artifact = artifact_by_id.get(str(ref))
             if artifact is None or artifact.kind != kind:
                 raise DFMError(
                     "evidence_field_invalid",

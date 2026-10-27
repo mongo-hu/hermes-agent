@@ -35,6 +35,10 @@ REQUIRED_PROPERTY_FIELDS = {
     kind: fields - ({"impact_scope"} if kind == "factor" else set())
     for kind, fields in PROPERTY_FIELDS.items()
 }
+LEGACY_SCHEMA4_PROPERTY_FIELDS = {
+    "feature_type": {"worker_kind"},
+    "geometric": {"worker_geometric_id", "quantity_id", "dimension", "canonical_unit"},
+}
 FACTOR_IMPACT_SCOPES = {
     "整件级",
     "特征实例级",
@@ -57,6 +61,36 @@ def catalog_json_field(
 ) -> Any:
     """Read current published names while retaining Schema 2 input compatibility."""
     return item.get(f"{name}_json" if version >= 3 else name, default)
+
+
+def catalog_feature_kind(properties: Mapping[str, Any]) -> str:
+    """Read validated bindings without changing stored publication identities."""
+    if set(properties) == {"worker_kind"}:
+        kind = str(properties["worker_kind"])
+        # The Mold workbook's WALL feature is the Worker's main-wall inventory.
+        # Do not narrow the general boss/hole concepts to solid/drilled variants.
+        return "main_wall" if kind == "wall" else kind
+    return str(properties.get("feature_kind") or "") if set(properties) == {"feature_kind"} else ""
+
+
+def _legacy_schema4_properties(payload: Mapping[str, Any]) -> bool:
+    """Accept only the complete historical profile, never a mixed downgrade."""
+    if payload["schema_version"] != 4:
+        return False
+    routed = [
+        item for item in payload["concepts"]
+        if item["concept_type"] in LEGACY_SCHEMA4_PROPERTY_FIELDS
+    ]
+    legacy_keys = {"worker_kind", "worker_geometric_id", "quantity_id"}
+    if not any(legacy_keys.intersection(item["properties_json"]) for item in routed):
+        return False
+    for item in routed:
+        if set(item["properties_json"]) != LEGACY_SCHEMA4_PROPERTY_FIELDS[item["concept_type"]]:
+            invalid(
+                "Current and legacy publication property profiles must not be mixed.",
+                concept_id=item["concept_id"],
+            )
+    return True
 
 
 def expression_unit(expression: Mapping[str, Any], operand_units: Mapping[str, str | None]) -> str | None:
@@ -155,21 +189,31 @@ def validate_catalog(payload: Mapping[str, Any], validate_source_policy) -> None
     process_id = f"process.{payload['rule_set']['process']}"
     if concepts.get(process_id, {}).get("concept_type") != "process":
         invalid("The publication does not declare its process concept.")
+    legacy_properties = _legacy_schema4_properties(payload)
     for concept_id, concept in concepts.items():
         kind = concept["concept_type"]
         properties = catalog_json_field(concept, "properties", version, {})
         property_names = set(properties) if isinstance(properties, dict) else set()
+        fields = (
+            LEGACY_SCHEMA4_PROPERTY_FIELDS[kind]
+            if legacy_properties and kind in LEGACY_SCHEMA4_PROPERTY_FIELDS
+            else PROPERTY_FIELDS[kind]
+        )
+        required_fields = (
+            fields if legacy_properties and kind in LEGACY_SCHEMA4_PROPERTY_FIELDS
+            else REQUIRED_PROPERTY_FIELDS[kind]
+        )
         if (
             not isinstance(properties, dict)
-            or not REQUIRED_PROPERTY_FIELDS[kind].issubset(property_names)
-            or not property_names.issubset(PROPERTY_FIELDS[kind])
+            or not required_fields.issubset(property_names)
+            or not property_names.issubset(fields)
         ):
             invalid(
                 "Concept properties must match the documented whitelist.",
                 concept_id=concept_id,
             )
         bindings = {
-            "feature_type": ("feature_kind",),
+            "feature_type": ("worker_kind" if legacy_properties else "feature_kind",),
             "factor": ("runtime_key",),
         }
         for name in bindings.get(kind, ()):
@@ -185,9 +229,14 @@ def validate_catalog(payload: Mapping[str, Any], validate_source_policy) -> None
                     "A Geometric concept_id must be the authoritative public G ID.",
                     concept_id=concept_id,
                 )
-            if any(
+            if legacy_properties:
+                # Old Mold publications left runtime metadata unresolved. Keep
+                # it intact; Worker capabilities and measured units gate execution.
+                if any(not isinstance(properties[name], str) for name in fields):
+                    invalid("Legacy Geometric metadata must use string values.", concept_id=concept_id)
+            elif any(
                 not isinstance(properties[name], str) or not properties[name].strip()
-                for name in PROPERTY_FIELDS["geometric"]
+                for name in fields
             ):
                 invalid(
                     "Geometric dimension and canonical_unit must be non-empty strings.",

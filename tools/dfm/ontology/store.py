@@ -32,7 +32,12 @@ from ..contracts import (
     _expression_operand_aliases,
 )
 from ..errors import DFMError
-from .catalog_contract import catalog_json_field, current_catalog, validate_catalog
+from .catalog_contract import (
+    catalog_feature_kind,
+    catalog_json_field,
+    current_catalog,
+    validate_catalog,
+)
 
 
 ONTOLOGY_SNAPSHOT_SCHEMA_VERSION = 4
@@ -716,7 +721,7 @@ class LocalOntologyStore:
             ).fetchall()
             for row in feature_rows:
                 properties = _load_json(row["properties_json"], {})
-                feature_kind = str(properties.get("feature_kind") or "")
+                feature_kind = catalog_feature_kind(properties)
                 if feature_kind:
                     features_by_check.setdefault(str(row["subject_id"]), set()).add(
                         feature_kind
@@ -1931,7 +1936,7 @@ class LocalOntologyStore:
                 (check_id,),
             ).fetchall()
             published_feature_kinds = [
-                str(properties.get("feature_kind") or "")
+                catalog_feature_kind(properties)
                 for properties in (
                     _load_json(item["properties_json"], {}) for item in feature_rows
                 )

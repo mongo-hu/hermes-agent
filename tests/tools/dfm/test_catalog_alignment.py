@@ -128,6 +128,161 @@ def test_schema_4_rejects_unknown_factor_impact_scope(tmp_path):
     assert exc_info.value.details["path"][-1] == "impact_scope"
 
 
+def legacy_schema4_payload(kind="wall"):
+    value = grouped_payload()
+    for concept in value["concepts"]:
+        if concept["concept_type"] == "feature_type":
+            concept["properties_json"] = {"worker_kind": kind}
+        elif concept["concept_type"] == "geometric":
+            concept["properties_json"] = {
+                "worker_geometric_id": "",
+                "quantity_id": "",
+                "dimension": "",
+                "canonical_unit": "",
+            }
+    return rehash(value)
+
+
+def wall_geometric_capability(kind="main_wall"):
+    return {
+        "G_WALL_THK_MIN": {
+            "feature_kind": kind,
+            "scope_modes": ["feature"],
+            "direction_modes": ["none"],
+            "requires_complete_inventory": False,
+            "context_schema": {"type": "object", "additionalProperties": False},
+        }
+    }
+
+
+@pytest.mark.parametrize("kind,worker_kind", [("wall", "main_wall"), ("hollow_boss", "hollow_boss")])
+def test_legacy_schema4_preserves_publication_and_compiles_with_v2_capability(tmp_path, kind, worker_kind):
+    value = legacy_schema4_payload(kind)
+    original = deepcopy(value)
+    store = LocalOntologyStore(tmp_path / "legacy.sqlite3")
+    store.install_package(value)
+    store.configure_geometric_bindings(wall_geometric_capability(worker_kind))
+
+    compiled = store.compile("injection", {"material": "ABS"}, operations())
+    assert compiled.rule_bindings
+    assert not compiled.skipped_checks
+    assert compiled.identity.content_sha256 == original["content_sha256"]
+    assert store.geometric_scope_specs("injection")[0]["feature_kind"] == worker_kind
+    context = store.check_context(value["rules"][0]["check_id"])
+    for relation in context["relations"]:
+        if relation["predicate"] in {"APPLIES_TO_FEATURE", "USES_OPERAND"}:
+            concept = next(item for item in original["concepts"] if item["concept_id"] == relation["object"]["concept_id"])
+            assert relation["object"]["properties_json"] == concept["properties_json"]
+    assert value == original
+
+
+@pytest.mark.parametrize("change", [
+    "feature_extra", "feature_mixed", "geometric_extra", "geometric_missing",
+    "new_feature_old_geometry", "old_feature_new_geometry", "non_string", "schema_3",
+])
+def test_legacy_schema4_rejects_partial_or_unknown_property_profiles(tmp_path, change):
+    store = LocalOntologyStore(tmp_path / "strict.sqlite3")
+    store.install_package(grouped_payload())
+    original = store.identity()
+    value = legacy_schema4_payload()
+    feature = next(item for item in value["concepts"] if item["concept_type"] == "feature_type")
+    geometric = next(item for item in value["concepts"] if item["concept_type"] == "geometric")
+    if change == "feature_extra":
+        feature["properties_json"]["unknown"] = "wall"
+    elif change == "feature_mixed":
+        feature["properties_json"]["feature_kind"] = "main_wall"
+    elif change == "geometric_extra":
+        geometric["properties_json"]["worker_role"] = "wall"
+    elif change == "geometric_missing":
+        geometric["properties_json"].pop("quantity_id")
+    elif change == "new_feature_old_geometry":
+        feature["properties_json"] = {"feature_kind": "main_wall"}
+    elif change == "old_feature_new_geometry":
+        geometric["properties_json"] = {"dimension": "length", "canonical_unit": "mm"}
+    elif change == "non_string":
+        geometric["properties_json"]["quantity_id"] = None
+    else:
+        value["schema_version"] = 3
+        value["rules"][0]["acceptance_criteria_json"] = value["rules"][0]["acceptance_criteria_json"][0]
+    with pytest.raises(DFMError) as exc_info:
+        store.install_package(rehash(value))
+    assert exc_info.value.code == "ontology_snapshot_invalid"
+    assert store.identity() == original
+
+
+@pytest.mark.parametrize("field", ["dimension", "canonical_unit"])
+def test_current_schema4_still_rejects_blank_geometric_metadata(field):
+    value = grouped_payload()
+    geometric = next(item for item in value["concepts"] if item["concept_type"] == "geometric")
+    geometric["properties_json"][field] = ""
+    with pytest.raises(DFMError) as exc_info:
+        LocalOntologyStore.from_package(rehash(value))
+    assert exc_info.value.code == "ontology_snapshot_invalid"
+
+
+@pytest.mark.parametrize("unit,outcome", [("mm", "pass"), ("degree", "indeterminate"), ("", "indeterminate")])
+def test_legacy_schema4_uses_actual_measured_units_before_passing(unit, outcome):
+    store = LocalOntologyStore.from_package(legacy_schema4_payload())
+    store.configure_geometric_bindings(wall_geometric_capability())
+    compiled = store.compile("injection", {"material": "ABS"}, operations())
+    evaluations, provenance = EvaluationEngine().evaluate([measurement(1.5, unit)], plan(compiled))
+    assert evaluations[0].outcome == outcome
+    if outcome == "indeterminate":
+        if unit:
+            assert all(item["error_code"] == "evaluation_unit_invalid" for item in evaluations[0].criterion_results)
+        else:
+            assert provenance[evaluations[0].evaluation_id]["unavailable_operands"]["actual"]["code"] == "evaluation_unit_invalid"
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("unit", [None, "", "  "])
+def test_ratio_cannot_treat_missing_measured_units_as_dimensionless(legacy, unit):
+    value = legacy_schema4_payload() if legacy else grouped_payload()
+    value["rules"][0]["acceptance_criteria_json"] = [[{
+        "criterion_id": "self_ratio",
+        "expression": {"op": "divide", "args": [{"operand": "actual"}, {"operand": "actual"}]},
+        "comparator": "EQ",
+        "threshold": 1.0,
+        "result_unit": "ratio",
+    }]]
+    store = LocalOntologyStore.from_package(rehash(value))
+    store.configure_geometric_bindings(wall_geometric_capability())
+    compiled = store.compile("injection", {"material": "ABS"}, operations())
+    evaluations, provenance = EvaluationEngine().evaluate([measurement(1.5, unit)], plan(compiled))
+    assert evaluations[0].outcome == "indeterminate"
+    assert provenance[evaluations[0].evaluation_id]["unavailable_operands"]["actual"]["code"] == "evaluation_unit_invalid"
+
+
+def test_legacy_schema4_unavailable_result_does_not_require_unit():
+    store = LocalOntologyStore.from_package(legacy_schema4_payload())
+    store.configure_geometric_bindings(wall_geometric_capability())
+    compiled = store.compile("injection", {"material": "ABS"}, operations())
+    unavailable = replace(measurement(None, None), status="unsupported", reason="not measured")
+    unavailable.validate()
+    evaluations, provenance = EvaluationEngine().evaluate([unavailable], plan(compiled))
+    assert evaluations[0].outcome == "indeterminate"
+    assert provenance[evaluations[0].evaluation_id]["unavailable_operands"]["actual"]["code"] == "evaluation_operand_unavailable"
+
+
+def test_legacy_schema4_without_worker_capability_skips_execution():
+    store = LocalOntologyStore.from_package(legacy_schema4_payload())
+    store.configure_geometric_bindings({})
+    compiled = store.compile("injection", {"material": "ABS"}, operations())
+    assert not compiled.rule_bindings
+    assert compiled.skipped_checks[0].reason == "geometric_id_unsupported"
+    assert not store.geometric_scope_specs("injection")
+
+
+@pytest.mark.parametrize("published,worker", [("boss", "solid_boss"), ("hole", "drilled_hole")])
+def test_legacy_schema4_does_not_narrow_general_feature_meaning(published, worker):
+    store = LocalOntologyStore.from_package(legacy_schema4_payload(published))
+    store.configure_geometric_bindings(wall_geometric_capability(worker))
+    with pytest.raises(DFMError, match="disagree on feature kind"):
+        store.compile("injection", {"material": "ABS"}, operations())
+    with pytest.raises(DFMError, match="disagree on feature kind"):
+        store.geometric_scope_specs("injection")
+
+
 def rehash(value):
     value.pop("content_sha256", None)
     value["content_sha256"] = hashlib.sha256(
