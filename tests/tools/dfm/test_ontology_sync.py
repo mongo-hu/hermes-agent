@@ -1,6 +1,7 @@
 import copy
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -100,6 +101,25 @@ def test_sync_uses_direct_http_requests(tmp_path):
     result = sync.sync_once()
 
     assert result["snapshot_id"] == "ontology.test@2"
+
+
+def test_same_snapshot_is_revalidated_after_contract_upgrade(tmp_path):
+    payload = package("ontology.test@stale")
+    feature = next(
+        item for item in payload["concepts"] if item["concept_type"] == "feature_type"
+    )
+    feature["properties"] = {"worker_kind": feature["properties"]["feature_kind"]}
+    payload["content_sha256"] = _content_hash(payload)
+    store = LocalOntologyStore(tmp_path / "dfm-ontology.sqlite3")
+    with patch.object(LocalOntologyStore, "_validate_package"):
+        store.install_package(payload)
+    sync = synchronizer(tmp_path, store, payload)
+    sync._archive(payload)
+
+    with pytest.raises(DFMError) as exc_info:
+        sync.sync_once()
+
+    assert exc_info.value.code == "ontology_snapshot_invalid"
 
 
 def test_revoked_installed_snapshot_blocks_runtime_without_safe_archive(tmp_path):

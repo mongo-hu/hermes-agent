@@ -133,6 +133,29 @@ class OntologySynchronizer:
                 {"snapshot_id": identity.snapshot_id},
             )
 
+    def ensure_current_valid(self, expected_hash: str = "") -> bool:
+        """Revalidate the archived source of the installed immutable Snapshot."""
+
+        identity = self.store.identity()
+        package_path = self.packages_dir / f"{identity.snapshot_id}.json"
+        if not package_path.is_file():
+            return False
+        digest = self.store.validate_package(package_path)
+        if digest != identity.content_sha256 or (
+            expected_hash and digest != expected_hash
+        ):
+            raise DFMError(
+                "ontology_snapshot_invalid",
+                "The installed DFM ontology database does not match its archived publication.",
+                {
+                    "snapshot_id": identity.snapshot_id,
+                    "installed_hash": identity.content_sha256,
+                    "artifact_hash": digest,
+                    "expected_hash": expected_hash,
+                },
+            )
+        return True
+
     def rollback(self, snapshot_id: str) -> dict[str, Any]:
         if snapshot_id in self.revoked_snapshot_ids():
             raise DFMError(
@@ -170,12 +193,20 @@ class OntologySynchronizer:
                 "The selected DFM ontology Snapshot is missing or revoked.",
                 {"snapshot_id": target_id},
             )
+        current = None
         try:
             current = self.store.identity()
-            if current.snapshot_id == target_id:
+            if current.snapshot_id == target_id and self.ensure_current_valid(
+                str(latest.get("content_sha256") or "")
+                if target_id == latest.get("snapshot_id")
+                else ""
+            ):
                 return {"changed": False, "snapshot_id": target_id}
         except DFMError:
-            pass
+            if current is None or current.snapshot_id != target_id:
+                pass
+            else:
+                raise
 
         if target_id == latest.get("snapshot_id"):
             artifact_url = str(latest.get("artifact_url") or "")
@@ -191,6 +222,15 @@ class OntologySynchronizer:
         expected_hash = expected_hash or headers.get("X-DFM-Content-SHA256", "")
         self._verify_hash(payload, expected_hash)
         self._archive(payload)
+        if current is not None and current.snapshot_id == target_id:
+            digest = self.store.validate_package(payload)
+            if digest != current.content_sha256:
+                raise DFMError(
+                    "ontology_snapshot_invalid",
+                    "An immutable DFM Snapshot ID resolved to different content.",
+                    {"snapshot_id": target_id},
+                )
+            return {"changed": False, "snapshot_id": target_id}
         self.store.install_package(payload)
         return {"changed": True, "snapshot_id": target_id, "rolled_back": False}
 

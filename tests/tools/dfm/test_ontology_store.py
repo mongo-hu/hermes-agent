@@ -281,17 +281,17 @@ def test_legacy_package_does_not_expose_removed_region_analysis_targets():
         {
             "concept_id": "feature.boss",
             "concept_type": "feature_type",
-            "name_zh": "螺钉柱",
+            "name_zh": "带孔 BOSS 柱",
             "definition": "用于螺钉连接的柱状注塑特征。",
             "aliases": [],
-            "properties": {"worker_kind": "screw_boss"},
+            "properties": {"worker_kind": "hollow_boss"},
             "status": "active",
         },
         {
-            "concept_id": "region.screw_boss.wall",
+            "concept_id": "region.hollow_boss.wall",
             "concept_type": "region_type",
-            "name_zh": "螺钉柱柱壁",
-            "definition": "螺钉柱参与壁厚计算的柱壁区域。",
+            "name_zh": "带孔 BOSS 柱柱壁",
+            "definition": "带孔 BOSS 柱参与壁厚计算的柱壁区域。",
             "aliases": [],
             "properties": {"worker_role": "wall"},
             "status": "active",
@@ -299,8 +299,8 @@ def test_legacy_package_does_not_expose_removed_region_analysis_targets():
         {
             "concept_id": "check.boss.minimum_wall",
             "concept_type": "check",
-            "name_zh": "螺钉柱最小柱壁",
-            "definition": "判断螺钉柱柱壁最小厚度。",
+            "name_zh": "带孔 BOSS 柱最小柱壁",
+            "definition": "判断带孔 BOSS 柱柱壁最小厚度。",
             "aliases": [],
             "properties": {},
             "status": "active",
@@ -316,10 +316,10 @@ def test_legacy_package_does_not_expose_removed_region_analysis_targets():
             "sort_order": 30,
         },
         {
-            "relation_id": "rel.feature.screw_boss.region.wall",
+            "relation_id": "rel.feature.hollow_boss.region.wall",
             "subject_id": "feature.boss",
             "predicate": "HAS_REGION",
-            "object_id": "region.screw_boss.wall",
+            "object_id": "region.hollow_boss.wall",
             "qualifiers": {},
             "sort_order": 10,
         },
@@ -335,7 +335,7 @@ def test_legacy_package_does_not_expose_removed_region_analysis_targets():
             "relation_id": "rel.check.boss-wall.region.wall",
             "subject_id": "check.boss.minimum_wall",
             "predicate": "APPLIES_TO_REGION",
-            "object_id": "region.screw_boss.wall",
+            "object_id": "region.hollow_boss.wall",
             "qualifiers": {},
             "sort_order": 15,
         },
@@ -357,7 +357,7 @@ def test_legacy_package_does_not_expose_removed_region_analysis_targets():
         "rule_id": "R_INJ_SCREW_BOSS_WALL_MIN",
         "version": "1.0.0",
         "check_id": "check.boss.minimum_wall",
-        "name": "螺钉柱最小柱壁",
+        "name": "带孔 BOSS 柱最小柱壁",
         "conditions": [],
         "expression": {"operand": "actual"},
         "comparator": "GTE",
@@ -384,7 +384,7 @@ def test_legacy_package_does_not_expose_removed_region_analysis_targets():
     assert compiled.rules[binding.rule_id].severity == "warning"
     assert (
         compiled.binding_selectors[binding.binding_id]["actual"]["feature_kind"]
-        == "screw_boss"
+        == "hollow_boss"
     )
     assert not hasattr(store, "analysis_target_specs")
     assert store.geometric_scope_specs("injection") == ()

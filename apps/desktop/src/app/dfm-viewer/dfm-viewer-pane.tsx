@@ -482,8 +482,8 @@ function ModelCanvas({
 }
 
 const FEATURE_LABELS: Record<string, string> = {
-  hollow_boss: '带孔BOSS柱',
-  screw_boss: '带孔BOSS柱', // Display historical snapshots without changing their IDs.
+  hollow_boss: '带孔 BOSS 柱',
+  screw_boss: '带孔 BOSS 柱', // Display historical snapshots without changing their IDs.
   blend: '圆角链',
   canonical_surface: '规范曲面',
   cavity: '型腔',

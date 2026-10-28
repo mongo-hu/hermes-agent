@@ -221,6 +221,16 @@ class DFMService:
                 root=self.workspace.ontology_dir,
                 config=self.config,
             )
+            try:
+                current_ontology_valid = (
+                    self.ontology_synchronizer.ensure_current_valid()
+                )
+            except DFMError:
+                # A validator upgrade may invalidate a Snapshot accepted by an
+                # older process. Upgrade synchronously before exposing DFM.
+                current_ontology_valid = False
+            if not current_ontology_valid:
+                self.ontology_synchronizer.sync_once()
             self._ontology_background_sync = BackgroundOntologySync(
                 self.ontology_synchronizer,
                 self.config.ontology_sync_interval_seconds,

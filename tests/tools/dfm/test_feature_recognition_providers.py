@@ -160,7 +160,7 @@ def test_feature_geometry_is_frozen_without_constructing_regions():
 
 def test_one_feature_carries_geometry_once_without_measurement_role_regions():
     input_record = _input()
-    feature_id = "feature.screw_boss.1"
+    feature_id = "feature.hollow_boss.1"
     geometry_ref = GeometryRef(
         "face",
         209,
@@ -177,7 +177,7 @@ def test_one_feature_carries_geometry_once_without_measurement_role_regions():
         features=[
             FeatureRecord(
                 feature_id=feature_id,
-                kind="screw_boss",
+                kind="hollow_boss",
                 source_refs=["recognizer:occt_cpp"],
                 confidence=0.9,
                 input_sha256=input_record.sha256,

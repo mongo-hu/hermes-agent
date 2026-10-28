@@ -119,18 +119,18 @@ Web 使用字典/Context API，Agent 下载带 SHA-256 内容身份的发布物�
 | Concept Type | 字段 |
 | --- | --- |
 | Process | 无，保存为空对象 `{}` |
-| Feature Type | `worker_kind` |
+| Feature Type | `feature_kind` |
 | Geometric | `dimension/canonical_unit`；通用 `concept_id` 即权威 G ID，不另存 Worker ID 或 Quantity ID |
 | Factor | `runtime_key/default_value/question/impact_scope/source_policy` |
 | Check | `report_group`；历史 `default_severity` 仅作 Draft 起草提示，不作为运行时定级来源 |
 
-以上是新发布契约的 `properties_json` 字段白名单。字段有可靠来源时填写实际内容，没有来源时保留空字符串、
-`null` 或空对象；除此之外的来源追踪、显示分组、导入版本和关系缓存等字段不写入
+以上是新发布契约的 `properties_json` 字段白名单。Feature Type 的 `feature_kind` 以及 Geometric 的
+`dimension/canonical_unit` 必须有非空值；除此之外的来源追踪、显示分组、导入版本和关系缓存等字段不写入
 `properties_json`。Excel 来源追踪由 Rule Citation、导入日志和发布物哈希承担。
-白名单内字段均在规则库管理界面完整展示。Feature Type 的 `worker_kind`、Geometric 的
+白名单内字段均在规则库管理界面完整展示。Feature Type 的 `feature_kind`、Geometric 的
 `dimension/canonical_unit`，以及 Factor 的 `runtime_key/default_value/question/source_policy` 只读，
-由工作簿导入或能力同步流程维护。`impact_scope` 是唯一允许普通管理 API 和界面人工修正的 Factor
-运行属性；再次导入工作簿时，以 Excel 的“影响范围”列覆盖该修正。发布时再依据 Capability 和规则完整性要求校验这些值。
+由工作簿导入维护。`impact_scope` 是唯一允许普通管理 API 和界面人工修正的 Factor
+运行属性；再次导入工作簿时，以 Excel 的“影响范围”列覆盖该修正。发布时按公共属性白名单和规则完整性要求校验这些值。
 
 新契约中，Geometric 值的类型继续由 `data_schema_json` 描述；部位、参考对象及聚合口径
 由该 G 的定义与对应 Worker Capability 明确声明。Worker 仅在私有执行描述中选择
@@ -262,7 +262,7 @@ Agent 项目 Manifest 中的 `FactRecord`，候选识别结果保存为 `Observa
 }
 ```
 
-Geometric 的技术指标 ID 直接使用该 Concept 的 `concept_id`（G ID），Feature 的 `worker_kind` 来自
+Geometric 的技术指标 ID 直接使用该 Concept 的 `concept_id`（G ID），Feature 的 `feature_kind` 来自
 `APPLIES_TO_FEATURE` 指向的 Feature Concept。`operand_text` 直接保存规则来源中的“比较对象”字符串，
 不再为字符串中出现的区域另建 Region Type Concept。
 
@@ -536,8 +536,8 @@ Measurement/Feature/Region 证据。若工程要求“等于某标称值”，�
 发布校验必须证明：
 
 - 所有关系引用存在且 Concept Type 合法；
-- Check 的每个 Operand 能以权威 G ID 在目标 OCCT Capability 中找到唯一技术指标定义，
-  且 Feature 类别、参考对象语义、聚合、数据 Schema、量纲和单位一致；不再校验公开 Metric/Quantity 绑定；
+- Check 的每个 Operand 使用权威 G ID，且 Feature 类别、参考对象语义、聚合、数据 Schema、量纲和单位完整一致；
+  目标 OCCT Capability 是否支持该 G ID 由 Hermes 在计划编译时校验，不在 Mold 保存或发布 Worker 私有绑定；
 - `conditions_json` 只用于 Factor 适用性筛选，不含 Geometric 合格判定；
 - `acceptance_criteria_json` 是非空外层 OR 数组，每个内层 AND 数组也非空，`criterion_id` 在整条规则内不重复；每项表达式只使用本 Check 声明的
   Operand Alias 和白名单算术运算，比较符属于受控集合；
@@ -678,8 +678,8 @@ Agent 同时保留 Schema 2/3 历史兼容。
 OCCT 新增 Feature/Geometric Capability（Recognizer、部位选择器和 Calculator 为内部实现）
 ＋ 本体新增 Feature/Geometric/Check/Relation，并在 USES_OPERAND 中保存比较对象原文
 ＋ 规则库新增 Rule Version
-→ 发布阶段做 Capability × Ontology 交叉校验
-→ Agent 通用编译器生成几何需求与 RuleBinding；新 Worker 使用 G ID
+→ Mold 按公共属性白名单发布不可变 Snapshot
+→ Hermes 按 Snapshot 的 Feature/G ID 校验 Worker Capability，并生成几何需求与 RuleBinding
 ```
 
 只要使用已支持的数据契约、聚合方式、表达式 DSL 和证据模式，
@@ -733,7 +733,7 @@ Check 通过 USES_OPERAND 绑定公式 alias 与 G；Operand 是现有关系及�
 | 中心九表与管理界面 | Mold `aimold_app/models/dfm_*`、`views/dfm_management.py`、Web `ruleCatalog` | 已落地模型、审核生命周期、规则集编排、发布和撤销界面；生产数据状态需部署核对 |
 | Excel 导入与新增“影响范围” | Mold `import_dfm_v2.py`、`sync_dfm_workbook_ontology.py`、`V2.2.3.xlsx` | 已按表头读取并写入 `Factor.properties_json.impact_scope`；界面允许修正，重导入以 Excel 为准 |
 | Schema 4 发布与四个运行接口 | Mold `dfm_publication_service.py`、`dfm_runtime_urls.py` | 已落地不可变 Artifact、SHA-256 校验、latest/dictionary/context/artifact；未实现数字签名 |
-| Mold Geometric 旧绑定字段 | Mold `dfm_concept_property_service.py`、`dfm_geometric_backfill_service.py` | 当前应用代码仍保留 `worker_geometric_id/quantity_id` 及旧 Capability 回填；它们不是新公共计算路由，仍需与 G ID 契约继续收敛 |
+| Mold 公共属性投影 | Mold `dfm_concept_property_service.py`、`dfm_publication_service.py` | 发布器按稳定 Feature/G ID 生成当前属性并严格使用白名单；旧 Worker 绑定字段不再读取、回填或发布，不要求迁移历史 JSON |
 
 迁移时逐条辨别旧 conditions_json 内的几何条件：合格要求进入 acceptance_criteria_json；真正的几何适用条件另行设计与审核，不伪装成 Factor。判定项 ID、单位、比较符、引用和 AND／OR 语义均需验证，不能按字段形状机械搬迁。
 

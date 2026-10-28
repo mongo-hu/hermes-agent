@@ -23,12 +23,12 @@ def _validate(name: str, payload: dict) -> None:
 
 def test_feature_observation_and_fusion_link_match_formal_schemas():
     feature = FeatureRecord(
-        feature_id="feature.screw_boss.003",
-        kind="screw_boss",
+        feature_id="feature.hollow_boss.003",
+        kind="hollow_boss",
         source_refs=["input:model"],
         confidence=0.96,
         input_sha256="a" * 64,
-        region_refs=["region.screw_boss.003.outer_wall"],
+        region_refs=["region.hollow_boss.003.outer_wall"],
         properties={"height_mm": 12.5, "thickness_mm": 1.8},
         relationships=[
             {

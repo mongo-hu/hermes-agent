@@ -232,7 +232,7 @@ def serve_v2():
                     "occt_version": "fixture",
                     "analysis_situs_version": "fixture",
                     "analysis_situs_commit": "fixture",
-                    "feature_kinds": ["main_wall", "rib", "screw_boss"],
+                    "feature_kinds": ["main_wall", "rib", "hollow_boss"],
                     "coverage_statuses": ["complete", "partial", "failed"],
                     "geometrics": geometrics,
                 },

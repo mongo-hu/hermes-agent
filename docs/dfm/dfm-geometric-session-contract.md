@@ -44,9 +44,9 @@ Hermes 负责决定“检查什么、需要算什么、结果是否符合要求�
 | 标识 | 在 Hermes 中的用途 |
 | --- | --- |
 | `project_id` / `run_id` | 项目与一次分析的记录，不作为 Worker 的计算对象编号 |
-| `check_id` | 业务指标，如螺钉柱“柱壁”；留在规则与问题处理层 |
+| `check_id` | 业务指标，如带孔 BOSS 柱“柱壁”；留在规则与问题处理层 |
 | `snapshot_id` | Worker 返回的模型及特征状态编号，用于后续识别、修订和计算 |
-| `feature_id` / `feature_kind` | 快照内的具体结构及其类别，例如 `BOSS_0007` / `screw_boss` |
+| `feature_id` / `feature_kind` | 快照内的具体结构及其类别，例如 `BOSS_0007` / `hollow_boss` |
 | `geometric_id` | 两端统一的技术指标 G ID |
 | `forming_scope_id` | 快照内的运行时成型范围，如MAIN_POS或SIDE_01；不新增本体Region概念 |
 | `context` | 该G实际需要的确认输入和算法参数；方向相关项可绑定forming_scope_id与显式用户方向 |
@@ -96,7 +96,7 @@ Hermes 管理 `dfm-geometry serve --stdio` 子进程，通过单行 JSON-RPC 2.0
 
 | 确认组 | 用户确认内容 | 解锁范围 |
 | --- | --- | --- |
-| 第一轮：主体壁与普通结构 | 主体壁、筋、凸台、螺钉柱、孔及部位/关联 | 相关壁厚、尺寸、圆角、净距和关系指标 |
+| 第一轮：主体壁与普通结构 | 主体壁、筋、凸台、带孔 BOSS 柱、孔及部位/关联 | 相关壁厚、尺寸、圆角、净距和关系指标 |
 | 第一轮：产品与成型属性 | 外观范围/等级、型芯/型腔侧、边界及主方向约定 | 规则选择、相应主方向拔模和方向评价 |
 | 第一轮：倒扣候选范围 | 各候选的范围，可拆分/合并，暂不必给出所有局部方向 | 局部结构关联与补识别，方向无关测量 |
 | 第二轮：各局部组 | 局部退出方向、作用范围、区域内结构与参考主壁 | 该组的局部拔模与方向评价 |
@@ -167,9 +167,9 @@ Run 固定原始模型和本体规则发布版本，执行期间可以追加不�
   → 固定就绪片段，合并同条件 G 需求并提交
 ```
 
-柱壁检查的变量绑定不变：`boss_wall_thickness` 对应 `G_SCREW_BOSS_WALL_THK_MAX`，`adjacent_main_wall_thickness` 对应 `G_SCREW_BOSS_WALL_REF_THK`。两个厚度可各自计算，Check 等二者可用再判断；业务比值留在 Hermes。
+柱壁检查的变量绑定不变：`boss_wall_thickness` 对应 `G_HOLLOW_BOSS_WALL_THK_MAX`，`adjacent_main_wall_thickness` 对应 `G_HOLLOW_BOSS_WALL_REF_THK`。两个厚度可各自计算，Check 等二者可用再判断；业务比值留在 Hermes。
 
-Check实例同时绑定Feature、Check、适用成型context与规则版本，避免同一结构的主方向评价被局部结果覆盖。方向无关G可共用空context，但业务评价仍保留其实际适用范围。螺钉柱优先使用具体子型规则，同一问题不重复报告普通BOSS结果。
+Check实例同时绑定Feature、Check、适用成型context与规则版本，避免同一结构的主方向评价被局部结果覆盖。方向无关G可共用空context，但业务评价仍保留其实际适用范围。带孔 BOSS 柱优先使用具体子型规则，同一问题不重复报告普通BOSS结果。
 
 同一 G、特征部位、参考对象和有效参数的请求只执行一次，可供多个 Check 使用。不同参考厚度 G 不因数值相同合并；G 的最大/最小口径不由 Check 临时改变。Operand 仍是变量绑定，不新增 CheckOperand 表。
 
@@ -208,8 +208,8 @@ Check实例同时绑定Feature、Check、适用成型context与规则版本，�
     {
       "feature_id": "BOSS_0007",
       "geometric_ids": [
-        "G_SCREW_BOSS_WALL_THK_MAX",
-        "G_SCREW_BOSS_WALL_REF_THK"
+        "G_HOLLOW_BOSS_WALL_THK_MAX",
+        "G_HOLLOW_BOSS_WALL_REF_THK"
       ],
       "context": {}
     }

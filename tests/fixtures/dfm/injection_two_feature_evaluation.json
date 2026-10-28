@@ -2,7 +2,7 @@
   "schema_version": 2,
   "source_workbook": "D:/item/模具项目/Rule_base/V2.2.2.xlsx",
   "runtime_rule_set": "RS_INJECTION_MOLDING_BASE@V1.0.8",
-  "scope": ["main_wall", "screw_boss"],
+  "scope": ["main_wall", "hollow_boss"],
   "interpretation": {
     "factor_conditions": "Conditions in one rule are AND; values inside an IN condition are OR.",
     "fact_scope": "The same F_MAT_ADDITIVE_FILL may be answered separately for each check_id; project-wide facts remain shared.",
@@ -19,9 +19,9 @@
     "question_driven_checks": [
       "C_WALL_THK_RANGE",
       "C_WALL_DRAFT",
-      "C_SCREW_BOSS_WALL_THK",
-      "C_SCREW_BOSS_BOTTOM_THK",
-      "C_SCREW_BOSS_FILLET"
+      "C_HOLLOW_BOSS_WALL_THK",
+      "C_HOLLOW_BOSS_BOTTOM_THK",
+      "C_HOLLOW_BOSS_FILLET"
     ],
     "concrete_answer_combinations": 32,
     "selectable_rule_ids": 29,
@@ -209,7 +209,7 @@
       }
     ]
   },
-  "screw_boss": {
+  "hollow_boss": {
     "shared_facts": {
       "F_PROC_BASE": "热塑性注塑",
       "F_PROC_AUX": "常规"
@@ -340,7 +340,7 @@
     "draft": [
       {
         "rule_id": "R_SCREW_BOSS_DRAFT_001",
-        "geometric_id": "G_SCREW_BOSS_DRAFT_OUT",
+        "geometric_id": "G_HOLLOW_BOSS_DRAFT_OUT",
         "min_degrees": 0.5,
         "excel_row": 6
       }
@@ -349,14 +349,14 @@
       {
         "F_APPR_REGION_REQ": "非外观",
         "rule_id": "R_SCREW_BOSS_FILLET_001",
-        "geometric_id": "G_SCREW_BOSS_FILLET_TOP_R",
+        "geometric_id": "G_HOLLOW_BOSS_FILLET_TOP_R",
         "ratio_inclusive": [0.2, 0.25],
         "excel_row": 6
       },
       {
         "F_APPR_REGION_REQ": "外观",
         "rule_id": "R_SCREW_BOSS_FILLET_003",
-        "geometric_id": "G_SCREW_BOSS_FILLET_BOTTOM_R",
+        "geometric_id": "G_HOLLOW_BOSS_FILLET_BOTTOM_R",
         "ratio_inclusive": [0.05, 0.1],
         "excel_row": 8
       }
@@ -364,22 +364,22 @@
     "no_match_examples": [
       {
         "F_PROC_AUX": "发泡",
-        "expected_absent_checks": ["C_SCREW_BOSS_WALL_THK"]
+        "expected_absent_checks": ["C_HOLLOW_BOSS_WALL_THK"]
       },
       {
         "F_APPR_REGION_REQ": "外观",
         "F_MAT_FAMILY": "POM",
         "F_MAT_ADDITIVE_FILL": "未填充",
         "expected_absent_checks": [
-          "C_SCREW_BOSS_WALL_THK",
-          "C_SCREW_BOSS_BOTTOM_THK"
+          "C_HOLLOW_BOSS_WALL_THK",
+          "C_HOLLOW_BOSS_BOTTOM_THK"
         ]
       },
       {
         "F_APPR_REGION_REQ": "外观",
         "F_MAT_FAMILY": "PP",
         "F_MAT_ADDITIVE_FILL": "GF、LGF",
-        "expected_absent_checks": ["C_SCREW_BOSS_WALL_THK"]
+        "expected_absent_checks": ["C_HOLLOW_BOSS_WALL_THK"]
       }
     ]
   },
@@ -389,7 +389,7 @@
       "F_MAT_FAMILY": "ABS",
       "check_facts": {
         "C_WALL_THK_RANGE": { "F_MAT_ADDITIVE_FILL": "非LGF" },
-        "C_SCREW_BOSS_WALL_THK": { "F_MAT_ADDITIVE_FILL": "未填充" }
+        "C_HOLLOW_BOSS_WALL_THK": { "F_MAT_ADDITIVE_FILL": "未填充" }
       },
       "F_APPR_REGION_REQ": "非外观",
       "F_SURF_FINISH_REQ": "光面",
@@ -406,7 +406,7 @@
       "F_MAT_FAMILY": "ABS",
       "check_facts": {
         "C_WALL_THK_RANGE": { "F_MAT_ADDITIVE_FILL": "非LGF" },
-        "C_SCREW_BOSS_WALL_THK": { "F_MAT_ADDITIVE_FILL": "未填充" }
+        "C_HOLLOW_BOSS_WALL_THK": { "F_MAT_ADDITIVE_FILL": "未填充" }
       },
       "F_APPR_REGION_REQ": "外观",
       "F_SURF_FINISH_REQ": "轻纹理",
@@ -423,7 +423,7 @@
       "F_MAT_FAMILY": "PC",
       "check_facts": {
         "C_WALL_THK_RANGE": { "F_MAT_ADDITIVE_FILL": "非LGF" },
-        "C_SCREW_BOSS_WALL_THK": { "F_MAT_ADDITIVE_FILL": "未填充" }
+        "C_HOLLOW_BOSS_WALL_THK": { "F_MAT_ADDITIVE_FILL": "未填充" }
       },
       "F_APPR_REGION_REQ": "非外观",
       "F_SURF_FINISH_REQ": "光面",
@@ -440,7 +440,7 @@
       "F_MAT_FAMILY": "PC",
       "check_facts": {
         "C_WALL_THK_RANGE": { "F_MAT_ADDITIVE_FILL": "非LGF" },
-        "C_SCREW_BOSS_WALL_THK": { "F_MAT_ADDITIVE_FILL": "未填充" }
+        "C_HOLLOW_BOSS_WALL_THK": { "F_MAT_ADDITIVE_FILL": "未填充" }
       },
       "F_APPR_REGION_REQ": "外观",
       "F_SURF_FINISH_REQ": "重纹理",
@@ -457,7 +457,7 @@
       "F_MAT_FAMILY": "PP",
       "check_facts": {
         "C_WALL_THK_RANGE": { "F_MAT_ADDITIVE_FILL": "非LGF" },
-        "C_SCREW_BOSS_WALL_THK": { "F_MAT_ADDITIVE_FILL": "TD20、EPDM+TD10" }
+        "C_HOLLOW_BOSS_WALL_THK": { "F_MAT_ADDITIVE_FILL": "TD20、EPDM+TD10" }
       },
       "F_APPR_REGION_REQ": "非外观",
       "F_SURF_FINISH_REQ": "光面",
@@ -474,7 +474,7 @@
       "F_MAT_FAMILY": "PP",
       "check_facts": {
         "C_WALL_THK_RANGE": { "F_MAT_ADDITIVE_FILL": "非LGF" },
-        "C_SCREW_BOSS_WALL_THK": { "F_MAT_ADDITIVE_FILL": "TD20、EPDM+TD10" }
+        "C_HOLLOW_BOSS_WALL_THK": { "F_MAT_ADDITIVE_FILL": "TD20、EPDM+TD10" }
       },
       "F_APPR_REGION_REQ": "外观",
       "F_SURF_FINISH_REQ": "轻纹理",
@@ -491,7 +491,7 @@
       "F_MAT_FAMILY": "PP",
       "check_facts": {
         "C_WALL_THK_RANGE": { "F_MAT_ADDITIVE_FILL": "LGF" },
-        "C_SCREW_BOSS_WALL_THK": { "F_MAT_ADDITIVE_FILL": "GF、LGF" }
+        "C_HOLLOW_BOSS_WALL_THK": { "F_MAT_ADDITIVE_FILL": "GF、LGF" }
       },
       "F_APPR_REGION_REQ": "非外观",
       "F_SURF_FINISH_REQ": "光面",
@@ -508,7 +508,7 @@
       "F_MAT_FAMILY": "POM",
       "check_facts": {
         "C_WALL_THK_RANGE": { "F_MAT_ADDITIVE_FILL": "非LGF" },
-        "C_SCREW_BOSS_WALL_THK": { "F_MAT_ADDITIVE_FILL": "未填充" }
+        "C_HOLLOW_BOSS_WALL_THK": { "F_MAT_ADDITIVE_FILL": "未填充" }
       },
       "F_APPR_REGION_REQ": "非外观",
       "F_SURF_FINISH_REQ": "光面",
@@ -562,7 +562,7 @@
   ],
   "excluded_checks": [
     {
-      "check_id": "C_SCREW_BOSS_THIN_STEEL",
+      "check_id": "C_HOLLOW_BOSS_THIN_STEEL",
       "reason": "rule_library_execution_contract_incomplete",
       "policy": "Do not ask F_TOOL_STEEL_TYPE and do not include thin-steel rules until the rule publication exposes a complete executable contract."
     }

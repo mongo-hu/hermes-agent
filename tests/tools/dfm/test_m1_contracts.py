@@ -156,8 +156,8 @@ def test_snapshot_geometry_query_round_trip_has_no_region_or_operation_payload()
         snapshot_id="snapshot_A",
         feature_id="BOSS_0007",
         geometric_ids=[
-            "G_SCREW_BOSS_WALL_THK_MAX",
-            "G_SCREW_BOSS_WALL_REF_THK",
+            "G_HOLLOW_BOSS_WALL_THK_MAX",
+            "G_HOLLOW_BOSS_WALL_REF_THK",
         ],
     )
     payload = query.to_dict()
@@ -165,8 +165,8 @@ def test_snapshot_geometry_query_round_trip_has_no_region_or_operation_payload()
         "snapshot_id": "snapshot_A",
         "feature_id": "BOSS_0007",
         "geometric_ids": [
-            "G_SCREW_BOSS_WALL_THK_MAX",
-            "G_SCREW_BOSS_WALL_REF_THK",
+            "G_HOLLOW_BOSS_WALL_THK_MAX",
+            "G_HOLLOW_BOSS_WALL_REF_THK",
         ],
     }
     assert set(payload) == {

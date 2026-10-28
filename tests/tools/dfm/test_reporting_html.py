@@ -690,10 +690,10 @@ def test_html_shows_every_failed_check_with_evaluated_units_not_llm_verdict(tmp_
     llm = json.loads(llm_path.read_text(encoding="utf-8"))
     ratio_issue = runtime["report"]["issues"][0]
     ratio_issue["id"] = "evaluation-ratio"
-    ratio_issue["check_id"] = "C_SCREW_BOSS_HOLE_DEPTH"
+    ratio_issue["check_id"] = "C_HOLLOW_BOSS_HOLE_DEPTH"
     ratio_issue["code"] = "injection.geometry.screw_boss.hole"
-    ratio_issue["title"] = "螺钉柱－孔深"
-    ratio_issue["recommendation"] = "控制螺钉柱孔深与孔径的比例。"
+    ratio_issue["title"] = "带孔 BOSS 柱－孔深"
+    ratio_issue["recommendation"] = "控制带孔 BOSS 柱孔深与孔径的比例。"
     ratio_issue["images"] = []
     ratio_issue["image"] = None
     ratio_issue["metric"].update({
@@ -737,7 +737,7 @@ def test_html_shows_every_failed_check_with_evaluated_units_not_llm_verdict(tmp_
     assert 'data-issue-nav="evaluation-draft"' in html
     assert "规则判定未通过：实测 4.45 倍；规则要求 ≤ 2 倍。" in html
     assert "规则判定未通过：实测 -3 °；规则要求 ≥ 2 °。" in html
-    assert "控制螺钉柱孔深与孔径的比例。" in html
+    assert "控制带孔 BOSS 柱孔深与孔径的比例。" in html
     assert "增加主体壁拔模角。" in html
     assert "本项未生成截图证据" in html
     assert "不构成实际风险" not in html
