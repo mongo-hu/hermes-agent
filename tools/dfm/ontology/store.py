@@ -250,9 +250,12 @@ class LocalOntologyStore:
         ):
             self.install_package(package)
 
-    def install_package(self, package: Path | Mapping[str, Any]) -> None:
-        payload = self._read_package(package)
-        self._validate_package(payload)
+    @classmethod
+    def _validated_package(
+        cls, package: Path | Mapping[str, Any]
+    ) -> tuple[dict[str, Any], str]:
+        payload = cls._read_package(package)
+        cls._validate_package(payload)
         digest = _content_hash(payload)
         declared = str(payload.get("content_sha256") or "")
         if declared and declared != digest:
@@ -261,6 +264,17 @@ class LocalOntologyStore:
                 "The DFM ontology publication hash does not match its content.",
                 {"declared": declared, "actual": digest},
             )
+        return payload, digest
+
+    @classmethod
+    def validate_package(cls, package: Path | Mapping[str, Any]) -> str:
+        """Validate an immutable publication and return its calculated digest."""
+
+        _, digest = cls._validated_package(package)
+        return digest
+
+    def install_package(self, package: Path | Mapping[str, Any]) -> None:
+        payload, digest = self._validated_package(package)
 
         if self.path is None:
             assert self._memory is not None
