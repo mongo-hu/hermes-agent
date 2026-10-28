@@ -38,8 +38,10 @@ class Client:
         self.latest = latest
         self.artifact = artifact
         self.headers = headers or {}
+        self.requests = []
 
     def get(self, url, **kwargs):
+        self.requests.append((url, kwargs))
         if url.endswith("/latest"):
             return Response(self.latest)
         return Response(self.artifact, self.headers)
@@ -101,6 +103,11 @@ def test_sync_uses_direct_http_requests(tmp_path):
     result = sync.sync_once()
 
     assert result["snapshot_id"] == "ontology.test@2"
+    assert len(sync.http.requests) == 2
+    assert all(
+        request_kwargs["proxies"] == {"http": "", "https": "", "all": ""}
+        for _, request_kwargs in sync.http.requests
+    )
 
 
 def test_same_snapshot_is_revalidated_after_contract_upgrade(tmp_path):

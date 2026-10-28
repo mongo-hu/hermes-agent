@@ -17,6 +17,7 @@ from .store import LocalOntologyStore, _content_hash
 
 
 logger = logging.getLogger(__name__)
+_DIRECT_PROXIES = {"http": "", "https": "", "all": ""}
 
 
 class OntologySynchronizer:
@@ -76,6 +77,7 @@ class OntologySynchronizer:
                     "process": self.config.ontology_process,
                     "organization_id": self.config.ontology_organization_id,
                 },
+                proxies=_DIRECT_PROXIES,
                 timeout=self.config.ontology_request_timeout_seconds,
             )
         except Exception as exc:
@@ -86,6 +88,7 @@ class OntologySynchronizer:
         try:
             response = self.http.get(
                 url,
+                proxies=_DIRECT_PROXIES,
                 timeout=self.config.ontology_request_timeout_seconds,
             )
             response.raise_for_status()
