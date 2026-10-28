@@ -88,19 +88,19 @@ def _question_tables(payload: dict):
             payload["main_wall"]["draft"],
         ),
         (
-            "C_SCREW_BOSS_WALL_THK",
-            payload["screw_boss"]["shared_facts"],
-            payload["screw_boss"]["wall_thickness"],
+            "C_HOLLOW_BOSS_WALL_THK",
+            payload["hollow_boss"]["shared_facts"],
+            payload["hollow_boss"]["wall_thickness"],
         ),
         (
-            "C_SCREW_BOSS_BOTTOM_THK",
-            payload["screw_boss"]["shared_facts"],
-            payload["screw_boss"]["bottom_thickness"],
+            "C_HOLLOW_BOSS_BOTTOM_THK",
+            payload["hollow_boss"]["shared_facts"],
+            payload["hollow_boss"]["bottom_thickness"],
         ),
         (
-            "C_SCREW_BOSS_FILLET",
-            payload["screw_boss"]["shared_facts"],
-            payload["screw_boss"]["fillet"],
+            "C_HOLLOW_BOSS_FILLET",
+            payload["hollow_boss"]["shared_facts"],
+            payload["hollow_boss"]["fillet"],
         ),
     )
 
@@ -172,18 +172,18 @@ def test_excluded_rules_and_incomplete_checks_cannot_leak_into_expectations():
         item["rule_id"]
         for section in (
             payload["main_wall"]["geometry"],
-            payload["screw_boss"]["draft"],
+            payload["hollow_boss"]["draft"],
         )
         for item in section
     )
     expected.update(
-        payload["screw_boss"]["hole_depth"][0]["expected_rule_id"] for _ in [0]
+        payload["hollow_boss"]["hole_depth"][0]["expected_rule_id"] for _ in [0]
     )
 
     assert not (excluded & expected)
     assert payload["excluded_checks"] == [
         {
-            "check_id": "C_SCREW_BOSS_THIN_STEEL",
+            "check_id": "C_HOLLOW_BOSS_THIN_STEEL",
             "reason": "rule_library_execution_contract_incomplete",
             "policy": (
                 "Do not ask F_TOOL_STEEL_TYPE and do not include thin-steel rules "
@@ -196,7 +196,7 @@ def test_excluded_rules_and_incomplete_checks_cannot_leak_into_expectations():
         for case in payload["cross_feature_cases"]
     } == {"非LGF", "LGF"}
     assert {
-        case["check_facts"]["C_SCREW_BOSS_WALL_THK"]["F_MAT_ADDITIVE_FILL"]
+        case["check_facts"]["C_HOLLOW_BOSS_WALL_THK"]["F_MAT_ADDITIVE_FILL"]
         for case in payload["cross_feature_cases"]
-        if "C_SCREW_BOSS_WALL_THK" in case.get("check_facts", {})
+        if "C_HOLLOW_BOSS_WALL_THK" in case.get("check_facts", {})
     } == {"未填充", "TD20、EPDM+TD10", "GF、LGF"}

@@ -93,8 +93,8 @@ def test_geometry_discovery_task_round_trips_and_matches_schema():
 
 def test_geometry_discovery_result_round_trips_and_matches_schema():
     topology_snapshot_id = "topology.snapshot.1"
-    region_id = "region.screw_boss.1.wall"
-    feature_id = "feature.screw_boss.1"
+    region_id = "region.hollow_boss.1.wall"
+    feature_id = "feature.hollow_boss.1"
     observation_id = "observation.pull_direction.1"
     region = RegionRecord(
         region_id=region_id,
@@ -119,7 +119,7 @@ def test_geometry_discovery_result_round_trips_and_matches_schema():
     )
     feature = FeatureRecord(
         feature_id=feature_id,
-        kind="screw_boss",
+        kind="hollow_boss",
         source_refs=["recognizer:occt_cpp@1"],
         confidence=0.96,
         input_sha256="a" * 64,

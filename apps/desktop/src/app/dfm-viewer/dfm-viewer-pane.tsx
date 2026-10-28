@@ -482,7 +482,7 @@ function ModelCanvas({
 }
 
 const FEATURE_LABELS: Record<string, string> = {
-  screw_boss: '螺钉柱',
+  hollow_boss: '带孔 BOSS 柱',
   blend: '圆角链',
   canonical_surface: '规范曲面',
   cavity: '型腔',

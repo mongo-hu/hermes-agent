@@ -288,7 +288,7 @@ def test_dfm_chat_reference_moves_between_projects_and_releases_on_finalize(
 def test_discovery_tool_returns_bounded_counts_without_geometry_payload(monkeypatch):
     from tools import dfm_tool
 
-    feature_kinds = ("ordinary_part", "main_wall", "screw_boss", "screw_boss")
+    feature_kinds = ("ordinary_part", "main_wall", "hollow_boss", "hollow_boss")
     discovery = {
         "ok": True,
         "project_id": "dfm_1",
@@ -325,7 +325,7 @@ def test_discovery_tool_returns_bounded_counts_without_geometry_payload(monkeypa
 
     assert len(output) < 10_000
     assert summary["feature_count"] == 3
-    assert summary["feature_counts"] == {"main_wall": 1, "screw_boss": 2}
+    assert summary["feature_counts"] == {"main_wall": 1, "hollow_boss": 2}
     assert summary["region_count"] == 3
     assert all(item["feature_id"] != "feature_0" for item in summary["features"])
     assert all(item["region_id"] != "region_0" for item in summary["regions"])

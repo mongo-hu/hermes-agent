@@ -63,9 +63,9 @@ def _ratio_plan() -> PlanRecord:
         rule_id="R_SCREW_BOSS_WALL_THK_001",
         operator="between",
         aggregation="identity",
-        check_id="C_SCREW_BOSS_WALL_THK",
+        check_id="C_HOLLOW_BOSS_WALL_THK",
         operand_alias="screw_boss_wall_thickness",
-        region_refs=["region.screw_boss.1.wall"],
+        region_refs=["region.hollow_boss.1.wall"],
         additional_operands=[
             RuleOperand(
                 alias="adjacent_main_wall_thickness",
@@ -127,7 +127,7 @@ def test_multi_measurement_ratio_evaluates_one_check_once():
             "measurement.boss.wall",
             "geometry.wall_thickness.boss",
             1.0,
-            "region.screw_boss.1.wall",
+            "region.hollow_boss.1.wall",
         ),
         _measurement(
             "measurement.main.wall",
@@ -141,7 +141,7 @@ def test_multi_measurement_ratio_evaluates_one_check_once():
 
     assert len(evaluations) == 1
     evaluation = evaluations[0]
-    assert evaluation.check_id == "C_SCREW_BOSS_WALL_THK"
+    assert evaluation.check_id == "C_HOLLOW_BOSS_WALL_THK"
     assert evaluation.measurement_ids == [
         "measurement.boss.wall",
         "measurement.main.wall",
@@ -192,7 +192,7 @@ def test_dimensionless_ratio_times_100_evaluates_as_percent():
             "measurement.boss.wall",
             "geometry.wall_thickness.boss",
             1.0,
-            "region.screw_boss.1.wall",
+            "region.hollow_boss.1.wall",
         ),
         _measurement(
             "measurement.main.wall",
@@ -226,7 +226,7 @@ def test_composite_rule_reuses_measurements_and_reports_each_clause(boss, main, 
         binding.rule_id: replace(base.rules[binding.rule_id], value=0.8, unit="mm", severity="high", severity_rationale="Two limits protect the boss wall.")
     })
     measurements = [
-        _measurement("measurement.boss.wall", "geometry.wall_thickness.boss", boss, "region.screw_boss.1.wall"),
+        _measurement("measurement.boss.wall", "geometry.wall_thickness.boss", boss, "region.hollow_boss.1.wall"),
         _measurement("measurement.main.wall", "geometry.wall_thickness.main", main, "region.main_wall.1.wall"),
     ]
     evaluations, provenance = EvaluationEngine().evaluate(measurements, plan)
@@ -237,8 +237,8 @@ def test_composite_rule_reuses_measurements_and_reports_each_clause(boss, main, 
     assert result.severity_rationale == "Two limits protect the boss wall."
     assert result.measurement_ids == ["measurement.boss.wall", "measurement.main.wall"]
     assert [item["criterion_id"] for item in result.criterion_results if item["outcome"] == "fail"] == failed
-    assert result.criterion_results[0]["region_refs"] == ["region.screw_boss.1.wall"]
-    assert result.criterion_results[1]["region_refs"] == ["region.main_wall.1.wall", "region.screw_boss.1.wall"]
+    assert result.criterion_results[0]["region_refs"] == ["region.hollow_boss.1.wall"]
+    assert result.criterion_results[1]["region_refs"] == ["region.hollow_boss.1.wall", "region.main_wall.1.wall"]
     assert provenance[result.evaluation_id]["criterion_results"] == result.criterion_results
 
 
@@ -253,7 +253,7 @@ def test_composite_rule_keeps_a_known_failure_when_another_operand_is_missing():
     binding = replace(base.rule_bindings[0], expression=criteria[0]["expression"], operator=">=", acceptance_criteria_json=criteria)
     plan = replace(base, rule_bindings=[binding], rules={binding.rule_id: replace(base.rules[binding.rule_id], value=0.8, unit="mm")})
     evaluations, _ = EvaluationEngine().evaluate([
-        _measurement("measurement.boss.wall", "geometry.wall_thickness.boss", 0.7, "region.screw_boss.1.wall")
+        _measurement("measurement.boss.wall", "geometry.wall_thickness.boss", 0.7, "region.hollow_boss.1.wall")
     ], plan)
     assert evaluations[0].outcome == "fail"
     assert [item["outcome"] for item in evaluations[0].criterion_results] == ["fail", "indeterminate"]
@@ -303,7 +303,7 @@ def test_or_of_and_groups_use_three_state_rule_semantics(
             "measurement.boss.wall",
             "geometry.wall_thickness.boss",
             1.0,
-            "region.screw_boss.1.wall",
+            "region.hollow_boss.1.wall",
         )
     ]
     if measure_main:
@@ -395,7 +395,7 @@ def test_multi_measurement_rule_rejects_missing_reference_operand():
             "measurement.boss.wall",
             "geometry.wall_thickness.boss",
             1.0,
-            "region.screw_boss.1.wall",
+            "region.hollow_boss.1.wall",
         )
     ]
 
@@ -413,7 +413,7 @@ def test_multi_measurement_rule_rejects_cross_input_values():
             "measurement.boss.wall",
             "geometry.wall_thickness.boss",
             1.0,
-            "region.screw_boss.1.wall",
+            "region.hollow_boss.1.wall",
         ),
         _measurement(
             "measurement.main.wall",
@@ -437,7 +437,7 @@ def test_multi_measurement_rule_rejects_division_by_zero():
             "measurement.boss.wall",
             "geometry.wall_thickness.boss",
             1.0,
-            "region.screw_boss.1.wall",
+            "region.hollow_boss.1.wall",
         ),
         _measurement(
             "measurement.main.wall",

@@ -22,12 +22,12 @@ const CHECK_LABELS_ZH: Record<string, string> = {
   C_RIB_HEIGHT_RATIO: '加强筋高度比问题',
   C_RIB_ROOT_FILLET: '加强筋根部圆角问题',
   C_RIB_THK_RATIO: '加强筋厚度比问题',
-  C_SCREW_BOSS_BOTTOM_THK: '螺钉柱孔底厚度问题',
-  C_SCREW_BOSS_DRAFT: '螺钉柱拔模角问题',
-  C_SCREW_BOSS_FILLET: '螺钉柱圆角问题',
-  C_SCREW_BOSS_HOLE_DEPTH: '螺钉柱孔芯深度问题',
-  C_SCREW_BOSS_THIN_STEEL: '螺钉柱薄钢问题',
-  C_SCREW_BOSS_WALL_THK: '螺钉柱柱壁问题',
+  C_HOLLOW_BOSS_BOTTOM_THK: '带孔 BOSS 柱孔底厚度问题',
+  C_HOLLOW_BOSS_DRAFT: '带孔 BOSS 柱拔模角问题',
+  C_HOLLOW_BOSS_FILLET: '带孔 BOSS 柱圆角问题',
+  C_HOLLOW_BOSS_HOLE_DEPTH: '带孔 BOSS 柱孔芯深度问题',
+  C_HOLLOW_BOSS_THIN_STEEL: '带孔 BOSS 柱薄钢问题',
+  C_HOLLOW_BOSS_WALL_THK: '带孔 BOSS 柱柱壁问题',
   C_WALL_DRAFT: '主体壁拔模角问题',
   C_WALL_FILLET: '主体壁圆角问题',
   C_WALL_THK_RANGE: '主体壁厚范围问题',
@@ -76,7 +76,7 @@ export function classifyViewerIssueType(issue: IssueTypeSource): [string, string
   const searchable = `${checkId} ${issueTypeId} ${metricId}`.toLowerCase()
 
   if (searchable.includes('boss') && (searchable.includes('wall') || searchable.includes('thickness'))) {
-    return [issueTypeId, '螺钉柱柱壁问题']
+    return [issueTypeId, '带孔 BOSS 柱柱壁问题']
   }
 
   if (searchable.includes('rib') && searchable.includes('thickness')) {

@@ -44,17 +44,17 @@ def test_screw_boss_wall_ratio_uses_two_public_g_results_for_one_finding(tmp_pat
     fragment_id = "fragment-screw-boss-wall"
     binding = GeometricRuleBinding(
         binding_id="binding-screw-boss-wall",
-        geometric_id="G_SCREW_BOSS_WALL_THK_MAX",
+        geometric_id="G_HOLLOW_BOSS_WALL_THK_MAX",
         rule_id="R_SCREW_BOSS_WALL_THK_001",
         operator="<=",
         aggregation="identity",
         feature_refs=[feature_id],
-        check_id="C_SCREW_BOSS_WALL_THK",
+        check_id="C_HOLLOW_BOSS_WALL_THK",
         operand_alias="boss_wall_thickness",
         additional_operands=[
             GeometricRuleOperand(
                 alias="adjacent_main_wall_thickness",
-                geometric_id="G_SCREW_BOSS_WALL_REF_THK",
+                geometric_id="G_HOLLOW_BOSS_WALL_REF_THK",
                 feature_refs=[feature_id],
             )
         ],
@@ -94,8 +94,8 @@ def test_screw_boss_wall_ratio_uses_two_public_g_results_for_one_finding(tmp_pat
                     GeometricRequest(
                         feature_id,
                         [
-                            "G_SCREW_BOSS_WALL_THK_MAX",
-                            "G_SCREW_BOSS_WALL_REF_THK",
+                            "G_HOLLOW_BOSS_WALL_THK_MAX",
+                            "G_HOLLOW_BOSS_WALL_REF_THK",
                         ],
                         {},
                     )
@@ -129,12 +129,12 @@ def test_screw_boss_wall_ratio_uses_two_public_g_results_for_one_finding(tmp_pat
     results = [
         result(
             "result-boss-wall",
-            "G_SCREW_BOSS_WALL_THK_MAX",
+            "G_HOLLOW_BOSS_WALL_THK_MAX",
             2.1,
         ),
         result(
             "result-reference-wall",
-            "G_SCREW_BOSS_WALL_REF_THK",
+            "G_HOLLOW_BOSS_WALL_REF_THK",
             3.0,
         ),
     ]
@@ -194,11 +194,11 @@ def test_screw_boss_wall_ratio_uses_two_public_g_results_for_one_finding(tmp_pat
     )
 
     assert len(findings) == 1
-    assert findings[0].check_ids == ["C_SCREW_BOSS_WALL_THK"]
+    assert findings[0].check_ids == ["C_HOLLOW_BOSS_WALL_THK"]
     assert findings[0].feature_refs == [feature_id]
     assert findings[0].geometric_ids == [
-        "G_SCREW_BOSS_WALL_REF_THK",
-        "G_SCREW_BOSS_WALL_THK_MAX",
+        "G_HOLLOW_BOSS_WALL_REF_THK",
+        "G_HOLLOW_BOSS_WALL_THK_MAX",
     ]
 
 

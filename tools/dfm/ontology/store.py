@@ -1681,7 +1681,7 @@ class LocalOntologyStore:
         if not candidates:
             # Skip checks whose rules don't match current facts/features.
             # This allows plan to generate only applicable checks (e.g., wall/draft
-            # basics) when advanced features (screw_boss, etc.) are not discovered.
+            # basics) when advanced features (hollow_boss, etc.) are not discovered.
             return None
         candidates.sort(
             key=lambda item: (int(item[0]["priority"]), item[1]), reverse=True

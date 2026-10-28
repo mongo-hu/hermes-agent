@@ -300,12 +300,12 @@ def test_rule_binding_separates_rule_facts_from_geometry_facts():
 
 def test_discovery_contract_links_observations_features_regions_and_analysis_plan():
     feature = FeatureRecord(
-        "feature.screw_boss.003",
-        "screw_boss",
+        "feature.hollow_boss.003",
+        "hollow_boss",
         ["input:model"],
         0.96,
         input_sha256="a" * 64,
-        region_refs=["region.screw_boss.003.outer_wall"],
+        region_refs=["region.hollow_boss.003.outer_wall"],
         properties={"outer_radius_mm": 4.0, "inner_radius_mm": 2.2},
         recognizer="occt_cpp_molding_feature_recognizer",
         recognizer_version="1.0.0",
