@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes.local/dfm/geometry/measurements-v2.schema.json",
+  "title": "DFM geometry per-G result batch",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "snapshot_id", "status", "results", "artifacts", "diagnostics"],
+  "properties": {
+    "contract_version": {"const": "dfm.geometry/v2"},
+    "snapshot_id": {"type": "string", "minLength": 1},
+    "status": {"const": "completed"},
+    "results": {"type": "array", "items": {"$ref": "#/$defs/geometricResult"}},
+    "artifacts": {"type": "array", "items": {"$ref": "#/$defs/artifact"}},
+    "diagnostics": {"type": "object"}
+  },
+  "$defs": {
+    "geometricResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "feature_id",
+        "geometric_id",
+        "status",
+        "value",
+        "unit",
+        "context",
+        "evidence",
+        "quality",
+        "reason",
+        "provenance"
+      ],
+      "properties": {
+        "feature_id": {"type": "string", "minLength": 1},
+        "geometric_id": {"type": "string", "pattern": "^G_[A-Z0-9_]+$"},
+        "status": {"enum": ["ok", "unsupported", "not_applicable", "missing_context", "ambiguous_scope", "failed"]},
+        "value": {"type": ["number", "integer", "null"]},
+        "unit": {"type": ["string", "null"]},
+        "context": {"type": "object"},
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["geometry_refs", "field_refs"],
+          "properties": {
+            "geometry_refs": {"type": "array", "items": {"$ref": "https://hermes.local/dfm/geometry/common.schema.json#/$defs/geometryRef"}},
+            "field_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+          }
+        },
+        "quality": {"type": ["object", "null"]},
+        "reason": {"type": ["string", "null"]},
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source_snapshot_id", "source_result_ref", "dependency_fingerprint"],
+          "properties": {
+            "source_snapshot_id": {"type": "string", "minLength": 1},
+            "source_result_ref": {"type": ["string", "null"]},
+            "dependency_fingerprint": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "ok"}}},
+          "then": {
+            "properties": {
+              "value": {"type": ["number", "integer"]},
+              "unit": {"type": "string"},
+              "reason": {"type": "null"},
+              "quality": {"type": "object"}
+            }
+          },
+          "else": {
+            "properties": {
+              "value": {"type": "null"},
+              "unit": {"type": "null"},
+              "reason": {"type": "string", "minLength": 1}
+            }
+          }
+        }
+      ]
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_id", "kind", "path", "sha256"],
+      "properties": {
+        "artifact_id": {"type": "string", "minLength": 1},
+        "kind": {"const": "scalar_field"},
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes.local/dfm/geometry/features-v2.schema.json",
+  "title": "DFM geometry feature snapshot result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "base_snapshot_id", "snapshot_id", "features", "annotations", "forming_scopes", "relationships", "coverage", "diagnostics"],
+  "properties": {
+    "contract_version": {"const": "dfm.geometry/v2"},
+    "base_snapshot_id": {"type": "string", "minLength": 1},
+    "snapshot_id": {"type": "string", "minLength": 1},
+    "features": {"type": "array", "items": {"$ref": "#/$defs/feature"}},
+    "annotations": {"type": "array", "items": {"$ref": "https://hermes.local/dfm/geometry/session-v2.schema.json#/$defs/annotation"}},
+    "forming_scopes": {"type": "array", "items": {"$ref": "https://hermes.local/dfm/geometry/session-v2.schema.json#/$defs/scope"}},
+    "relationships": {"type": "array", "items": {"type": "object"}},
+    "coverage": {"type": "array", "items": {"$ref": "#/$defs/coverage"}},
+    "diagnostics": {"type": "object"}
+  },
+  "$defs": {
+    "feature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "feature_id",
+        "kind",
+        "subtype",
+        "source_refs",
+        "confidence",
+        "geometry_refs",
+        "parameters",
+        "method",
+        "algorithm_version",
+        "input_sha256",
+        "quality",
+        "diagnostics"
+      ],
+      "properties": {
+        "feature_id": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["drilled_hole", "blend", "shaft", "cavity", "convex_hull", "isolated", "canonical_surface", "surface_probe", "hollow_boss", "solid_boss", "chamfer", "rib", "main_wall"]},
+        "subtype": {"type": "string", "minLength": 1},
+        "source_refs": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "geometry_refs": {"type": "array", "minItems": 1, "items": {"$ref": "https://hermes.local/dfm/geometry/common.schema.json#/$defs/geometryRef"}},
+        "parameters": {"type": "object"},
+        "parts": {"type": "object", "additionalProperties": {"type": "array", "items": {"$ref": "https://hermes.local/dfm/geometry/common.schema.json#/$defs/geometryRef"}}},
+        "method": {"type": "string", "minLength": 1},
+        "algorithm_version": {"type": "string", "minLength": 1},
+        "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "quality": {"type": "object"},
+        "diagnostics": {"type": "object"}
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["feature_kind", "context", "status", "covered_geometry_ref", "unresolved_geometry_ref", "diagnostics"],
+      "properties": {
+        "feature_kind": {"type": "string", "minLength": 1},
+        "forming_scope_id": {"type": ["string", "null"]},
+        "context": {"type": "object"},
+        "status": {"enum": ["complete", "partial", "failed"]},
+        "covered_geometry_ref": {"type": "object"},
+        "unresolved_geometry_ref": {"type": ["object", "null"]},
+        "diagnostics": {"type": "object"}
+      }
+    }
+  }
+}

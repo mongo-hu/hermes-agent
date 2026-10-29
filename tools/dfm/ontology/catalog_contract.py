@@ -67,10 +67,14 @@ def catalog_feature_kind(properties: Mapping[str, Any]) -> str:
     """Read validated bindings without changing stored publication identities."""
     if set(properties) == {"worker_kind"}:
         kind = str(properties["worker_kind"])
-        # The Mold workbook's WALL feature is the Worker's main-wall inventory.
-        # Do not narrow the general boss/hole concepts to solid/drilled variants.
-        return "main_wall" if kind == "wall" else kind
-    return str(properties.get("feature_kind") or "") if set(properties) == {"feature_kind"} else ""
+    elif set(properties) == {"feature_kind"}:
+        kind = str(properties.get("feature_kind") or "")
+    else:
+        return ""
+    # FEATURE_WALL is published as 主体壁 in both property profiles. Normalize
+    # its runtime binding only; never rewrite the immutable publication/hash.
+    # General boss/hole concepts must not be narrowed to solid/drilled variants.
+    return "main_wall" if kind == "wall" else kind
 
 
 def _legacy_schema4_properties(payload: Mapping[str, Any]) -> bool:

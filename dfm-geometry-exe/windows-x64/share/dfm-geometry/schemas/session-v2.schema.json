@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes.local/dfm/geometry/session-v2.schema.json",
+  "title": "OCCT geometry session bundle 2.3.0",
+  "$ref": "#/$defs/capabilities",
+  "$defs": {
+    "id": {"type": "string", "minLength": 1},
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "objects": {"type": "array", "items": {"type": "object"}},
+    "geometric": {
+      "type": "object", "additionalProperties": false,
+      "required": ["geometric_id", "feature_kind", "support_status", "scope_modes", "direction_modes", "requires_complete_inventory", "requires_relationships", "context_schema"],
+      "properties": {
+        "geometric_id": {"type": "string", "pattern": "^G_"}, "feature_kind": {"$ref": "#/$defs/id"},
+        "support_status": {"enum": ["supported", "not_implemented"]},
+        "verification_status": {"type": "string"}, "dimension": {"type": "string"}, "canonical_unit": {"type": "string"},
+        "scope_modes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["feature", "intersection"]}},
+        "direction_modes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["none", "main", "local"]}},
+        "requires_complete_inventory": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+        "requires_relationships": {"type": "array", "uniqueItems": true, "items": {
+          "type": "object", "additionalProperties": false, "required": ["type", "target_feature_kind"],
+          "properties": {"type": {"$ref": "#/$defs/id"}, "target_feature_kind": {"$ref": "#/$defs/id"}}
+        }},
+        "context_schema": {"type": "object"}, "result_schema": {"type": "object"},
+        "evidence_kinds": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "capabilities": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contract_version", "schema_bundle_version", "engine_version", "dependency_fingerprint", "backend", "transport", "methods", "feature_kinds", "annotation_kinds", "geometrics"],
+      "properties": {
+        "contract_version": {"const": "dfm.geometry/v2"}, "schema_bundle_version": {"const": "2.3.0"},
+        "engine_version": {"$ref": "#/$defs/id"}, "dependency_fingerprint": {"$ref": "#/$defs/hash"},
+        "backend": {"const": "analysis_situs+occt"}, "transport": {"const": "stdio-jsonrpc"},
+        "methods": {"type": "object", "additionalProperties": {"enum": ["available", "unavailable"]}},
+        "feature_kinds": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+        "annotation_kinds": {"type": "array", "items": {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "geometry_kinds", "value_schema", "recognition_status"],
+          "properties": {"kind": {"$ref": "#/$defs/id"},
+            "geometry_kinds": {"type": "array", "minItems": 1, "items": {"enum": ["face", "edge"]}},
+            "value_schema": {"type": "object"}, "recognition_status": {"enum": ["supported", "not_implemented"]}}
+        }},
+        "coverage_statuses": {"type": "array", "items": {"enum": ["complete", "partial", "failed"]}},
+        "geometric_result_statuses": {"type": "array", "items": {"enum": ["ok", "unsupported", "not_applicable", "missing_context", "ambiguous_scope", "failed"]}},
+        "limits": {"type": "object"}, "occt_version": {"type": "string"},
+        "analysis_situs_version": {"type": "string"}, "analysis_situs_commit": {"type": "string"},
+        "geometrics": {"type": "array", "items": {"$ref": "#/$defs/geometric"}}
+      }
+    },
+    "scope": {
+      "type": "object", "required": ["forming_scope_id", "kind", "mode", "geometry_refs", "draw_direction", "status"],
+      "properties": {
+        "forming_scope_id": {"$ref": "#/$defs/id"},
+        "kind": {"enum": ["main_forming", "undercut", "local_forming"]}, "mode": {"enum": ["main", "local"]},
+        "geometry_refs": {"$ref": "#/$defs/objects"},
+        "draw_direction": {"oneOf": [{"type": "null"}, {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}}]},
+        "status": {"enum": ["candidate", "confirmed", "stale"]},
+        "supersedes_scope_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}
+      },
+      "allOf": [
+        {"if": {"properties": {"mode": {"const": "main"}}}, "then": {"properties": {"kind": {"const": "main_forming"}}},
+         "else": {"properties": {"kind": {"enum": ["undercut", "local_forming"]}}}},
+        {"if": {"properties": {"status": {"const": "confirmed"}}}, "then": {"properties": {"draw_direction": {"type": "array"}}}}
+      ]
+    },
+    "snapshot": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contract_version", "snapshot_id", "base_snapshot_id", "features", "annotations", "forming_scopes", "relationships", "coverage"],
+      "properties": {
+        "contract_version": {"const": "dfm.geometry/v2"}, "snapshot_id": {"$ref": "#/$defs/id"},
+        "base_snapshot_id": {"type": ["string", "null"]},
+        "features": {"$ref": "#/$defs/objects"}, "annotations": {"type": "array", "items": {"$ref": "#/$defs/annotation"}},
+        "forming_scopes": {"type": "array", "items": {"$ref": "#/$defs/scope"}},
+        "relationships": {"$ref": "#/$defs/objects"}, "coverage": {"$ref": "#/$defs/objects"},
+        "model_identity": {"type": "object"}, "lease": {"type": "object"}, "artifacts": {"type": "object"}, "diagnostics": {"type": "object"}
+      }
+    },
+    "annotation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["annotation_id", "kind", "value", "geometry_refs", "properties", "status", "source"],
+      "properties": {
+        "annotation_id": {"$ref": "#/$defs/id"},
+        "kind": {"enum": ["appearance", "mold_side", "forming_side", "parting_boundary"]},
+        "value": {"type": "string"}, "geometry_refs": {"type": "array", "minItems": 1, "items": {"$ref": "https://hermes.local/dfm/geometry/common.schema.json#/$defs/geometryRef"}},
+        "properties": {"type": "object"}, "status": {"enum": ["active", "stale"]},
+        "source": {"enum": ["recognizer", "user"]}, "patch_mask_ref": {"type": "null"}
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "appearance"}}}, "then": {"properties": {"value": {"enum": ["appearance", "non_appearance"]}}}},
+        {"if": {"properties": {"kind": {"const": "mold_side"}}}, "then": {"properties": {"value": {"enum": ["fixed", "moving"]}}}},
+        {"if": {"properties": {"kind": {"const": "forming_side"}}}, "then": {"properties": {"value": {"enum": ["cavity", "core"]}}}},
+        {"if": {"properties": {"kind": {"const": "parting_boundary"}}}, "then": {"properties": {"value": {"const": "parting"}}}},
+        {"if": {"properties": {"kind": {"const": "parting_boundary"}}},
+         "then": {"properties": {"geometry_refs": {"items": {"properties": {"kind": {"const": "edge"}}}}}},
+         "else": {"properties": {"geometry_refs": {"items": {"properties": {"kind": {"const": "face"}}}}}}}
+      ]
+    },
+    "annotations_revise_request": {
+      "type": "object", "additionalProperties": false, "required": ["snapshot_id", "annotations"],
+      "properties": {
+        "snapshot_id": {"$ref": "#/$defs/id"},
+        "annotations": {"type": "array", "items": {
+          "type": "object", "additionalProperties": false, "required": ["annotation_id"],
+          "properties": {"annotation_id": {"$ref": "#/$defs/id"},
+            "kind": {"enum": ["appearance", "mold_side", "forming_side", "parting_boundary"]},
+            "value": {"type": "string"}, "geometry_refs": {"type": "array", "minItems": 1, "items": {"$ref": "https://hermes.local/dfm/geometry/common.schema.json#/$defs/geometryRef"}},
+            "properties": {"type": "object"}}
+        }},
+        "retire_annotation_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}
+      }
+    },
+    "compute_request": {
+      "type": "object", "additionalProperties": false, "required": ["snapshot_id", "items"],
+      "properties": {
+        "snapshot_id": {"$ref": "#/$defs/id"},
+        "items": {"type": "array", "minItems": 1, "items": {
+          "type": "object", "additionalProperties": false, "required": ["feature_id", "geometric_ids", "context"],
+          "properties": {"feature_id": {"$ref": "#/$defs/id"}, "context": {"type": "object"},
+            "geometric_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^G_"}}}
+        }}
+      }
+    },
+    "geometric_result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["feature_id", "geometric_id", "context", "status", "value", "unit", "evidence", "quality", "reason"],
+      "properties": {
+        "feature_id": {"$ref": "#/$defs/id"}, "geometric_id": {"type": "string", "pattern": "^G_"},
+        "context": {"type": "object"}, "status": {"enum": ["ok", "unsupported", "not_applicable", "missing_context", "ambiguous_scope", "failed"]},
+        "value": {"type": ["number", "null"]}, "unit": {"type": ["string", "null"]},
+        "evidence": {"type": "object"}, "quality": {"type": ["object", "null"]},
+        "reason": {"type": ["string", "null"]}, "provenance": {"type": "object"}
+      },
+      "allOf": [{"if": {"properties": {"status": {"const": "ok"}}},
+        "then": {"properties": {"value": {"type": "number"}, "unit": {"type": "string"}}},
+        "else": {"properties": {"value": {"type": "null"}}}}]
+    }
+  }
+}

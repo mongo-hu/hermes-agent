@@ -211,6 +211,28 @@ def test_legacy_schema4_rejects_partial_or_unknown_property_profiles(tmp_path, c
     assert store.identity() == original
 
 
+def test_current_wall_kind_uses_runtime_inventory_without_rewriting_publication(tmp_path):
+    value = grouped_payload()
+    for concept in value["concepts"]:
+        if concept["concept_type"] == "feature_type":
+            concept["properties_json"] = {"feature_kind": "wall"}
+    value = rehash(value)
+    original = deepcopy(value)
+    store = LocalOntologyStore(tmp_path / "current-wall.sqlite3")
+    store.install_package(value)
+    store.configure_geometric_bindings(wall_geometric_capability())
+    compiled = store.compile("injection", {"material": "ABS"}, operations())
+    assert compiled.rule_bindings
+    assert not compiled.skipped_checks
+    assert store.geometric_scope_specs("injection")[0]["feature_kind"] == "main_wall"
+    assert compiled.identity.content_sha256 == original["content_sha256"]
+    context = store.check_context(value["rules"][0]["check_id"])
+    for relation in context["relations"]:
+        if relation["predicate"] == "APPLIES_TO_FEATURE":
+            assert relation["object"]["properties_json"] == {"feature_kind": "wall"}
+    assert value == original
+
+
 @pytest.mark.parametrize("field", ["dimension", "canonical_unit"])
 def test_current_schema4_still_rejects_blank_geometric_metadata(field):
     value = grouped_payload()

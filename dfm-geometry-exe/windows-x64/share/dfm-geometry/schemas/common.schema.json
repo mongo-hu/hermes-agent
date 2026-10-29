@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes.local/dfm/geometry/common.schema.json",
+  "title": "Hermes DFM Geometry Common Definitions",
+  "$defs": {
+    "geometryRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "index", "input_sha256", "topology_snapshot_id", "entity_id"],
+      "properties": {
+        "kind": {"enum": ["face", "edge", "solid", "vertex"]},
+        "index": {"type": "integer", "minimum": 1},
+        "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "topology_snapshot_id": {"type": "string", "minLength": 1},
+        "entity_id": {"type": "string", "minLength": 1}
+      }
+    },
+    "faceGeometryRef": {
+      "allOf": [
+        {"$ref": "#/$defs/geometryRef"},
+        {"properties": {"kind": {"const": "face"}}}
+      ]
+    },
+    "triangleRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primitive_id", "triangle_id", "render_mesh_snapshot_id"],
+      "properties": {
+        "primitive_id": {"type": "string", "minLength": 1},
+        "triangle_id": {"type": "integer", "minimum": 0},
+        "render_mesh_snapshot_id": {"type": "string", "minLength": 1}
+      }
+    },
+    "meshVertexRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primitive_id", "vertex_id", "render_mesh_snapshot_id"],
+      "properties": {
+        "primitive_id": {"type": "string", "minLength": 1},
+        "vertex_id": {"type": "integer", "minimum": 0},
+        "render_mesh_snapshot_id": {"type": "string", "minLength": 1}
+      }
+    },
+    "vector3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"type": "number"}
+    }
+  }
+}

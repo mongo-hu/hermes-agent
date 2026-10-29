@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes.local/dfm/geometry/preflight-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "contract_version", "run_id", "input_sha256", "engine_version", "format", "unit", "status", "valid_brep", "solid_count", "face_count", "edge_count", "vertex_count", "transferred_root_count", "top_level_shape_type", "open_edge_count", "non_manifold_edge_count", "bbox", "surface_counts", "healed", "geometry_refs", "quality", "diagnostics"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "contract_version": {"const": "dfm.geometry.artifact/preflight/v1"},
+    "run_id": {"type": "string", "minLength": 1},
+    "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "engine_version": {"type": "string", "pattern": "^occt-dfm-geometry-[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "format": {"const": "step"},
+    "unit": {"const": "mm"},
+    "status": {"enum": ["passed", "failed"]},
+    "valid_brep": {"type": "boolean"},
+    "solid_count": {"type": "integer", "minimum": 0},
+    "face_count": {"type": "integer", "minimum": 0},
+    "edge_count": {"type": "integer", "minimum": 0},
+    "vertex_count": {"type": "integer", "minimum": 0},
+    "transferred_root_count": {"type": "integer", "minimum": 0},
+    "top_level_shape_type": {"enum": ["empty", "compound", "compsolid", "solid", "shell", "face", "wire", "edge", "vertex", "shape"]},
+    "open_edge_count": {"type": "integer", "minimum": 0},
+    "non_manifold_edge_count": {"type": "integer", "minimum": 0},
+    "bbox": {"type": "object"},
+    "surface_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+    "healed": {"type": "boolean"},
+    "geometry_refs": {"type": "array", "maxItems": 0},
+    "quality": {"$ref": "#/$defs/quality"},
+    "diagnostics": {"type": "object"}
+  },
+  "$defs": {
+    "quality": {
+      "type": "object",
+      "required": ["backend", "maturity", "certified"],
+      "properties": {
+        "backend": {"const": "occt"},
+        "maturity": {"const": "experimental"},
+        "certified": {"const": false}
+      }
+    }
+  }
+}

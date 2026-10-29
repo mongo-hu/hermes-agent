@@ -1,0 +1,45 @@
+{
+  "session": {"contract_version": "dfm.geometry/v2", "schema_bundle_version": "2.3.0"},
+  "request": {
+    "schema_version": 2,
+    "contract_version": "dfm.geometry/v2",
+    "schema_bundle_version": "2.3.0",
+    "transport": "stdio-jsonrpc"
+  },
+  "event": {
+    "schema_version": 2,
+    "contract_version": "dfm.geometry/v2"
+  },
+  "result": {
+    "schema_version": 2,
+    "contract_version": "dfm.geometry/v2"
+  },
+  "capabilities": {
+    "contract_version": "dfm.geometry/v2",
+    "schema_bundle_version": "2.3.0"
+  },
+  "artifacts": {
+    "preflight": {
+      "schema_version": 1,
+      "contract_version": "dfm.geometry.artifact/preflight/v1"
+    },
+    "features": {
+      "schema_version": 2,
+      "contract_version": "dfm.geometry/v2"
+    },
+    "measurements": {
+      "schema_version": 2,
+      "contract_version": "dfm.geometry/v2"
+    },
+    "render_scene": {
+      "schema_version": 2
+    },
+    "topology_map": {
+      "schema_version": 2
+    },
+    "scalar_field": {
+      "schema_version": 2,
+      "contract_version": "dfm.geometry/v2"
+    }
+  }
+}

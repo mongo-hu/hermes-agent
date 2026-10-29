@@ -88,7 +88,11 @@ def test_cold_read_is_hydrated_once_and_external_changes_are_detected(
     for _ in range(6):
         assert documents.read_result_document(path, "geometric_results") == table(2)
     assert reads == [path]
+    stamp = path.stat()
     path.write_text(json.dumps(table(3)), encoding="utf-8")
+    # Fast same-size writes can share a Windows filesystem timestamp tick.
+    # This case tests signature invalidation; forged signatures use force=True below.
+    os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 1_000_000_000))
     assert documents.read_result_document(path, "geometric_results") == table(3)
     assert reads == [path, path]
 

@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes.local/dfm/geometry/request-v2.schema.json",
+  "title": "DFM geometry persistent-session JSON-RPC request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["jsonrpc", "id", "method", "params"],
+  "properties": {
+    "jsonrpc": {"const": "2.0"},
+    "id": {"type": ["string", "integer"]},
+    "method": {
+      "enum": [
+        "capabilities.get",
+        "snapshots.open",
+        "snapshots.get",
+        "snapshots.renew",
+        "snapshots.close",
+        "features.discover",
+        "features.revise",
+        "annotations.revise",
+        "forming_scopes.analyze",
+        "forming_scopes.revise",
+        "snapshots.merge",
+        "geometrics.compute",
+        "jobs.status",
+        "jobs.cancel"
+      ]
+    },
+    "params": {"type": "object"}
+  },
+  "oneOf": [
+    {"properties": {"method": {"const": "capabilities.get"}, "params": {"$ref": "#/$defs/emptyParams"}}},
+    {"properties": {"method": {"const": "snapshots.open"}, "params": {"$ref": "#/$defs/openSnapshotParams"}}},
+    {"properties": {"method": {"const": "snapshots.get"}, "params": {"$ref": "#/$defs/snapshotParams"}}},
+    {"properties": {"method": {"const": "snapshots.renew"}, "params": {"$ref": "#/$defs/renewSnapshotParams"}}},
+    {"properties": {"method": {"const": "snapshots.close"}, "params": {"$ref": "#/$defs/snapshotParams"}}},
+    {"properties": {"method": {"const": "features.discover"}, "params": {"$ref": "#/$defs/discoverFeaturesParams"}}},
+    {"properties": {"method": {"const": "features.revise"}, "params": {"$ref": "#/$defs/reviseFeaturesParams"}}},
+    {"properties": {"method": {"const": "annotations.revise"}, "params": {"$ref": "https://hermes.local/dfm/geometry/session-v2.schema.json#/$defs/annotations_revise_request"}}},
+    {"properties": {"method": {"const": "forming_scopes.analyze"}, "params": {"$ref": "#/$defs/analyzeFormingScopeParams"}}},
+    {"properties": {"method": {"const": "forming_scopes.revise"}, "params": {"$ref": "#/$defs/reviseFormingScopesParams"}}},
+    {"properties": {"method": {"const": "snapshots.merge"}, "params": {"$ref": "#/$defs/mergeSnapshotsParams"}}},
+    {"properties": {"method": {"const": "geometrics.compute"}, "params": {"$ref": "#/$defs/computeGeometricsParams"}}},
+    {"properties": {"method": {"enum": ["jobs.status", "jobs.cancel"]}, "params": {"$ref": "#/$defs/jobParams"}}}
+  ],
+  "$defs": {
+    "nonEmptyString": {"type": "string", "minLength": 1},
+    "snapshotId": {"type": "string", "pattern": "^snapshot_[A-Za-z0-9_-]+$"},
+    "jobId": {"type": "string", "pattern": "^job_[A-Za-z0-9_-]+$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "leaseSeconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+    "direction": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"type": "number"}
+    },
+    "geometryRefs": {
+      "type": "array",
+      "items": {"$ref": "https://hermes.local/dfm/geometry/common.schema.json#/$defs/geometryRef"}
+    },
+    "emptyParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 0
+    },
+    "snapshotParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snapshot_id"],
+      "properties": {"snapshot_id": {"$ref": "#/$defs/snapshotId"}}
+    },
+    "openSnapshotParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input_path", "input_sha256", "artifact_dir"],
+      "properties": {
+        "input_path": {"$ref": "#/$defs/nonEmptyString"},
+        "input_sha256": {"$ref": "#/$defs/sha256"},
+        "artifact_dir": {"$ref": "#/$defs/nonEmptyString"},
+        "lease_seconds": {"$ref": "#/$defs/leaseSeconds"}
+      }
+    },
+    "renewSnapshotParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snapshot_id"],
+      "properties": {
+        "snapshot_id": {"$ref": "#/$defs/snapshotId"},
+        "lease_seconds": {"$ref": "#/$defs/leaseSeconds"}
+      }
+    },
+    "featureKind": {
+      "enum": ["main_wall", "rib", "solid_boss", "hollow_boss", "drilled_hole", "blend", "chamfer", "shaft", "cavity", "isolated"]
+    },
+    "discoverFeaturesParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snapshot_id", "feature_kinds"],
+      "properties": {
+        "snapshot_id": {"$ref": "#/$defs/snapshotId"},
+        "feature_kinds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/featureKind"}
+        },
+        "context": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {"forming_scope_id": {"$ref": "#/$defs/nonEmptyString"}}
+        }
+      }
+    },
+    "reviseFeaturesParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snapshot_id", "revisions"],
+      "properties": {
+        "snapshot_id": {"$ref": "#/$defs/snapshotId"},
+        "revisions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["feature_id"],
+            "properties": {
+              "feature_id": {"$ref": "#/$defs/nonEmptyString"},
+              "geometry_refs": {"$ref": "#/$defs/geometryRefs"},
+              "parts": {"type": "object", "additionalProperties": {"$ref": "#/$defs/geometryRefs"}},
+              "parameters": {"type": "object"},
+              "source": {"const": "user_confirmed"}
+            }
+          }
+        },
+        "relationships": {"type": "array", "items": {"type": "object"}}
+      }
+    },
+    "analyzeFormingScopeParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snapshot_id", "forming_scope_id", "mode", "draw_direction", "coordinate_system", "direction_source"],
+      "properties": {
+        "snapshot_id": {"$ref": "#/$defs/snapshotId"},
+        "forming_scope_id": {"$ref": "#/$defs/nonEmptyString"},
+        "mode": {"enum": ["main", "local"]},
+        "draw_direction": {"$ref": "#/$defs/direction"},
+        "coordinate_system": {"const": "model"},
+        "direction_source": {"const": "user_confirmed"}
+      }
+    },
+    "formingScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["forming_scope_id"],
+      "properties": {
+        "forming_scope_id": {"$ref": "#/$defs/nonEmptyString"},
+        "kind": {"enum": ["main_forming", "undercut", "local_forming"]},
+        "mode": {"enum": ["main", "local"]},
+        "draw_direction": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/direction"}]},
+        "coordinate_system": {"const": "model"},
+        "direction_source": {"enum": ["user_confirmed", null]},
+        "supersedes_scope_ids": {"type": "array", "items": {"$ref": "#/$defs/nonEmptyString"}},
+        "geometry_refs": {"$ref": "#/$defs/geometryRefs"}
+      }
+    },
+    "reviseFormingScopesParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snapshot_id", "scopes"],
+      "properties": {
+        "snapshot_id": {"$ref": "#/$defs/snapshotId"},
+        "scopes": {"type": "array", "items": {"$ref": "#/$defs/formingScope"}},
+        "retire_scope_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/nonEmptyString"}}
+      }
+    },
+    "mergeSnapshotsParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_snapshot_id", "snapshot_ids"],
+      "properties": {
+        "base_snapshot_id": {"$ref": "#/$defs/snapshotId"},
+        "snapshot_ids": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/snapshotId"}
+        }
+      }
+    },
+    "geometricContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "forming_scope_id": {"$ref": "#/$defs/nonEmptyString"},
+        "draw_direction": {"$ref": "#/$defs/direction"},
+        "coordinate_system": {"const": "model"},
+        "direction_source": {"const": "user_confirmed"}
+      }
+    },
+    "computeGeometricsParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snapshot_id", "items"],
+      "properties": {
+        "snapshot_id": {"$ref": "#/$defs/snapshotId"},
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["feature_id", "geometric_ids", "context"],
+            "properties": {
+              "feature_id": {"$ref": "#/$defs/nonEmptyString"},
+              "geometric_ids": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {"type": "string", "pattern": "^G_[A-Z0-9_]+$"}
+              },
+              "context": {"$ref": "#/$defs/geometricContext"}
+            }
+          }
+        }
+      }
+    },
+    "jobParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job_id"],
+      "properties": {"job_id": {"$ref": "#/$defs/jobId"}}
+    }
+  }
+}

@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes.local/dfm/geometry/capabilities-v2.schema.json",
+  "title": "DFM geometry persistent-session capabilities",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "schema_bundle_version",
+    "engine_version",
+    "dependency_fingerprint",
+    "backend",
+    "occt_version",
+    "analysis_situs_version",
+    "analysis_situs_commit",
+    "transport",
+    "methods",
+    "feature_kinds",
+    "annotation_kinds",
+    "coverage_statuses",
+    "geometric_result_statuses",
+    "geometrics",
+    "limits"
+  ],
+  "properties": {
+    "contract_version": {"const": "dfm.geometry/v2"},
+    "schema_bundle_version": {"const": "2.3.0"},
+    "engine_version": {"type": "string", "pattern": "^occt-dfm-geometry-[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "dependency_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "backend": {"const": "analysis_situs+occt"},
+    "occt_version": {"type": "string", "minLength": 1},
+    "analysis_situs_version": {"const": "v2025.2"},
+    "analysis_situs_commit": {"const": "aa5958932c8c85c068566ab685f2b99c0436b926"},
+    "transport": {"const": "stdio-jsonrpc"},
+    "methods": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capabilities.get",
+        "snapshots.open",
+        "snapshots.get",
+        "snapshots.renew",
+        "snapshots.close",
+        "features.discover",
+        "features.revise",
+        "annotations.revise",
+        "forming_scopes.analyze",
+        "forming_scopes.revise",
+        "snapshots.merge",
+        "geometrics.compute",
+        "jobs.status",
+        "jobs.cancel"
+      ],
+      "properties": {
+        "capabilities.get": {"const": "available"},
+        "snapshots.open": {"const": "available"},
+        "snapshots.get": {"const": "available"},
+        "snapshots.renew": {"const": "available"},
+        "snapshots.close": {"const": "available"},
+        "features.discover": {"const": "available"},
+        "features.revise": {"const": "available"},
+        "annotations.revise": {"const": "available"},
+        "forming_scopes.analyze": {"const": "available"},
+        "forming_scopes.revise": {"const": "available"},
+        "snapshots.merge": {"const": "available"},
+        "geometrics.compute": {"const": "available"},
+        "jobs.status": {"const": "available"},
+        "jobs.cancel": {"const": "available"}
+      }
+    },
+    "annotation_kinds": {"$ref": "https://hermes.local/dfm/geometry/session-v2.schema.json#/$defs/capabilities/properties/annotation_kinds"},
+    "feature_kinds": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "coverage_statuses": {
+      "type": "array",
+      "minItems": 3,
+      "uniqueItems": true,
+      "items": {"enum": ["complete", "partial", "failed"]},
+      "contains": {"const": "complete"}
+    },
+    "geometric_result_statuses": {
+      "type": "array",
+      "minItems": 6,
+      "uniqueItems": true,
+      "items": {"enum": ["ok", "unsupported", "not_applicable", "missing_context", "ambiguous_scope", "failed"]},
+      "contains": {"const": "ok"}
+    },
+    "geometrics": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/geometricCapability"}
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["default_lease_seconds", "minimum_lease_seconds", "maximum_lease_seconds"],
+      "properties": {
+        "max_concurrent_jobs": {"type": "integer", "minimum": 1},
+        "default_lease_seconds": {"type": "integer", "minimum": 1},
+        "minimum_lease_seconds": {"type": "integer", "minimum": 1},
+        "maximum_lease_seconds": {"type": "integer", "minimum": 1}
+      }
+    }
+  },
+  "$defs": {
+    "geometricCapability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "geometric_id",
+        "feature_kind",
+        "support_status",
+        "scope_modes",
+        "direction_modes",
+        "requires_complete_inventory",
+        "requires_relationships",
+        "context_schema"
+      ],
+      "properties": {
+        "geometric_id": {"type": "string", "pattern": "^G_[A-Z0-9_]+$"},
+        "feature_kind": {"type": "string", "minLength": 1},
+        "support_status": {"const": "supported"},
+        "scope_modes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"enum": ["feature", "intersection"]}
+        },
+        "direction_modes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"enum": ["none", "main", "local"]}
+        },
+        "requires_complete_inventory": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "requires_relationships": {"$ref": "https://hermes.local/dfm/geometry/session-v2.schema.json#/$defs/geometric/properties/requires_relationships"},
+        "verification_status": {"type": "string"},
+        "dimension": {"type": "string"},
+        "canonical_unit": {"type": "string"},
+        "result_schema": {"type": "object"},
+        "evidence_kinds": {"type": "array", "items": {"type": "string"}},
+        "context_schema": {"type": "object"}
+      }
+    },
+    "recognizer_failure_policies": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "strict",
+          "retain_completed"
+        ]
+      }
+    }
+  }
+}

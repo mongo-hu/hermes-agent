@@ -2,6 +2,8 @@
 
 更新日期：2026-10-29。状态：本轮会话数据与两轮主流程框架已通过匹配 Worker、Hermes 和真实 Electron 联调，具体证据见第 10 节；算法工程认证、自然语言聊天全场景及正式发布包不由本记录替代。
 
+本次接入构建：Worker `1.12.0` / bundle `2.3.0`，已更新本仓库随包运行目录；与已发布规则 `V1.0.11` 的本次联调及限制见第 10.17 节。早期 Electron 验证记录保留其原有范围。
+
 [开发导航](README.md)
 
 总体流程见[两轮分组确认的DFM主流程](dfm-main-workflow-explained.md)。本方案规定 Hermes 如何调用常驻 Worker、管理项目与快照、组织技术指标计算，以及消费结果和生成报告。
@@ -572,3 +574,17 @@ runtime/result_documents.py 统一管理 geometric_results 和 evaluations 两�
 验证（2026-10-29）：结果文档专项 16 项通过，覆盖写后预热、并发独立副本、冷启动、替换/篡改、单份及总量预算、跨项目隔离、原子写失败和非有限数值拒绝。真实 Boss 多批用例记录实际读取次数：累计 G 和判定工作表在规则、证据和 Viewer 阶段不再读取文件；成功最终封版仅对 G 文档强制读取一次，判定文档继续复用内存。重复查询仍检查文件签名，不能把“不重新解析”理解成不检查文件身份。
 
 最终框架回归：59 个 DFM/审核路由 Python 文件，516 项通过、0 失败，另有 2 项旧可选环境用例跳过；其中真实 Electron 两轮确认、局部方向、属性修改、报告前高亮及异步 HTML 演示均实际执行。前端 6 个文件、26 项及 TypeScript 检查已通过，生产 renderer/main 构建已验证。Worker 仍为已验证的 bundle 2.3.0 构建，本次 Hermes 工作表缓存没有改变 C++ 或公共 Schema；原生与独立安装证据见第 10.15 节及 Worker 第 8 节。该结论只覆盖本轮框架范围，不表示全部识别算法、远程规则数据或正式发布包已经认证。
+
+### 10.17 1.12.0 运行包与 V1.0.11 发布规则接入
+
+2026-10-29 已将 `dfm-geometry-exe/windows-x64` 更新为 Worker 1.12.0，包含 EXE、运行库和 bundle 2.3.0 Schema。当前 config.yaml 使用此路径，无须修改 executable。使用 Desktop 的 `HERMES_HOME=C:/Users/developer/.hermes` 执行 doctor，外部 OCCT 可用、常驻会话就绪，HTML 所需 Playwright 和 Chromium 可用；内部 PythonOCC 不在本次所用 .venv 中，不影响配置的外部后端。
+
+远程最新快照和本地安装均为 `RS_INJECTION_MOLDING_BASE@V1.0.11`，87 个概念、183 条关系、64 条规则，原包内容 SHA-256 为 `80e1a88e80cd9f9b098d497e7c48b69f4fe356e900900ca8092dd431a380b33e`。规则包中主体壁 FEATURE_WALL 的 `feature_kind` 为 wall；`ontology/catalog_contract.py::catalog_feature_kind` 将其投影到 Worker 的 main_wall。该映射只用于运行时绑定，不修改原包、发布摘要或 Mold 数据。
+
+解析模型 rounded_boss.step 联调用实际发布条件和 acceptance_criteria_json：ABS、未填充、常规热塑性注塑。柱壁最大厚度为 2 mm，邻近主体壁厚度为 3 mm，比值 0.6667。非外观规则 R_HOLLOW_BOSS_WALL_THK_001 的区间为 0.5～1，判定通过；外观规则 R_HOLLOW_BOSS_WALL_THK_002 的区间为 1/3～0.5，判定不通过。两场景均由包内规则编译，不在 Worker 中定义业务阈值。
+
+上述调用通过 Hermes 的真实识别 Provider、GeometrySessionPool、规则编译器和 EvaluationEngine。STEP 仅导入一次，两个 G 各求解一次；第二次业务判定命中两个 G 结果缓存，证据仍可定位。Hermes 运行目录内的 EXE 另通过 26 项公开 JSON、9 项会话、5 项解析几何与消费端测试。
+
+本次 Hermes 回归覆盖 61 个 DFM/审核路由文件，560 项通过、0 失败，包含新版 Worker 的原生会话、几何修订、参考壁和多批计算；2 项 Electron 专项及 2 项旧可选环境用例未启用。Windows 冷读取用例显式推进外部写入的 mtime，避免同一文件系统时间戳内的等长写入影响签名失效测试；签名伪装时强制读取摘要的独立用例继续保留。
+
+当前 Worker 发布 24 个 G，可对齐本包 45 个 G 中的 21 个。其余指标继续作为未覆盖项处理；本次不补写规则、不迁移 Mold 数据，也不把未实现算法标为可用。Worker 的合并、构建及安装细节维护在其会话文档第 8.11 节。本次未重新执行 Electron 界面专项。
