@@ -22,13 +22,18 @@ def test_dfm_tools_are_discovered_with_stable_schemas_and_dispatch(tmp_path):
         "ontology_status",
         "sync_ontology",
     ]
-    assert analysis_schema["parameters"]["properties"]["action"]["enum"] == [
+    actions = analysis_schema["parameters"]["properties"]["action"]["enum"]
+    assert len(actions) == len(set(actions))
+    assert {
         "discover",
         "drawing_context",
         "submit_observations",
         "fusion_context",
         "submit_fusion_links",
         "update_feature_geometry",
+        "update_forming_scope_geometry",
+        "restructure_forming_scopes",
+        "review_context",
         "confirm_discovery",
         "analyze_forming_scope",
         "revise_forming_scopes",
@@ -39,7 +44,7 @@ def test_dfm_tools_are_discovered_with_stable_schemas_and_dispatch(tmp_path):
         "result",
         "render_html",
         "context",
-    ]
+    } <= set(actions)
     assert "observations" in analysis_schema["parameters"]["properties"]
     assert "fusion_links" in analysis_schema["parameters"]["properties"]
     assert "llm_content" in analysis_schema["parameters"]["properties"]

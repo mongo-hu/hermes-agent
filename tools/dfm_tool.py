@@ -434,7 +434,7 @@ DFM_PROJECT_SCHEMA = {
 
 DFM_ANALYSIS_SCHEMA = {
     "name": "dfm_analysis",
-    "description": "Run the DFM workflow. The OCCT path uses the persistent dfm.geometry/v2 contract: Discovery returns Worker feature IDs and geometry refs, forming scopes are reviewed separately, and ordinary calculation is sent only as snapshot_id + feature_id + geometric_ids + context. Do not create Region, face_indices, operation/calculator/metric/quantity routing, or per-G task IDs for this path. Follow next_action and use feature_counts for exact discovery counts. When a main or local direction is user-confirmed, call analyze_forming_scope, review its candidate, then call revise_forming_scopes. If report_context returns ready=false, call it again with the same project_id/run_id (or wait for its background notification); never recreate the project or restart clarification while the run is unfinished. Drawing OCR is deterministic; use drawing_context and submit_observations, then fusion_context and submit_fusion_links. render_html validates exact issue IDs and runs asynchronously. Unavailable analyzers and incomplete G results remain explicit and must never be presented as passing.",
+    "description": "Run the DFM workflow. The OCCT path uses persistent dfm.geometry/v2 sessions: calculation uses snapshot_id + feature_id + geometric_ids + context, never Region, face_indices, private operation/calculator/metric/quantity routing or per-G task IDs. Confirm the main draw direction before discover; discovery orchestrates supported structures and main-direction scopes together. Use review_context and confirm_discovery for independent groups. Confirming a local range triggers its supplemental discovery; then confirm local structures and submit its user direction with revise_forming_scopes. Editing geometry requires the current revision; use update_feature_geometry, update_forming_scope_geometry or restructure_forming_scopes. Follow next_action and exact feature_counts. Already-started runs resume automatically when their review/input dependencies change; do not recreate projects or restart analysis while waiting. Use analyze_forming_scope only for an explicit additional direction analysis, not as a mandatory repeat after discover. report_context may remain ready=false until analysis finishes. render_html validates issue IDs and runs asynchronously. Drawing OCR is deterministic; use drawing_context/submit_observations then fusion_context/submit_fusion_links. Unavailable or incomplete results are never passing.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -447,7 +447,11 @@ DFM_ANALYSIS_SCHEMA = {
                     "fusion_context",
                     "submit_fusion_links",
                     "update_feature_geometry",
+                    "update_forming_scope_geometry",
+                    "restructure_forming_scopes",
+                    "revise_annotations",
                     "confirm_discovery",
+                    "review_context",
                     "analyze_forming_scope",
                     "revise_forming_scopes",
                     "plan",
@@ -487,6 +491,11 @@ DFM_ANALYSIS_SCHEMA = {
                 "type": "integer",
                 "minimum": 0,
                 "description": "Manifest revision returned by drawing_context or fusion_context; required by semantic submissions.",
+            },
+            "expected_snapshot_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Hermes snapshot_id from review_context. Supply with revision for review confirmation or geometry edits so unrelated run progress does not block the write; changed geometry is still rejected.",
             },
             "review_group_ids": {
                 "type": "array",
@@ -593,7 +602,7 @@ DFM_ANALYSIS_SCHEMA = {
                         "entity_id",
                     ],
                 },
-                "description": "Complete confirmed face references for update_feature_geometry.",
+                "description": "Complete face references for update_feature_geometry or update_forming_scope_geometry.",
             },
             "forming_scope_id": {
                 "type": "string",
@@ -611,23 +620,36 @@ DFM_ANALYSIS_SCHEMA = {
                 "items": {"type": "number"},
                 "description": "User-confirmed part exit direction in model coordinates.",
             },
+            "annotations": {
+                "type": "array",
+                "description": "Surface attribute patches for revise_annotations. New records require annotation_id, kind, value and complete geometry_refs; existing records may change value or selected geometry. Attribute confirmation is separate.",
+                "items": {"type": "object", "properties": {
+                    "annotation_id": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["appearance", "mold_side", "forming_side", "parting_boundary"]},
+                    "value": {"type": "string"}, "geometry_refs": {"type": "array", "items": {"type": "object"}},
+                    "properties": {"type": "object"}}, "required": ["annotation_id"], "additionalProperties": False}
+            },
+            "retire_annotation_ids": {"type": "array", "items": {"type": "string"},
+                "description": "Active annotation IDs to retire through revise_annotations."},
             "forming_scopes": {
                 "type": "array",
-                "minItems": 1,
+                "description": "Confirmed direction records for revise_forming_scopes; candidate local ranges for restructure_forming_scopes. Candidate ranges use null direction/source and may omit forming_scope_id to create a new range.",
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
                         "forming_scope_id": {"type": "string", "minLength": 1},
+                        "kind": {"type": "string", "enum": ["main_forming", "undercut", "local_forming"]},
                         "mode": {"type": "string", "enum": ["main", "local"]},
                         "draw_direction": {
-                            "type": "array",
+                            "type": ["array", "null"],
                             "minItems": 3,
                             "maxItems": 3,
                             "items": {"type": "number"},
                         },
                         "coordinate_system": {"type": "string", "const": "model"},
-                        "direction_source": {"type": "string", "const": "user_confirmed"},
+                        "direction_source": {"type": ["string", "null"], "enum": ["user_confirmed", None]},
+                        "supersedes_scope_ids": {"type": "array", "uniqueItems": True, "items": {"type": "string"}},
                         "geometry_refs": {
                             "type": "array",
                             "items": {
@@ -644,9 +666,11 @@ DFM_ANALYSIS_SCHEMA = {
                             },
                         },
                     },
-                    "required": ["forming_scope_id", "mode", "draw_direction", "coordinate_system", "direction_source", "geometry_refs"],
+                    "required": ["kind", "mode", "geometry_refs"],
                 },
             },
+            "retire_scope_ids": {"type": "array", "uniqueItems": True, "items": {"type": "string"},
+                                 "description": "Existing local scopes explicitly retired by restructure_forming_scopes; never MAIN."},
             "base_plan_id": {
                 "type": "string",
                 "description": "Invalidated plan to rebuild with only affected operations.",

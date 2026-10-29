@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import math
 from pathlib import Path
 
 from ..contracts import ArtifactRecord, PlanOperation, RegionRecord
 from ..errors import DFMError
-from ..geometry.snapshot_hash import render_mesh_content_sha256
+from ..runtime.result_documents import SMALL_RESULT_KINDS, read_result_document
+from ..geometry.snapshot_hash import render_mesh_content_sha256, topology_content_sha256
 
 
 def validate_objective_result(
@@ -135,7 +135,9 @@ def validate_objective_result(
         or item.get("input_sha256") != input_sha256
         for item in linked_payloads.values()
     ):
-        raise DFMError(error_code, "Objective geometry belongs to another run or input.")
+        raise DFMError(
+            error_code, "Objective geometry belongs to another run or input."
+        )
 
     scenes = [item for item in linked_payloads.values() if item.get("scene_id")]
     topology_maps = [item for item in linked_payloads.values() if item.get("map_id")]
@@ -159,24 +161,32 @@ def validate_objective_result(
             not mesh_id
             or not isinstance(primitives, list)
             or snapshot.get("input_sha256") != input_sha256
-            or snapshot.get("topology_snapshot_id") != scene.get("topology_snapshot_ref")
-            or any(item.get("render_mesh_snapshot_id") != mesh_id for item in primitives)
+            or snapshot.get("topology_snapshot_id")
+            != scene.get("topology_snapshot_ref")
+            or any(
+                item.get("render_mesh_snapshot_id") != mesh_id for item in primitives
+            )
             or snapshot.get("triangle_count")
             != sum(len(item.get("triangles", [])) for item in primitives)
             or snapshot.get("render_mesh_sha256") != mesh_content_sha256
         ):
-            raise DFMError(error_code, "Render mesh snapshot identity or content is invalid.")
+            raise DFMError(
+                error_code, "Render mesh snapshot identity or content is invalid."
+            )
     for topology in topology_maps:
         snapshot = topology.get("topology_snapshot")
         if not isinstance(snapshot, dict):
-            raise DFMError(error_code, "Topology map has no immutable topology snapshot.")
+            raise DFMError(
+                error_code, "Topology map has no immutable topology snapshot."
+            )
         topology_id = str(snapshot.get("topology_snapshot_id") or "")
         faces = topology.get("faces")
         if (
             not topology_id
             or not isinstance(faces, list)
             or snapshot.get("input_sha256") != input_sha256
-            or snapshot.get("topology_content_sha256") != _topology_content_sha256(faces)
+            or snapshot.get("topology_content_sha256")
+            != topology_content_sha256(faces, topology.get("edges", []))
             or snapshot.get("entity_count", {}).get("face") != len(faces)
             or any(
                 face.get("geometry_ref", {}).get("topology_snapshot_id") != topology_id
@@ -185,9 +195,13 @@ def validate_objective_result(
                 for face in faces
             )
         ):
-            raise DFMError(error_code, "Topology snapshot identity or content is invalid.")
+            raise DFMError(
+                error_code, "Topology snapshot identity or content is invalid."
+            )
         scene = linked_payloads.get(str(topology.get("scene_ref") or ""), {})
-        mesh_id = str(scene.get("render_mesh_snapshot", {}).get("render_mesh_snapshot_id") or "")
+        mesh_id = str(
+            scene.get("render_mesh_snapshot", {}).get("render_mesh_snapshot_id") or ""
+        )
         if (
             scene.get("topology_snapshot_ref") != topology_id
             or topology.get("render_mesh_snapshot_ref") != mesh_id
@@ -197,7 +211,9 @@ def validate_objective_result(
                 for ref in face.get("triangle_refs", [])
             )
         ):
-            raise DFMError(error_code, "Topology and render mesh snapshots are inconsistent.")
+            raise DFMError(
+                error_code, "Topology and render mesh snapshots are inconsistent."
+            )
         if planned_snapshot_ids and planned_snapshot_ids != {topology_id}:
             raise DFMError(
                 error_code,
@@ -213,10 +229,8 @@ def validate_objective_result(
             operation is None
             or field.get("metric_id") not in operation.metric_ids
             or field.get("quantity_id") not in operation.required_quantities
-            or sorted(field.get("feature_refs") or [])
-            != sorted(operation.feature_refs)
-            or sorted(field.get("region_refs") or [])
-            != sorted(operation.region_refs)
+            or sorted(field.get("feature_refs") or []) != sorted(operation.feature_refs)
+            or sorted(field.get("region_refs") or []) != sorted(operation.region_refs)
         ):
             raise DFMError(error_code, "Scalar field does not link to its operation.")
         calculation_context = field.get("calculation_context")
@@ -242,11 +256,17 @@ def validate_objective_result(
             or by_id[topology_ref].kind != "topology_map"
             or linked_payloads.get(topology_ref, {}).get("scene_ref") != scene_ref
         ):
-            raise DFMError(error_code, "Scalar field scene/topology refs are inconsistent.")
+            raise DFMError(
+                error_code, "Scalar field scene/topology refs are inconsistent."
+            )
         scene = linked_payloads[scene_ref]
         topology = linked_payloads[topology_ref]
-        topology_id = str(topology.get("topology_snapshot", {}).get("topology_snapshot_id") or "")
-        mesh_id = str(scene.get("render_mesh_snapshot", {}).get("render_mesh_snapshot_id") or "")
+        topology_id = str(
+            topology.get("topology_snapshot", {}).get("topology_snapshot_id") or ""
+        )
+        mesh_id = str(
+            scene.get("render_mesh_snapshot", {}).get("render_mesh_snapshot_id") or ""
+        )
         if (
             field.get("topology_snapshot_ref") != topology_id
             or field.get("render_mesh_snapshot_ref") != mesh_id
@@ -275,15 +295,15 @@ def validate_objective_result(
             raise DFMError(error_code, "Scalar field cells reference missing samples.")
 
 
-def _read(
-    project_dir: Path, artifact: ArtifactRecord, error_code: str
-) -> dict:
+def _read(project_dir: Path, artifact: ArtifactRecord, error_code: str) -> dict:
     try:
-        payload = json.loads(
-            (project_dir / artifact.relative_path).read_text(encoding="utf-8")
-        )
+        path = project_dir / artifact.relative_path
+        payload = (read_result_document(path, artifact.kind, sha256=artifact.sha256, size_bytes=artifact.size_bytes)
+                   if artifact.kind in SMALL_RESULT_KINDS else json.loads(path.read_text(encoding="utf-8")))
     except (OSError, ValueError) as exc:
-        raise DFMError(error_code, f"The {artifact.kind} artifact is not valid JSON.") from exc
+        raise DFMError(
+            error_code, f"The {artifact.kind} artifact is not valid JSON."
+        ) from exc
     if not isinstance(payload, dict):
         raise DFMError(error_code, f"The {artifact.kind} artifact must be an object.")
     return payload
@@ -299,22 +319,3 @@ def _is_unit_vector(value: object) -> bool:
     if not all(math.isfinite(item) for item in components):
         return False
     return abs(math.sqrt(sum(item * item for item in components)) - 1.0) <= 1e-6
-
-
-def _stable_sha256(payload: object) -> str:
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    ).hexdigest()
-
-
-def _topology_content_sha256(faces: list[dict]) -> str:
-    return _stable_sha256(
-        [
-            {
-                "entity_id": face.get("geometry_ref", {}).get("entity_id"),
-                "kind": face.get("geometry_ref", {}).get("kind"),
-                "index": face.get("geometry_ref", {}).get("index"),
-            }
-            for face in faces
-        ]
-    )

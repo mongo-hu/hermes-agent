@@ -149,7 +149,8 @@ def wall_geometric_capability(kind="main_wall"):
             "feature_kind": kind,
             "scope_modes": ["feature"],
             "direction_modes": ["none"],
-            "requires_complete_inventory": False,
+            "requires_complete_inventory": [],
+            "requires_relationships": [],
             "context_schema": {"type": "object", "additionalProperties": False},
         }
     }
@@ -658,7 +659,8 @@ def test_geometric_id_capability_binding_keeps_only_public_g_identity():
             "feature_kind": "main_wall",
             "scope_modes": ["feature"],
             "direction_modes": ["none"],
-            "requires_complete_inventory": False,
+            "requires_complete_inventory": [],
+            "requires_relationships": [],
             "context_schema": {"type": "object", "additionalProperties": False},
         }
     })

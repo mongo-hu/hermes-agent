@@ -47,6 +47,7 @@ def test_local_forming_candidate_can_wait_for_direction_but_confirmation_cannot(
         forming_scope_id="SIDE_01",
         snapshot_id="snapshot_1",
         mode="local",
+        kind="undercut",
         draw_direction=None,
         coordinate_system="model",
         direction_source=None,
@@ -60,6 +61,43 @@ def test_local_forming_candidate_can_wait_for_direction_but_confirmation_cannot(
         FormingScopeRecord(
             **{**candidate.__dict__, "status": "confirmed"}
         ).validate()
+
+
+@pytest.mark.parametrize("kind,mode", [("", "local"), ("appearance", "local"),
+                                      ("undercut", "main"), ("main_forming", "local")])
+def test_scope_kind_is_explicit_and_distinct_from_mode(kind, mode):
+    scope = FormingScopeRecord(
+        forming_scope_id="opaque-id-not-a-type", snapshot_id="snapshot-1",
+        mode=mode, kind=kind, draw_direction=[0, 0, 1], coordinate_system="model",
+        direction_source="user_confirmed", status="confirmed",
+    )
+    with pytest.raises(DFMError):
+        scope.validate()
+
+
+def test_semantic_recovery_fingerprint_includes_annotations_and_relationships():
+    from tools.dfm.runtime.process import _snapshot_state_sha256
+
+    state = {"features": [], "forming_scopes": [], "coverage": [],
+             "annotations": [], "relationships": []}
+    original = _snapshot_state_sha256(state)
+    annotated = {**state, "annotations": [{"annotation_id": "A1", "kind": "appearance"}]}
+    related = {**state, "relationships": [{"relation_id": "R1", "to_ref": "SIDE_01"}]}
+    assert original != _snapshot_state_sha256(annotated)
+    assert original != _snapshot_state_sha256(related)
+    assert _snapshot_state_sha256(annotated) != _snapshot_state_sha256(related)
+
+
+def test_worker_feature_parts_survive_conversion_to_hermes_records():
+    from tools.dfm.feature_recognition.occt_cpp import OCCTCppFeatureRecognitionProvider
+
+    parts = {"outer_wall": [{"kind": "face", "index": 101}]}
+    raw = {"feature_id": "BOSS_7", "kind": "hollow_boss", "parts": parts}
+    source = InputRecord("input-1", "step", "part.stp", "inputs/part.stp", 1, "a" * 64, "now")
+    provider = OCCTCppFeatureRecognitionProvider()
+    records = provider._feature_records([raw], input_record=source, snapshot_id="snapshot-1")
+    assert records[0].properties["parts"] == parts
+    assert records[0].feature_id == "BOSS_7"
 
 
 def test_result_manifest_rejects_a_different_viewer_mesh_version():

@@ -94,7 +94,7 @@ try:
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel
+    from pydantic import BaseModel, Field
     from starlette.concurrency import run_in_threadpool
 except ImportError:
     # First try lazy-installing the dashboard extras. Only the user actually
@@ -110,7 +110,7 @@ except ImportError:
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
-        from pydantic import BaseModel
+        from pydantic import BaseModel, Field
         from starlette.concurrency import run_in_threadpool
     except Exception:
         raise SystemExit(
@@ -161,19 +161,58 @@ def _warm_gateway_module() -> None:
         pass
 
 
+def _print_dfm_startup_status(message: str) -> None:
+    _log.info(message)
+    # Normal startup logging is file-only; show versions without verbose mode.
+    print(message, file=sys.stderr, flush=True)
+
+
 def _start_dfm_ontology_sync() -> None:
-    """Start the configured DFM ontology synchronizer with Hermes itself."""
+    """Start DFM synchronization and report installed versions off the event loop."""
     try:
         from tools.dfm.config import load_dfm_config
 
-        if not load_dfm_config().ontology_endpoint:
-            return
+        config = load_dfm_config()
+    except Exception as exc:
+        _log.exception("DFM startup configuration could not be read")
+        _print_dfm_startup_status(f"[DFM] Startup versions unavailable: {exc}")
+        return
+
+    try:
         from tools.dfm.service import get_dfm_service
 
-        get_dfm_service()
-        _log.info("DFM ontology synchronization started at Hermes startup")
-    except Exception:
+        service = get_dfm_service()
+        identity = service.ontology_store.identity()
+        _print_dfm_startup_status(
+            f"[DFM] Current rule package: rule_set={identity.rule_set_code}, "
+            f"version={identity.rule_set_version}, snapshot={identity.snapshot_id}"
+        )
+        if config.ontology_endpoint:
+            _log.info("DFM ontology synchronization started at Hermes startup")
+    except Exception as exc:
         _log.exception("DFM ontology synchronization failed to start")
+        _print_dfm_startup_status(f"[DFM] Current rule package: unavailable ({exc})")
+
+    try:
+        from tools.dfm.analyzers.occt import (
+            discover_geometry_executable,
+            probe_geometry_executable,
+        )
+
+        executable = discover_geometry_executable(config.geometry_executable)
+        if executable is None:
+            _print_dfm_startup_status(
+                "[DFM] OCCT Worker: unavailable (executable not found)"
+            )
+            return
+        capability = probe_geometry_executable(executable)
+        _print_dfm_startup_status(
+            f"[DFM] OCCT Worker: version={capability['engine_version']}, "
+            f"contract={capability['contract_version']}, executable={executable}"
+        )
+    except Exception as exc:
+        _log.exception("DFM startup Worker version probe failed")
+        _print_dfm_startup_status(f"[DFM] OCCT Worker: unavailable ({exc})")
 
 
 def _resolve_restart_drain_timeout() -> float:
@@ -204,8 +243,8 @@ async def _lifespan(app: "FastAPI"):
     # the server socket is already open and accepting probes.
     asyncio.get_event_loop().run_in_executor(None, _warm_gateway_module)
 
-    # DFM publications must refresh when Hermes starts, without waiting for a
-    # conversation to invoke the DFM toolset first.
+    # Refresh DFM publications and report installed versions without waiting for
+    # a tool call or blocking startup on the Worker capability handshake.
     asyncio.get_event_loop().run_in_executor(None, _start_dfm_ontology_sync)
 
     # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
@@ -10025,8 +10064,29 @@ async def get_logs(
 # ---------------------------------------------------------------------------
 
 class DFMFeatureGeometryRequest(BaseModel):
-    face_indices: List[int]
+    geometry_refs: List[Dict[str, Any]]
     expected_revision: int
+    expected_snapshot_id: Optional[str] = None
+
+
+class DFMReviewConfirmationRequest(BaseModel):
+    review_group_ids: List[str]
+    expected_revision: int
+    expected_snapshot_id: Optional[str] = None
+
+
+class DFMAnnotationRevisionRequest(BaseModel):
+    annotations: List[Dict[str, Any]]
+    expected_revision: int
+    expected_snapshot_id: Optional[str] = None
+    retire_annotation_ids: List[str] = Field(default_factory=list)
+
+
+class DFMReviewDirectionRequest(BaseModel):
+    forming_scope_id: str
+    draw_direction: List[float]
+    expected_revision: int
+    expected_snapshot_id: Optional[str] = None
 
 
 def _raise_dfm_http_error(exc: Exception) -> None:
@@ -10034,7 +10094,7 @@ def _raise_dfm_http_error(exc: Exception) -> None:
 
     if not isinstance(exc, DFMError):
         raise exc
-    status_code = 409 if exc.code == "manifest_conflict" else 400
+    status_code = 409 if exc.code in {"manifest_conflict", "review_group_stale", "snapshot_conflict", "geometry_edit_conflict"} else 400
     raise HTTPException(status_code=status_code, detail=exc.to_dict()["error"])
 
 
@@ -10049,9 +10109,82 @@ def update_dfm_discovery_feature(
             "update_feature_geometry",
             project_id=project_id,
             feature_id=feature_id,
-            face_indices=request.face_indices,
+            geometry_refs=request.geometry_refs,
             expected_revision=request.expected_revision,
+            **({"expected_snapshot_id": request.expected_snapshot_id} if request.expected_snapshot_id is not None else {}),
         )
+    except Exception as exc:
+        _raise_dfm_http_error(exc)
+
+
+@app.get("/api/dfm/projects/{project_id}/discovery/review")
+def get_dfm_discovery_review(project_id: str):
+    from tools.dfm.service import get_dfm_service
+    try:
+        return get_dfm_service().analysis("review_context", project_id=project_id)
+    except Exception as exc:
+        _raise_dfm_http_error(exc)
+
+
+@app.patch("/api/dfm/projects/{project_id}/discovery/annotations")
+def revise_dfm_annotations(project_id: str, request: DFMAnnotationRevisionRequest):
+    from tools.dfm.service import get_dfm_service
+    try:
+        return get_dfm_service().analysis("revise_annotations", project_id=project_id,
+            annotations=request.annotations, retire_annotation_ids=request.retire_annotation_ids,
+            expected_revision=request.expected_revision,
+            **({"expected_snapshot_id": request.expected_snapshot_id} if request.expected_snapshot_id is not None else {}))
+    except Exception as exc:
+        _raise_dfm_http_error(exc)
+
+
+@app.patch("/api/dfm/projects/{project_id}/discovery/scopes/{forming_scope_id}")
+def update_dfm_forming_scope_geometry(project_id: str, forming_scope_id: str, request: DFMFeatureGeometryRequest):
+    from tools.dfm.service import get_dfm_service
+    try:
+        service = get_dfm_service()
+        service.analysis("update_forming_scope_geometry", project_id=project_id, forming_scope_id=forming_scope_id,
+                         geometry_refs=request.geometry_refs, expected_revision=request.expected_revision,
+                         **({"expected_snapshot_id": request.expected_snapshot_id} if request.expected_snapshot_id is not None else {}))
+        return service.analysis("review_context", project_id=project_id)
+    except Exception as exc:
+        _raise_dfm_http_error(exc)
+
+
+@app.post("/api/dfm/projects/{project_id}/discovery/review/confirm")
+def confirm_dfm_discovery_groups(project_id: str, request: DFMReviewConfirmationRequest):
+    from tools.dfm.errors import DFMError
+    from tools.dfm.service import get_dfm_service
+    try:
+        if not request.review_group_ids:
+            raise DFMError("review_group_required", "Select at least one current review group.")
+        service = get_dfm_service()
+        service.analysis("confirm_discovery", project_id=project_id,
+            review_group_ids=request.review_group_ids, expected_revision=request.expected_revision,
+            **({"expected_snapshot_id": request.expected_snapshot_id} if request.expected_snapshot_id is not None else {}))
+        return service.analysis("review_context", project_id=project_id)
+    except Exception as exc:
+        _raise_dfm_http_error(exc)
+
+
+@app.post("/api/dfm/projects/{project_id}/discovery/review/direction")
+def confirm_dfm_scope_direction(project_id: str, request: DFMReviewDirectionRequest):
+    from tools.dfm.errors import DFMError
+    from tools.dfm.service import get_dfm_service
+    try:
+        service = get_dfm_service()
+        context = service.analysis("review_context", project_id=project_id)
+        scope = next((item for item in context["forming_scopes"]
+                      if item["forming_scope_id"] == request.forming_scope_id), None)
+        if scope is None:
+            raise DFMError("forming_scope_invalid", "The requested direction scope is not current.")
+        payload = {key: scope[key] for key in ("forming_scope_id", "kind", "mode", "geometry_refs")}
+        payload.update({"draw_direction": request.draw_direction,
+                        "coordinate_system": "model", "direction_source": "user_confirmed"})
+        service.analysis("revise_forming_scopes", project_id=project_id,
+            forming_scopes=[payload], expected_revision=request.expected_revision,
+            **({"expected_snapshot_id": request.expected_snapshot_id} if request.expected_snapshot_id is not None else {}))
+        return service.analysis("review_context", project_id=project_id)
     except Exception as exc:
         _raise_dfm_http_error(exc)
 

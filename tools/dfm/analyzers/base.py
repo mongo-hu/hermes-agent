@@ -21,6 +21,8 @@ class AnalyzerContext:
     plan: PlanRecord | None = None
     event_sink: Callable[[WorkerEvent], None] | None = None
     completed_plan_fragment_refs: FrozenSet[str] = frozenset()
+    # Internal transport selection only; never sent as a Worker task/Check ID.
+    selected_plan_fragment_refs: FrozenSet[str] | None = None
 
 
 class CancellationToken:

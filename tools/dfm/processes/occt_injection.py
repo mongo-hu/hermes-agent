@@ -45,13 +45,20 @@ def geometry_binding_index(scope: Mapping[str, Any]) -> dict[str, dict[str, Any]
         scope_modes = raw.get("scope_modes")
         direction_modes = raw.get("direction_modes")
         context_schema = raw.get("context_schema")
+        reference_requirements = raw.get("requires_relationships")
         if (
             not feature_kind
             or not isinstance(scope_modes, list)
             or not scope_modes
             or not isinstance(direction_modes, list)
             or not direction_modes
-            or not isinstance(raw.get("requires_complete_inventory"), bool)
+            or not isinstance(raw.get("requires_complete_inventory"), list)
+            or any(not isinstance(kind, str) or not kind for kind in raw.get("requires_complete_inventory", []))
+            or not isinstance(reference_requirements, list)
+            or any(not isinstance(item, Mapping) or set(item) != {"type", "target_feature_kind"}
+                   or any(not isinstance(item.get(key), str) or not item[key] for key in ("type", "target_feature_kind"))
+                   for item in reference_requirements)
+            or len({item["type"] for item in reference_requirements}) != len(reference_requirements)
             or not isinstance(context_schema, Mapping)
         ):
             raise DFMError(
@@ -63,7 +70,8 @@ def geometry_binding_index(scope: Mapping[str, Any]) -> dict[str, dict[str, Any]
             "feature_kind": feature_kind,
             "scope_modes": [str(value) for value in scope_modes],
             "direction_modes": [str(value) for value in direction_modes],
-            "requires_complete_inventory": raw["requires_complete_inventory"],
+            "requires_complete_inventory": list(raw["requires_complete_inventory"]),
+            "requires_relationships": [dict(item) for item in reference_requirements],
             "context_schema": dict(context_schema),
         }
     return result

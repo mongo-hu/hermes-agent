@@ -1,7 +1,7 @@
 ---
 title: "DFM 部署环境定义"
 status: implementation-reference
-updated: 2026-10-19
+updated: 2026-10-29
 type: deployment-guide
 ---
 
@@ -11,7 +11,7 @@ type: deployment-guide
 
 本文件只维护依赖、配置、启动与环境验证。总体流程在[主流程](dfm-main-workflow-explained.md)，常驻 Worker 和两轮确认的接入在[会话设计](dfm-geometric-session-contract.md)，不在此复制全流程图。
 
-2026-10-19 基于 HEAD `3c6dd9536` 及工作区源码静态核对，未启动真实引擎或执行 E2E。现有外部链路仍调用一次性 capabilities／analyze；dfm.geometry/v2 常驻会话、续租和分组调度为待实施目标。PythonOCC 依赖只在选择内部参考后端时需要，不要求 C++ 引擎安装进 Agent 的 Python 环境。
+当前工作区的外部链路使用 dfm.geometry/v2 常驻 Worker，配套 Schema bundle 2.3.0；预览、两轮识别、人工修订和 G 计算复用模型资源。真实 Worker、独立安装目录及 Electron 两轮确认到异步 HTML 演示已联调，记录见会话文档第 10 节。自然语言聊天全场景与正式发布包仍单独验收；旧安装 EXE 不会因更新 Hermes 源码自动升级。PythonOCC 仅在选择内部参考后端时需要，不要求 C++ 引擎安装进 Agent 的 Python 环境。
 
 `available` 表示依赖与能力探测成功，不等于算法已获工程认证。不要将参考结果或旧 Capability 直接当作生产发布依据。
 
@@ -48,10 +48,10 @@ Hermes 不链接或 vendoring C++ 内部库，只发现已构建的可执行程�
 | 内容 | 核对位置 | 发布记录要求 |
 | --- | --- | --- |
 | 本体规则发布包 | 本地 SQLite 元数据、Plan 固定身份、ontology_snapshot.schema.json | schema_version、发布身份、规则集版本与哈希；不把仓库示例当作最新 |
-| 几何通信 | EXE 能力、当前 Analyzer 协议常量和配套 Schema | Worker 构建、通信协议和消费端版本；现有一次性协议与目标 v2 分开 |
+| 几何通信 | EXE 能力、runtime/process.py 和 Worker schemas/session-v2.schema.json | contract_version=dfm.geometry/v2、schema_bundle_version、engine_version、dependency_fingerprint；与实际安装文件匹配 |
 | 显示与测量制品 | 实际 Artifact Schema、Manifest 和内容哈希 | 几何／网格身份、采样精度和制品版本，不混用三角形编号 |
 
-Agent 当前接受规则包 Schema 2/3/4，后续新规则使用 Schema 4；这是规则包版本，不等于几何通信 v2。现有一次性 Worker 的契约与目标会话 Schema 不可只改版本号混用。
+Agent 当前接受规则包 Schema 2/3/4，后续新规则使用 Schema 4；这是规则包版本，不等于几何通信 v2。新外部链路不提供旧 Worker 公共协议适配，不能只改版本号混用。
 
 ## 2. 当前 Python 依赖
 
@@ -199,11 +199,10 @@ DFM Runtime 校验契约并落库，几何模块验证 Feature/Region 与拓扑�
 
 ## 5. 容器部署
 
-当前 PythonOCC 参考镜像可以用于开发和契约回归，但不得标记为生产 DFM 镜像。目标部署有
-两种受支持形态：
+当前 PythonOCC 参考镜像可以用于开发和契约回归，但不得标记为生产 DFM 镜像。部署形态需区分已接入与后续方案：
 
-1. **同容器独立进程**：Hermes 调用已安装的 OCCT C++ Worker；适合单机和早期 E2E；
-2. **独立计算服务**：Hermes 通过受控 HTTP Adapter 提交 Job；适合水平扩展和资源隔离。
+1. **同机/同容器独立进程**：当前接入方式。Hermes 管理 serve --stdio 进程与会话，不需要手工先启动 EXE；容器自身仍需验证匹配的运行库。
+2. **独立计算服务**：后续部署选项；当前会话客户端不是 HTTP 客户端，不宣称已可直接配置 REST 地址使用。
 
 无论哪种形态，都必须：
 
@@ -238,7 +237,13 @@ Adapter 可执行，不代表 Django 发布、签名同步、生产认证或模�
 - 验证大模型的时间／内存、取消、超时、崩溃与恢复；外部后端失败不自动降级内部 PythonOCC。
 - HTML 在 Agent 同一解释器可渲染，报告任务独立排队，已有问题无需等待报告。
 
-目标 v2 交付后另验收：同一健康会话 STEP 只导入一次；两轮按组确认且就绪分支先算；续租／查询／取消通道可用；改局部方向只失效相关结果；Viewer 与同版报告使用一致证据；重启后旧句柄显式失效。细节和共享样例以会话契约发布物为准，不提前提供未实现 config 键或声称 doctor 已检查这些条件。
+每次部署仍需验证：同一健康会话 STEP 只导入一次；两轮按组确认且就绪分支先算；续租／查询／取消通道可用；改局部方向只失效相关结果；Viewer 与同版报告使用一致证据；重启后旧句柄显式失效。已有源码专项证据见会话文档第 10 节，不把 doctor 的 available 当作这些行为已在当前安装环境全部验收。
+
+### 6.3 本轮 Worker 安装验证
+
+Windows 开发验证目录为 D:/workspace/occt-worker/out/install/session-2.3.0-verification-20261028。该目录的 bin/dfm-geometry.exe、运行库及 share/dfm-geometry/schemas 一起交付；不能只复制 EXE。已从其它工作目录、仅包含 Windows/System32 和 Windows 的 PATH 运行公共会话契约 9 项及 Hermes 解析几何联调 5 项，均通过。具体命令及完整构建脚本见 Worker 会话文档第 8.10 节。
+
+此目录没有覆盖用户配置或 Hermes 随包 EXE。开发接入应将 geometry.executable 明确指向匹配构建，再用同一 profile 的 doctor 核对实际版本；正式发布需固定可追溯源码和完整运行库，不能把当前含未提交修改的 Desktop build 当作发布包。
 
 ## 7. 常见问题
 

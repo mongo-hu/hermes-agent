@@ -28,9 +28,22 @@ from unittest.mock import patch
 
 import pytest
 
-import hermes_cli.web_server as web_server_mod
-
 SLOW_SECONDS = 3  # represents the Defender worst-case (scaled down for CI speed)
+
+
+@pytest.fixture
+def web_server_mod():
+    # Import after the hermetic-home fixture, including on Windows.
+    import hermes_cli.web_server as module
+
+    return module
+
+
+@pytest.fixture(autouse=True)
+def _isolate_dfm_startup(web_server_mod):
+    # Boot timing tests must not spawn a real geometry process or synchronize packages.
+    with patch.object(web_server_mod, "_start_dfm_ontology_sync"):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +69,7 @@ def _make_slow_drain(seconds: float):
 # Test 1 — _lifespan fire-and-forget does not block the event loop
 # ---------------------------------------------------------------------------
 
-def test_lifespan_warmup_is_nonblocking():
+def test_lifespan_warmup_is_nonblocking(web_server_mod):
     """
     _warm_gateway_module runs in an executor (fire-and-forget).
     Even if it sleeps for SLOW_SECONDS, TestClient startup must complete
@@ -84,7 +97,7 @@ def test_lifespan_warmup_is_nonblocking():
 # Test 2 — get_status run_in_executor keeps event loop free for other requests
 # ---------------------------------------------------------------------------
 
-def test_lifespan_starts_dfm_ontology_sync():
+def test_lifespan_starts_dfm_ontology_sync(web_server_mod):
     """Starting Hermes schedules DFM ontology synchronization immediately."""
     from fastapi.testclient import TestClient
 
@@ -94,7 +107,20 @@ def test_lifespan_starts_dfm_ontology_sync():
             assert started.wait(timeout=1)
 
 
-def test_get_status_does_not_block_event_loop():
+def test_lifespan_dfm_version_probe_is_nonblocking(web_server_mod):
+    from fastapi.testclient import TestClient
+
+    with patch.object(
+        web_server_mod, "_start_dfm_ontology_sync", _make_slow_warm(SLOW_SECONDS)
+    ):
+        t0 = time.perf_counter()
+        with TestClient(web_server_mod.app, raise_server_exceptions=False):
+            startup_ms = (time.perf_counter() - t0) * 1000
+
+    assert startup_ms < SLOW_SECONDS * 1000 / 2
+
+
+def test_get_status_does_not_block_event_loop(web_server_mod):
     """
     /api/status calls _resolve_restart_drain_timeout via run_in_executor.
     While that slow call is running in a thread, a concurrent fast request
@@ -159,7 +185,7 @@ def test_get_status_does_not_block_event_loop():
 # Test 3 — no orphan accumulation: concurrent probes all receive 200
 # ---------------------------------------------------------------------------
 
-def test_concurrent_status_probes_all_respond():
+def test_concurrent_status_probes_all_respond(web_server_mod):
     """
     Three concurrent /api/status requests must all receive HTTP 200.
     If the event loop were blocked, later requests would pile up and

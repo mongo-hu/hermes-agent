@@ -1,4 +1,7 @@
 export interface GeometryReference {
+  entity_id?: string
+  input_sha256?: string
+  topology_snapshot_id?: string
   index: number
   kind: 'edge' | 'face' | 'solid' | 'vertex'
 }
@@ -18,6 +21,39 @@ export interface RenderTriangleReference {
 export interface TopologyFace {
   geometry_ref: GeometryReference
   triangle_refs: { primitive_id: string; triangle_id: number }[]
+}
+
+export interface TopologyEdge {
+  geometry_ref: GeometryReference
+  adjacent_face_indices: number[]
+}
+
+/** Boundary location is deliberately coarse: render adjacent faces, never edge IDs as face IDs. */
+export function resolveReviewDisplayRefs(
+  refs: GeometryReference[],
+  faces: TopologyFace[],
+  edges: TopologyEdge[]
+): GeometryReference[] {
+  const edgeByIndex = new Map(edges.map(edge => [edge.geometry_ref.index, edge]))
+  const faceByIndex = new Map(faces.map(face => [face.geometry_ref.index, face.geometry_ref]))
+  const result = refs.flatMap(ref => {
+    if (ref.kind === 'face') {
+      const face = faceByIndex.get(ref.index)
+      return face && face.input_sha256 === ref.input_sha256 && face.topology_snapshot_id === ref.topology_snapshot_id
+        ? [face]
+        : []
+    }
+    if (ref.kind !== 'edge') return []
+    const edge = edgeByIndex.get(ref.index)
+    if (
+      !edge ||
+      edge.geometry_ref.input_sha256 !== ref.input_sha256 ||
+      edge.geometry_ref.topology_snapshot_id !== ref.topology_snapshot_id
+    )
+      return []
+    return edge.adjacent_face_indices.flatMap(index => (faceByIndex.get(index) ? [faceByIndex.get(index)!] : []))
+  })
+  return Array.from(new Map(result.map(ref => [JSON.stringify(ref), ref])).values())
 }
 
 export interface MergedFaceGroup {

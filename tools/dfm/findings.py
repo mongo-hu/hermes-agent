@@ -28,6 +28,13 @@ def materialize_evaluated_findings(
     evaluations_payload = _read_object(
         project_dir, evaluations_artifact, "evaluations_invalid"
     )
+    selected_path = evaluations_payload.get("measurement_artifact")
+    if selected_path:
+        measurements_artifact = next((item for item in artifacts
+            if item.relative_path == selected_path and item.kind in {"geometric_results", "measurements"}), None)
+        if measurements_artifact is None:
+            raise DFMError("measurements_invalid", "The evaluations reference an unavailable measurement artifact.")
+        measurements_payload = _read_object(project_dir, measurements_artifact, "measurements_invalid")
     evidence_payload = (
         _read_object(project_dir, by_kind["evidence_records"], "evidence_invalid")
         if "evidence_records" in by_kind
@@ -110,6 +117,8 @@ def materialize_evaluated_findings(
             }
             results.append(
                 GeometricFindingRecord(
+                    plan_fragment_refs=sorted({str(item["provenance"]["plan_fragment_ref"]) for item in linked
+                        if isinstance(item.get("provenance"), dict) and item["provenance"].get("plan_fragment_ref")}),
                     geometric_ids=sorted(
                         {
                             str(item["geometric_id"])

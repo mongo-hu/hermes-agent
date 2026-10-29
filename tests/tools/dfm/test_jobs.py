@@ -15,6 +15,9 @@ from tools.dfm.contracts import (
     ArtifactRecord,
     Capability,
     CapabilityStatus,
+    EffectiveRule,
+    GeometricResultRecord,
+    GeometricRuleBinding,
     GeometricRequest,
     PlanFragmentRecord,
     PlanRecord,
@@ -678,3 +681,169 @@ def test_executor_submit_failure_does_not_leave_queued_run(job_env):
 
     assert persisted.status is RunStatus.FAILED
     assert persisted.error["code"] == "runtime_submit_failed"
+
+
+def _wait_stage(manager, project_id, run_id, stage):
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        run = manager.status(project_id, run_id)
+        if run.stage == stage:
+            return run
+        time.sleep(0.01)
+    pytest.fail(f"run did not reach {stage}: {manager.status(project_id, run_id)}")
+
+
+def _waiting_fragment_setup(job_env):
+    workspace, project_id, registry, _, managers = job_env
+    analyzer = FragmentAnalyzer()
+    registry.register(analyzer)
+    manager = JobManager(workspace, registry, DFMConfig(max_concurrent_runs=1))
+    managers.append(manager)
+    ready = PlanFragmentRecord("ready", "s1", "d1", "caps", "a" * 64, [], [],
+                               [GeometricRequest("wall", ["G_THICKNESS"], {})])
+    pending = replace(ready, fragment_id="pending", dependency_fingerprint="b" * 64,
+                      status="waiting_input", items=[GeometricRequest("boss", ["G_DRAFT"], {"forming_scope_id": "SIDE"})],
+                      blocking_reasons=[{"code": "missing_context"}])
+    plan = PlanRecord("p1", "step", ["fragment"], "ready", "now", plan_fragments=[ready, pending])
+    return manager, project_id, analyzer, plan
+
+
+def test_waiting_run_commits_completed_fragments_and_releases_execution_slot(job_env):
+    manager, project_id, analyzer, plan = _waiting_fragment_setup(job_env)
+    run = manager.start(project_id, "fragment", plan=plan)
+    assert analyzer.first_started.wait(2)
+    analyzer.release_first.set()
+    parked = _wait_stage(manager, project_id, run.run_id, "waiting_input")
+    assert parked.status is RunStatus.RUNNING
+    assert parked.completed_fragment_refs == ["ready"]
+    assert len(parked.artifacts) == 1
+    assert parked.artifacts[0].kind == "diagnostic"
+    deadline = time.monotonic() + 2
+    while run.run_id in manager._futures and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert run.run_id not in manager._futures
+    assert len(analyzer.executed) == 1
+    # A waiting Run must not occupy the only geometry execution slot.
+    other = manager.start(project_id, "test")
+    assert other.status is RunStatus.QUEUED
+    job_env[3].release.set()
+    _wait_status(manager, project_id, other.run_id, RunStatus.SUCCEEDED)
+    assert manager.status(project_id, run.run_id).stage == "waiting_input"
+
+
+def test_append_resumes_waiting_run_without_repeating_completed_fragments(job_env):
+    manager, project_id, analyzer, plan = _waiting_fragment_setup(job_env)
+    run = manager.start(project_id, "fragment", plan=plan)
+    assert analyzer.first_started.wait(2)
+    analyzer.release_first.set()
+    _wait_stage(manager, project_id, run.run_id, "waiting_input")
+    revised = replace(plan.plan_fragments[1], fragment_id="unblocked", status="ready",
+                      supersedes="pending", dependency_fingerprint="c" * 64,
+                      blocking_reasons=[], items=[GeometricRequest("boss", ["G_DRAFT"], {"forming_scope_id": "SIDE", "draw_direction": [1, 0, 0]})])
+    appended = replace(plan, plan_id="p2", parent_plan_id=plan.plan_id,
+                       plan_fragments=[*plan.plan_fragments, revised])
+    manager.append_plan(project_id, run.run_id, appended)
+    finished = _wait_status(manager, project_id, run.run_id, RunStatus.SUCCEEDED, timeout=3)
+    assert analyzer.executed == [["ready"], ["unblocked"]]
+    assert set(finished.completed_fragment_refs) == {"ready", "unblocked"}
+    assert len(finished.artifacts) == 2
+
+
+def test_waiting_run_can_be_cancelled_without_an_executor(job_env):
+    manager, project_id, analyzer, plan = _waiting_fragment_setup(job_env)
+    run = manager.start(project_id, "fragment", plan=plan)
+    assert analyzer.first_started.wait(2)
+    analyzer.release_first.set()
+    _wait_stage(manager, project_id, run.run_id, "waiting_input")
+    manager.cancel(project_id, run.run_id)
+    cancelled = _wait_status(manager, project_id, run.run_id, RunStatus.CANCELLED)
+    assert cancelled.completed_fragment_refs == ["ready"]
+    assert analyzer.executed == [["ready"]]
+
+
+def test_rule_input_wait_is_not_sealed_and_can_be_resolved_without_new_geometry(job_env):
+    manager, project_id, analyzer, plan = _waiting_fragment_setup(job_env)
+    plan = replace(plan, plan_fragments=plan.plan_fragments[:1], pending_inputs=[{
+        "clarification_id": "material", "question": "material?", "status": "open"}])
+    run = manager.start(project_id, "fragment", plan=plan)
+    assert analyzer.first_started.wait(2)
+    analyzer.release_first.set()
+    parked = _wait_stage(manager, project_id, run.run_id, "waiting_input")
+    assert parked.status is RunStatus.RUNNING
+    manager.append_plan(project_id, run.run_id, replace(plan, plan_id="resolved", parent_plan_id=plan.plan_id, pending_inputs=[]))
+    _wait_status(manager, project_id, run.run_id, RunStatus.SUCCEEDED, timeout=3)
+    assert analyzer.executed == [["ready"]]
+
+
+def test_append_during_wait_notification_is_not_lost_before_executor_returns(job_env):
+    manager, project_id, analyzer, plan = _waiting_fragment_setup(job_env)
+    replacement = replace(plan.plan_fragments[1], fragment_id="unblocked", status="ready", supersedes="pending",
+                          dependency_fingerprint="c" * 64, blocking_reasons=[])
+    appended = replace(plan, plan_id="p2", parent_plan_id=plan.plan_id,
+                       plan_fragments=[*plan.plan_fragments, replacement])
+    invoked = Event()
+
+    def on_update(updated):
+        if updated.stage == "waiting_input" and not invoked.is_set():
+            invoked.set()
+            # This listener runs inside _execute, before its Future completes.
+            assert updated.run_id in manager._futures
+            manager.append_plan(project_id, updated.run_id, appended)
+
+    run = manager.start(project_id, "fragment", plan=plan, on_update=on_update)
+    assert analyzer.first_started.wait(2)
+    analyzer.release_first.set()
+    _wait_status(manager, project_id, run.run_id, RunStatus.SUCCEEDED, timeout=3)
+    assert invoked.is_set()
+    assert analyzer.executed == [["ready"], ["unblocked"]]
+
+
+def test_waiting_replacement_refreshes_findings_and_viewer_without_more_geometry(job_env):
+    manager, project_id, analyzer, plan = _waiting_fragment_setup(job_env)
+    binding = GeometricRuleBinding(binding_id="wall_check", geometric_id="G_THICKNESS", rule_id="wall_rule",
+        operator=">=", aggregation="identity", feature_refs=["wall"], check_id="C_WALL_THK_RANGE")
+    ready = replace(plan.plan_fragments[0], rule_binding_refs=[binding.binding_id])
+    plan = replace(plan, rule_bindings=[binding], rules={binding.rule_id: EffectiveRule(3.0, "mm", "fixture")},
+                   plan_fragments=[ready, plan.plan_fragments[1]])
+    native_run = analyzer.run
+
+    def objective(context, cancellation):
+        artifacts = native_run(context, cancellation)
+        row = GeometricResultRecord(result_id="wall_result", snapshot_id="s1", feature_id="wall",
+            geometric_id="G_THICKNESS", context={}, status="ok", value=1.0, unit="mm",
+            evidence={"geometry_refs": [{"kind": "face", "index": 7}], "field_refs": []},
+            quality={"fixture": True}, reason=None, provenance={"plan_fragment_ref": "ready"}, input_sha256="a" * 64)
+        payloads = {
+            "geometric_results": {"input_sha256": "a" * 64, "results": [row.to_dict()]},
+            "render_scene": {"schema_version": 2, "primitives": []},
+            "topology_map": {"schema_version": 2, "faces": []},
+        }
+        for kind, payload in payloads.items():
+            path = context.project_dir / "runs" / context.run_id / "artifacts" / (kind + ".json")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            artifacts.append(ArtifactRecord(kind, kind, path.relative_to(context.project_dir).as_posix(), "application/json", "now"))
+        return artifacts
+
+    analyzer.run = objective
+    run = manager.start(project_id, "fragment", plan=plan)
+    assert analyzer.first_started.wait(2)
+    analyzer.release_first.set()
+    first = _wait_stage(manager, project_id, run.run_id, "waiting_input")
+    project_dir = manager.workspace.project_dir(project_id)
+    viewer = next(item for item in first.artifacts if item.kind == "dfm_viewer")
+    prior = json.loads((project_dir / viewer.relative_path).read_text(encoding="utf-8"))
+    assert len(prior["issues"]) == 1
+    revision = replace(ready, fragment_id="wall_recheck", supersedes="ready", status="pending_review",
+                       dependency_fingerprint="d" * 64, blocking_reasons=[{"code": "review_required"}])
+    manager.append_plan(project_id, run.run_id, replace(plan, plan_id="p2", parent_plan_id=plan.plan_id,
+                        plan_fragments=[*plan.plan_fragments, revision]))
+    parked = _wait_stage(manager, project_id, run.run_id, "waiting_review")
+    updated = json.loads((project_dir / viewer.relative_path).read_text(encoding="utf-8"))
+    assert updated["issues"] == []
+    assert updated["status"] == "partial"
+    assert parked.completed_fragment_refs == ["ready"]
+    assert analyzer.executed == [["ready"]]
+    finding = ManifestStore(project_dir).load().findings[0]
+    assert finding.status == "stale"
+    assert finding.stale_reason == "plan_replaced"

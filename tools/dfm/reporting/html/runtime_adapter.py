@@ -15,6 +15,7 @@ from ...contracts import (
     validate_result_manifest_mesh_binding,
 )
 from ...errors import DFMError
+from ...runtime.result_documents import SMALL_RESULT_KINDS, read_result_document
 
 
 _PROCESS_LABELS = {
@@ -29,7 +30,8 @@ def _utc_now() -> str:
 def _read_object(project_dir: Path, artifact: ArtifactRecord) -> dict[str, Any]:
     path = _artifact_path(project_dir, artifact)
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = (read_result_document(path, artifact.kind, sha256=artifact.sha256, size_bytes=artifact.size_bytes)
+                   if artifact.kind in SMALL_RESULT_KINDS else json.loads(path.read_text(encoding="utf-8")))
     except (OSError, ValueError) as exc:
         raise DFMError(
             "report_input_invalid",

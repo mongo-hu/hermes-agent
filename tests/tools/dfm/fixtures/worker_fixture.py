@@ -28,8 +28,24 @@ def serve_v2():
     snapshots = {}
     jobs = {}
 
+    def semantic_result(result):
+        if "features" in result and result.get("snapshot_id") in snapshots:
+            state = snapshots[result["snapshot_id"]]
+            result = {**result, **{key: deepcopy(state[key]) for key in (
+                "features", "annotations", "relationships", "forming_scopes", "coverage")}}
+            result["diagnostics"] = {"model_import_count": 1, "fixture": True, **result.get("diagnostics", {})}
+        return result
+
     def response(request_id, result):
+        result = semantic_result(result)
         emit_raw({"jsonrpc": "2.0", "id": request_id, "result": result})
+
+    def upsert_coverage(state, rows):
+        def key(row):
+            return row["feature_kind"], json.dumps(row.get("context", {}), sort_keys=True)
+        indexed = {key(row): row for row in state["coverage"]}
+        indexed.update({key(row): row for row in rows})
+        state["coverage"] = list(indexed.values())
 
     def next_snapshot(base_snapshot_id=None):
         nonlocal snapshot_sequence
@@ -38,13 +54,14 @@ def serve_v2():
         snapshots[snapshot_id] = deepcopy(
             snapshots.get(
                 base_snapshot_id,
-                {"features": [], "forming_scopes": [], "coverage": []},
+                {"features": [], "annotations": [], "relationships": [], "forming_scopes": [], "coverage": []},
             )
         )
         return snapshot_id
 
     def submit(method, result):
         nonlocal job_sequence
+        result = semantic_result(result)
         job_sequence += 1
         job_id = f"job_fixture_{job_sequence:04d}"
         jobs[job_id] = {
@@ -169,10 +186,12 @@ def serve_v2():
         name: "available"
         for name in (
             "snapshots.open",
+            "snapshots.get",
             "snapshots.renew",
             "snapshots.close",
             "features.discover",
             "features.revise",
+            "annotations.revise",
             "forming_scopes.analyze",
             "forming_scopes.revise",
             "snapshots.merge",
@@ -190,7 +209,8 @@ def serve_v2():
             "direction_modes": (
                 ["main", "local"] if "DRAFT" in geometric_id else ["none"]
             ),
-            "requires_complete_inventory": False,
+            "requires_complete_inventory": [],
+            "requires_relationships": [],
             "context_schema": (
                 {
                     "type": "object",
@@ -222,7 +242,7 @@ def serve_v2():
                 request_id,
                 {
                     "contract_version": contract,
-                    "schema_bundle_version": "2.0.0",
+                    "schema_bundle_version": "2.3.0",
                     "engine_version": "contract-fixture-1",
                     "dependency_fingerprint": dependency_fingerprint,
                     "backend": "analysis_situs+occt",
@@ -233,6 +253,7 @@ def serve_v2():
                     "analysis_situs_version": "fixture",
                     "analysis_situs_commit": "fixture",
                     "feature_kinds": ["main_wall", "rib", "hollow_boss"],
+                    "annotation_kinds": [],
                     "coverage_statuses": ["complete", "partial", "failed"],
                     "geometrics": geometrics,
                 },
@@ -275,6 +296,9 @@ def serve_v2():
                     },
                 },
             )
+        elif method == "snapshots.get":
+            response(request_id, {"contract_version": contract, "snapshot_id": params["snapshot_id"],
+                                  "base_snapshot_id": None, "features": snapshots[params["snapshot_id"]]["features"]})
         elif method == "snapshots.renew":
             response(
                 request_id,
@@ -307,10 +331,11 @@ def serve_v2():
                 item["feature_id"] == "MAIN_WALL_0001" for item in state["features"]
             ):
                 state["features"].append(feature(input_sha256, topology_snapshot_id))
-            state["coverage"].extend(
+            upsert_coverage(state, [
                 {
                     "feature_kind": kind,
                     "forming_scope_id": context.get("forming_scope_id"),
+                    "context": context,
                     "status": "complete",
                     "covered_geometry_ref": geometry_ref(
                         input_sha256, topology_snapshot_id
@@ -322,7 +347,14 @@ def serve_v2():
                     },
                 }
                 for kind in requested
-            )
+            ])
+            if context.get("forming_scope_id"):
+                state["relationships"] = [row for row in state["relationships"] if row["to_ref"] != context["forming_scope_id"]]
+                state["relationships"].extend({
+                    "relation_id": "rel_" + row["feature_id"] + "_" + context["forming_scope_id"],
+                    "type": "contained_in_forming_scope", "from_ref": row["feature_id"],
+                    "to_ref": context["forming_scope_id"], "geometry_refs": row["geometry_refs"],
+                } for row in state["features"])
             response(
                 request_id,
                 submit(
@@ -332,6 +364,9 @@ def serve_v2():
                         "base_snapshot_id": base_snapshot_id,
                         "snapshot_id": snapshot_id,
                         "features": state["features"],
+                        "annotations": state["annotations"],
+                        "relationships": state["relationships"],
+                        "forming_scopes": state["forming_scopes"],
                         "coverage": state["coverage"],
                         "diagnostics": {"fixture": True},
                     },
@@ -363,6 +398,21 @@ def serve_v2():
                     "diagnostics": {"fixture": True},
                 },
             )
+        elif method == "annotations.revise":
+            # Protocol-only authoring fixture; real validation lives in native tests.
+            base_snapshot_id = params["snapshot_id"]
+            snapshot_id = next_snapshot(base_snapshot_id)
+            state = snapshots[snapshot_id]
+            rows = {row["annotation_id"]: row for row in state["annotations"]}
+            for identity in params.get("retire_annotation_ids", []):
+                rows[identity] = {**rows[identity], "status": "stale", "source": "user"}
+            for patch in params["annotations"]:
+                identity = patch["annotation_id"]
+                rows[identity] = {"properties": {}, **rows.get(identity, {}), **patch,
+                                  "status": "active", "source": "user"}
+            state["annotations"] = list(rows.values())
+            response(request_id, {"contract_version": contract, "base_snapshot_id": base_snapshot_id,
+                                 "snapshot_id": snapshot_id, "features": state["features"]})
         elif method == "forming_scopes.analyze":
             base_snapshot_id = params["snapshot_id"]
             snapshot_id = next_snapshot(base_snapshot_id)
@@ -370,6 +420,7 @@ def serve_v2():
             ref = geometry_ref(state["input_sha256"], state["topology_snapshot_id"])
             main_scope = {
                 "forming_scope_id": params["forming_scope_id"],
+                "kind": "main_forming" if params["mode"] == "main" else "local_forming",
                 "mode": params["mode"],
                 "draw_direction": [float(value) for value in params["draw_direction"]],
                 "coordinate_system": params["coordinate_system"],
@@ -380,6 +431,7 @@ def serve_v2():
             }
             local_scope = {
                 "forming_scope_id": "SIDE_01",
+                "kind": "undercut",
                 "mode": "local",
                 "draw_direction": None,
                 "coordinate_system": "model",
@@ -389,16 +441,18 @@ def serve_v2():
                 "diagnostics": {"fixture": True, "algorithm_certified": False},
             }
             state["forming_scopes"] = [main_scope, local_scope]
-            state["coverage"].extend(
+            upsert_coverage(state, [
                 {
+                    "feature_kind": "forming_scope",
                     "forming_scope_id": item["forming_scope_id"],
+                    "context": {"forming_scope_id": item["forming_scope_id"]},
                     "status": "complete",
                     "covered_geometry_ref": ref,
                     "unresolved_geometry_ref": None,
                     "diagnostics": {"fixture": True},
                 }
                 for item in state["forming_scopes"]
-            )
+            ])
             response(
                 request_id,
                 submit(
@@ -454,6 +508,8 @@ def serve_v2():
                 branch = snapshots[branch_id]
                 for key, identity in (
                     ("features", "feature_id"),
+                    ("annotations", "annotation_id"),
+                    ("relationships", "relation_id"),
                     ("forming_scopes", "forming_scope_id"),
                 ):
                     merged = {item[identity]: item for item in state[key]}

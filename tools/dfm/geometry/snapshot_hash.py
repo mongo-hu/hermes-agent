@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import struct
 from typing import Any
@@ -10,6 +11,32 @@ from typing import Any
 
 _RENDER_MESH_DOMAIN = b"dfm.render-mesh-snapshot/v2\0"
 _MAX_UINT64 = (1 << 64) - 1
+
+
+def topology_content_sha256(faces: list[dict], edges: list[dict] | None = None) -> str:
+    """Canonical topology identity, including published edge-to-face adjacency."""
+    payload = [
+        {
+            key: face.get("geometry_ref", {}).get(key)
+            for key in ("entity_id", "kind", "index")
+        }
+        for face in faces
+    ]
+    payload.extend(
+        {
+            **{
+                key: edge.get("geometry_ref", {}).get(key)
+                for key in ("entity_id", "kind", "index")
+            },
+            "adjacent_face_indices": edge["adjacent_face_indices"],
+        }
+        for edge in (edges or [])
+    )
+    return hashlib.sha256(
+        json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def render_mesh_content_sha256(primitives: list[dict[str, Any]]) -> str:

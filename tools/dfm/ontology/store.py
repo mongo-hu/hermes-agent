@@ -769,7 +769,7 @@ class LocalOntologyStore:
                 "feature_kind": feature_kind,
                 "scope_modes": list(capability["scope_modes"]),
                 "direction_modes": list(capability["direction_modes"]),
-                "requires_complete_inventory": bool(
+                "requires_complete_inventory": list(
                     capability["requires_complete_inventory"]
                 ),
                 "context_schema": dict(capability["context_schema"]),
@@ -1983,7 +1983,7 @@ class LocalOntologyStore:
                 "feature_kinds": published_feature_kinds,
                 "scope_modes": list(capability_binding["scope_modes"]),
                 "direction_modes": list(capability_binding["direction_modes"]),
-                "requires_complete_inventory": bool(
+                "requires_complete_inventory": list(
                     capability_binding["requires_complete_inventory"]
                 ),
                 "context_schema": dict(capability_binding["context_schema"]),

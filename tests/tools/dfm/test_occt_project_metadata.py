@@ -107,7 +107,7 @@ def test_step_import_is_strict_first_with_audited_fixshape_fallback():
     geometry_context = (
         NATIVE / "src" / "geometry" / "geometry_context.cpp"
     ).read_text(encoding="utf-8")
-    engine = (NATIVE / "src" / "engine.cpp").read_text(encoding="utf-8")
+    session = (NATIVE / "src" / "application" / "session_service.cpp").read_text(encoding="utf-8")
     assert "reader.SetShapeProcessFlags(ShapeProcess::OperationsFlags{});" in reader
     assert "model.strict_validation = validation_summary(model);" in reader
     assert "return normalize_step_shape(std::move(model), parameters);" in reader
@@ -120,7 +120,7 @@ def test_step_import_is_strict_first_with_audited_fixshape_fallback():
     assert '"post_shape_process_validation", model.post_shape_process_validation' in preflight
     assert "if (model_.aag.IsNull())" in geometry_context
     assert "build_aag(model_);" in geometry_context
-    assert "make_preflight(live_model->model" in engine
+    assert "make_preflight(" in session
     assert "build_aag" not in reader
 
 
@@ -131,13 +131,22 @@ def test_cli_routes_occt_default_messages_away_from_jsonl_stdout():
     assert 'new Message_PrinterOStream("cerr", Standard_False)' in cli
 
 
-def test_engine_translates_native_failures_to_json_rpc_errors():
-    engine = (NATIVE / "src" / "engine.cpp").read_text(encoding="utf-8")
-    assert "catch (const Standard_Failure& exception)" in engine
-    assert 'fail("step_read_failed"' in engine
-    assert "catch (const std::exception& exception)" in engine
-    assert '"worker_internal_error", exception.what()' in engine
-    assert "error_response(id, -32000, \"Server error\"" in engine
+@pytest.mark.skipif(not os.environ.get("DFM_GEOMETRY_E2E_EXECUTABLE"), reason="native Worker executable is not configured")
+def test_engine_translates_native_failures_to_json_rpc_errors(tmp_path):
+    from tools.dfm.errors import DFMError
+    from tools.dfm.runtime.process import GeometrySession
+
+    session = GeometrySession(os.environ["DFM_GEOMETRY_E2E_EXECUTABLE"], request_timeout_seconds=30)
+    try:
+        pid = session.pid
+        with pytest.raises(DFMError) as failure:
+            session.call("snapshots.open", {"input_path": str(tmp_path / "missing.step"),
+                "input_sha256": "a" * 64, "artifact_dir": str(tmp_path / "geometry"), "lease_seconds": 900})
+        assert failure.value.code == "geometry_input_invalid"
+        assert session.call("capabilities.get", {})["contract_version"] == "dfm.geometry/v2"
+        assert session.alive and session.pid == pid
+    finally:
+        session.close()
 
 
 def test_licenses_and_upstream_provenance_are_pinned():

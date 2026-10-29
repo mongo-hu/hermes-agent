@@ -17,7 +17,8 @@ from ..contracts import (
     GeometryRef,
 )
 from ..errors import DFMError
-from ..geometry.snapshot_hash import render_mesh_content_sha256
+from ..runtime.result_documents import SMALL_RESULT_KINDS, read_result_document
+from ..geometry.snapshot_hash import render_mesh_content_sha256, topology_content_sha256
 from .planner import (
     PreparedScene,
     ProjectedScene,
@@ -561,20 +562,14 @@ class FieldEvidenceEngine:
                     "evidence_artifact_invalid",
                     "The render mesh snapshot content is not canonicalizable.",
                 ) from exc
-            topology_payload = [
-                {
-                    "entity_id": face.get("geometry_ref", {}).get("entity_id"),
-                    "kind": face.get("geometry_ref", {}).get("kind"),
-                    "index": face.get("geometry_ref", {}).get("index"),
-                }
-                for face in linked_payloads["topology_map"].get("faces", [])
-            ]
+            topology = linked_payloads["topology_map"]
+            topology_hash = topology_content_sha256(topology.get("faces", []), topology.get("edges", []))
             if (
                 scene_snapshot.get("render_mesh_sha256") != mesh_content_sha256
                 or scene_snapshot.get("triangle_count")
                 != sum(len(item.get("triangles", [])) for item in primitives)
                 or topology_snapshot.get("topology_content_sha256")
-                != _stable_content_sha256(topology_payload)
+                != topology_hash
             ):
                 raise DFMError(
                     "evidence_snapshot_mismatch",
@@ -1552,9 +1547,9 @@ def _read_json(
     if cache is not None and artifact.artifact_id in cache:
         return cache[artifact.artifact_id]
     try:
-        payload = json.loads(
-            (project_dir / artifact.relative_path).read_text(encoding="utf-8")
-        )
+        path = project_dir / artifact.relative_path
+        payload = (read_result_document(path, artifact.kind, sha256=artifact.sha256, size_bytes=artifact.size_bytes)
+                   if artifact.kind in SMALL_RESULT_KINDS else json.loads(path.read_text(encoding="utf-8")))
     except (OSError, ValueError) as exc:
         raise DFMError(
             "evidence_artifact_invalid",

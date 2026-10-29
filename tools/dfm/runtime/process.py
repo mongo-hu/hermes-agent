@@ -8,7 +8,7 @@ is not represented here and cannot leak into ordinary geometry requests.
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import ctypes
 import hashlib
 import json
@@ -21,22 +21,24 @@ import signal
 import subprocess
 import threading
 import time
-from typing import Any, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 
-from ..analyzers.base import CancellationToken
+if TYPE_CHECKING:
+    from ..analyzers.base import CancellationToken
 from ..contracts import WorkerEvent
 from ..errors import DFMError
 from .events import parse_worker_event
 
 
 SESSION_CONTRACT = "dfm.geometry/v2"
-SESSION_SCHEMA_BUNDLE_VERSION = "2.0.0"
+SESSION_SCHEMA_BUNDLE_VERSION = "2.3.0"
 TERMINAL_JOB_STATES = frozenset({"completed", "failed", "cancelled"})
 _RECOVERABLE_SNAPSHOT_METHODS = frozenset({
     "features.discover",
     "features.revise",
+    "annotations.revise",
     "forming_scopes.analyze",
     "forming_scopes.revise",
     "snapshots.merge",
@@ -64,7 +66,7 @@ def _snapshot_state_sha256(payload: Mapping[str, Any]) -> str:
     """Fingerprint the semantic state recreated by a snapshot mutation."""
 
     state: dict[str, list[Any]] = {}
-    for key in ("features", "forming_scopes", "coverage"):
+    for key in ("features", "annotations", "forming_scopes", "relationships", "coverage"):
         if key not in payload:
             continue
         values = payload.get(key)
@@ -229,10 +231,12 @@ class GeometrySession:
         methods = capability.get("methods")
         required_methods = {
             "snapshots.open",
+            "snapshots.get",
             "snapshots.renew",
             "snapshots.close",
             "features.discover",
             "features.revise",
+            "annotations.revise",
             "forming_scopes.analyze",
             "forming_scopes.revise",
             "snapshots.merge",
@@ -752,6 +756,13 @@ class GeometrySessionPool:
         )
 
     def _record_recovery_step(
+        self, project_id: str, owned: ProjectGeometrySession, method: str, params: Mapping[str, Any],
+        input_sha256: str, result: Mapping[str, Any],
+    ) -> None:
+        with self._lock:
+            self._record_recovery_step_locked(project_id, owned, method, params, input_sha256, result)
+
+    def _record_recovery_step_locked(
         self,
         project_id: str,
         owned: ProjectGeometrySession,
@@ -784,7 +795,6 @@ class GeometrySessionPool:
             "result_snapshot_id": logical_result_id,
             "result_state_sha256": _snapshot_state_sha256(result),
         })
-        state.current_snapshot_id = logical_result_id
         owned.snapshot_aliases[logical_result_id] = result_snapshot_id
         owned.input_by_snapshot_id[result_snapshot_id] = input_sha256
         self._write_recovery(state)
@@ -821,7 +831,8 @@ class GeometrySessionPool:
     ) -> dict[str, Any]:
         revisions = params.get("revisions")
         scopes = params.get("scopes")
-        records = revisions if isinstance(revisions, list) else scopes
+        annotations = params.get("annotations")
+        records = next((rows for rows in (revisions, scopes, annotations) if isinstance(rows, list)), None)
         if not isinstance(records, list):
             return params
         artifacts = opened.get("artifacts")
@@ -831,8 +842,8 @@ class GeometrySessionPool:
         try:
             topology = json.loads(topology_path.read_text(encoding="utf-8"))
             by_index = {
-                int(item["geometry_ref"]["index"]): dict(item["geometry_ref"])
-                for item in topology.get("faces", [])
+                (item["geometry_ref"]["kind"], int(item["geometry_ref"]["index"])): dict(item["geometry_ref"])
+                for item in [*topology.get("faces", []), *topology.get("edges", [])]
                 if isinstance(item, dict) and isinstance(item.get("geometry_ref"), dict)
             }
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
@@ -840,6 +851,8 @@ class GeometrySessionPool:
                 "geometry_recovery_invalid",
                 "The reopened model topology cannot validate persisted revisions.",
             ) from exc
+        nested = [part for record in records for part in (record.get("parts") or {}).values()]
+        records = [*records, *({"geometry_refs": refs} for refs in nested)]
         for record in records:
             refs = record.get("geometry_refs")
             if not isinstance(refs, list):
@@ -851,11 +864,16 @@ class GeometrySessionPool:
                         "geometry_recovery_review_required",
                         "A persisted geometry revision contains an invalid reference.",
                     )
-                new_ref = by_index.get(int(old_ref.get("index", 0)))
+                try:
+                    new_ref = by_index.get((old_ref.get("kind"), int(old_ref.get("index", 0))))
+                except (TypeError, ValueError):
+                    new_ref = None
                 if (
                     new_ref is None
-                    or new_ref.get("kind") != "face"
+                    or new_ref.get("kind") not in {"face", "edge"}
                     or new_ref.get("input_sha256") != input_sha256
+                    or old_ref.get("input_sha256") != input_sha256
+                    or old_ref.get("topology_snapshot_id") != new_ref.get("topology_snapshot_id")
                     or (
                         old_ref.get("entity_id")
                         and old_ref.get("entity_id") != new_ref.get("entity_id")
@@ -863,11 +881,11 @@ class GeometrySessionPool:
                 ):
                     raise DFMError(
                         "geometry_recovery_review_required",
-                        "A persisted face revision cannot be verified on the reopened model.",
+                        "A persisted topology revision cannot be verified on the reopened model.",
                         {"geometry_ref": dict(old_ref)},
                     )
                 validated.append(new_ref)
-            record["geometry_refs"] = validated
+            record["geometry_refs"][:] = validated
         return params
 
     def _recover_model(
@@ -901,6 +919,7 @@ class GeometrySessionPool:
         owned.snapshot_lease_seconds[live_opened_id] = state.lease_seconds
         owned.snapshot_last_renewed[live_opened_id] = time.monotonic()
         owned.input_by_snapshot_id[live_opened_id] = state.input_sha256
+        current_document = dict(opened)
         for step in state.steps:
             method = str(step.get("method") or "")
             if method not in _RECOVERABLE_SNAPSHOT_METHODS:
@@ -941,6 +960,8 @@ class GeometrySessionPool:
                     },
                 )
             aliases[logical_result_id] = live_result_id
+            if logical_result_id == state.current_snapshot_id:
+                current_document = dict(response)
             owned.snapshot_ids.add(live_result_id)
             owned.snapshot_lease_seconds[live_result_id] = state.lease_seconds
             owned.snapshot_last_renewed[live_result_id] = time.monotonic()
@@ -954,6 +975,7 @@ class GeometrySessionPool:
         owned.snapshot_aliases.update(aliases)
         recovered = {
             **dict(opened),
+            **current_document,
             "snapshot_id": current_live,
             "recovered_from_snapshot_id": state.current_snapshot_id,
         }
@@ -1157,6 +1179,8 @@ class GeometrySessionPool:
         input_sha256: str,
         opened: Mapping[str, Any],
         derived: Mapping[str, Any],
+        *,
+        adopt: bool = True,
     ) -> dict[str, Any]:
         """Advance one project's current immutable snapshot after a v2 mutation."""
 
@@ -1188,6 +1212,7 @@ class GeometrySessionPool:
                 snapshot_id = str(result["snapshot_id"])
             current = {
                 **dict(opened),
+                **result,
                 "snapshot_id": snapshot_id,
                 "base_snapshot_id": result.get("base_snapshot_id"),
             }
@@ -1200,9 +1225,35 @@ class GeometrySessionPool:
                 owned.snapshot_lease_seconds[snapshot_id] = lease_seconds
                 owned.snapshot_last_renewed[snapshot_id] = time.monotonic()
             owned.input_by_snapshot_id[snapshot_id] = input_sha256
-            owned.snapshots_by_input_sha256[input_sha256] = current
+            if adopt:
+                recovery = self._recovery.get(project_id, {}).get(input_sha256)
+                if recovery is not None:
+                    updated_recovery = replace(recovery, current_snapshot_id=self._logical_snapshot_id(owned, snapshot_id))
+                    self._write_recovery(updated_recovery)
+                    self._recovery[project_id][input_sha256] = updated_recovery
+                owned.snapshots_by_input_sha256[input_sha256] = current
             owned.last_used = time.monotonic()
             return result
+
+    def select_snapshot(self, project_id: str, input_sha256: str, snapshot_id: str) -> dict[str, Any]:
+        """Select an already committed semantic head, never merge an orphan branch."""
+        owned = self.acquire(project_id)
+        with self._lock:
+            opened = owned.snapshots_by_input_sha256.get(input_sha256)
+            if opened is None:
+                raise DFMError("geometry_snapshot_missing", "Open the model before selecting its committed snapshot.")
+            live_id = self.resolve_snapshot_id(project_id, snapshot_id)
+            result = self.call(project_id, "snapshots.get", {"snapshot_id": live_id})
+            if str(result.get("snapshot_id")) != live_id:
+                raise DFMError("geometry_snapshot_conflict", "Snapshot query returned a different geometry state.")
+            current = {**opened, **result}
+            recovery = self._recovery.get(project_id, {}).get(input_sha256)
+            if recovery is not None:
+                updated_recovery = replace(recovery, current_snapshot_id=snapshot_id)
+                self._write_recovery(updated_recovery)
+                self._recovery[project_id][input_sha256] = updated_recovery
+            owned.snapshots_by_input_sha256[input_sha256] = current
+            return dict(current)
 
     def open_model(
         self,
@@ -1233,7 +1284,7 @@ class GeometrySessionPool:
                 owned.last_used = time.monotonic()
                 return dict(existing)
             except DFMError as exc:
-                if exc.code not in {"snapshot_not_found", "geometry_session_lost"}:
+                if exc.code not in {"snapshot_not_found", "snapshot_expired", "geometry_session_lost"}:
                     raise
                 owned.snapshots_by_input_sha256.pop(input_sha256, None)
         recovery = self._load_recovery(

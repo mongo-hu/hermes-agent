@@ -751,7 +751,8 @@ def test_occt_plan_stops_when_no_supported_rule_is_applicable(service, monkeypat
                 "support_status": "supported",
                 "scope_modes": ["feature"],
                 "direction_modes": ["none"],
-                "requires_complete_inventory": False,
+                "requires_complete_inventory": [],
+                "requires_relationships": [],
                 "context_schema": {},
             }
         ],
@@ -839,6 +840,7 @@ def test_geometric_binding_keeps_one_local_scope_waiting_while_another_is_ready(
             None,
             "candidate",
             [geometry_ref],
+            kind="undercut",
         ),
         FormingScopeRecord(
             "SIDE_02",
@@ -849,6 +851,7 @@ def test_geometric_binding_keeps_one_local_scope_waiting_while_another_is_ready(
             "user_confirmed",
             "confirmed",
             [geometry_ref],
+            kind="undercut",
         ),
     ]
     review_groups = [
@@ -893,7 +896,8 @@ def test_geometric_binding_keeps_one_local_scope_waiting_while_another_is_ready(
                 "support_status": "supported",
                 "scope_modes": ["feature"],
                 "direction_modes": ["local"],
-                "requires_complete_inventory": False,
+                "requires_complete_inventory": [],
+                "requires_relationships": [],
                 "context_schema": {
                     "required": [
                         "forming_scope_id",
@@ -916,6 +920,7 @@ def test_geometric_binding_keeps_one_local_scope_waiting_while_another_is_ready(
         SimpleNamespace(
             worker_snapshot_id="snapshot_model_4",
             feature_refs=[feature.feature_id],
+            forming_scopes=[item.to_dict() for item in scopes],
         ),
     )
 

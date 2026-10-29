@@ -4,6 +4,7 @@ import pytest
 
 from tools.dfm.analyzers.base import AnalyzerContext
 from tools.dfm.errors import DFMError
+from tools.dfm.runtime.process import SESSION_SCHEMA_BUNDLE_VERSION
 from tools.dfm.processes.registry import build_default_process_registry
 from tools.dfm.processes.base import ProcessPlan
 from tools.dfm.processes.occt_injection import (
@@ -250,14 +251,15 @@ def test_injection_adapter_rejects_unknown_or_untrusted_parameters(context, para
 def _occt_geometric_scope():
     return {
         "contract_version": "dfm.geometry/v2",
-        "schema_bundle_version": "2.0.0",
+        "schema_bundle_version": SESSION_SCHEMA_BUNDLE_VERSION,
         "geometrics": [{
             "geometric_id": "G_WALL_THK_MIN",
             "support_status": "supported",
             "feature_kind": "main_wall",
             "scope_modes": ["feature"],
             "direction_modes": ["none"],
-            "requires_complete_inventory": False,
+            "requires_complete_inventory": [],
+            "requires_relationships": [],
             "context_schema": {},
         }],
     }
@@ -270,9 +272,20 @@ def test_occt_scope_projects_worker_binding_from_geometric_id_only():
         "feature_kind": "main_wall",
         "scope_modes": ["feature"],
         "direction_modes": ["none"],
-        "requires_complete_inventory": False,
+        "requires_complete_inventory": [],
+        "requires_relationships": [],
         "context_schema": {},
     }
+
+
+@pytest.mark.parametrize("requirements", [None, True, ["adjacent_main_wall"], [{"type": "adjacent_main_wall"}],
+    [{"type": "adjacent_main_wall", "target_feature_kind": "main_wall"}] * 2])
+def test_occt_reference_requirements_must_be_explicit_unique_descriptors(requirements):
+    scope = _occt_geometric_scope()
+    scope["geometrics"][0]["requires_relationships"] = requirements
+    with pytest.raises(DFMError) as error:
+        geometry_binding_index(scope)
+    assert error.value.code == "process_scope_invalid"
 
 
 def test_occt_plan_drops_operations_when_no_rule_binding_is_executable(context):
@@ -315,3 +328,12 @@ def test_occt_supported_binding_requires_available_runtime_operations():
         geometry_binding_index(scope)
 
     assert exc_info.value.code == "process_scope_invalid"
+
+
+def test_occt_inventory_dependencies_name_the_required_feature_kinds():
+    scope = _occt_geometric_scope()
+    scope["geometrics"][0]["requires_complete_inventory"] = ["rib", "drilled_hole"]
+    assert geometry_binding_index(scope)["G_WALL_THK_MIN"]["requires_complete_inventory"] == ["rib", "drilled_hole"]
+    scope["geometrics"][0]["requires_complete_inventory"] = True
+    with pytest.raises(DFMError):
+        geometry_binding_index(scope)

@@ -5,23 +5,29 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 from typing import Any, Callable, Mapping
+from uuid import uuid4
 
 from ..contracts import (
     ArtifactRecord,
     Capability,
     CapabilityStatus,
     GeometricResultRecord,
+    PlanFragmentRecord,
     WorkerEvent,
 )
 from ..errors import DFMError
+from ..geometry.artifact_metadata import inspect_geometry_file
 from ..runtime.process import (
     GeometrySession,
     SESSION_CONTRACT,
     geometry_capability_identity,
 )
+from ..runtime.geometric_batches import next_geometric_batch, request_key
+from ..runtime.result_documents import read_result_document, write_result_document
 from .base import AnalyzerContext, CancellationToken
 
 
@@ -62,6 +68,65 @@ _LEGACY_ROUTING_FIELDS = {
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _result_binding_key(record: GeometricResultRecord) -> tuple[str, str, str, str]:
+    return (
+        record.provenance["plan_fragment_ref"],
+        *request_key(record.feature_id, record.geometric_id, record.context),
+    )
+
+
+def _geometric_record(
+    raw: Mapping, fragment: PlanFragmentRecord, snapshot_id: str, input_sha256: str
+) -> GeometricResultRecord:
+    provenance = dict(raw.get("provenance") or {})
+    provenance["plan_fragment_ref"] = fragment.fragment_id
+    stable = hashlib.sha256(
+        json.dumps(
+            {
+                "snapshot_id": fragment.snapshot_id,
+                "plan_fragment_ref": fragment.fragment_id,
+                "feature_id": raw.get("feature_id"),
+                "geometric_id": raw.get("geometric_id"),
+                "context": raw.get("context") or {},
+                "dependency_fingerprint": provenance.get("dependency_fingerprint"),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:24]
+    record = GeometricResultRecord(
+        result_id=f"geometric_result_{stable}",
+        snapshot_id=snapshot_id,
+        feature_id=str(raw.get("feature_id") or ""),
+        geometric_id=str(raw.get("geometric_id") or ""),
+        status=str(raw.get("status") or "failed"),
+        value=raw.get("value"),
+        unit=raw.get("unit"),
+        context=dict(raw.get("context") or {}),
+        evidence=dict(raw.get("evidence") or {}),
+        quality=dict(raw["quality"])
+        if isinstance(raw.get("quality"), Mapping)
+        else None,
+        reason=str(raw["reason"]) if raw.get("reason") is not None else None,
+        provenance=provenance,
+        input_sha256=input_sha256,
+    )
+    record.validate()
+    return record
+
+
+def _write_result_json(path: Path, payload: dict) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False),
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _reject_legacy_routing(value: Any) -> None:
@@ -353,9 +418,16 @@ class OcctAnalyzer:
                     "A live Worker snapshot artifact is outside the owning project.",
                     {"kind": kind},
                 )
+            file_info = inspect_geometry_file(artifact_path, kind)
             shared_artifacts.append(
                 ArtifactRecord(
-                    artifact_id=f"artifact_{context.run_id}_{kind}",
+                    artifact_id=(
+                        f"scene_{raw_open_artifacts['render_mesh_snapshot_id']}"
+                        if kind == "render_scene"
+                        else f"topology_{raw_open_artifacts['topology_snapshot_id']}"
+                        if kind == "topology_map"
+                        else f"artifact_{context.run_id}_{kind}"
+                    ),
                     kind=kind,
                     relative_path=artifact_path.relative_to(
                         context.project_dir
@@ -363,19 +435,18 @@ class OcctAnalyzer:
                     media_type="application/json",
                     created_at=_utc_now(),
                     run_id=context.run_id,
-                    size_bytes=artifact_path.stat().st_size,
-                    sha256=hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
+                    size_bytes=file_info.size_bytes,
+                    sha256=file_info.sha256,
                 )
             )
         path = output_dir / "geometric_results.json"
         results: list[GeometricResultRecord] = []
         if path.is_file():
             try:
-                existing_payload = json.loads(path.read_text(encoding="utf-8"))
+                existing_payload = read_result_document(path, "geometric_results")
                 if (
                     not isinstance(existing_payload, Mapping)
-                    or
-                    existing_payload.get("contract_version") != SESSION_CONTRACT
+                    or existing_payload.get("contract_version") != SESSION_CONTRACT
                     or existing_payload.get("run_id") != context.run_id
                     or existing_payload.get("input_sha256") != input_record.sha256
                     or not isinstance(existing_payload.get("results"), list)
@@ -392,38 +463,20 @@ class OcctAnalyzer:
                     {"run_id": context.run_id},
                 ) from exc
         scalar_artifacts: dict[str, ArtifactRecord] = {}
-        seen_requests: set[tuple[str, str, str, str]] = set()
+        batch_artifacts: list[ArtifactRecord] = []
+        results_by_binding = {_result_binding_key(record): record for record in results}
+        processed = set(context.completed_plan_fragment_refs)
 
-        for fragment in runnable_fragments:
-            fragment.validate()
-            if fragment.fragment_id in context.completed_plan_fragment_refs:
-                continue
-            live_snapshot_id = live_snapshot_ids[fragment.fragment_id]
+        while batch := next_geometric_batch(
+            context.plan, processed, selected=context.selected_plan_fragment_refs
+        ):
+            for fragment in batch.fragments:
+                fragment.validate()
+            live_snapshot_id = live_snapshot_ids[batch.fragments[0].fragment_id]
             cancellation.raise_if_cancelled()
-            items = []
-            for item in fragment.items:
-                context_json = json.dumps(
-                    item.context, sort_keys=True, separators=(",", ":")
-                )
-                geometric_ids = []
-                for geometric_id in item.geometric_ids:
-                    key = (
-                        fragment.snapshot_id,
-                        item.feature_id,
-                        geometric_id,
-                        context_json,
-                    )
-                    if key not in seen_requests:
-                        seen_requests.add(key)
-                        geometric_ids.append(geometric_id)
-                if geometric_ids:
-                    items.append({
-                        "feature_id": item.feature_id,
-                        "geometric_ids": geometric_ids,
-                        "context": dict(item.context),
-                    })
-            if not items:
-                continue
+            items = batch.items()
+            owners = batch.owners()
+            batch_results: list[GeometricResultRecord] = []
             submitted_keys = {
                 (
                     str(item["feature_id"]),
@@ -476,7 +529,7 @@ class OcctAnalyzer:
                 raise DFMError(
                     "geometry_snapshot_conflict",
                     "The Worker result does not belong to the fragment snapshot.",
-                    {"fragment_id": fragment.fragment_id},
+                    {"fragment_ids": sorted(batch.fragment_refs)},
                 )
             unknown_completed = set(completed) - {
                 "contract_version",
@@ -545,46 +598,12 @@ class OcctAnalyzer:
                         },
                     )
                 returned_keys.add(result_key)
-                provenance = dict(raw.get("provenance") or {})
-                provenance["plan_fragment_ref"] = fragment.fragment_id
-                stable = hashlib.sha256(
-                    json.dumps(
-                        {
-                            "snapshot_id": fragment.snapshot_id,
-                            "feature_id": raw.get("feature_id"),
-                            "geometric_id": raw.get("geometric_id"),
-                            "context": raw.get("context") or {},
-                            "dependency_fingerprint": provenance.get(
-                                "dependency_fingerprint"
-                            ),
-                        },
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ).encode("utf-8")
-                ).hexdigest()[:24]
-                record = GeometricResultRecord(
-                    result_id=f"geometric_result_{stable}",
-                    snapshot_id=live_snapshot_id,
-                    feature_id=str(raw.get("feature_id") or ""),
-                    geometric_id=str(raw.get("geometric_id") or ""),
-                    status=str(raw.get("status") or "failed"),
-                    value=raw.get("value"),
-                    unit=raw.get("unit"),
-                    context=dict(raw.get("context") or {}),
-                    evidence=dict(raw.get("evidence") or {}),
-                    quality=(
-                        dict(raw["quality"])
-                        if isinstance(raw.get("quality"), Mapping)
-                        else None
-                    ),
-                    reason=(
-                        str(raw["reason"]) if raw.get("reason") is not None else None
-                    ),
-                    provenance=provenance,
-                    input_sha256=input_record.sha256,
-                )
-                record.validate()
-                results.append(record)
+                for owner in owners[result_key]:
+                    record = _geometric_record(
+                        raw, owner, live_snapshot_id, input_record.sha256
+                    )
+                    results_by_binding[_result_binding_key(record)] = record
+                    batch_results.append(record)
             if returned_keys != submitted_keys:
                 raise DFMError(
                     "geometry_protocol_invalid",
@@ -650,47 +669,60 @@ class OcctAnalyzer:
                     sha256=artifact_sha256,
                 )
 
-            incremental_path = output_dir / "geometric_results.incremental.json"
-            incremental_path.write_text(
-                json.dumps(
-                    {
-                        "schema_version": 1,
-                        "contract_version": SESSION_CONTRACT,
-                        "run_id": context.run_id,
-                        "input_sha256": input_record.sha256,
-                        "results": [item.to_dict() for item in results],
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
+            cancellation.raise_if_cancelled()
+            incremental_path = (
+                output_dir / f"geometric_batch_{uuid4().hex[:16]}.incremental.json"
             )
-            if context.event_sink is not None:
-                context.event_sink(
-                    WorkerEvent(
-                        schema_version=1,
-                        type="artifact",
-                        kind="geometric_results",
-                        path=incremental_path.name,
-                        external_job_id=external_job_id,
-                    )
-                )
-
-        path.write_text(
-            json.dumps(
+            _write_result_json(
+                incremental_path,
                 {
                     "schema_version": 1,
                     "contract_version": SESSION_CONTRACT,
                     "run_id": context.run_id,
                     "input_sha256": input_record.sha256,
-                    "results": [item.to_dict() for item in results],
+                    "fragment_refs": sorted(batch.fragment_refs),
+                    "results": [item.to_dict() for item in batch_results],
                 },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
+            )
+            content = incremental_path.read_bytes()
+            batch_artifacts.append(
+                ArtifactRecord(
+                    artifact_id="artifact_" + incremental_path.stem,
+                    kind="geometric_batch",
+                    relative_path=incremental_path.relative_to(
+                        context.project_dir
+                    ).as_posix(),
+                    media_type="application/json",
+                    created_at=_utc_now(),
+                    run_id=context.run_id,
+                    size_bytes=len(content),
+                    sha256=hashlib.sha256(content).hexdigest(),
+                )
+            )
+            results = list(results_by_binding.values())
+            processed.update(batch.fragment_refs)
+            if context.event_sink is not None:
+                context.event_sink(
+                    WorkerEvent(
+                        schema_version=1,
+                        type="artifact",
+                        kind="geometric_batch",
+                        path=incremental_path.name,
+                        external_job_id=external_job_id,
+                    )
+                )
+
+        result_size, result_sha256 = write_result_document(
+            path,
+            "geometric_results",
+            {
+                "schema_version": 1,
+                "contract_version": SESSION_CONTRACT,
+                "run_id": context.run_id,
+                "input_sha256": input_record.sha256,
+                "results": [item.to_dict() for item in results],
+            },
         )
-        result_bytes = path.read_bytes()
         return [
             *shared_artifacts,
             ArtifactRecord(
@@ -700,8 +732,9 @@ class OcctAnalyzer:
                 media_type="application/json",
                 created_at=_utc_now(),
                 run_id=context.run_id,
-                size_bytes=len(result_bytes),
-                sha256=hashlib.sha256(result_bytes).hexdigest(),
+                size_bytes=result_size,
+                sha256=result_sha256,
             ),
             *scalar_artifacts.values(),
+            *batch_artifacts,
         ]

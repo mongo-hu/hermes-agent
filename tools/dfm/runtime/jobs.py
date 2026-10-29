@@ -19,6 +19,7 @@ from ..analyzers.registry import AnalyzerRegistry
 from ..config import DFMConfig
 from ..contracts import (
     ArtifactRecord,
+    GeometricFindingRecord,
     PlanRecord,
     ProjectManifest,
     RunRecord,
@@ -35,6 +36,7 @@ from ..contracts import (
     ensure_run_transition,
 )
 from ..errors import DFMError
+from ..geometry.artifact_metadata import SHARED_GEOMETRY_KINDS, inspect_geometry_file
 from ..evidence import FieldEvidenceEngine
 from ..evaluation import EvaluationEngine
 from ..findings import materialize_evaluated_findings
@@ -44,6 +46,8 @@ from ..reporting.html import materialize_html_runtime
 from ..reporting.result_assembler import materialize_result_reports
 from ..viewer import materialize_viewer_manifest
 from .objective_cache import ObjectiveOperationCache
+from .geometric_batches import next_geometric_batch
+from .result_documents import read_result_document
 
 
 logger = logging.getLogger(__name__)
@@ -77,6 +81,7 @@ class JobManager:
         self._tokens: dict[str, CancellationToken] = {}
         self._listeners: dict[str, Callable[[RunRecord], None]] = {}
         self._lock = RLock()
+        self._closed = False
         self.runtime_id = f"runtime_{uuid4().hex[:16]}"
         self.evaluation_engine = EvaluationEngine()
         self.field_evidence_engine = FieldEvidenceEngine()
@@ -86,6 +91,14 @@ class JobManager:
 
     def _store(self, project_id: str) -> ManifestStore:
         return ManifestStore(self.workspace.project_dir(project_id))
+
+    def _checkpoint_project(self, project_id: str) -> None:
+        try:
+            self._store(project_id).checkpoint()
+        except OSError:
+            # The business update is already committed in the recovery log.
+            # Retrying housekeeping must not rerun valid geometry or fail HTML.
+            logger.warning("DFM stage checkpoint deferred: project_id=%s", project_id, exc_info=True)
 
     @staticmethod
     def _find_run(manifest: ProjectManifest, run_id: str) -> RunRecord:
@@ -164,7 +177,7 @@ class JobManager:
             if on_update is not None:
                 self._listeners[run_id] = on_update
             try:
-                future = self._executor.submit(self._execute, project_id, run_id, analyzer, token)
+                self._submit_execution(project_id, run_id, analyzer, token)
             except Exception:
                 self._tokens.pop(run_id, None)
                 self._mark_failure(
@@ -176,9 +189,49 @@ class JobManager:
                 )
                 self._listeners.pop(run_id, None)
                 return self.status(project_id, run_id)
-            self._futures[run_id] = future
-            future.add_done_callback(lambda _future, rid=run_id: self._forget_future(rid))
             return run
+
+    def _submit_execution(self, project_id, run_id, analyzer, token) -> None:
+        """Called under the scheduling lock; exactly one executor owns a Run."""
+        if self._closed:
+            raise RuntimeError("DFM runtime is shutting down")
+        future = self._executor.submit(self._execute, project_id, run_id, analyzer, token)
+        self._futures[run_id] = future
+        future.add_done_callback(
+            lambda done: self._execution_finished(project_id, run_id, analyzer, token, done)
+        )
+
+    @staticmethod
+    def _has_ready_work(run: RunRecord) -> bool:
+        if not run.plan_snapshot:
+            return False
+        plan = PlanRecord.from_dict(run.plan_snapshot)
+        ready = any(item.fragment_id not in run.completed_fragment_refs
+                    for item in plan.active_plan_fragments(statuses={"ready"}))
+        resolved_wait = run.stage in {"waiting_review", "waiting_input"} and not (
+            plan.pending_inputs or plan.active_plan_fragments(statuses={"pending_review", "waiting_input", "needs_attention"})
+        )
+        return ready or resolved_wait
+
+    def _execution_finished(self, project_id, run_id, analyzer, token, future) -> None:
+        with self._lock:
+            if self._futures.get(run_id) is not future:
+                return
+            self._futures.pop(run_id, None)
+            run = self.status(project_id, run_id)
+            if token.is_cancelled and run.status is RunStatus.RUNNING:
+                self._mark_failure(project_id, run_id, RunStatus.CANCELLED, "run_cancelled", "The DFM run was cancelled.")
+                run = self.status(project_id, run_id)
+            if not self._closed and run.status is RunStatus.RUNNING and self._has_ready_work(run):
+                try:
+                    self._submit_execution(project_id, run_id, analyzer, token)
+                    return
+                except Exception:
+                    self._mark_failure(project_id, run_id, RunStatus.FAILED,
+                                       "runtime_submit_failed", "The DFM runtime could not resume the run.")
+            if run.status is not RunStatus.RUNNING or self._closed:
+                self._tokens.pop(run_id, None)
+                self._listeners.pop(run_id, None)
 
     def _forget_future(self, run_id: str) -> None:
         with self._lock:
@@ -260,7 +313,7 @@ class JobManager:
                     "Appending a plan must preserve every existing fragment byte-for-byte.",
                     {"run_id": run_id, "fragment_ids": altered},
                 )
-            if set(current_fragments) == set(appended_fragments):
+            if set(current_fragments) == set(appended_fragments) and current.pending_inputs == plan.pending_inputs:
                 raise DFMError(
                     "plan_fragment_invalid",
                     "The replacement plan contains no new immutable fragment.",
@@ -278,6 +331,15 @@ class JobManager:
                     heartbeat_at=now,
                 ),
             )
+            future = self._futures.get(run_id)
+            if future is None or future.done():
+                token = self._tokens.setdefault(run_id, CancellationToken())
+                try:
+                    self._submit_execution(project_id, run_id, self.registry.get(run.analyzer_key), token)
+                except Exception:
+                    self._mark_failure(project_id, run_id, RunStatus.FAILED,
+                                       "runtime_submit_failed", "The DFM runtime could not resume the run.")
+                    return self.status(project_id, run_id)
         self._notify(run_id, appended)
         return appended
 
@@ -473,7 +535,7 @@ class JobManager:
     def _execute(self, project_id: str, run_id: str, analyzer, token: CancellationToken) -> None:
         try:
             current = self.status(project_id, run_id)
-            if current.status is not RunStatus.QUEUED:
+            if current.status not in {RunStatus.QUEUED, RunStatus.RUNNING}:
                 return
             self._replace_run(
                 project_id,
@@ -487,8 +549,9 @@ class JobManager:
                     progress_percent=max(run.progress_percent, 1),
                 ),
             )
-            completed_fragment_refs: set[str] = set()
-            checked_by_path: dict[str, ArtifactRecord] = {}
+            completed_fragment_refs = set(current.completed_fragment_refs)
+            checked_by_path = {item.relative_path: item for item in current.artifacts}
+            published_plan_id = None
             while True:
                 token.raise_if_cancelled()
                 manifest = self._store(project_id).load()
@@ -518,7 +581,7 @@ class JobManager:
                     else set()
                 )
                 pending_fragment_refs = ready_fragment_refs - completed_fragment_refs
-                if plan is not None and plan.plan_fragments and not pending_fragment_refs:
+                if plan is not None and (plan.plan_fragments or plan.pending_inputs) and not pending_fragment_refs:
                     with self._lock:
                         latest_run = self.status(project_id, run_id)
                         latest_plan = PlanRecord.from_dict(latest_run.plan_snapshot or {})
@@ -532,6 +595,26 @@ class JobManager:
                             continue
                         plan = latest_plan
                         manifest = self._store(project_id).load()
+                        waiting = latest_plan.active_plan_fragments(statuses={"pending_review", "waiting_input", "needs_attention"})
+                        if waiting or latest_plan.pending_inputs:
+                            if published_plan_id != latest_plan.plan_id:
+                                retired_findings = self._refresh_partial_outputs(
+                                    project_id, run_id, latest_plan, checked_by_path, manifest.features,
+                                    completed_refs=completed_fragment_refs,
+                                )
+                                published_plan_id = latest_plan.plan_id
+                                self._publish_batch(project_id, run_id, list(checked_by_path.values()),
+                                                    completed_fragment_refs, retired_findings)
+                            waiting_stage = "waiting_review" if any(
+                                item.status == "pending_review" for item in waiting
+                            ) else "waiting_input"
+                            parked = self._replace_run(
+                                project_id, run_id,
+                                lambda item: replace(item, stage=waiting_stage, updated_at=_utc_now(), heartbeat_at=_utc_now()),
+                            )
+                            self._checkpoint_project(project_id)
+                            self._notify(run_id, parked)
+                            return
                         self._replace_run(
                             project_id,
                             run_id,
@@ -544,6 +627,13 @@ class JobManager:
                         )
                     break
 
+                selected_fragment_refs = pending_fragment_refs
+                if plan is not None and plan.plan_fragments and analyzer.key == "occt_cpp":
+                    batch = next_geometric_batch(plan, completed_fragment_refs)
+                    if batch is None:
+                        raise DFMError("plan_fragment_invalid", "Ready fragments could not form a calculation batch.")
+                    selected_fragment_refs = set(batch.fragment_refs)
+                    context = replace(context, selected_plan_fragment_refs=batch.fragment_refs)
                 artifacts = (
                     self.objective_cache.restore(
                         context.project_dir,
@@ -558,12 +648,14 @@ class JobManager:
                 )
                 if artifacts is None:
                     artifacts = analyzer.run(context, token)
+                    token.raise_if_cancelled()
                 else:
                     self._advance_stage(
                         project_id, run_id, STAGE_OBJECTIVE_READY, 70
                     )
                 for item in artifacts:
-                    checked = self._validate_artifact(context.project_dir, item)
+                    checked = self._validate_artifact(context.project_dir, item,
+                        allow_cached_geometry=bool(plan is not None and plan.plan_fragments and analyzer.key == "occt_cpp"))
                     checked_by_path[checked.relative_path] = checked
                 if plan is None or not plan.plan_fragments:
                     if plan is not None and input_sha256:
@@ -577,9 +669,24 @@ class JobManager:
                             analyzer_version=analyzer.version,
                         )
                     break
-                completed_fragment_refs.update(pending_fragment_refs)
+                completed_fragment_refs.update(selected_fragment_refs)
+                # A review/edit can replace the plan while this batch is running.
+                # Publish against the current plan, never revive its retired inputs.
+                latest_manifest = self._store(project_id).load()
+                latest_run = self._find_run(latest_manifest, run_id)
+                plan = PlanRecord.from_dict(latest_run.plan_snapshot or {})
+                retired_findings = self._refresh_partial_outputs(
+                    project_id, run_id, plan, checked_by_path, latest_manifest.features,
+                    completed_refs=completed_fragment_refs,
+                )
+                published_plan_id = plan.plan_id
+                self._publish_batch(project_id, run_id, list(checked_by_path.values()), completed_fragment_refs, retired_findings)
 
             checked = list(checked_by_path.values())
+            # Batch signature hits are not final content proof. Re-hash every
+            # shared file before evidence/report sealing, including preflight.
+            checked = [self._validate_artifact(context.project_dir, item)
+                       if item.kind in SHARED_GEOMETRY_KINDS else item for item in checked]
             if plan is not None and any(
                 item.kind in {"measurements", "geometric_results"}
                 for item in checked
@@ -681,10 +788,51 @@ class JobManager:
                 "analyzer_failed",
                 "The DFM analyzer failed. Run diagnostics for details.",
             )
-        finally:
-            with self._lock:
-                self._tokens.pop(run_id, None)
-                self._listeners.pop(run_id, None)
+
+    def _refresh_partial_outputs(self, project_id, run_id, plan, by_path, features, *, completed_refs=None):
+        """Refresh conclusions even when a revised plan contains no runnable G."""
+        # Progress events may already have published an incremental evaluation
+        # while the analyzer returns only the completed batch. Keep its source
+        # artifact in the same reference set before reading that evaluation.
+        for artifact in self.status(project_id, run_id).artifacts:
+            by_path.setdefault(artifact.relative_path, artifact)
+        artifacts = list(by_path.values())
+        if not any(item.kind == "geometric_results" for item in artifacts):
+            return set()
+        project_dir = self.workspace.project_dir(project_id)
+        prior = {item.finding_id for item in materialize_evaluated_findings(project_dir, artifacts)}
+        preferred = sorted(artifacts, key=lambda item: item.relative_path.endswith(".incremental.json"))
+        evaluation = self._validate_artifact(project_dir, self.evaluation_engine.materialize(project_dir, run_id, plan, preferred))
+        by_path[evaluation.relative_path] = evaluation
+        viewer = materialize_viewer_manifest(project_dir, run_id, plan, list(by_path.values()), features=features,
+                                             completed_fragment_refs=completed_refs)
+        if viewer is not None:
+            viewer = self._validate_artifact(project_dir, viewer)
+            by_path[viewer.relative_path] = viewer
+        return prior
+
+    def _publish_batch(self, project_id, run_id, artifacts, completed_refs, retired_finding_ids=frozenset()) -> None:
+        """Commit partial results and findings before waiting or final reporting."""
+        findings = materialize_evaluated_findings(self.workspace.project_dir(project_id), artifacts)
+        finding_ids = {item.finding_id for item in findings}
+
+        def update(current):
+            selected_run = self._find_run(current, run_id)
+            if selected_run.status is RunStatus.CANCELLED:
+                raise DFMError("run_cancelled", "A cancelled Run cannot publish another batch.")
+            all_artifacts = {item.relative_path: item for item in current.artifacts}
+            all_artifacts.update({item.relative_path: item for item in artifacts})
+            runs = [replace(run, artifacts=artifacts, completed_fragment_refs=sorted(completed_refs),
+                            updated_at=_utc_now(), heartbeat_at=_utc_now())
+                    if run.run_id == run_id else run for run in current.runs]
+            return replace(current, runs=runs, artifacts=list(all_artifacts.values()),
+                           findings=[replace(item, status="stale", validity_status="stale", stale_reason="plan_replaced")
+                               if isinstance(item, GeometricFindingRecord) and item.finding_id in retired_finding_ids else item
+                               for item in current.findings if item.finding_id not in finding_ids] + findings,
+                           updated_at=_utc_now())
+
+        self._store(project_id).update(update)
+        self._notify(run_id, self.status(project_id, run_id))
 
     @staticmethod
     def _materialize_result_manifest(
@@ -700,11 +848,9 @@ class JobManager:
             item for item in artifacts if item.kind == "geometric_results"
         )
         try:
-            result_payload = json.loads(
-                (project_dir / result_artifact.relative_path).read_text(
-                    encoding="utf-8"
-                )
-            )
+            result_payload = read_result_document(project_dir / result_artifact.relative_path,
+                "geometric_results", sha256=result_artifact.sha256,
+                size_bytes=result_artifact.size_bytes, force=True)
         except (OSError, ValueError, TypeError) as exc:
             raise DFMError(
                 "geometric_result_invalid",
@@ -717,6 +863,9 @@ class JobManager:
             if artifact is None:
                 return {}
             try:
+                if kind in {"render_scene", "topology_map"}:
+                    checked = JobManager._validate_artifact(project_dir, artifact)
+                    return inspect_geometry_file(project_dir / checked.relative_path, kind).metadata
                 value = json.loads(
                     (project_dir / artifact.relative_path).read_text(encoding="utf-8")
                 )
@@ -808,6 +957,7 @@ class JobManager:
                 for value in item.review_group_refs
             }),
             "coverage_gaps": [dict(item) for item in plan.coverage_gaps],
+            "pending_inputs": [dict(item) for item in plan.pending_inputs],
             "mesh_refs": [
                 item.artifact_id
                 for item in artifacts
@@ -963,7 +1113,8 @@ class JobManager:
                 )
             if not found:
                 raise DFMError("run_not_found", "DFM run was not found.", {"run_id": run_id})
-            known_paths = {item.relative_path for item in current.artifacts}
+            combined_artifacts = {item.relative_path: item for item in current.artifacts}
+            combined_artifacts.update({item.relative_path: item for item in artifacts})
             findings = materialize_evaluated_findings(
                 self.workspace.project_dir(project_id), artifacts
             )
@@ -971,19 +1122,13 @@ class JobManager:
             return replace(
                 current,
                 runs=runs,
-                artifacts=[
-                    *current.artifacts,
-                    *[
-                        item
-                        for item in artifacts
-                        if item.relative_path not in known_paths
-                    ],
-                ],
+                artifacts=list(combined_artifacts.values()),
                 findings=[item for item in current.findings if item.finding_id not in finding_ids] + findings,
                 updated_at=now,
             )
 
         self._store(project_id).update(complete)
+        self._checkpoint_project(project_id)
         self._notify(run_id, self.status(project_id, run_id))
 
     def _record_event(self, project_id: str, run_id: str, event: WorkerEvent) -> None:
@@ -1010,7 +1155,10 @@ class JobManager:
             total_faces = run.total_faces
             elapsed_seconds = run.elapsed_seconds
             if event.type == "progress":
-                percent = max(percent, int(event.percent or 0))
+                event_percent = int(event.percent or 0)
+                if run.plan_snapshot and run.plan_snapshot.get("plan_fragments"):
+                    event_percent = min(70, event_percent)
+                percent = max(percent, event_percent)
                 stage = event.stage or stage
                 processed_faces = event.processed_faces
                 total_faces = event.total_faces
@@ -1136,7 +1284,7 @@ class JobManager:
         )
 
     @staticmethod
-    def _validate_artifact(project_dir: Path, artifact: ArtifactRecord) -> ArtifactRecord:
+    def _validate_artifact(project_dir: Path, artifact: ArtifactRecord, *, allow_cached_geometry: bool = False) -> ArtifactRecord:
         relative = Path(artifact.relative_path)
         resolved = (project_dir / relative).resolve()
         if relative.is_absolute() or not resolved.is_relative_to(project_dir.resolve()) or not resolved.is_file():
@@ -1145,12 +1293,19 @@ class JobManager:
                 "Analyzer returned an invalid artifact path.",
                 {"path": artifact.relative_path},
             )
-        size_bytes = resolved.stat().st_size
-        digest = hashlib.sha256()
-        with resolved.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-        sha256 = digest.hexdigest()
+        if artifact.kind in SHARED_GEOMETRY_KINDS:
+            try:
+                info = inspect_geometry_file(resolved, artifact.kind, force=not allow_cached_geometry)
+            except DFMError as exc:
+                raise DFMError("artifact_invalid", "A shared geometry artifact cannot be validated.", {"path": artifact.relative_path}) from exc
+            size_bytes, sha256 = info.size_bytes, info.sha256
+        else:
+            size_bytes = resolved.stat().st_size
+            digest = hashlib.sha256()
+            with resolved.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            sha256 = digest.hexdigest()
         if artifact.size_bytes not in {0, size_bytes} or (
             artifact.sha256 and artifact.sha256 != sha256
         ):
@@ -1214,6 +1369,11 @@ class JobManager:
             if token:
                 token.cancel()
             future = self._futures.get(run_id)
+            if run.status is RunStatus.RUNNING and (future is None or future.done()):
+                self._mark_failure(project_id, run_id, RunStatus.CANCELLED, "run_cancelled", "The DFM run was cancelled.")
+                self._tokens.pop(run_id, None)
+                self._listeners.pop(run_id, None)
+                return self.status(project_id, run_id)
             if run.status is RunStatus.QUEUED and future and future.cancel():
                 return self._replace_run(
                     project_id,
@@ -1305,6 +1465,7 @@ class JobManager:
             )
 
         updated = self._store(project_id).update(attach)
+        self._checkpoint_project(project_id)
         return self._find_run(updated, run_id)
 
     def reconcile_incomplete_runs(self) -> None:
@@ -1361,6 +1522,7 @@ class JobManager:
 
     def shutdown(self) -> None:
         with self._lock:
+            self._closed = True
             for token in self._tokens.values():
                 token.cancel()
         self._executor.shutdown(wait=False, cancel_futures=True)

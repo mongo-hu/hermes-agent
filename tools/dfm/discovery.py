@@ -138,6 +138,10 @@ class DiscoveryEngine:
         capabilities = dict(manifest.capabilities)
         discovery_state = dict(capabilities.get("geometry_discovery") or {})
         by_input = dict(discovery_state.get("inputs") or {})
+        discovery_context_sha256 = _content_hash({
+            item.name: item.value for item in manifest.facts
+            if item.status == "confirmed" and item.name in {"pull_dir", "model_units"}
+        })
         provider_capability = self.geometry_provider.capability(manifest.project_id)
         provider_capability_signature = _content_hash({
             "contract_version": provider_capability.get("contract_version"),
@@ -173,6 +177,7 @@ class DiscoveryEngine:
                     already_discovered
                     and cached_discovery.get("capability_signature")
                     == provider_capability_signature
+                    and cached_discovery.get("discovery_context_sha256") == discovery_context_sha256
                 ):
                     continue
                 resolved_facts = {
@@ -233,12 +238,16 @@ class DiscoveryEngine:
                     "provider": self.geometry_provider.key,
                     "provider_version": self.geometry_provider.version,
                     "capability_signature": provider_capability_signature,
+                    "discovery_context_sha256": discovery_context_sha256,
                     "topology_snapshot_id": result.topology_snapshot_id,
                     "render_mesh_snapshot_id": result.render_mesh_snapshot_id,
                     "geometry_snapshot_ref": result.geometry_snapshot_ref,
                     "worker_snapshot_id": result.worker_snapshot_id,
                     "artifact_refs": [item.artifact_id for item in result.artifacts],
                     "coverage": coverage,
+                    "annotations": result.annotations,
+                    "relationships": result.relationships,
+                    "forming_scopes": result.forming_scopes,
                 }
         discovery_state.update({
             "status": provider_capability.get("status"),
@@ -322,6 +331,12 @@ class DiscoveryEngine:
             for item in features
         }
         identity["coverage"] = list(geometry_metadata.get("coverage", []))
+        identity["annotations"] = list(geometry_metadata.get("annotations", []))
+        identity["relationships"] = list(geometry_metadata.get("relationships", []))
+        identity["forming_scopes"] = list(geometry_metadata.get("forming_scopes", []))
+        identity["feature_parts"] = {
+            item.feature_id: item.properties.get("parts", {}) for item in features
+        }
         content_sha256 = _content_hash(identity)
         existing = next(
             (
@@ -353,6 +368,9 @@ class DiscoveryEngine:
             artifact_refs=list(geometry_metadata.get("artifact_refs", [])),
             worker_snapshot_id=geometry_metadata.get("worker_snapshot_id", ""),
             coverage=list(geometry_metadata.get("coverage", [])),
+            annotations=list(geometry_metadata.get("annotations", [])),
+            relationships=list(geometry_metadata.get("relationships", [])),
+            forming_scopes=list(geometry_metadata.get("forming_scopes", [])),
         )
         return (
             replace(

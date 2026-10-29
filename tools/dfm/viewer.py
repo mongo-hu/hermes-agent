@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,9 @@ from .contracts import (
     validate_result_manifest_mesh_binding,
 )
 from .errors import DFMError
+from .geometry.artifact_metadata import inspect_geometry_file
 from .issue_types import classify_issue_type, summarize_issue_types
+from .runtime.result_documents import SMALL_RESULT_KINDS, read_result_document
 
 
 def _utc_now() -> str:
@@ -30,8 +33,14 @@ def _read(project_dir: Path, artifact: ArtifactRecord) -> dict[str, Any]:
             "A DFM viewer artifact is outside the project or missing.",
         )
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+        if artifact.kind in {"render_scene", "topology_map"}:
+            info = inspect_geometry_file(path, artifact.kind)
+            if (artifact.sha256 and artifact.sha256 != info.sha256) or artifact.size_bytes not in {0, info.size_bytes}:
+                raise ValueError("Geometry artifact descriptor does not match its file")
+            return info.metadata
+        payload = (read_result_document(path, artifact.kind, sha256=artifact.sha256, size_bytes=artifact.size_bytes)
+                   if artifact.kind in SMALL_RESULT_KINDS else json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError, DFMError) as exc:
         raise DFMError(
             "viewer_input_invalid",
             f"The {artifact.kind} artifact cannot be used by the DFM viewer.",
@@ -44,12 +53,21 @@ def _read(project_dir: Path, artifact: ArtifactRecord) -> dict[str, Any]:
     return payload
 
 
+def _asset_path(project_dir: Path, artifact: ArtifactRecord, viewer_dir: Path) -> str:
+    root = project_dir.resolve()
+    source = (root / artifact.relative_path).resolve()
+    if not source.is_relative_to(root) or not source.is_file():
+        raise DFMError("viewer_input_invalid", "A Viewer reference must resolve to a file in its owning project.")
+    return Path(os.path.relpath(source, viewer_dir.resolve())).as_posix()
+
+
 def materialize_viewer_manifest(
     project_dir: Path,
     run_id: str,
     plan: PlanRecord,
     artifacts: list[ArtifactRecord],
     features: list[FeatureRecord] | None = None,
+    completed_fragment_refs: set[str] | None = None,
 ) -> ArtifactRecord | None:
     """Link the shared render scene, findings and topology for Desktop."""
 
@@ -81,6 +99,15 @@ def materialize_viewer_manifest(
         }
     )
     evaluations_payload = _read(project_dir, by_kind["evaluations"])
+    selected_path = evaluations_payload.get("measurement_artifact")
+    if selected_path:
+        selected = next((item for item in artifacts if item.relative_path == selected_path
+                         and item.kind in {"geometric_results", "measurements"}), None)
+        if selected is None:
+            raise DFMError("viewer_input_invalid", "The evaluations reference an unavailable measurement artifact.")
+        objective_artifact = selected
+        geometric_run = selected.kind == "geometric_results"
+        measurements_payload = _read(project_dir, selected)
     scene_payload = _read(project_dir, by_kind["render_scene"])
     topology_payload = _read(project_dir, by_kind["topology_map"])
     result_manifest_payload = (
@@ -273,10 +300,19 @@ def materialize_viewer_manifest(
     output_dir = project_dir / "runs" / run_id / "artifacts"
     output_path = output_dir / "dfm_viewer.json"
     output_dir.mkdir(parents=True, exist_ok=True)
+    coverage_gaps = result_manifest_payload.get("coverage_gaps", plan.coverage_gaps)
+    pending_inputs = result_manifest_payload.get("pending_inputs", plan.pending_inputs)
+    incomplete_fragments = result_manifest_payload.get("incomplete_fragments", [
+        {"fragment_id": item.fragment_id, "status": item.status, "blocking_reasons": item.blocking_reasons}
+        for item in plan.active_plan_fragments() if item.status != "ready" or (
+            completed_fragment_refs is not None and item.fragment_id not in completed_fragment_refs)
+    ])
+    awaiting_dependencies = bool(pending_inputs or incomplete_fragments)
     payload = {
         "schema_version": 2,
         "contract_version": "hermes.dfm.viewer/v2",
-        "status": "completed",
+        "status": "partial" if awaiting_dependencies else "completed",
+        "project_id": project_dir.name,
         "run_id": run_id,
         "input_sha256": measurements_payload.get("input_sha256"),
         "process": plan.process,
@@ -285,40 +321,33 @@ def materialize_viewer_manifest(
         "verification_level": (
             "experimental" if "occt_cpp" in plan.analyzer_keys else "reference"
         ),
-        "scene_path": Path(by_kind["render_scene"].relative_path).name,
-        "topology_path": Path(by_kind["topology_map"].relative_path).name,
+        "scene_path": _asset_path(project_dir, by_kind["render_scene"], output_dir),
+        "topology_path": _asset_path(project_dir, by_kind["topology_map"], output_dir),
         "render_mesh_snapshot_id": mesh_snapshot_id,
         "topology_snapshot_id": topology_snapshot_id,
         "result_manifest_path": (
-            Path(by_kind["result_manifest"].relative_path).name
+            _asset_path(project_dir, by_kind["result_manifest"], output_dir)
             if "result_manifest" in by_kind
             else None
         ),
         "analysis_coverage": {
             "status": (
                 "partial"
-                if any(
-                    result_manifest_payload.get(key)
-                    for key in (
-                        "coverage_gaps",
-                        "incomplete_results",
-                        "incomplete_fragments",
-                    )
-                )
+                if any((coverage_gaps, pending_inputs, incomplete_fragments,
+                        result_manifest_payload.get("incomplete_results")))
                 else "complete"
             ),
-            "coverage_gaps": result_manifest_payload.get("coverage_gaps", []),
+            "coverage_gaps": coverage_gaps,
+            "pending_inputs": pending_inputs,
             "incomplete_results": result_manifest_payload.get(
                 "incomplete_results", []
             ),
-            "incomplete_fragments": result_manifest_payload.get(
-                "incomplete_fragments", []
-            ),
+            "incomplete_fragments": incomplete_fragments,
         },
         **(
-            {"geometric_results_path": Path(objective_artifact.relative_path).name}
+            {"geometric_results_path": _asset_path(project_dir, objective_artifact, output_dir)}
             if geometric_run
-            else {"measurements_path": Path(objective_artifact.relative_path).name}
+            else {"measurements_path": _asset_path(project_dir, objective_artifact, output_dir)}
         ),
         "issue_count": len(issues),
         "issue_type_counts": summarize_issue_types(issues),
@@ -357,14 +386,15 @@ def materialize_preview_manifest(
         "schema_version": 2,
         "contract_version": "hermes.dfm.viewer/v2",
         "status": "preview",
+        "project_id": project_dir.name,
         "run_id": run_id,
         "input_sha256": input_sha256,
         "process": "injection",
         "scope_id": "injection.geometry-core",
         "scope_version": "4.0.0",
         "verification_level": "experimental",
-        "scene_path": Path(by_kind["render_scene"].relative_path).name,
-        "topology_path": Path(by_kind["topology_map"].relative_path).name,
+        "scene_path": _asset_path(project_dir, by_kind["render_scene"], output_dir),
+        "topology_path": _asset_path(project_dir, by_kind["topology_map"], output_dir),
         "measurements_path": None,
         "issue_count": 0,
         "issue_type_counts": [],
@@ -456,14 +486,19 @@ def materialize_discovery_viewer_manifest(
         "schema_version": 2,
         "contract_version": "hermes.dfm.viewer/v2",
         "status": "discovery",
+        "project_id": manifest.project_id,
         "review_status": review_status,
         "project_revision": manifest.revision,
+        "review_groups": [item.to_dict() for item in manifest.review_groups if item.status != "stale"],
+        "forming_scopes": list(metadata.get("forming_scopes", [])),
+        "annotations": list(metadata.get("annotations", [])),
+        "relationships": list(metadata.get("relationships", [])),
         "input_sha256": input_sha256,
         "process": manifest.process,
         "scope_id": "discovery.feature-regions",
         "verification_level": "experimental",
-        "scene_path": Path(by_kind["render_scene"].relative_path).name,
-        "topology_path": Path(by_kind["topology_map"].relative_path).name,
+        "scene_path": _asset_path(project_dir, by_kind["render_scene"], output_dir),
+        "topology_path": _asset_path(project_dir, by_kind["topology_map"], output_dir),
         "measurements_path": None,
         "issue_count": 0,
         "issue_type_counts": [],

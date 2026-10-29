@@ -292,6 +292,9 @@ class DiscoverySnapshotRecord:
     artifact_refs: list[str] = field(default_factory=list)
     worker_snapshot_id: str = ""
     coverage: list[dict[str, Any]] = field(default_factory=list)
+    annotations: list[dict[str, Any]] = field(default_factory=list)
+    relationships: list[dict[str, Any]] = field(default_factory=list)
+    forming_scopes: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         values = asdict(self)
@@ -334,6 +337,7 @@ class PlanRecord:
     regions: list["RegionRecord"] = field(default_factory=list)
     plan_fragments: list["PlanFragmentRecord"] = field(default_factory=list)
     coverage_gaps: list[dict[str, Any]] = field(default_factory=list)
+    pending_inputs: list[dict[str, Any]] = field(default_factory=list)
 
     def active_plan_fragments(
         self, *, statuses: set[str] | None = None
@@ -377,6 +381,7 @@ class PlanRecord:
             "discovery_snapshot_refs": list(self.discovery_snapshot_refs),
             "plan_fragments": [item.to_dict() for item in self.plan_fragments],
             "coverage_gaps": [dict(item) for item in self.coverage_gaps],
+            "pending_inputs": [dict(item) for item in self.pending_inputs],
         }
         if not self.plan_fragments:
             values["operations"] = [
@@ -393,6 +398,11 @@ class PlanRecord:
                 "DFM plans must be either discovery or analysis plans.",
                 {"plan_id": self.plan_id, "phase": self.phase},
             )
+        if not isinstance(self.pending_inputs, list) or any(
+            not isinstance(item, dict) or not item.get("clarification_id")
+            for item in self.pending_inputs
+        ):
+            raise DFMError("plan_input_invalid", "Pending plan inputs require clarification identities.")
         if bool(self.ontology_snapshot_id) != bool(self.ontology_snapshot_sha256) or (
             self.ontology_snapshot_sha256
             and not re.fullmatch(r"[0-9a-f]{64}", self.ontology_snapshot_sha256)
@@ -1312,6 +1322,7 @@ class PlanFragmentRecord:
     supersedes: str | None = None
     review_group_refs: list[str] = field(default_factory=list)
     blocking_reasons: list[dict[str, Any]] = field(default_factory=list)
+    reference_dependencies: list[dict[str, Any]] = field(default_factory=list)
 
     def validate(self) -> None:
         if (
@@ -1351,6 +1362,13 @@ class PlanFragmentRecord:
                 )
         for item in self.items:
             item.validate()
+        for dependency in self.reference_dependencies:
+            if (not isinstance(dependency, dict)
+                or any(not isinstance(dependency.get(key), str) or not dependency[key] for key in (
+                    "feature_id", "geometric_id", "relation_id", "type", "target_feature_id", "target_feature_kind"))
+                or not isinstance(dependency.get("geometry_refs"), list) or not dependency["geometry_refs"]
+                or not isinstance(dependency.get("review_group_refs"), list)):
+                raise DFMError("plan_fragment_invalid", "A reference dependency is missing its geometric identity.")
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
@@ -1646,6 +1664,8 @@ class FormingScopeRecord:
     status: str
     geometry_refs: list[GeometryRef] = field(default_factory=list)
     diagnostics: dict[str, Any] = field(default_factory=dict)
+    kind: str = ""
+    supersedes_scope_ids: list[str] = field(default_factory=list)
 
     def validate(self) -> None:
         direction_required = self.mode == "main" or self.status == "confirmed"
@@ -1665,8 +1685,15 @@ class FormingScopeRecord:
             not self.forming_scope_id
             or not self.snapshot_id
             or self.mode not in {"main", "local"}
+            or self.kind not in {"main_forming", "undercut", "local_forming"}
+            or (self.mode == "main" and self.kind != "main_forming")
+            or (self.mode == "local" and self.kind == "main_forming")
             or self.coordinate_system != "model"
             or self.status not in {"candidate", "confirmed", "stale"}
+            or not isinstance(self.supersedes_scope_ids, list)
+            or any(not isinstance(value, str) or not value or value == self.forming_scope_id
+                   for value in self.supersedes_scope_ids)
+            or len(self.supersedes_scope_ids) != len(set(self.supersedes_scope_ids))
             or (direction_required and not direction_valid)
             or (direction_required and self.direction_source != "user_confirmed")
             or (
@@ -1733,6 +1760,7 @@ class ReviewGroupRecord:
             or self.kind
             not in {
                 "ordinary_structure",
+                "surface_attribute",
                 "product_forming",
                 "undercut_scope",
                 "local_structure",
@@ -2643,6 +2671,7 @@ class GeometricFindingRecord:
     validity_status: str = "current"
     stale_reason: str | None = None
     location_status: str = "preliminary"
+    plan_fragment_refs: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -2787,6 +2816,7 @@ class RunRecord:
     worker_stdout_path: str | None = None
     worker_stderr_path: str | None = None
     external_job_id: str | None = None
+    completed_fragment_refs: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -2813,6 +2843,7 @@ class RunRecord:
             "worker_stdout_path": self.worker_stdout_path,
             "worker_stderr_path": self.worker_stderr_path,
             "external_job_id": self.external_job_id,
+            "completed_fragment_refs": list(self.completed_fragment_refs),
         }
 
     @classmethod
@@ -2845,6 +2876,7 @@ class ProjectManifest:
     discovery_snapshots: list[DiscoverySnapshotRecord] = field(default_factory=list)
     forming_scopes: list[FormingScopeRecord] = field(default_factory=list)
     review_groups: list[ReviewGroupRecord] = field(default_factory=list)
+    geometry_edits: list[dict[str, Any]] = field(default_factory=list)
     plans: list[PlanRecord] = field(default_factory=list)
     runs: list[RunRecord] = field(default_factory=list)
     findings: list[FindingRecord | GeometricFindingRecord] = field(default_factory=list)
@@ -2879,6 +2911,7 @@ class ProjectManifest:
             ],
             "forming_scopes": [item.to_dict() for item in self.forming_scopes],
             "review_groups": [item.to_dict() for item in self.review_groups],
+            "geometry_edits": [dict(item) for item in self.geometry_edits],
             "plans": [item.to_dict() for item in self.plans],
             "runs": [run.to_dict() for run in self.runs],
             "findings": [item.to_dict() for item in self.findings],

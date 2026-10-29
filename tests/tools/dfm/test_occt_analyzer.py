@@ -26,13 +26,14 @@ from tools.dfm.runtime.process import (
     GeometrySessionPool,
     ProjectGeometrySession,
     SESSION_CONTRACT,
+    SESSION_SCHEMA_BUNDLE_VERSION,
     geometry_capability_identity,
 )
 
 
 CAPABILITIES = {
     "contract_version": SESSION_CONTRACT,
-    "schema_bundle_version": "2.0.0",
+    "schema_bundle_version": SESSION_SCHEMA_BUNDLE_VERSION,
     "engine_version": "occt-dfm-geometry-test",
     "dependency_fingerprint": "a" * 64,
     "backend": "occt-analysis-situs",
@@ -47,7 +48,8 @@ CAPABILITIES = {
             "feature_kind": "main_wall",
             "scope_modes": ["feature"],
             "direction_modes": ["none"],
-            "requires_complete_inventory": False,
+            "requires_complete_inventory": [],
+            "requires_relationships": [],
             "context_schema": {
                 "type": "object",
                 "additionalProperties": False,
@@ -200,6 +202,7 @@ def test_snapshot_update_merges_sibling_branches_instead_of_overwriting():
 
     pool = object.__new__(GeometrySessionPool)
     pool._lock = threading.RLock()
+    pool._recovery = {}
     owned = ProjectGeometrySession("dfm-1", FakeSession())
     owned.snapshots_by_input_sha256["a" * 64] = {"snapshot_id": "snapshot-left"}
     owned.snapshot_lease_seconds["snapshot-base"] = 900
@@ -527,7 +530,7 @@ def test_native_capability_schema_validates_real_executable():
     if schema_dir is None or not executable:
         pytest.skip("external DFMAnalysis_OCCT checkout is not available")
     schema = json.loads(
-        (schema_dir / "capabilities.schema.json").read_text(encoding="utf-8")
+        (schema_dir / "session-v2.schema.json").read_text(encoding="utf-8")
     )
     Draft202012Validator.check_schema(schema)
 

@@ -27,6 +27,7 @@ from ..contracts import (
     _expression_operand_aliases,
 )
 from ..errors import DFMError
+from ..runtime.result_documents import read_result_document, write_result_document
 
 
 EVALUATION_SCHEMA_VERSION = 2
@@ -96,10 +97,16 @@ class EvaluationEngine:
                 "A successful geometry run must provide measurements for evaluation.",
             )
         try:
-            payload = json.loads(
-                (project_dir / measurement_artifact.relative_path).read_text(
-                    encoding="utf-8"
+            path = project_dir / measurement_artifact.relative_path
+            payload = (
+                read_result_document(
+                    path,
+                    measurement_artifact.kind,
+                    sha256=measurement_artifact.sha256,
+                    size_bytes=measurement_artifact.size_bytes,
                 )
+                if measurement_artifact.kind == "geometric_results"
+                else json.loads(path.read_text(encoding="utf-8"))
             )
             if measurement_artifact.kind == "geometric_results":
                 measurements = [
@@ -120,24 +127,21 @@ class EvaluationEngine:
         output_dir = project_dir / "runs" / run_id / "artifacts"
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / "evaluations.json"
-        output_path.write_text(
-            json.dumps(
-                {
-                    "schema_version": EVALUATION_SCHEMA_VERSION,
-                    "engine_version": self.version,
-                    "run_id": run_id,
-                    "input_sha256": str(payload.get("input_sha256") or ""),
-                    "process": plan.process,
-                    "scope_id": plan.scope_id,
-                    "scope_version": plan.scope_version,
-                    "measurement_artifact": measurement_artifact.relative_path,
-                    "evaluations": [item.to_dict() for item in evaluations],
-                    "provenance": provenance,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
+        result_size, result_sha256 = write_result_document(
+            output_path,
+            "evaluations",
+            {
+                "schema_version": EVALUATION_SCHEMA_VERSION,
+                "engine_version": self.version,
+                "run_id": run_id,
+                "input_sha256": str(payload.get("input_sha256") or ""),
+                "process": plan.process,
+                "scope_id": plan.scope_id,
+                "scope_version": plan.scope_version,
+                "measurement_artifact": measurement_artifact.relative_path,
+                "evaluations": [item.to_dict() for item in evaluations],
+                "provenance": provenance,
+            },
         )
         return ArtifactRecord(
             f"artifact_{run_id}_evaluations",
@@ -145,6 +149,8 @@ class EvaluationEngine:
             output_path.relative_to(project_dir).as_posix(),
             "application/json",
             _utc_now(),
+            size_bytes=result_size,
+            sha256=result_sha256,
         )
 
     def evaluate(

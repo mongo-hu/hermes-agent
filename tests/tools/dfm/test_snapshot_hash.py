@@ -1,6 +1,65 @@
-import pytest
+import json
+from pathlib import Path
 
-from tools.dfm.geometry.snapshot_hash import render_mesh_content_sha256
+import pytest
+from jsonschema import Draft202012Validator, ValidationError
+
+from tools.dfm.geometry.snapshot_hash import (
+    render_mesh_content_sha256,
+    topology_content_sha256,
+)
+
+
+def test_topology_hash_covers_edge_identity_and_face_adjacency():
+    faces = [{"geometry_ref": {"entity_id": "face-1", "kind": "face", "index": 1}}]
+    edge = {
+        "geometry_ref": {"entity_id": "edge-1", "kind": "edge", "index": 1},
+        "adjacent_face_indices": [1],
+    }
+    digest = topology_content_sha256(faces, [edge])
+    assert digest != topology_content_sha256(faces)
+    assert digest != topology_content_sha256(
+        faces, [{**edge, "adjacent_face_indices": [2]}]
+    )
+    assert digest != topology_content_sha256(
+        faces,
+        [{**edge, "geometry_ref": {"entity_id": "edge-2", "kind": "edge", "index": 2}}],
+    )
+    assert digest == topology_content_sha256(faces, [dict(edge)])
+
+
+def test_topology_schema_distinguishes_face_and_edge_references():
+    schema = json.loads(
+        (
+            Path(__file__).resolve().parents[3]
+            / "tools/dfm/schemas/topology_map.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    edge = {
+        "geometry_ref": {
+            "kind": "edge",
+            "index": 1,
+            "entity_id": "edge-1",
+            "input_sha256": "a" * 64,
+            "topology_snapshot_id": "topology",
+        },
+        "adjacent_face_indices": [2],
+    }
+    edges = Draft202012Validator({
+        "$defs": schema["$defs"],
+        **schema["properties"]["edges"],
+    })
+    edges.validate([edge])
+    with pytest.raises(ValidationError):
+        edges.validate([
+            {**edge, "geometry_ref": {**edge["geometry_ref"], "kind": "face"}}
+        ])
+    faces = Draft202012Validator({
+        "$defs": schema["$defs"],
+        **schema["properties"]["faces"],
+    })
+    with pytest.raises(ValidationError):
+        faces.validate([{"geometry_ref": edge["geometry_ref"], "triangle_refs": []}])
 
 
 def test_render_mesh_hash_has_a_cross_language_contract_vector():
@@ -44,25 +103,21 @@ def test_render_mesh_hash_excludes_snapshot_identity_and_normalizes_negative_zer
 
 def test_render_mesh_hash_rejects_non_finite_coordinates():
     with pytest.raises(ValueError, match="finite numbers"):
-        render_mesh_content_sha256(
-            [
-                {
-                    "primitive_id": "face-1",
-                    "vertices": [[float("nan"), 0, 0], [1, 0, 0], [0, 1, 0]],
-                    "triangles": [[0, 1, 2]],
-                }
-            ]
-        )
+        render_mesh_content_sha256([
+            {
+                "primitive_id": "face-1",
+                "vertices": [[float("nan"), 0, 0], [1, 0, 0], [0, 1, 0]],
+                "triangles": [[0, 1, 2]],
+            }
+        ])
 
 
 def test_render_mesh_hash_rejects_json_string_coordinates():
     with pytest.raises(ValueError, match="finite numbers"):
-        render_mesh_content_sha256(
-            [
-                {
-                    "primitive_id": "face-1",
-                    "vertices": [["0.0", 0, 0], [1, 0, 0], [0, 1, 0]],
-                    "triangles": [[0, 1, 2]],
-                }
-            ]
-        )
+        render_mesh_content_sha256([
+            {
+                "primitive_id": "face-1",
+                "vertices": [["0.0", 0, 0], [1, 0, 0], [0, 1, 0]],
+                "triangles": [[0, 1, 2]],
+            }
+        ])

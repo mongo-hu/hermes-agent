@@ -13,6 +13,15 @@
     "scene_ref": {"type": "string", "minLength": 1},
     "topology_snapshot": {"$ref": "#/$defs/topologySnapshot"},
     "render_mesh_snapshot_ref": {"type": "string", "minLength": 1},
+    "edges": {
+      "type": "array", "items": {
+        "type": "object", "additionalProperties": false, "required": ["geometry_ref", "adjacent_face_indices"],
+        "properties": {
+          "geometry_ref": {"allOf": [{"$ref": "#/$defs/geometryRef"}, {"properties": {"kind": {"const": "edge"}}}]},
+          "adjacent_face_indices": {"type": "array", "uniqueItems": true, "items": {"type": "integer", "minimum": 1}}
+        }
+      }
+    },
     "faces": {
       "type": "array",
       "items": {
@@ -20,7 +29,7 @@
         "additionalProperties": false,
         "required": ["geometry_ref", "triangle_refs"],
         "properties": {
-          "geometry_ref": {"$ref": "#/$defs/geometryRef"},
+          "geometry_ref": {"allOf": [{"$ref": "#/$defs/geometryRef"}, {"properties": {"kind": {"const": "face"}}}]},
           "triangle_refs": {"type": "array", "items": {"$ref": "#/$defs/triangleRef"}}
         }
       }
@@ -32,7 +41,7 @@
       "additionalProperties": false,
       "required": ["kind", "index", "input_sha256", "topology_snapshot_id", "entity_id"],
       "properties": {
-        "kind": {"const": "face"},
+        "kind": {"enum": ["face", "edge"]},
         "index": {"type": "integer", "minimum": 1},
         "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "topology_snapshot_id": {"type": "string", "minLength": 1},

@@ -174,7 +174,10 @@ def test_viewer_manifest_maps_failed_evaluation_to_geometry_refs(tmp_path):
     assert result is not None
     payload = json.loads((tmp_path / result.relative_path).read_text(encoding="utf-8"))
     assert payload["contract_version"] == "hermes.dfm.viewer/v2"
-    assert payload["scene_path"] == "render_scene.json"
+    viewer_dir = (tmp_path / result.relative_path).parent
+    for kind, field in (("render_scene", "scene_path"), ("topology_map", "topology_path")):
+        source = next(item for item in artifacts if item.kind == kind)
+        assert (viewer_dir / payload[field]).resolve() == (tmp_path / source.relative_path).resolve()
     assert "mesh_path" not in payload
     assert payload["issue_count"] == 1
     assert payload["issues"][0]["geometry_refs"] == [

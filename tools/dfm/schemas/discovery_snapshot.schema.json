@@ -27,6 +27,20 @@
     "render_mesh_snapshot_id": {"type": "string"},
     "worker_snapshot_id": {"type": "string"},
     "artifact_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "annotations": {
+      "type": "array", "items": {"type": "object", "required": ["annotation_id", "kind"],
+        "properties": {"annotation_id": {"type": "string", "minLength": 1}, "kind": {"type": "string", "minLength": 1}}}
+    },
+    "relationships": {
+      "type": "array", "items": {"type": "object", "required": ["relation_id", "type", "from_ref", "to_ref"],
+        "properties": {"relation_id": {"type": "string", "minLength": 1}, "type": {"type": "string", "minLength": 1},
+          "from_ref": {"type": "string", "minLength": 1}, "to_ref": {"type": "string", "minLength": 1}}}
+    },
+    "forming_scopes": {
+      "type": "array", "items": {"type": "object", "required": ["forming_scope_id", "kind", "mode"],
+        "properties": {"forming_scope_id": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["main_forming", "undercut", "local_forming"]}, "mode": {"enum": ["main", "local"]}}}
+    },
     "coverage": {
       "type": "array",
       "items": {

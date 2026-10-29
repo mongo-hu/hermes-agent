@@ -7053,10 +7053,21 @@ ipcMain.handle('hermes:window:openNewSession', async () => {
 ipcMain.handle('hermes:window:openDfmViewer', async (_event, manifestPath) => {
   try {
     const { resolvedPath } = await resolveReadableFileForIpc(String(manifestPath || ''), {
+      maxBytes: TEXT_PREVIEW_SOURCE_MAX_BYTES,
       purpose: 'DFM viewer manifest'
     })
 
-    if (path.basename(resolvedPath) !== 'dfm_viewer.json') {
+    if (!['dfm_viewer.json', 'dfm_discovery_viewer.json'].includes(path.basename(resolvedPath))) {
+      return { ok: false, error: 'invalid_viewer_manifest' }
+    }
+    const manifest = JSON.parse(await fs.promises.readFile(resolvedPath, 'utf8'))
+
+    if (
+      manifest?.contract_version !== 'hermes.dfm.viewer/v2' ||
+      typeof manifest.scene_path !== 'string' || !manifest.scene_path.trim() ||
+      typeof manifest.topology_path !== 'string' || !manifest.topology_path.trim() ||
+      !Array.isArray(manifest.issues)
+    ) {
       return { ok: false, error: 'invalid_viewer_manifest' }
     }
     createDfmViewerWindow(resolvedPath)

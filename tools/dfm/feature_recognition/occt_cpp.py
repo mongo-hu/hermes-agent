@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import hashlib
+import math
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -11,19 +11,12 @@ from .base import FeatureRecognitionResult
 from ..analyzers.occt import discover_geometry_executable
 from ..contracts import ArtifactRecord, FeatureRecord, InputRecord
 from ..errors import DFMError
+from ..geometry.artifact_metadata import inspect_geometry_file
 from ..runtime.process import SESSION_CONTRACT
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 class OCCTCppFeatureRecognitionProvider:
@@ -51,7 +44,7 @@ class OCCTCppFeatureRecognitionProvider:
             "deployment": "persistent_external_worker",
             "primary_production_target": True,
             "supported_formats": ["step"],
-            "required_fact_names": ["process", "model_units"],
+            "required_fact_names": ["process", "model_units", "pull_dir"],
             "output_contracts": ["FeatureRecord[]", SESSION_CONTRACT],
         }
         if self.executable is None:
@@ -83,9 +76,8 @@ class OCCTCppFeatureRecognitionProvider:
             "schema_bundle_version": self._capability.get("schema_bundle_version"),
             "methods": dict(self._capability.get("methods") or {}),
             "feature_kinds": list(self._capability.get("feature_kinds", [])),
-            "coverage_statuses": list(
-                self._capability.get("coverage_statuses", [])
-            ),
+            "annotation_kinds": list(self._capability.get("annotation_kinds", [])),
+            "coverage_statuses": list(self._capability.get("coverage_statuses", [])),
             "geometrics": list(self._capability.get("geometrics", [])),
         }
 
@@ -99,14 +91,15 @@ class OCCTCppFeatureRecognitionProvider:
                 "The Worker returned an artifact outside the owning DFM project.",
                 {"kind": kind},
             )
+        info = inspect_geometry_file(path, kind)
         return ArtifactRecord(
             artifact_id=f"artifact_geometry_{input_sha256[:16]}_{kind}",
             kind=kind,
             relative_path=path.relative_to(project_dir).as_posix(),
             media_type="application/json",
             created_at=_utc_now(),
-            size_bytes=path.stat().st_size,
-            sha256=_sha256(path),
+            size_bytes=info.size_bytes,
+            sha256=info.sha256,
         )
 
     def _feature_records(
@@ -115,6 +108,7 @@ class OCCTCppFeatureRecognitionProvider:
         *,
         input_record: InputRecord,
         snapshot_id: str,
+        relationships: list[dict[str, Any]] | None = None,
     ) -> list[FeatureRecord]:
         if not isinstance(raw_features, list):
             raise DFMError(
@@ -148,12 +142,21 @@ class OCCTCppFeatureRecognitionProvider:
                     properties={
                         "subtype": raw.get("subtype"),
                         "parameters": dict(raw.get("parameters") or {}),
+                        "parts": dict(raw.get("parts") or {}),
                         "geometry_refs": list(raw.get("geometry_refs") or []),
                         "method": raw.get("method"),
                         "diagnostics": dict(raw.get("diagnostics") or {}),
                         "worker_snapshot_id": snapshot_id,
                     },
-                    relationships=list(raw.get("relationships") or []),
+                    relationships=(
+                        [
+                            dict(item)
+                            for item in relationships
+                            if item.get("from_ref") == feature_id
+                        ]
+                        if relationships is not None
+                        else list(raw.get("relationships") or [])
+                    ),
                     recognizer=self.key,
                     recognizer_version=self.version,
                     status="detected",
@@ -161,11 +164,46 @@ class OCCTCppFeatureRecognitionProvider:
             )
         return features
 
+    def project_snapshot(
+        self, input_record: InputRecord, result: Mapping[str, Any]
+    ) -> FeatureRecognitionResult:
+        """Build a read projection of the Worker's committed semantic graph."""
+        snapshot_id = str(result.get("snapshot_id") or "")
+        if not snapshot_id:
+            raise DFMError(
+                "geometry_protocol_invalid", "The Worker omitted its snapshot identity."
+            )
+        collections: dict[str, list[dict[str, Any]]] = {}
+        for name in ("annotations", "relationships", "forming_scopes", "coverage"):
+            rows = result.get(name, [])
+            if not isinstance(rows, list) or any(
+                not isinstance(row, Mapping) for row in rows
+            ):
+                raise DFMError(
+                    "geometry_protocol_invalid",
+                    f"Worker {name} must be an object array.",
+                )
+            collections[name] = [dict(row) for row in rows]
+        return FeatureRecognitionResult(
+            features=self._feature_records(
+                result.get("features"),
+                input_record=input_record,
+                snapshot_id=snapshot_id,
+                relationships=collections["relationships"],
+            ),
+            worker_snapshot_id=snapshot_id,
+            diagnostics={
+                "coverage": collections["coverage"],
+                "base_snapshot_id": result.get("base_snapshot_id"),
+            },
+            annotations=collections["annotations"],
+            relationships=collections["relationships"],
+            forming_scopes=collections["forming_scopes"],
+        )
+
     @staticmethod
     def _discovery_batches(feature_kinds: list[str]) -> list[list[str]]:
-        primary = [kind for kind in feature_kinds if kind == "main_wall"]
-        structures = [kind for kind in feature_kinds if kind != "main_wall"]
-        return [batch for batch in (primary, structures) if batch]
+        return [list(feature_kinds)] if feature_kinds else []
 
     def recognize(
         self,
@@ -191,6 +229,23 @@ class OCCTCppFeatureRecognitionProvider:
                 "Feature discovery requires the project-owned persistent session pool.",
             )
         project_dir = project_dir.resolve()
+        confirmed_direction = (facts or {}).get("pull_dir")
+        draw_direction = getattr(confirmed_direction, "value", confirmed_direction)
+        if (
+            not isinstance(draw_direction, list)
+            or len(draw_direction) != 3
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                for value in draw_direction
+            )
+            or sum(value * value for value in draw_direction) <= 1e-24
+        ):
+            raise DFMError(
+                "direction_required",
+                "First-round discovery requires a confirmed main draw direction.",
+            )
         capability = self.capability(project_dir.name)
         if capability["status"] != "available":
             raise DFMError(
@@ -230,6 +285,21 @@ class OCCTCppFeatureRecognitionProvider:
             self.session_pool.wait_job(project_id, submitted["job_id"])
             for submitted in submissions
         ]
+        submitted_scope = self.session_pool.call(
+            project_id,
+            "forming_scopes.analyze",
+            {
+                "snapshot_id": opened["snapshot_id"],
+                "forming_scope_id": "MAIN",
+                "mode": "main",
+                "draw_direction": list(draw_direction),
+                "coordinate_system": "model",
+                "direction_source": "user_confirmed",
+            },
+        )
+        branches.append(
+            self.session_pool.wait_job(project_id, submitted_scope["job_id"])
+        )
         result = (
             branches[0]
             if len(branches) == 1
@@ -246,11 +316,7 @@ class OCCTCppFeatureRecognitionProvider:
             project_id, input_record.sha256, opened, result
         )
 
-        features = self._feature_records(
-            result.get("features"),
-            input_record=input_record,
-            snapshot_id=str(result["snapshot_id"]),
-        )
+        projection = self.project_snapshot(input_record, result)
 
         opened_artifacts = opened.get("artifacts")
         if not isinstance(opened_artifacts, Mapping):
@@ -265,7 +331,7 @@ class OCCTCppFeatureRecognitionProvider:
             for kind in ("preflight", "topology_map", "render_scene")
         ]
         return FeatureRecognitionResult(
-            features=features,
+            features=projection.features,
             diagnostics={
                 "contract_version": SESSION_CONTRACT,
                 "base_snapshot_id": result.get("base_snapshot_id"),
@@ -280,6 +346,9 @@ class OCCTCppFeatureRecognitionProvider:
             render_mesh_snapshot_id=str(opened_artifacts["render_mesh_snapshot_id"]),
             geometry_snapshot_ref=artifacts[0].artifact_id,
             worker_snapshot_id=str(result["snapshot_id"]),
+            annotations=projection.annotations,
+            relationships=projection.relationships,
+            forming_scopes=projection.forming_scopes,
         )
 
     def recognize_scope(
@@ -289,7 +358,7 @@ class OCCTCppFeatureRecognitionProvider:
         snapshot_id: str,
         forming_scope_id: str,
         project_dir: Path,
-    ) -> tuple[list[FeatureRecord], list[dict[str, Any]], str]:
+    ) -> FeatureRecognitionResult:
         """Supplement one confirmed local scope without rerunning model-wide discovery."""
 
         if self.session_pool is None:
@@ -329,25 +398,11 @@ class OCCTCppFeatureRecognitionProvider:
                 "context": {"forming_scope_id": forming_scope_id},
             },
         )
-        result = self.session_pool.wait_job(
-            project_dir.name, str(submitted["job_id"])
-        )
+        result = self.session_pool.wait_job(project_dir.name, str(submitted["job_id"]))
         result = self.session_pool.update_snapshot(
             project_dir.name, input_record.sha256, opened, result
         )
-        return (
-            self._feature_records(
-                result.get("features"),
-                input_record=input_record,
-                snapshot_id=str(result["snapshot_id"]),
-            ),
-            [
-                dict(item)
-                for item in result.get("coverage", [])
-                if isinstance(item, Mapping)
-            ],
-            str(result["snapshot_id"]),
-        )
+        return self.project_snapshot(input_record, result)
 
 
 def build_occt_feature_recognition_provider(

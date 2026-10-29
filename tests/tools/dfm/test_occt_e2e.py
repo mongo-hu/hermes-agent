@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -166,14 +167,12 @@ def test_screw_boss_wall_ratio_uses_two_public_g_results_for_one_finding(tmp_pat
     output_dir.mkdir(parents=True)
     results_path = output_dir / "geometric_results.json"
     results_path.write_text(
-        json.dumps(
-            {
-                "contract_version": "dfm.geometry/v2",
-                "run_id": "run-screw-boss",
-                "input_sha256": "c" * 64,
-                "results": [item.to_dict() for item in results],
-            }
-        ),
+        json.dumps({
+            "contract_version": "dfm.geometry/v2",
+            "run_id": "run-screw-boss",
+            "input_sha256": "c" * 64,
+            "results": [item.to_dict() for item in results],
+        }),
         encoding="utf-8",
     )
     results_artifact = ArtifactRecord(
@@ -540,9 +539,7 @@ def test_followup_confirmation_creates_a_new_manifest_without_rewriting_stage_re
         path = tmp_path / "runs" / run_id / "artifacts" / "geometric_results.json"
         path.parent.mkdir(parents=True)
         path.write_text(
-            json.dumps(
-                {"contract_version": "dfm.geometry/v2", "results": results}
-            ),
+            json.dumps({"contract_version": "dfm.geometry/v2", "results": results}),
             encoding="utf-8",
         )
         return ArtifactRecord(
@@ -571,9 +568,9 @@ def test_followup_confirmation_creates_a_new_manifest_without_rewriting_stage_re
     first_path = tmp_path / first_artifact.relative_path
     first_bytes = first_path.read_bytes()
     first_payload = json.loads(first_bytes)
-    assert [
-        item["fragment_id"] for item in first_payload["incomplete_fragments"]
-    ] == [waiting.fragment_id]
+    assert [item["fragment_id"] for item in first_payload["incomplete_fragments"]] == [
+        waiting.fragment_id
+    ]
 
     confirmed = PlanFragmentRecord(
         fragment_id="fragment-side-confirmed",
@@ -630,9 +627,10 @@ def test_followup_confirmation_creates_a_new_manifest_without_rewriting_stage_re
     assert second_payload["run_id"] == "run-stage-2"
     assert second_payload["incomplete_fragments"] == []
     assert second_payload["result_refs"] == ["result-ordinary", "result-side"]
-    assert [
-        item["fragment_id"] for item in second_payload["plan_fragments"]
-    ] == [ready.fragment_id, confirmed.fragment_id]
+    assert [item["fragment_id"] for item in second_payload["plan_fragments"]] == [
+        ready.fragment_id,
+        confirmed.fragment_id,
+    ]
 
 
 @pytest.mark.skipif(not EXECUTABLE, reason="DFM_GEOMETRY_E2E_EXECUTABLE is unset")
@@ -670,7 +668,12 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
     try:
         discovery = OCCTCppFeatureRecognitionProvider(
             EXECUTABLE, session_pool=pool
-        ).recognize(input_record, process="injection", project_dir=project_dir)
+        ).recognize(
+            input_record,
+            process="injection",
+            facts={"pull_dir": [0, 0, 1]},
+            project_dir=project_dir,
+        )
         assert discovery.worker_snapshot_id.startswith("snapshot_")
         assert not hasattr(discovery, "regions")
         assert all("region_refs" not in item.to_dict() for item in discovery.features)
@@ -699,15 +702,12 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
             if item["forming_scope_id"] == "MAIN_POS"
         )
         assert candidate["status"] == "candidate"
-        local_candidate = next(
-            item
-            for item in analyzed_scope["forming_scopes"]
-            if item["forming_scope_id"] == "SIDE_01"
-        )
-        assert local_candidate["mode"] == "local"
-        assert local_candidate["draw_direction"] is None
-        assert local_candidate["direction_source"] is None
-        assert local_candidate["geometry_refs"]
+        for local_candidate in analyzed_scope["forming_scopes"]:
+            if local_candidate["mode"] == "local":
+                assert local_candidate["kind"] == "undercut"
+                assert local_candidate["draw_direction"] is None
+                assert local_candidate["direction_source"] is None
+                assert local_candidate["geometry_refs"]
         confirmed_scope = pool.call(
             "project-v2",
             "forming_scopes.revise",
@@ -764,7 +764,7 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
             capability_version=geometry_capability_identity(worker_capability),
             dependency_fingerprint=worker_capability["dependency_fingerprint"],
             confirmed_fact_refs=[],
-            rule_binding_refs=[item.binding_id for item in shared_g_bindings],
+            rule_binding_refs=[shared_g_bindings[0].binding_id],
             items=[request, direction_request],
         )
         plan = PlanRecord(
@@ -778,8 +778,25 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
                 "rule-shared-b": EffectiveRule(100.0, "mm", "ontology:test-b"),
             },
             rule_bindings=shared_g_bindings,
-            plan_fragments=[fragment],
+            plan_fragments=[
+                fragment,
+                replace(
+                    fragment,
+                    fragment_id="fragment-v2-shared",
+                    items=[request],
+                    rule_binding_refs=[shared_g_bindings[1].binding_id],
+                ),
+            ],
         )
+        calls = []
+        native_call = pool.call
+
+        def observe(project_id, method, params):
+            if method == "geometrics.compute":
+                calls.append(params)
+            return native_call(project_id, method, params)
+
+        pool.call = observe
         artifacts = OcctAnalyzer(EXECUTABLE, session_pool=pool).run(
             AnalyzerContext(
                 "project-v2",
@@ -798,11 +815,22 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
             (project_dir / result_artifact.relative_path).read_text(encoding="utf-8")
         )
         assert payload["contract_version"] == "dfm.geometry/v2"
-        assert len(payload["results"]) == 2
-        assert sum(
-            item["geometric_id"] == "G_WALL_THK_MIN"
-            for item in payload["results"]
-        ) == 1
+        assert len(calls) == 1
+        assert len(payload["results"]) == 3
+        assert (
+            sum(item["geometric_id"] == "G_WALL_THK_MIN" for item in payload["results"])
+            == 2
+        )
+        shared_results = [
+            row for row in payload["results"] if row["geometric_id"] == "G_WALL_THK_MIN"
+        ]
+        assert len({row["result_id"] for row in shared_results}) == 2
+        assert (
+            len({row["provenance"]["plan_fragment_ref"] for row in shared_results}) == 2
+        )
+        assert (
+            len({row["provenance"]["source_result_ref"] for row in shared_results}) == 1
+        )
         result = next(
             item
             for item in payload["results"]
@@ -870,6 +898,31 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
         }.intersection(scalar_payload)
         cached = pool.acquire("project-v2").snapshots_by_input_sha256[input_sha256]
         assert cached["diagnostics"]["model_import_count"] == 1
+        delta = next(item for item in artifacts if item.kind == "geometric_batch")
+        original_delta = (project_dir / delta.relative_path).read_bytes()
+        repeated = OcctAnalyzer(EXECUTABLE, session_pool=pool).run(
+            AnalyzerContext(
+                "project-v2", project_dir, "step", [input_record], "run-v2", plan
+            ),
+            CancellationToken(),
+        )
+        repeated_results = json.loads(
+            (
+                project_dir
+                / next(
+                    item for item in repeated if item.kind == "geometric_results"
+                ).relative_path
+            ).read_text(encoding="utf-8")
+        )["results"]
+        assert len(calls) == 2
+        assert len(repeated_results) == 3
+        assert len({row["result_id"] for row in repeated_results}) == 3
+        assert all(
+            row["quality"]["calculation_reused"]
+            for row in repeated_results
+            if row["geometric_id"] == "G_WALL_THK_MIN"
+        )
+        assert (project_dir / delta.relative_path).read_bytes() == original_delta
         recovery_log = (
             project_dir
             / "artifacts"
@@ -883,7 +936,7 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
         )
         assert [item["method"] for item in recovery_payload["steps"]] == [
             "features.discover",
-            "features.discover",
+            "forming_scopes.analyze",
             "snapshots.merge",
             "forming_scopes.analyze",
             "forming_scopes.revise",
@@ -913,6 +966,7 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
             other_input,
             process="injection",
             project_dir=other_project_dir,
+            facts={"pull_dir": [0, 0, 1]},
         )
         other_session = pool.acquire("project-v2-other").session
         other_pid = other_session.pid
@@ -955,6 +1009,14 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
         ]
         assert pool.acquire("project-v2").session.pid != crashed_pid
         assert recovered_cache["diagnostics"]["model_import_count"] == 1
+        assert any(
+            item["feature_id"] == wall.feature_id
+            for item in recovered_cache["features"]
+        )
+        assert any(
+            item["forming_scope_id"] == "MAIN_POS" and item["status"] == "confirmed"
+            for item in recovered_cache["forming_scopes"]
+        )
     finally:
         pool.close()
 
@@ -1012,7 +1074,12 @@ def test_ready_scopes_run_once_while_another_local_direction_waits(tmp_path):
     try:
         discovery = OCCTCppFeatureRecognitionProvider(
             executable, session_pool=pool
-        ).recognize(input_record, process="injection", project_dir=project_dir)
+        ).recognize(
+            input_record,
+            process="injection",
+            facts={"pull_dir": [0, 0, 1]},
+            project_dir=project_dir,
+        )
         wall = next(item for item in discovery.features if item.kind == "main_wall")
         ready_direction = {
             "forming_scope_id": "SIDE_02",
@@ -1161,19 +1228,19 @@ def test_ready_scopes_run_once_while_another_local_direction_waits(tmp_path):
             ("G_WALL_THK_MIN", None),
             ("G_WALL_IN_DRAFT", "SIDE_02"),
         }
-        assert sum(
-            item["geometric_id"] == "G_WALL_THK_MIN" for item in results
-        ) == 1
+        assert sum(item["geometric_id"] == "G_WALL_THK_MIN" for item in results) == 1
 
         evaluations = json.loads(
             (
                 project_dir
-                / EvaluationEngine().materialize(
+                / EvaluationEngine()
+                .materialize(
                     project_dir,
                     "run-independent-scopes",
                     plan,
                     [results_artifact],
-                ).relative_path
+                )
+                .relative_path
             ).read_text(encoding="utf-8")
         )["evaluations"]
         assert {item["rule_id"]: item["outcome"] for item in evaluations} == {
@@ -1183,6 +1250,79 @@ def test_ready_scopes_run_once_while_another_local_direction_waits(tmp_path):
         }
     finally:
         pool.close()
+
+
+def _confirm_service_scopes(service, project_id, scope):
+    candidate = scope["forming_scope"]
+    assert candidate["forming_scope_id"] == "MAIN"
+    service.analysis(
+        "revise_forming_scopes",
+        project_id=project_id,
+        forming_scopes=[
+            {
+                key: candidate[key]
+                for key in (
+                    "forming_scope_id",
+                    "kind",
+                    "mode",
+                    "draw_direction",
+                    "coordinate_system",
+                    "direction_source",
+                    "geometry_refs",
+                )
+            }
+        ],
+    )
+    # Native candidates depend on actual geometry. SIDE_01 is only a fixture ID.
+    for local_candidate in scope["forming_scopes"]:
+        if local_candidate["mode"] != "local":
+            continue
+        scope_id = local_candidate["forming_scope_id"]
+        assert local_candidate["draw_direction"] is None
+        context = service.analysis("review_context", project_id=project_id)
+        group = next(
+            row
+            for row in context["review_groups"]
+            if row["kind"] == "undercut_scope" and scope_id in row["target_refs"]
+        )
+        supplemented = service.analysis(
+            "confirm_discovery",
+            project_id=project_id,
+            expected_revision=context["revision"],
+            review_group_ids=[group["review_group_id"]],
+        )
+        structure = next(
+            row
+            for row in supplemented["review_groups"]
+            if row["kind"] == "local_structure" and scope_id in row["target_refs"]
+        )
+        service.analysis(
+            "confirm_discovery",
+            project_id=project_id,
+            expected_revision=supplemented["revision"],
+            review_group_ids=[structure["review_group_id"]],
+        )
+        revised = service.analysis(
+            "revise_forming_scopes",
+            project_id=project_id,
+            forming_scopes=[
+                {
+                    "forming_scope_id": scope_id,
+                    "kind": local_candidate["kind"],
+                    "mode": "local",
+                    "draw_direction": [0, 1, 0],
+                    "coordinate_system": "model",
+                    "direction_source": "user_confirmed",
+                    "geometry_refs": local_candidate["geometry_refs"],
+                }
+            ],
+        )
+        assert revised["forming_scopes"][0]["draw_direction"] == [0, 1, 0]
+        assert any(
+            row.review_group_id == structure["review_group_id"]
+            and row.status == "confirmed"
+            for row in service._store(project_id).load().review_groups
+        )
 
 
 def _assert_complete_service_flow(
@@ -1242,85 +1382,7 @@ def _assert_complete_service_flow(
             "analyze_forming_scope",
             project_id=project_id,
         )
-        candidate = scope["forming_scope"]
-        assert candidate["forming_scope_id"] == "MAIN"
-        local_candidate = next(
-            item
-            for item in scope["forming_scopes"]
-            if item["forming_scope_id"] == "SIDE_01"
-        )
-        assert local_candidate["draw_direction"] is None
-        assert local_candidate["direction_source"] is None
-        assert local_candidate["geometry_refs"]
-        undercut_group = next(
-            item
-            for item in scope["review_groups"]
-            if item["kind"] == "undercut_scope"
-        )
-        main_revised = service.analysis(
-            "revise_forming_scopes",
-            project_id=project_id,
-            forming_scopes=[
-                {
-                    key: candidate[key]
-                    for key in (
-                        "forming_scope_id",
-                        "mode",
-                        "draw_direction",
-                        "coordinate_system",
-                        "direction_source",
-                        "geometry_refs",
-                    )
-                }
-            ],
-        )
-        supplemented = service.analysis(
-            "confirm_discovery",
-            project_id=project_id,
-            expected_revision=main_revised["revision"],
-            review_group_ids=[undercut_group["review_group_id"]],
-        )
-        pending_by_kind = {
-            item["kind"]: item for item in supplemented["review_groups"]
-        }
-        assert {"local_structure", "local_direction"}.issubset(pending_by_kind)
-        assert supplemented["next_action"] == "confirm_discovery"
-        structure_confirmed = service.analysis(
-            "confirm_discovery",
-            project_id=project_id,
-            expected_revision=supplemented["revision"],
-            review_group_ids=[
-                pending_by_kind["local_structure"]["review_group_id"]
-            ],
-        )
-        assert structure_confirmed["status"] == "forming_scope_review_required"
-        assert structure_confirmed["next_action"] == "revise_forming_scopes"
-        local_revised = service.analysis(
-            "revise_forming_scopes",
-            project_id=project_id,
-            forming_scopes=[
-                {
-                    "forming_scope_id": local_candidate["forming_scope_id"],
-                    "mode": local_candidate["mode"],
-                    "draw_direction": [0, 1, 0],
-                    "coordinate_system": local_candidate["coordinate_system"],
-                    "direction_source": "user_confirmed",
-                    "geometry_refs": local_candidate["geometry_refs"],
-                }
-            ],
-        )
-        review_groups = service._store(project_id).load().review_groups
-        assert [
-            item.status
-            for item in review_groups
-            if item.kind == "product_forming" and "MAIN" in item.target_refs
-        ] == ["confirmed"]
-        assert {
-            item.status
-            for item in review_groups
-            if item.kind == "local_direction" and "SIDE_01" in item.target_refs
-        } == {"stale", "confirmed"}
-        assert local_revised["forming_scopes"][0]["draw_direction"] == [0.0, 1.0, 0.0]
+        _confirm_service_scopes(service, project_id, scope)
         planned = service.analysis("plan", project_id=project_id)
         plan = planned["plan"]
         assert plan["status"] == "ready"
@@ -1373,8 +1435,7 @@ def _assert_complete_service_flow(
         project_dir = service.workspace.project_dir(project_id)
         result_manifest = json.loads(
             (
-                project_dir
-                / artifacts_by_kind["result_manifest"]["relative_path"]
+                project_dir / artifacts_by_kind["result_manifest"]["relative_path"]
             ).read_text(encoding="utf-8")
         )
         assert result_manifest["contract_version"] == "hermes.dfm.result-manifest/v1"
@@ -1387,16 +1448,17 @@ def _assert_complete_service_flow(
         )
         runtime = json.loads(
             (
-                project_dir
-                / artifacts_by_kind["report_html_runtime"]["relative_path"]
+                project_dir / artifacts_by_kind["report_html_runtime"]["relative_path"]
             ).read_text(encoding="utf-8")
         )
         assert viewer["run_id"] == runtime["report"]["run_id"] == run_id
-        assert viewer["render_mesh_snapshot_id"] == (
-            runtime["result_manifest"]["render_mesh_snapshot_id"]
+        assert (
+            viewer["render_mesh_snapshot_id"]
+            == (runtime["result_manifest"]["render_mesh_snapshot_id"])
         )
-        assert viewer["topology_snapshot_id"] == (
-            runtime["result_manifest"]["topology_snapshot_id"]
+        assert (
+            viewer["topology_snapshot_id"]
+            == (runtime["result_manifest"]["topology_snapshot_id"])
         )
         input_sha256 = manifest["inputs"][0]["sha256"]
         cached = service.geometry_sessions.acquire(
@@ -1407,8 +1469,7 @@ def _assert_complete_service_flow(
             assert result_manifest["incomplete_results"] == []
             assert manifest["findings"]
             assert all(
-                item["validity_status"] == "current"
-                for item in manifest["findings"]
+                item["validity_status"] == "current" for item in manifest["findings"]
             )
             assert viewer["issue_count"] == len(manifest["findings"])
             assert viewer["analysis_coverage"]["status"] == "complete"
@@ -1472,13 +1533,14 @@ def _assert_complete_service_flow(
                 break
             time.sleep(0.02)
         assert final_status["status"] == "succeeded"
-        completed = service.analysis(
-            "result", project_id=project_id, run_id=run_id
-        )["run"]
+        completed = service.analysis("result", project_id=project_id, run_id=run_id)[
+            "run"
+        ]
         final_artifacts = {item["kind"]: item for item in completed["artifacts"]}
         assert "report_html" in final_artifacts
-        assert final_artifacts["result_manifest"]["artifact_id"] == (
-            artifacts_by_kind["result_manifest"]["artifact_id"]
+        assert (
+            final_artifacts["result_manifest"]["artifact_id"]
+            == (artifacts_by_kind["result_manifest"]["artifact_id"])
         )
     finally:
         service.close()

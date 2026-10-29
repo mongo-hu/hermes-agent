@@ -10,6 +10,7 @@ from typing import Any
 from ..contracts import ArtifactRecord, PlanRecord
 from ..errors import DFMError
 from ..issue_types import classify_issue_type, summarize_issue_types
+from ..runtime.result_documents import SMALL_RESULT_KINDS, read_result_document
 
 
 def _utc_now() -> str:
@@ -223,8 +224,9 @@ def materialize_result_reports(
     coverage_gaps = result_manifest_payload.get("coverage_gaps", [])
     incomplete_results = result_manifest_payload.get("incomplete_results", [])
     incomplete_fragments = result_manifest_payload.get("incomplete_fragments", [])
+    pending_inputs = result_manifest_payload.get("pending_inputs", plan.pending_inputs)
     coverage_complete = not any(
-        (coverage_gaps, incomplete_results, incomplete_fragments, indeterminate_checks)
+        (coverage_gaps, incomplete_results, incomplete_fragments, pending_inputs, indeterminate_checks)
     )
     result = {
         "schema_version": 1,
@@ -257,6 +259,7 @@ def materialize_result_reports(
             "coverage_gaps": coverage_gaps,
             "incomplete_results": incomplete_results,
             "incomplete_fragments": incomplete_fragments,
+            "pending_inputs": pending_inputs,
             "message": (
                 "全部已计划范围均已取得可判定结果。"
                 if coverage_complete
@@ -345,9 +348,9 @@ def materialize_result_reports(
 
 def _read(project_dir: Path, artifact: ArtifactRecord) -> dict[str, Any]:
     try:
-        payload = json.loads(
-            (project_dir / artifact.relative_path).read_text(encoding="utf-8")
-        )
+        path = project_dir / artifact.relative_path
+        payload = (read_result_document(path, artifact.kind, sha256=artifact.sha256, size_bytes=artifact.size_bytes)
+                   if artifact.kind in SMALL_RESULT_KINDS else json.loads(path.read_text(encoding="utf-8")))
     except (OSError, ValueError) as exc:
         raise DFMError(
             "report_input_invalid", f"The {artifact.kind} artifact cannot be read."

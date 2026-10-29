@@ -6,6 +6,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import sys
 import threading
 from typing import Any, Mapping
 from uuid import uuid4
@@ -36,6 +37,7 @@ class OntologySynchronizer:
         self.packages_dir = self.root / "packages"
         self.revocations_path = self.root / "revocations.json"
         self._sync_lock = threading.Lock()
+        self._sync_status: tuple[str, int | None, str] | None = None
 
     @staticmethod
     def _verify_hash(payload: Mapping[str, Any], expected_hash: str = "") -> None:
@@ -181,7 +183,62 @@ class OntologySynchronizer:
 
     def sync_once(self) -> dict[str, Any]:
         with self._sync_lock:
-            return self._sync_once()
+            try:
+                result = self._sync_once()
+            except Exception as exc:
+                self._report_sync_status(error=exc)
+                raise
+            self._report_sync_status(result=result)
+            return result
+
+    def _report_sync_status(
+        self, *, result: Mapping[str, Any] | None = None, error: Exception | None = None
+    ) -> None:
+        """Show initial health and status changes without repeating every poll."""
+        if error is None:
+            state = ("available", None, "")
+            label = "recovered" if self._sync_status is not None else "available"
+            message = (
+                f"[DFM] Rule service: {label}, endpoint={self.config.ontology_endpoint}, "
+                f"snapshot={(result or {}).get('snapshot_id', '')}"
+            )
+            level = logging.INFO
+        else:
+            label = (
+                "unavailable"
+                if isinstance(error, DFMError) and error.code == "ontology_sync_failed"
+                else "sync_failed"
+            )
+            status_code = None
+            reason = str(error)
+            cause: BaseException | None = error
+            while cause is not None:
+                response = getattr(cause, "response", None)
+                if response is not None:
+                    status_code = response.status_code
+                    try:
+                        body = response.json()
+                        if isinstance(body, dict) and isinstance(body.get("detail"), str):
+                            reason = body["detail"]
+                        else:
+                            reason = str(cause)
+                    except (ValueError, TypeError):
+                        reason = str(cause)
+                    break
+                reason = str(cause) or reason
+                cause = cause.__cause__
+            reason = " ".join(reason.split())[:500]
+            state = (label, status_code, reason)
+            http_status = f", HTTP={status_code}" if status_code is not None else ""
+            message = (
+                f"[DFM] Rule service: {label}, endpoint={self.config.ontology_endpoint}"
+                f"{http_status}, reason={reason}"
+            )
+            level = logging.WARNING
+        if state != self._sync_status:
+            logger.log(level, message)
+            print(message, file=sys.stderr, flush=True)
+            self._sync_status = state
 
     def _sync_once(self) -> dict[str, Any]:
         latest = self._get_latest()
@@ -197,8 +254,12 @@ class OntologySynchronizer:
                 {"snapshot_id": target_id},
             )
         current = None
+        previous_snapshot_id = "not_installed"
+        previous_rule_set_version = "not_installed"
         try:
             current = self.store.identity()
+            previous_snapshot_id = current.snapshot_id
+            previous_rule_set_version = current.rule_set_version
             if current.snapshot_id == target_id and self.ensure_current_valid(
                 str(latest.get("content_sha256") or "")
                 if target_id == latest.get("snapshot_id")
@@ -235,6 +296,15 @@ class OntologySynchronizer:
                 )
             return {"changed": False, "snapshot_id": target_id}
         self.store.install_package(payload)
+        message = (
+            f"[DFM] Rule package updated: rule_set={payload['rule_set']['rule_set_code']}, "
+            f"version={previous_rule_set_version} -> {payload['rule_set']['version']}, "
+            f"snapshot={previous_snapshot_id} -> {target_id}, "
+            f"ontology_version={payload['ontology_version']}"
+        )
+        logger.info(message)
+        # Default Hermes logging is file-only; keep successful updates visible in the terminal.
+        print(message, file=sys.stderr, flush=True)
         return {"changed": True, "snapshot_id": target_id, "rolled_back": False}
 
 
