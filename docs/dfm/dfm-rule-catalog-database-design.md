@@ -25,7 +25,7 @@ Schema 4 发布器和 Hermes 运行代码描述已经落地的应用。生产数
 2. 生成、审核、发布系统默认规则和企业规则；
 3. 将当前企业可执行的本体与规则编译成 Agent 可离线使用的只读快照。
 
-本体库不是几何算法数据库。OCCT 如何识别螺钉柱、如何计算壁厚、拔模角和圆角，仍由
+本体库不是几何算法数据库。OCCT 如何识别带孔 Boss 柱、如何计算壁厚、拔模角和圆角，仍由
 `dfm-occt-worker` 的 C++ 实现和 Capability Manifest 负责。数据库只描述这些能力的业务语义、
 组合关系和规则。
 
@@ -221,8 +221,8 @@ Agent 项目 Manifest 中的 `FactRecord`，候选识别结果保存为 `Observa
 识别结果先保存为带来源、置信度和证据的 Observation；只有通过 `source_policy` 后才能成为参与规则匹配
 的 confirmed Fact。规则条件默认只使用规范化后的 Factor 值，不因来源不同而改变工程阈值。
 
-几何连续量不应为了复用该机制而转成 Factor。例如螺钉柱壁厚、高度和直径属于
-`Measurement/Operand`；“识别出螺钉柱”属于 `Feature`；材料、皮纹和外观等级等用于选择工程规则的
+几何连续量不应为了复用该机制而转成 Factor。例如带孔 Boss 柱壁厚、高度和直径属于
+`Measurement/Operand`；“识别出带孔 Boss 柱”属于 `Feature`；材料、皮纹和外观等级等用于选择工程规则的
 上下文才属于 `Factor/Fact`。
 
 ### 4.2 `dfm_relation`
@@ -258,7 +258,7 @@ Agent 项目 Manifest 中的 `FactRecord`，候选识别结果保存为 `Observa
   "alias": "boss_wall_thickness",
   "aggregation": "minimum",
   "required": true,
-  "operand_text": "螺钉柱柱壁实际壁厚 t"
+  "operand_text": "带孔 Boss 柱柱壁实际壁厚 t"
 }
 ```
 
@@ -290,7 +290,7 @@ AnalysisPlan 时结合 G 的明确语义、已确认 Discovery 特征和经过�
   "missing_policy": "ask_user",
   "phase": "analysis",
   "question": "使用什么材料牌号？",
-  "required_by": ["C_SCREW_BOSS_DRAFT"]
+  "required_by": ["C_HOLLOW_BOSS_DRAFT"]
 }
 ```
 
@@ -440,7 +440,7 @@ Rule Version 适用条件与合格判定示例（省略了需单独审核的分�
 ```
 
 上例表示柱壁厚度须不小于 `2.0 mm`，且柱壁厚度与相邻主体壁厚度之比须大于 `0.4`；
-任一项未满足，就对该螺钉柱的柱壁 Check 生成一次失败结果，逐项记录实测值、阈值和所用
+任一项未满足，就对该带孔 Boss 柱的柱壁 Check 生成一次失败结果，逐项记录实测值、阈值和所用
 Measurement/Feature/Region 证据。若工程要求“等于某标称值”，应先明确公差，通常用
 `BETWEEN` 表达允许区间，不直接对浮点测量值做精确相等判定。
 

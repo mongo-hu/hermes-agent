@@ -201,12 +201,25 @@ def test_desktop_confirms_two_rounds_edits_native_attributes_and_previews_report
                     expect(panel.get_by_role("alert")).to_have_count(0)
 
                 ordinary = bucket("主体壁")
+                canvas_before_location = page.locator("canvas").screenshot()
+                ordinary.get_by_role("button", name="定位", exact=True).click()
+                page.wait_for_timeout(550)
+                assert page.locator("canvas").screenshot() != canvas_before_location
                 ordinary.get_by_role(
                     "checkbox", name=f"选择 {wall['feature_id']}", exact=True
                 ).check()
                 primary = bucket("第一轮 · 主成型范围")
                 primary.get_by_role("checkbox", name="选择 MAIN", exact=True).check()
                 confirm_selected(2)
+                expect(panel.get_by_role("checkbox", name=f"选择 {wall['feature_id']}", exact=True)).to_have_count(0)
+                expect(page.get_by_text("已确认特征 · 1 个实例", exact=True)).to_be_visible()
+                page.locator("summary").filter(has_text="主体壁 · 1 个实例").click()
+                page.get_by_role("button", name="编辑", exact=True).click()
+                editor = page.get_by_role("region", name="编辑特征选面")
+                expect(editor).to_be_visible()
+                expect(editor.get_by_text("单击未选面添加", exact=False)).to_be_visible()
+                editor.get_by_role("button", name="取消编辑", exact=True).click()
+                expect(editor).to_have_count(0)
                 current = service.analysis("review_context", project_id=project_id)
                 assert (
                     next(

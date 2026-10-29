@@ -151,6 +151,29 @@ def test_review_snapshot_rebases_confirmation_without_losing_new_artifacts(
     )
 
 
+def test_feature_face_removal_updates_worker_parts_and_requires_new_confirmation(model):
+    service, project_id, wall, refs = model
+    context = service.analysis("review_context", project_id=project_id)
+    group = next(item for item in context["review_groups"]
+                 if item["kind"] == "ordinary_structure" and wall["feature_id"] in item["target_refs"])
+    service.analysis("confirm_discovery", project_id=project_id,
+                     review_group_ids=[group["review_group_id"]], expected_revision=context["revision"])
+    context = service.analysis("review_context", project_id=project_id)
+    selected = refs[:1]
+    saved = service.analysis("update_feature_geometry", project_id=project_id,
+                            feature_id=wall["feature_id"], geometry_refs=selected,
+                            expected_revision=context["revision"], expected_snapshot_id=context["snapshot_id"])
+    assert saved["geometry_refs"] == selected
+    current = service.analysis("review_context", project_id=project_id)
+    edited = next(row for row in current["features"] if row["feature_id"] == wall["feature_id"])
+    assert all(ref in selected for part in edited["properties"]["parts"].values() for ref in part)
+    groups = [row for row in current["review_groups"] if row["kind"] == "ordinary_structure"
+              and wall["feature_id"] in row["target_refs"]]
+    assert len(groups) == 1
+    assert groups[0]["status"] == "pending_review"
+    assert groups[0]["review_group_id"] != group["review_group_id"]
+
+
 def test_review_snapshot_edit_tolerates_progress_but_rejects_changed_geometry(
     model, monkeypatch
 ):

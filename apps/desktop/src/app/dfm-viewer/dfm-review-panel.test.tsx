@@ -1,8 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { DfmReviewPanel } from './dfm-review-panel'
 import type { ReviewContext } from './dfm-review'
+import { DfmReviewPanel } from './dfm-review-panel'
 
 const previousBridge = window.hermesDesktop
 
@@ -19,6 +19,7 @@ function context(): ReviewContext {
     input_sha256: 'a'.repeat(64),
     topology_snapshot_id: 'topology'
   }
+
   return {
     project_id: 'project-a',
     revision: 7,
@@ -47,6 +48,7 @@ function openBucket(label: RegExp) {
   const details = summary.closest('details')!
   details.open = true
   fireEvent(details, new Event('toggle', { bubbles: true }))
+
   return details
 }
 
@@ -54,23 +56,26 @@ function mount(initial: ReviewContext, next = initial) {
   const api = vi.fn(async (request: { path: string; method?: string; body?: unknown }) =>
     request.method === 'POST' ? next : initial
   )
+
   Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api } })
   const onChanged = vi.fn()
   const onHighlight = vi.fn()
   const onEditScope = vi.fn()
   const onEditAnnotation = vi.fn()
   const onCreateAnnotation = vi.fn()
+
   const view = render(
     <DfmReviewPanel
+      onChanged={onChanged}
+      onCreateAnnotation={onCreateAnnotation}
+      onEditAnnotation={onEditAnnotation}
+      onEditScope={onEditScope}
+      onHighlight={onHighlight}
       projectId={initial.project_id}
       revision={initial.revision}
-      onChanged={onChanged}
-      onHighlight={onHighlight}
-      onEditScope={onEditScope}
-      onEditAnnotation={onEditAnnotation}
-      onCreateAnnotation={onCreateAnnotation}
     />
   )
+
   return { ...view, api, onChanged, onHighlight, onEditScope, onEditAnnotation, onCreateAnnotation }
 }
 
@@ -84,7 +89,8 @@ describe('DFM grouped review interaction', () => {
     fireEvent.click(screen.getByRole('button', { name: '确认选中组（1）' }))
     await waitFor(() => expect(api).toHaveBeenCalledTimes(2))
     expect(api.mock.calls[1][0].body).toEqual({
-      review_group_ids: ['boss-1'], expected_revision: 7,
+      review_group_ids: ['boss-1'],
+      expected_revision: 7,
       expected_snapshot_id: 'discovery.snapshot.reviewed'
     })
   })
@@ -139,8 +145,8 @@ describe('DFM grouped review interaction', () => {
   it('opens the range editor with the authoritative scope and current revision', async () => {
     const initial = context()
     const { onEditScope, api } = mount(initial)
-    await screen.findByText(/倒扣范围/)
-    const bucket = openBucket(/倒扣范围/)
+    await screen.findByText('已确认的范围与属性')
+    const bucket = openBucket(/已确认的范围与属性/)
     fireEvent.click(await within(bucket).findByRole('button', { name: '编辑范围' }))
     expect(onEditScope).toHaveBeenCalledWith(initial.forming_scopes[0], initial.revision)
     expect(api).toHaveBeenCalledTimes(1)
@@ -152,14 +158,16 @@ describe('DFM grouped review interaction', () => {
     openBucket(/带孔 Boss 柱/)
     fireEvent.click(await screen.findByRole('checkbox', { name: '选择 BOSS_1' }))
     let resolve!: (value: ReviewContext) => void
+
     const pending = new Promise<ReviewContext>(done => {
       resolve = done
     })
+
     api.mockImplementationOnce(() => pending)
     fireEvent.click(screen.getByRole('button', { name: '确认选中组（1）' }))
     const next = { ...context(), project_id: 'project-b', revision: 1 }
     api.mockResolvedValue(next)
-    rerender(<DfmReviewPanel projectId="project-b" revision={1} onChanged={onChanged} onHighlight={onHighlight} />)
+    rerender(<DfmReviewPanel onChanged={onChanged} onHighlight={onHighlight} projectId="project-b" revision={1} />)
     await waitFor(() => expect(api).toHaveBeenCalledTimes(3))
     openBucket(/带孔 Boss 柱/)
     const checkbox = await screen.findByRole('checkbox', { name: '选择 BOSS_1' })
@@ -175,6 +183,7 @@ describe('DFM grouped review interaction', () => {
   })
   it('loads read-only, expands a category, highlights and confirms only selected instances', async () => {
     const initial = context()
+
     const next = {
       ...initial,
       revision: 8,
@@ -182,6 +191,7 @@ describe('DFM grouped review interaction', () => {
         group.review_group_id === 'boss-1' ? { ...group, status: 'confirmed' as const } : group
       )
     }
+
     const { api, onChanged, onHighlight } = mount(initial, next)
     await screen.findByText(/带孔 Boss 柱/)
     expect(api).toHaveBeenCalledTimes(1)
@@ -199,7 +209,7 @@ describe('DFM grouped review interaction', () => {
       method: 'POST',
       body: { review_group_ids: ['boss-1'], expected_revision: 7 }
     })
-    expect((screen.getByRole('checkbox', { name: '选择 BOSS_1' }) as HTMLInputElement).disabled).toBe(true)
+    expect(screen.queryByRole('checkbox', { name: '选择 BOSS_1' })).toBeNull()
     expect((screen.getByRole('checkbox', { name: '选择 BOSS_2' }) as HTMLInputElement).disabled).toBe(false)
   })
 
@@ -212,6 +222,7 @@ describe('DFM grouped review interaction', () => {
     fireEvent.click(confirm)
     expect(await screen.findByRole('alert')).toHaveProperty('textContent', '请输入三个有限数值，且方向不能全为零。')
     expect(api).toHaveBeenCalledTimes(1)
+
     for (const [axis, value] of [
       ['X', '1'],
       ['Y', '0'],
@@ -219,6 +230,7 @@ describe('DFM grouped review interaction', () => {
     ]) {
       fireEvent.change(screen.getByRole('textbox', { name: `SIDE 方向 ${axis}` }), { target: { value } })
     }
+
     fireEvent.click(confirm)
     await waitFor(() => expect(api).toHaveBeenCalledTimes(2))
     expect(api.mock.calls[1][0]).toEqual({

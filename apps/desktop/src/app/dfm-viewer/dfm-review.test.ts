@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
+
 import {
+  confirmedFeatureIds,
   directionUnlocked,
   parseReviewDirection,
   reviewBuckets,
-  reviewGeometry,
   type ReviewContext,
+  reviewGeometry,
   type ReviewGroup
 } from './dfm-review'
 
@@ -54,11 +56,30 @@ describe('DFM review state', () => {
   it('groups by category without merging independent confirmations', () => {
     const buckets = reviewBuckets(context())
     expect(buckets.find(bucket => bucket.id === 'hollow_boss')?.groups.map(group => group.review_group_id)).toEqual([
-      'b1',
-      'b2'
+      'b1'
     ])
     expect(buckets.find(bucket => bucket.id === 'hollow_boss')?.label).toBe('带孔 Boss 柱')
     expect(buckets.find(bucket => bucket.id === 'main_wall')?.groups).toHaveLength(1)
+  })
+
+  it('moves only confirmed structures into results and sends revised structures back to pending', () => {
+    const state = context()
+    expect([...confirmedFeatureIds(state.review_groups)]).toEqual(['BOSS_2'])
+    state.review_groups[0].status = 'confirmed'
+    expect([...confirmedFeatureIds(state.review_groups)]).toEqual(['BOSS_1', 'BOSS_2'])
+    expect(
+      reviewBuckets(state)
+        .flatMap(bucket => bucket.groups)
+        .map(group => group.target_refs[0])
+    ).toEqual(['WALL'])
+    state.review_groups[0].status = 'stale'
+    state.review_groups.push({ ...state.review_groups[0], review_group_id: 'revised', status: 'pending_review' })
+    expect([...confirmedFeatureIds(state.review_groups)]).toEqual(['BOSS_2'])
+    expect(
+      reviewBuckets(state)
+        .flatMap(bucket => bucket.groups)
+        .some(group => group.review_group_id === 'revised')
+    ).toBe(true)
   })
 
   it('locates scope-only targets and deduplicates shared feature faces', () => {
@@ -68,17 +89,20 @@ describe('DFM review state', () => {
       target_refs: ['SIDE', 'BOSS_1'],
       status: 'pending_review'
     }
+
     expect(reviewGeometry(context(), group)).toEqual([{ kind: 'face', index: 1 }])
   })
 
   it('unlocks local direction only after its own range and structures are confirmed', () => {
     const state = context()
+
     const group: ReviewGroup = {
       review_group_id: 'direction',
       kind: 'local_direction',
       target_refs: ['SIDE'],
       status: 'pending_review'
     }
+
     expect(directionUnlocked(state, group)).toBe(false)
     state.review_groups.push(
       ...['undercut_scope', 'local_structure'].map(kind => ({ ...group, kind, status: 'confirmed' as const }))
@@ -95,7 +119,8 @@ describe('DFM review state', () => {
       ['NaN', '0', '1'],
       ['Infinity', '0', '1']
     ])
-      expect(parseReviewDirection(value)).toBeNull()
+      {expect(parseReviewDirection(value)).toBeNull()}
+
     expect(parseReviewDirection(['1', '2', '-3'])).toEqual([1, 2, -3])
   })
 })

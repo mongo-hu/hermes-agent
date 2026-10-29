@@ -75,9 +75,31 @@ const LABELS: Record<string, string> = {
   local_direction: '第二轮 · 局部退出方向'
 }
 
+export function confirmedFeatureIds(groups: readonly ReviewGroup[]): Set<string> {
+  const pending = new Set(
+    groups
+      .filter(group => group.kind === 'ordinary_structure' && group.status === 'pending_review')
+      .flatMap(group => group.target_refs)
+  )
+
+  return new Set(
+    groups
+      .filter(group => group.kind === 'ordinary_structure' && group.status === 'confirmed')
+      .flatMap(group => group.target_refs)
+      .filter(id => !pending.has(id))
+  )
+}
+
+export function featureNeedsPartReview(feature: ReviewFeature | undefined): boolean {
+  const refs = feature?.properties.diagnostics?.unassigned_geometry_refs
+
+  return Array.isArray(refs) && refs.length > 0
+}
+
 export function reviewBuckets(context: ReviewContext): Array<{ id: string; label: string; groups: ReviewGroup[] }> {
   const buckets = new Map<string, { id: string; label: string; groups: ReviewGroup[] }>()
-  for (const group of context.review_groups.filter(item => item.status !== 'stale')) {
+
+  for (const group of context.review_groups.filter(item => item.status === 'pending_review')) {
     const kind =
       group.kind === 'ordinary_structure'
         ? (context.features.find(feature => group.target_refs.includes(feature.feature_id))?.kind ?? '结构')
@@ -85,26 +107,31 @@ export function reviewBuckets(context: ReviewContext): Array<{ id: string; label
           ? (context.annotations.find(annotation => group.target_refs.includes(annotation.annotation_id))?.kind ??
             'surface_attribute')
           : group.kind
+
     const bucket = buckets.get(kind) ?? { id: kind, label: LABELS[kind] ?? kind, groups: [] }
     bucket.groups.push(group)
     buckets.set(kind, bucket)
   }
+
   return Array.from(buckets.values())
 }
 
 export function reviewGeometry(context: ReviewContext, group: ReviewGroup): GeometryReference[] {
   const selected = new Set(group.target_refs)
+
   if (group.kind === 'surface_attribute') {
     return context.annotations
       .filter(item => item.status !== 'stale' && selected.has(item.annotation_id))
       .flatMap(item => item.geometry_refs)
   }
+
   const refs = [
     ...context.features
       .filter(item => selected.has(item.feature_id))
       .flatMap(item => item.properties.geometry_refs ?? []),
     ...context.forming_scopes.filter(item => selected.has(item.forming_scope_id)).flatMap(item => item.geometry_refs)
   ]
+
   return Array.from(
     new Map(
       refs.map(ref => [JSON.stringify([ref.input_sha256, ref.topology_snapshot_id, ref.kind, ref.index]), ref])
@@ -114,6 +141,7 @@ export function reviewGeometry(context: ReviewContext, group: ReviewGroup): Geom
 
 export function directionUnlocked(context: ReviewContext, group: ReviewGroup): boolean {
   const scope = group.target_refs[0]
+
   return ['undercut_scope', 'local_structure'].every(kind =>
     context.review_groups.some(
       item => item.kind === kind && item.target_refs.includes(scope) && item.status === 'confirmed'
@@ -122,7 +150,8 @@ export function directionUnlocked(context: ReviewContext, group: ReviewGroup): b
 }
 
 export function parseReviewDirection(values: string[]): number[] | null {
-  if (values.length !== 3 || values.some(value => !value.trim())) return null
+  if (values.length !== 3 || values.some(value => !value.trim())) {return null}
   const direction = values.map(Number)
+
   return direction.every(Number.isFinite) && direction.some(value => value !== 0) ? direction : null
 }
