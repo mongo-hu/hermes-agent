@@ -5,7 +5,9 @@ import json
 import os
 from pathlib import Path
 import re
+from threading import Event
 import time
+from urllib.request import urlopen
 
 import pytest
 
@@ -161,8 +163,16 @@ def test_desktop_confirms_two_rounds_edits_native_attributes_and_previews_report
         )
         requests = []
         call = service.geometry_sessions.call
+        slow_range_save = Event()
+        range_save_started = Event()
 
         def observe(pid, method, params):
+            if method == "forming_scopes.revise" and slow_range_save.is_set():
+                slow_range_save.clear()
+                range_save_started.set()
+                # Reproduce a valid geometry save exceeding Desktop's generic
+                # 15-second timeout while keeping real HTTP, IPC and Worker I/O.
+                time.sleep(16)
             if method == "geometrics.compute":
                 requests.append(json.loads(json.dumps(params)))
             return call(pid, method, params)
@@ -187,8 +197,10 @@ def test_desktop_confirms_two_rounds_edits_native_attributes_and_previews_report
 
                 def bucket(label):
                     summary = panel.locator("summary").filter(has_text=label)
-                    summary.click()
-                    return summary.locator("..")
+                    details = summary.locator("..")
+                    if details.get_attribute("open") is None:
+                        summary.click()
+                    return details
 
                 def confirm_selected(count):
                     button = panel.get_by_role(
@@ -200,6 +212,14 @@ def test_desktop_confirms_two_rounds_edits_native_attributes_and_previews_report
                     ).to_be_visible(timeout=20000)
                     expect(panel.get_by_role("alert")).to_have_count(0)
 
+                def advance_attribute_review(value):
+                    current = service.analysis("review_context", project_id=project_id)
+                    annotation = next(row for row in current["annotations"] if row["annotation_id"] == "APPEARANCE_TEST")
+                    service.analysis("revise_annotations", project_id=project_id,
+                        annotations=[{key: annotation[key] for key in ("annotation_id", "kind", "geometry_refs")} | {"value": value}],
+                        expected_revision=current["revision"], expected_snapshot_id=current["snapshot_id"])
+                    assert service.analysis("review_context", project_id=project_id)["snapshot_id"] != current["snapshot_id"]
+
                 ordinary = bucket("主体壁")
                 canvas_before_location = page.locator("canvas").screenshot()
                 ordinary.get_by_role("button", name="定位", exact=True).click()
@@ -208,9 +228,7 @@ def test_desktop_confirms_two_rounds_edits_native_attributes_and_previews_report
                 ordinary.get_by_role(
                     "checkbox", name=f"选择 {wall['feature_id']}", exact=True
                 ).check()
-                primary = bucket("第一轮 · 主成型范围")
-                primary.get_by_role("checkbox", name="选择 MAIN", exact=True).check()
-                confirm_selected(2)
+                confirm_selected(1)
                 expect(panel.get_by_role("checkbox", name=f"选择 {wall['feature_id']}", exact=True)).to_have_count(0)
                 expect(page.get_by_text("已确认特征 · 1 个实例", exact=True)).to_be_visible()
                 page.locator("summary").filter(has_text="主体壁 · 1 个实例").click()
@@ -245,7 +263,91 @@ def test_desktop_confirms_two_rounds_edits_native_attributes_and_previews_report
 
                 # Refresh reads the actual latest revision; no local cache patch.
                 panel.get_by_role("button", name="刷新", exact=True).click()
+                bucket("出模设置")
+                primary = bucket("整件设置 · 主出模方向")
+                expect(primary.get_by_text("整件主出模设置", exact=True)).to_be_visible()
+                expect(primary.get_by_role("checkbox")).to_have_count(0)
+                primary.get_by_role("button", name="整件主出模设置", exact=True).click()
+                expect(page.locator('[data-direction-scope="MAIN"]')).to_have_attribute("data-direction-vector", "[0,0,1]")
+                # The displayed review is now old, although the main scope did not change.
+                advance_attribute_review("non_appearance")
+                primary.get_by_role("button", name="编辑方向", exact=True).click()
+                axis_editor = page.get_by_role("region", name="编辑出模方向")
+                vector_input = axis_editor.get_by_role("textbox", name="方向向量", exact=True)
+                vector_input.fill("[0,1,0]")
+                expect(page.locator('[data-direction-scope="MAIN"]')).to_have_attribute("data-direction-vector", "[0,1,0]")
+                page.wait_for_timeout(650)
+
+                def drag_red_handle():
+                    canvas_node = page.locator("canvas")
+                    picture = Image.open(BytesIO(canvas_node.screenshot())).convert("RGB")
+                    pixels = [(x, y) for y in range(picture.height) for x in range(picture.width)
+                              if (lambda rgb: rgb[0] > 150 and rgb[0] > rgb[1] * 1.65 and rgb[0] > rgb[2] * 1.65)(picture.getpixel((x, y)))]
+                    assert pixels, "the visible X handle must be rendered"
+                    x, y = pixels[len(pixels) // 3]
+                    box = canvas_node.bounding_box()
+                    px, py = x * box["width"] / picture.width, y * box["height"] / picture.height
+                    dx, dy = px - box["width"] / 2, py - box["height"] / 2
+                    length = max((dx * dx + dy * dy) ** 0.5, 1)
+                    page.mouse.move(box["x"] + px, box["y"] + py)
+                    page.mouse.down()
+                    page.mouse.move(box["x"] + px - dy / length * 55, box["y"] + py + dx / length * 55, steps=15)
+                    page.mouse.up()
+
+                drag_red_handle()
+                expect(vector_input).not_to_have_value("[0,1,0]")
+                rotated_vector = vector_input.input_value()
+                axis_editor.get_by_role("button", name="平移轴线", exact=True).click()
+                page.wait_for_timeout(150)
+                drag_red_handle()
+                expect(page.locator('[data-direction-scope="MAIN"]')).to_have_attribute("data-direction-origin", re.compile(r"^\["))
+                expect(vector_input).to_have_value(rotated_vector)
+                axis_editor.get_by_role("button", name="取消方向编辑", exact=True).click()
+                expect(page.locator('[data-direction-scope="MAIN"]')).to_have_attribute("data-direction-vector", "[0,0,1]")
                 undercut = bucket("第一轮 · 倒扣范围")
+                undercut.get_by_role("button", name="编辑范围", exact=True).click()
+                range_editor = page.get_by_role("region", name="编辑倒扣范围")
+                expect(range_editor).to_be_visible()
+                before_scope = next(row for row in service.analysis("review_context", project_id=project_id)["forming_scopes"]
+                                    if row["forming_scope_id"] == "SIDE_TEST")
+                initial_count = len(before_scope["geometry_refs"])
+                assert initial_count > 1
+                page.wait_for_timeout(550)  # Wait for the locating camera to settle.
+                canvas = page.locator("canvas")
+                box = canvas.bounding_box()
+                assert box
+                # Remove a visible selected face through the real Three raycast.
+                for x, y in [(0.35, 0.4), (0.65, 0.4), (0.5, 0.65), (0.5, 0.5)]:
+                    canvas.click(position={"x": box["width"] * x, "y": box["height"] * y})
+                    if f"已选 {initial_count} 个面" not in range_editor.inner_text():
+                        break
+                expect(range_editor).not_to_contain_text(f"已选 {initial_count} 个面")
+                slow_range_save.set()
+                range_editor.get_by_role("button", name="保存范围", exact=True).click()
+                assert range_save_started.wait(5), "range save did not reach the actual Worker boundary"
+                expect(range_editor.get_by_role("status")).to_contain_text("正在保存范围")
+                expect(range_editor.get_by_role("button", name="保存中…", exact=True)).to_be_disabled()
+                # A slow edit uses a server worker thread, leaving HTTP responsive.
+                with urlopen(backend["HERMES_DESKTOP_REMOTE_URL"] + "/api/status", timeout=3) as response:
+                    assert response.status == 200
+                expect(range_editor).to_have_count(0, timeout=30000)
+                current_scope = next(row for row in service.analysis("review_context", project_id=project_id)["forming_scopes"]
+                                     if row["forming_scope_id"] == "SIDE_TEST")
+                assert len(current_scope["geometry_refs"]) == initial_count - 1
+                assert current_scope["draw_direction"] is None
+                assert any(row["status"] == "committed" and row["method"] == "forming_scopes.revise"
+                           for row in service._store(project_id).load().geometry_edits)
+                # Continue from the Viewer returned by the completed save.
+                undercut = bucket("第一轮 · 倒扣范围")
+                undercut.get_by_role("button", name="编辑范围", exact=True).click()
+                page.get_by_role("button", name="输入退出方向", exact=True).click()
+                early_direction = page.get_by_role("region", name="编辑出模方向")
+                early_direction.get_by_role("textbox", name="方向向量", exact=True).fill("[1,0,0]")
+                early_direction.get_by_role("button", name="暂存方向", exact=True).click()
+                expect(early_direction).to_have_count(0, timeout=20000)
+                staged = service.analysis("review_context", project_id=project_id)
+                candidate = next(scope for scope in staged["forming_scopes"] if scope["forming_scope_id"] == "SIDE_TEST")
+                assert candidate["status"] == "candidate" and candidate["draw_direction"] == [1, 0, 0]
                 undercut.get_by_role(
                     "checkbox", name="选择 SIDE_TEST", exact=True
                 ).check()
@@ -254,11 +356,14 @@ def test_desktop_confirms_two_rounds_edits_native_attributes_and_previews_report
                 local.get_by_role("checkbox", name="选择 SIDE_TEST", exact=True).check()
                 confirm_selected(1)
                 direction = bucket("第二轮 · 局部退出方向")
-                for axis, value in zip("XYZ", ["1", "0", "0"]):
-                    direction.get_by_role(
-                        "textbox", name=f"SIDE_TEST 方向 {axis}", exact=True
-                    ).fill(value)
-                direction.get_by_role("button", name="确认此方向", exact=True).click()
+                direction.get_by_role("button", name="编辑方向", exact=True).click()
+                direction_editor = page.get_by_role("region", name="编辑出模方向")
+                direction_editor.get_by_role("textbox", name="方向向量", exact=True).fill("[1,0,0]")
+                expect(page.locator('[data-direction-scope="SIDE_TEST"]')).to_have_attribute("data-direction-vector", "[1,0,0]")
+                # Keep the direction draft while another review publishes a new snapshot.
+                advance_attribute_review("appearance")
+                direction_editor.get_by_role("button", name="保存方向", exact=True).click()
+                expect(direction_editor).to_have_count(0, timeout=20000)
                 finished = wait_run(
                     service, project_id, run_id, {"report_editing", "complete"}
                 )
@@ -286,6 +391,7 @@ def test_desktop_confirms_two_rounds_edits_native_attributes_and_previews_report
                 # A real user attribute edit must reach Worker without re-running Gs.
                 request_count = len(requests)
                 panel.get_by_role("button", name="刷新", exact=True).click()
+                bucket("属性标注")
                 appearance = bucket("面属性 · 外观")
                 appearance.get_by_role("button", name="编辑属性", exact=True).click()
                 page.get_by_role("combobox", name="面属性值", exact=True).select_option(

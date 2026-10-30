@@ -93,6 +93,7 @@ class GeometryEdit:
         if method not in {
             "features.revise",
             "forming_scopes.revise",
+            "forming_scopes.analyze",
             "annotations.revise",
         } or not params.get("snapshot_id"):
             raise DFMError(

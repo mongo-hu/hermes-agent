@@ -12,6 +12,7 @@ interface DfmFeatureGroupsProps<T extends FeatureIdentity> {
   editingFeatureId: string | null
   activeFeatureElementRef: RefObject<HTMLDivElement | null>
   renderFeature: (feature: T, index: number) => ReactNode
+  navigationSequence?: number
 }
 
 export function DfmFeatureGroups<T extends FeatureIdentity>({
@@ -20,7 +21,8 @@ export function DfmFeatureGroups<T extends FeatureIdentity>({
   activeFeatureId,
   editingFeatureId,
   activeFeatureElementRef,
-  renderFeature
+  renderFeature,
+  navigationSequence
 }: DfmFeatureGroupsProps<T>) {
   const [openKinds, setOpenKinds] = useState<Set<string>>(new Set())
 
@@ -43,22 +45,26 @@ export function DfmFeatureGroups<T extends FeatureIdentity>({
     setOpenKinds(previous => {
       const required = [activeKind, editingKind].filter((kind): kind is string => kind !== undefined)
 
-      if (required.every(kind => previous.has(kind))) {return previous}
+      if (required.every(kind => previous.has(kind))) {
+        return previous
+      }
 
       return new Set([...previous, ...required])
     })
-  }, [activeFeatureId, editingFeatureId, activeKind, editingKind])
+  }, [activeFeatureId, editingFeatureId, activeKind, editingKind, navigationSequence])
 
   useEffect(() => {
     if (activeKindOpen && !editingFeatureId) {
       activeFeatureElementRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     }
-  }, [activeFeatureId, activeKindOpen, activeFeatureElementRef, editingFeatureId])
+  }, [activeFeatureId, activeKindOpen, activeFeatureElementRef, editingFeatureId, navigationSequence])
 
   return (
     <div className="grid gap-2">
       <h2 className="text-[11px] font-medium text-slate-300">已确认特征 · {features.length} 个实例</h2>
-      {!features.length && <p className="text-[10px] text-slate-400">确认前结果为空。请在上方定位、编辑并确认候选特征。</p>}
+      {!features.length && (
+        <p className="text-[10px] text-slate-400">确认前结果为空。请在上方定位、编辑并确认候选特征。</p>
+      )}
       {groups.map(([kind, entries]) => (
         <details
           className="overflow-hidden rounded-lg border border-white/10 bg-white/[0.025]"
@@ -66,11 +72,17 @@ export function DfmFeatureGroups<T extends FeatureIdentity>({
           onToggle={event => {
             const open = event.currentTarget.open
             setOpenKinds(previous => {
-              if (previous.has(kind) === open) {return previous}
+              if (previous.has(kind) === open) {
+                return previous
+              }
+
               const next = new Set(previous)
 
-              if (open) {next.add(kind)}
-              else {next.delete(kind)}
+              if (open) {
+                next.add(kind)
+              } else {
+                next.delete(kind)
+              }
 
               return next
             })

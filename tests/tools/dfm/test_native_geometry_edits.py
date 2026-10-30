@@ -85,6 +85,119 @@ def metadata(service, project_id):
     )
 
 
+def test_user_main_direction_is_committed_once_without_an_extra_structure_review(model):
+    service, project_id, _wall, _refs = model
+    before = service._store(project_id).load()
+    context = service.analysis("review_context", project_id=project_id)
+    main = next(scope for scope in context["forming_scopes"] if scope["mode"] == "main")
+    assert main["status"] == "confirmed"
+    assert main["draw_direction"] == [0, 0, 1]
+    assert any(group["kind"] == "product_forming" and group["status"] == "confirmed"
+               for group in context["review_groups"])
+    assert not any(feature["feature_id"] == main["forming_scope_id"] for feature in context["features"])
+    assert any(group["kind"] == "undercut_scope" and group["status"] == "pending_review"
+               for group in context["review_groups"])
+    assert service._sync_confirmed_main_direction(project_id, before).revision == before.revision
+    assert service._store(project_id).load().revision == before.revision
+
+
+def test_unchanged_range_save_preserves_direction_and_reviews_without_worker_work(model, monkeypatch):
+    service, project_id, _wall, _refs = model
+    context = service.analysis("review_context", project_id=project_id)
+    scope = next(row for row in context["forming_scopes"] if row["forming_scope_id"] == "SIDE_TEST")
+    service.analysis("stage_forming_direction", project_id=project_id,
+        forming_scope={**scope, "draw_direction": [1, 0, 0]},
+        expected_revision=context["revision"], expected_snapshot_id=context["snapshot_id"])
+    before = service._store(project_id).load()
+    context = service.analysis("review_context", project_id=project_id)
+    assert context["edit_timeout_ms"] == (service.config.geometry_timeout_seconds + 60) * 1000
+
+    def no_worker(*args, **kwargs):
+        pytest.fail("Unchanged geometry must not invoke Worker or invalidate reviews")
+
+    monkeypatch.setattr(service, "_prepare_geometry_edit", no_worker)
+    result = service.analysis("update_forming_scope_geometry", project_id=project_id,
+        forming_scope_id="SIDE_TEST", geometry_refs=list(reversed(scope["geometry_refs"])),
+        expected_revision=context["revision"], expected_snapshot_id=context["snapshot_id"])
+    assert result["unchanged"] is True
+    assert service._store(project_id).load() == before
+    current = service.analysis("review_context", project_id=project_id)
+    assert current == context
+    with pytest.raises(DFMError) as failure:
+        service.analysis("update_forming_scope_geometry", project_id=project_id,
+            forming_scope_id="SIDE_TEST", geometry_refs=scope["geometry_refs"], expected_revision=context["revision"] - 1)
+    assert failure.value.code == "manifest_conflict"
+
+
+def test_a_candidate_with_another_direction_is_not_implicitly_confirmed(model):
+    service, project_id, _wall, _refs = model
+    service.analysis("analyze_forming_scope", project_id=project_id,
+                     forming_scope_id="MAIN", mode="main", draw_direction=[1, 0, 0])
+    before = service._store(project_id).load()
+    assert service._sync_confirmed_main_direction(project_id, before).revision == before.revision
+    context = service.analysis("review_context", project_id=project_id)
+    main = next(scope for scope in context["forming_scopes"] if scope["mode"] == "main")
+    assert main["draw_direction"] == [1, 0, 0]
+    assert main["status"] == "candidate"
+    assert any(group["kind"] == "product_forming" and group["status"] == "pending_review"
+               for group in context["review_groups"])
+
+
+def test_main_direction_edit_preserves_features_retires_old_ranges_and_reuses_model(model):
+    service, project_id, wall, refs = model
+    context = service.analysis("review_context", project_id=project_id)
+    service.analysis("update_feature_geometry", project_id=project_id, feature_id=wall["feature_id"],
+                     geometry_refs=refs[:2], expected_revision=context["revision"], expected_snapshot_id=context["snapshot_id"])
+    context = service.analysis("review_context", project_id=project_id)
+    before_features = {row["feature_id"]: row["properties"]["geometry_refs"] for row in context["features"]}
+    main = next(row for row in context["forming_scopes"] if row["mode"] == "main")
+    payload = {key: main[key] for key in ("forming_scope_id", "kind", "mode", "geometry_refs")}
+    payload.update(draw_direction=[1, 0, 0], coordinate_system="model", direction_source="user_confirmed")
+    result = service.analysis("revise_forming_scopes", project_id=project_id, forming_scopes=[payload],
+                              expected_revision=context["revision"], expected_snapshot_id=context["snapshot_id"])
+    assert result["viewer_manifest"]
+    updated = service.analysis("review_context", project_id=project_id)
+    assert {row["feature_id"]: row["properties"]["geometry_refs"] for row in updated["features"]} == before_features
+    assert next(row for row in updated["forming_scopes"] if row["forming_scope_id"] == "SIDE_TEST")["status"] == "stale"
+    assert not any("SIDE_TEST" in group["target_refs"] for group in updated["review_groups"])
+    main = next(row for row in updated["forming_scopes"] if row["mode"] == "main")
+    assert main["status"] == "confirmed" and main["draw_direction"] == [1, 0, 0]
+    state, digest, _ = metadata(service, project_id)
+    assert next(fact.value for fact in reversed(state.facts) if fact.name == "pull_dir") == [1, 0, 0]
+    cached = service.geometry_sessions.acquire(project_id).snapshots_by_input_sha256[digest]
+    assert cached["diagnostics"]["model_import_count"] == 1
+    # A normal plan/discovery refresh must keep the user's edited Feature faces.
+    service._persist_geometry_candidates(project_id)
+    assert {row["feature_id"]: row["properties"]["geometry_refs"] for row in service.analysis("review_context", project_id=project_id)["features"]} == before_features
+    service.geometry_sessions.close_project(project_id)
+    state = service._store(project_id).load()
+    service._open_committed_geometry(project_id, state, next(item for item in state.inputs if item.sha256 == digest))
+    restored = service.analysis("review_context", project_id=project_id)
+    assert next(row for row in restored["forming_scopes"] if row["mode"] == "main")["draw_direction"] == [1, 0, 0]
+    assert {row["feature_id"]: row["properties"]["geometry_refs"] for row in restored["features"]} == before_features
+
+
+def test_failed_main_direction_analysis_keeps_the_previous_fact_and_snapshot(model, monkeypatch):
+    service, project_id, _wall, _refs = model
+    context = service.analysis("review_context", project_id=project_id)
+    state = service._store(project_id).load()
+    main = next(row for row in context["forming_scopes"] if row["mode"] == "main")
+    payload = {key: main[key] for key in ("forming_scope_id", "kind", "mode", "geometry_refs")}
+    payload.update(draw_direction=[1, 0, 0], coordinate_system="model", direction_source="user_confirmed")
+    call = service.geometry_sessions.call
+    def fail_analysis(project, method, params):
+        if method == "forming_scopes.analyze":
+            raise DFMError("geometry_execution_failed", "native analysis failed")
+        return call(project, method, params)
+    monkeypatch.setattr(service.geometry_sessions, "call", fail_analysis)
+    with pytest.raises(DFMError, match="native analysis failed"):
+        service.analysis("revise_forming_scopes", project_id=project_id, forming_scopes=[payload],
+                         expected_revision=context["revision"], expected_snapshot_id=context["snapshot_id"])
+    after = service._store(project_id).load()
+    assert after.facts == state.facts
+    assert service._latest_discovery_snapshot(after).snapshot_id == context["snapshot_id"]
+
+
 def test_review_snapshot_rebases_confirmation_without_losing_new_artifacts(
     model, monkeypatch
 ):

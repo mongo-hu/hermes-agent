@@ -6,6 +6,7 @@ import {
   parseReviewDirection,
   reviewBuckets,
   type ReviewContext,
+  reviewEditTimeout,
   reviewGeometry,
   type ReviewGroup
 } from './dfm-review'
@@ -53,13 +54,21 @@ function context(): ReviewContext {
 }
 
 describe('DFM review state', () => {
+  it('uses the backend execution budget for edits instead of the generic API timeout', () => {
+    expect(reviewEditTimeout({ edit_timeout_ms: 235_000 })).toBe(235_000)
+
+    for (const value of [undefined, 0, -1, NaN, Infinity]) {
+      expect(reviewEditTimeout({ edit_timeout_ms: value })).toBeGreaterThan(15_000)
+    }
+  })
+
   it('groups by category without merging independent confirmations', () => {
     const buckets = reviewBuckets(context())
-    expect(buckets.find(bucket => bucket.id === 'hollow_boss')?.groups.map(group => group.review_group_id)).toEqual([
-      'b1'
-    ])
-    expect(buckets.find(bucket => bucket.id === 'hollow_boss')?.label).toBe('带孔 Boss 柱')
-    expect(buckets.find(bucket => bucket.id === 'main_wall')?.groups).toHaveLength(1)
+    expect(
+      buckets.find(bucket => bucket.id === 'structure:hollow_boss')?.groups.map(group => group.review_group_id)
+    ).toEqual(['b1'])
+    expect(buckets.find(bucket => bucket.id === 'structure:hollow_boss')?.label).toBe('带孔 Boss 柱')
+    expect(buckets.find(bucket => bucket.id === 'structure:main_wall')?.groups).toHaveLength(1)
   })
 
   it('moves only confirmed structures into results and sends revised structures back to pending', () => {
@@ -93,6 +102,31 @@ describe('DFM review state', () => {
     expect(reviewGeometry(context(), group)).toEqual([{ kind: 'face', index: 1 }])
   })
 
+  it('keeps the global draw scope separate from wall features and structure counts', () => {
+    const state = context()
+
+    const main: ReviewGroup = {
+      review_group_id: 'main',
+      kind: 'product_forming',
+      target_refs: ['MAIN'],
+      status: 'confirmed'
+    }
+
+    state.forming_scopes.push({
+      forming_scope_id: 'MAIN',
+      kind: 'main_forming',
+      mode: 'main',
+      draw_direction: [0, 0, 1],
+      geometry_refs: state.features.flatMap(feature => feature.properties.geometry_refs ?? [])
+    })
+    state.review_groups.push(main)
+    expect(reviewGeometry(state, main)).toHaveLength(3)
+    const wall = state.review_groups.find(group => group.target_refs.includes('WALL'))!
+    expect(reviewGeometry(state, wall)).toEqual([{ kind: 'face', index: 3 }])
+    expect(confirmedFeatureIds(state.review_groups)).toEqual(new Set(['BOSS_2']))
+    expect(state.features.some(feature => feature.feature_id === 'MAIN')).toBe(false)
+  })
+
   it('unlocks local direction only after its own range and structures are confirmed', () => {
     const state = context()
 
@@ -118,8 +152,9 @@ describe('DFM review state', () => {
       ['0', '0', '0'],
       ['NaN', '0', '1'],
       ['Infinity', '0', '1']
-    ])
-      {expect(parseReviewDirection(value)).toBeNull()}
+    ]) {
+      expect(parseReviewDirection(value)).toBeNull()
+    }
 
     expect(parseReviewDirection(['1', '2', '-3'])).toEqual([1, 2, -3])
   })

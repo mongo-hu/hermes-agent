@@ -4,6 +4,7 @@ interface AnnotationEditorProps {
   values: string[]
   faceCount: number
   busy: boolean
+  saveBlocked?: boolean
   onValue: (value: string) => void
   onSave: () => void
   onCancel: () => void
@@ -15,6 +16,7 @@ export function DfmAnnotationEditor({
   values,
   faceCount,
   busy,
+  saveBlocked = false,
   onValue,
   onSave,
   onCancel
@@ -29,10 +31,10 @@ export function DfmAnnotationEditor({
         属性值
         <select
           aria-label="面属性值"
-          disabled={busy}
-          value={value}
-          onChange={event => onValue(event.target.value)}
           className="ml-2 rounded bg-slate-800 p-1"
+          disabled={busy}
+          onChange={event => onValue(event.target.value)}
+          value={value}
         >
           {values.map(item => (
             <option key={item} value={item}>
@@ -42,14 +44,14 @@ export function DfmAnnotationEditor({
         </select>
       </label>
       <button
-        type="button"
-        disabled={busy || faceCount === 0 || !values.includes(value)}
-        onClick={onSave}
         className="mr-3 mt-2"
+        disabled={busy || saveBlocked || faceCount === 0 || !values.includes(value)}
+        onClick={onSave}
+        type="button"
       >
         保存属性
       </button>
-      <button type="button" disabled={busy} onClick={onCancel}>
+      <button disabled={busy} onClick={onCancel} type="button">
         取消
       </button>
     </div>

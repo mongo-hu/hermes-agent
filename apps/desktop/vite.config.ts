@@ -28,6 +28,12 @@ const fsAllow = [
 export default defineConfig({
   base: './',
   plugins: [react(), tailwindcss()],
+  // Discover the lazily opened 3D editor's dependencies at startup. A late
+  // optimizer pass during HMR can otherwise mix React runtime generations.
+  optimizeDeps: {
+    include: ['react', 'react-dom/client', 'react/jsx-runtime', 'react/jsx-dev-runtime',
+      'three', 'three/addons/controls/OrbitControls.js', 'three/addons/controls/TransformControls.js']
+  },
   css: {
     // Pin an explicit (empty) PostCSS config. Tailwind is handled entirely by
     // `@tailwindcss/vite`, so the renderer needs no PostCSS plugins — and

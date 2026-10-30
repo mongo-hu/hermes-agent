@@ -1263,6 +1263,7 @@ class GeometrySessionPool:
         input_sha256: str,
         artifact_dir: Path,
         lease_seconds: int,
+        expected_snapshot_id: str | None = None,
     ) -> dict[str, Any]:
         owned = self.acquire(project_id)
         existing = owned.snapshots_by_input_sha256.get(input_sha256)
@@ -1282,7 +1283,8 @@ class GeometrySessionPool:
                     time.monotonic()
                 )
                 owned.last_used = time.monotonic()
-                return dict(existing)
+                if not expected_snapshot_id or owned.snapshot_aliases.get(expected_snapshot_id, expected_snapshot_id) in owned.snapshot_ids:
+                    return dict(existing)
             except DFMError as exc:
                 if exc.code not in {"snapshot_not_found", "snapshot_expired", "geometry_session_lost"}:
                     raise
@@ -1300,10 +1302,18 @@ class GeometrySessionPool:
             except DFMError as exc:
                 if exc.code != "geometry_recovery_dependency_changed":
                     raise
+                if expected_snapshot_id:
+                    raise
+                self._archive_recovery(recovery.path)
                 self._recovery.get(project_id, {}).pop(input_sha256, None)
             else:
                 owned.last_used = time.monotonic()
+                if expected_snapshot_id:
+                    self.resolve_snapshot_id(project_id, expected_snapshot_id)
                 return recovered
+        if expected_snapshot_id:
+            raise DFMError("geometry_recovery_unavailable", "The reviewed snapshot requires geometry-session recovery.",
+                           {"snapshot_id": expected_snapshot_id, "next_action": "prepare_review"})
         opened = owned.session.call(
             "snapshots.open",
             {
@@ -1338,6 +1348,21 @@ class GeometrySessionPool:
         self._write_recovery(state)
         owned.last_used = time.monotonic()
         return opened
+
+    @staticmethod
+    def _archive_recovery(path: Path) -> None:
+        if path.is_file():
+            path.replace(path.with_name(f"session-recovery.archived-{time.time_ns()}.json"))
+
+    def restart_discovery(self, project_id: str, input_sha256: str, artifact_dir: Path) -> None:
+        """Start a new semantic branch while retaining the model and old recovery log."""
+        owned = self.acquire(project_id)
+        with self._lock:
+            if owned.active_job_ids:
+                raise DFMError("geometry_session_busy", "Wait for the current geometry task before restoring review.")
+            self._archive_recovery(artifact_dir / "session-recovery.json")
+            self._recovery.get(project_id, {}).pop(input_sha256, None)
+            owned.snapshots_by_input_sha256.pop(input_sha256, None)
 
     def wait_job(
         self,

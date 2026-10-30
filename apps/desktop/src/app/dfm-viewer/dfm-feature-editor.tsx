@@ -7,6 +7,7 @@ interface FeatureEditorProps {
   addedCount: number
   removedCount: number
   busy: boolean
+  saveBlocked?: boolean
   onSave: () => void
   onCancel: () => void
   onRestore: () => void
@@ -19,6 +20,7 @@ export function DfmFeatureEditor({
   addedCount,
   removedCount,
   busy,
+  saveBlocked = false,
   onSave,
   onCancel,
   onRestore
@@ -54,7 +56,7 @@ export function DfmFeatureEditor({
       <div className="mt-2 flex flex-wrap gap-3">
         <button
           className="text-amber-50 disabled:opacity-40"
-          disabled={busy || faceCount === 0}
+          disabled={busy || saveBlocked || faceCount === 0}
           onClick={onSave}
           type="button"
         >

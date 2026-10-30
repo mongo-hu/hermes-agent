@@ -18,7 +18,10 @@ def api(monkeypatch):
         "project_id": "dfm_test",
         "revision": 7,
         "features": [],
-        "review_groups": [],
+        "review_groups": [
+            {"kind": "undercut_scope", "status": "confirmed", "target_refs": ["SIDE"]},
+            {"kind": "local_structure", "status": "confirmed", "target_refs": ["SIDE"]},
+        ],
         "forming_scopes": [
             {
                 "forming_scope_id": "SIDE",
@@ -71,6 +74,28 @@ def test_direction_uses_current_server_geometry_and_user_supplied_vector(api):
     assert scope["kind"] == "undercut"
     assert scope["draw_direction"] == [1, 2, 0]
     assert scope["direction_source"] == "user_confirmed"
+
+
+def test_unreviewed_undercut_direction_is_staged_instead_of_confirmed(api):
+    client, service = api
+    state = service.analysis("review_context")
+    state["review_groups"] = []
+    service.reset_mock()
+    result = client.post("/api/dfm/projects/dfm_test/discovery/review/direction", json={
+        "forming_scope_id": "SIDE", "draw_direction": [1, 0, 0], "expected_revision": 7})
+    assert result.status_code == 200, result.text
+    call = service.analysis.call_args_list[-2]
+    assert call.args == ("stage_forming_direction",)
+    assert call.kwargs["forming_scope"]["draw_direction"] == [1, 0, 0]
+
+
+def test_edit_prepare_keeps_review_snapshot_pinned(api):
+    client, service = api
+    result = client.post("/api/dfm/projects/dfm_test/discovery/review/prepare", json={
+        "expected_revision": 7, "expected_snapshot_id": "snapshot-reviewed"})
+    assert result.status_code == 200, result.text
+    service.analysis.assert_called_once_with("prepare_review", project_id="dfm_test",
+        expected_revision=7, expected_snapshot_id="snapshot-reviewed")
 
 
 def test_attribute_edit_preserves_identity_geometry_and_revision(api):
@@ -182,6 +207,12 @@ def test_scope_geometry_edit_preserves_full_refs_and_returns_updated_review_cont
     api,
 ):
     client, service = api
+    state = service.analysis("review_context")
+    service.reset_mock()
+    service.analysis.side_effect = lambda action, **params: (
+        {"revision": 8, "viewer_manifest": "/project/current-viewer.json", "unchanged": False}
+        if action == "update_forming_scope_geometry" else {**state, "revision": 8}
+    )
     refs = [
         {
             "kind": "face",
@@ -196,6 +227,9 @@ def test_scope_geometry_edit_preserves_full_refs_and_returns_updated_review_cont
         json={"geometry_refs": refs, "expected_revision": 7},
     )
     assert result.status_code == 200, result.text
+    assert result.json()["viewer_manifest"] == "/project/current-viewer.json"
+    assert result.json()["revision"] == 8
+    assert result.json()["unchanged"] is False
     call = service.analysis.call_args_list[-2]
     assert call.args == ("update_forming_scope_geometry",)
     assert call.kwargs == {
@@ -204,6 +238,10 @@ def test_scope_geometry_edit_preserves_full_refs_and_returns_updated_review_cont
         "geometry_refs": refs,
         "expected_revision": 7,
     }
+    service.analysis.side_effect = lambda action, **params: {**state, "unchanged": True}
+    unchanged = client.patch("/api/dfm/projects/dfm_test/discovery/scopes/SIDE",
+        json={"geometry_refs": refs, "expected_revision": 7})
+    assert unchanged.json()["unchanged"] is True
     service.analysis.side_effect = DFMError(
         "geometry_edit_conflict", "another edit committed"
     )

@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ReviewContext } from './dfm-review'
+import { type ReviewContext, reviewEditTimeout } from './dfm-review'
 import { DfmReviewPanel } from './dfm-review-panel'
 
 const previousBridge = window.hermesDesktop
@@ -44,8 +44,16 @@ function context(): ReviewContext {
 }
 
 function openBucket(label: RegExp) {
-  const summary = screen.getByText(label)
+  const summary = screen.getByText(label, { selector: 'summary' })
   const details = summary.closest('details')!
+  let parent = details.parentElement?.closest('details')
+
+  while (parent) {
+    parent.open = true
+    fireEvent(parent, new Event('toggle'))
+    parent = parent.parentElement?.closest('details')
+  }
+
   details.open = true
   fireEvent(details, new Event('toggle', { bubbles: true }))
 
@@ -61,6 +69,7 @@ function mount(initial: ReviewContext, next = initial) {
   const onChanged = vi.fn()
   const onHighlight = vi.fn()
   const onEditScope = vi.fn()
+  const onEditDirection = vi.fn()
   const onEditAnnotation = vi.fn()
   const onCreateAnnotation = vi.fn()
 
@@ -69,6 +78,7 @@ function mount(initial: ReviewContext, next = initial) {
       onChanged={onChanged}
       onCreateAnnotation={onCreateAnnotation}
       onEditAnnotation={onEditAnnotation}
+      onEditDirection={onEditDirection}
       onEditScope={onEditScope}
       onHighlight={onHighlight}
       projectId={initial.project_id}
@@ -76,18 +86,19 @@ function mount(initial: ReviewContext, next = initial) {
     />
   )
 
-  return { ...view, api, onChanged, onHighlight, onEditScope, onEditAnnotation, onCreateAnnotation }
+  return { ...view, api, onChanged, onHighlight, onEditScope, onEditDirection, onEditAnnotation, onCreateAnnotation }
 }
 
 describe('DFM grouped review interaction', () => {
   it('pins the reviewed snapshot while submitting a group confirmation', async () => {
-    const initial = { ...context(), snapshot_id: 'discovery.snapshot.reviewed' }
+    const initial = { ...context(), snapshot_id: 'discovery.snapshot.reviewed', edit_timeout_ms: 180_000 }
     const { api } = mount(initial, { ...initial, revision: 8 })
     await screen.findByText(/带孔 Boss 柱/)
     openBucket(/带孔 Boss 柱/)
     fireEvent.click(screen.getByRole('checkbox', { name: '选择 BOSS_1' }))
     fireEvent.click(screen.getByRole('button', { name: '确认选中组（1）' }))
     await waitFor(() => expect(api).toHaveBeenCalledTimes(2))
+    expect(api.mock.calls[1][0]).toMatchObject({ timeoutMs: initial.edit_timeout_ms })
     expect(api.mock.calls[1][0].body).toEqual({
       review_group_ids: ['boss-1'],
       expected_revision: 7,
@@ -122,11 +133,12 @@ describe('DFM grouped review interaction', () => {
     })
     const { onEditAnnotation, onCreateAnnotation, onHighlight, api } = mount(initial)
     await screen.findByText(/面属性 · 外观/)
+    openBucket(/属性标注/)
     fireEvent.click(screen.getByRole('button', { name: '标记外观' }))
-    expect(onCreateAnnotation).toHaveBeenCalledWith(initial.annotation_kinds[0], initial.revision)
+    expect(onCreateAnnotation).toHaveBeenCalledWith(initial.annotation_kinds[0], initial)
     const bucket = openBucket(/面属性 · 外观/)
     fireEvent.click(within(bucket).getByRole('button', { name: '编辑属性' }))
-    expect(onEditAnnotation).toHaveBeenCalledWith(initial.annotations[0], initial.revision, [
+    expect(onEditAnnotation).toHaveBeenCalledWith(initial.annotations[0], initial, [
       'appearance',
       'non_appearance'
     ])
@@ -138,6 +150,7 @@ describe('DFM grouped review interaction', () => {
       expect(api).toHaveBeenLastCalledWith({
         path: '/api/dfm/projects/project-a/discovery/review/confirm',
         method: 'POST',
+        timeoutMs: reviewEditTimeout(initial),
         body: { expected_revision: 7, review_group_ids: ['attribute-1'] }
       })
     )
@@ -145,10 +158,10 @@ describe('DFM grouped review interaction', () => {
   it('opens the range editor with the authoritative scope and current revision', async () => {
     const initial = context()
     const { onEditScope, api } = mount(initial)
-    await screen.findByText('已确认的范围与属性')
-    const bucket = openBucket(/已确认的范围与属性/)
+    await screen.findByText(/第一轮 · 倒扣范围/)
+    const bucket = openBucket(/第一轮 · 倒扣范围/)
     fireEvent.click(await within(bucket).findByRole('button', { name: '编辑范围' }))
-    expect(onEditScope).toHaveBeenCalledWith(initial.forming_scopes[0], initial.revision)
+    expect(onEditScope).toHaveBeenCalledWith(initial.forming_scopes[0], initial)
     expect(api).toHaveBeenCalledTimes(1)
   })
   it('does not carry a pending request or late result into another project', async () => {
@@ -207,50 +220,49 @@ describe('DFM grouped review interaction', () => {
     expect(api.mock.calls[1][0]).toEqual({
       path: '/api/dfm/projects/project-a/discovery/review/confirm',
       method: 'POST',
+      timeoutMs: reviewEditTimeout(initial),
       body: { review_group_ids: ['boss-1'], expected_revision: 7 }
     })
     expect(screen.queryByRole('checkbox', { name: '选择 BOSS_1' })).toBeNull()
     expect((screen.getByRole('checkbox', { name: '选择 BOSS_2' }) as HTMLInputElement).disabled).toBe(false)
   })
 
-  it('requires an explicit nonzero local direction and submits the confirmed model vector', async () => {
+  it('opens a versioned local direction editor only after its range and structures are confirmed', async () => {
     const initial = context()
-    const { api } = mount(initial, { ...initial, revision: 8 })
+    const { api, onEditDirection } = mount(initial)
     await screen.findByText(/局部退出方向/)
-    openBucket(/局部退出方向/)
-    const confirm = await screen.findByRole('button', { name: '确认此方向' })
-    fireEvent.click(confirm)
-    expect(await screen.findByRole('alert')).toHaveProperty('textContent', '请输入三个有限数值，且方向不能全为零。')
+    const bucket = openBucket(/局部退出方向/)
+    fireEvent.click(within(bucket).getByRole('button', { name: '编辑方向' }))
+    expect(onEditDirection).toHaveBeenCalledWith(initial.forming_scopes[0], initial)
     expect(api).toHaveBeenCalledTimes(1)
-
-    for (const [axis, value] of [
-      ['X', '1'],
-      ['Y', '0'],
-      ['Z', '0']
-    ]) {
-      fireEvent.change(screen.getByRole('textbox', { name: `SIDE 方向 ${axis}` }), { target: { value } })
-    }
-
-    fireEvent.click(confirm)
-    await waitFor(() => expect(api).toHaveBeenCalledTimes(2))
-    expect(api.mock.calls[1][0]).toEqual({
-      path: '/api/dfm/projects/project-a/discovery/review/direction',
-      method: 'POST',
-      body: { forming_scope_id: 'SIDE', draw_direction: [1, 0, 0], expected_revision: 7 }
-    })
   })
 
-  it('keeps a local direction locked until its own structure is confirmed', async () => {
+  it('hides all pending controls when there are no pending groups and keeps confirmed groups visible', async () => {
+    const initial = context()
+    initial.review_groups = initial.review_groups.map(group => ({ ...group, status: 'confirmed' }))
+    mount(initial)
+    await screen.findByText(/第一轮 · 倒扣范围/)
+    expect(screen.queryByText('待确认组')).toBeNull()
+    expect(screen.queryByText(/待确认 · 0/)).toBeNull()
+    expect(screen.queryByRole('button', { name: /确认选中组/ })).toBeNull()
+    expect(screen.getAllByText('已确认组').length).toBeGreaterThan(0)
+    const bucket = openBucket(/第一轮 · 倒扣范围/)
+    expect(within(bucket).getByRole('button', { name: '编辑范围' })).toBeTruthy()
+  })
+
+  it('offers direction input before local structure confirmation so it can be staged', async () => {
     const initial = context()
     initial.review_groups = initial.review_groups.map(group =>
       group.review_group_id === 'structure' ? { ...group, status: 'pending_review' } : group
     )
-    mount(initial)
+    const { onEditDirection } = mount(initial)
     await screen.findByText(/局部退出方向/)
     openBucket(/局部退出方向/)
-    const button = await screen.findByRole('button', { name: '确认此方向' })
-    expect((button as HTMLButtonElement).disabled).toBe(true)
-    expect(screen.getByText('先确认该倒扣范围和局部结构。')).toBeTruthy()
+    const button = await screen.findByRole('button', { name: '编辑方向' })
+    expect((button as HTMLButtonElement).disabled).toBe(false)
+    expect(screen.getByText('可先输入并暂存方向；正式确认需完成范围及局部结构审核。')).toBeTruthy()
+    fireEvent.click(button)
+    expect(onEditDirection).toHaveBeenCalledWith(initial.forming_scopes[0], initial)
   })
 
   it('refreshes after a version conflict and retries against the new revision', async () => {
@@ -259,11 +271,11 @@ describe('DFM grouped review interaction', () => {
     await screen.findByText(/带孔 Boss 柱/)
     openBucket(/带孔 Boss 柱/)
     fireEvent.click(await screen.findByRole('checkbox', { name: '选择 BOSS_1' }))
-    api.mockRejectedValueOnce(new Error('409 project changed'))
+    api.mockRejectedValueOnce(new Error('409 manifest_conflict: project changed'))
     api.mockResolvedValueOnce({ ...initial, revision: 9 })
     fireEvent.click(screen.getByRole('button', { name: '确认选中组（1）' }))
     await waitFor(() => expect(api).toHaveBeenCalledTimes(3))
-    expect(await screen.findByRole('alert')).toHaveProperty('textContent', '409 project changed')
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', '审核状态已更新，已刷新列表。请核对后重新确认选中的组。')
     fireEvent.click(screen.getByRole('button', { name: '确认选中组（1）' }))
     await waitFor(() => expect(api).toHaveBeenCalledTimes(4))
     expect(api.mock.calls[3][0].body).toEqual({ review_group_ids: ['boss-1'], expected_revision: 9 })

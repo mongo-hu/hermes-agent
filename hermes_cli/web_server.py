@@ -10089,6 +10089,11 @@ class DFMReviewDirectionRequest(BaseModel):
     expected_snapshot_id: Optional[str] = None
 
 
+class DFMReviewPrepareRequest(BaseModel):
+    expected_revision: int
+    expected_snapshot_id: Optional[str] = None
+
+
 def _raise_dfm_http_error(exc: Exception) -> None:
     from tools.dfm.errors import DFMError
 
@@ -10143,10 +10148,11 @@ def update_dfm_forming_scope_geometry(project_id: str, forming_scope_id: str, re
     from tools.dfm.service import get_dfm_service
     try:
         service = get_dfm_service()
-        service.analysis("update_forming_scope_geometry", project_id=project_id, forming_scope_id=forming_scope_id,
+        result = service.analysis("update_forming_scope_geometry", project_id=project_id, forming_scope_id=forming_scope_id,
                          geometry_refs=request.geometry_refs, expected_revision=request.expected_revision,
                          **({"expected_snapshot_id": request.expected_snapshot_id} if request.expected_snapshot_id is not None else {}))
-        return service.analysis("review_context", project_id=project_id)
+        return {**service.analysis("review_context", project_id=project_id),
+                "viewer_manifest": result.get("viewer_manifest"), "unchanged": result.get("unchanged", False)}
     except Exception as exc:
         _raise_dfm_http_error(exc)
 
@@ -10181,10 +10187,23 @@ def confirm_dfm_scope_direction(project_id: str, request: DFMReviewDirectionRequ
         payload = {key: scope[key] for key in ("forming_scope_id", "kind", "mode", "geometry_refs")}
         payload.update({"draw_direction": request.draw_direction,
                         "coordinate_system": "model", "direction_source": "user_confirmed"})
-        service.analysis("revise_forming_scopes", project_id=project_id,
-            forming_scopes=[payload], expected_revision=request.expected_revision,
+        ready = scope["mode"] == "main" or all(any(group["kind"] == kind and group["status"] == "confirmed"
+            and scope["forming_scope_id"] in group["target_refs"] for group in context["review_groups"])
+            for kind in ("undercut_scope", "local_structure"))
+        result = service.analysis("revise_forming_scopes" if ready else "stage_forming_direction", project_id=project_id,
+            **({"forming_scopes": [payload]} if ready else {"forming_scope": payload}), expected_revision=request.expected_revision,
             **({"expected_snapshot_id": request.expected_snapshot_id} if request.expected_snapshot_id is not None else {}))
-        return service.analysis("review_context", project_id=project_id)
+        return {**service.analysis("review_context", project_id=project_id), "viewer_manifest": result.get("viewer_manifest"), "direction_status": result.get("status")}
+    except Exception as exc:
+        _raise_dfm_http_error(exc)
+
+
+@app.post("/api/dfm/projects/{project_id}/discovery/review/prepare")
+def prepare_dfm_review_edit(project_id: str, request: DFMReviewPrepareRequest):
+    from tools.dfm.service import get_dfm_service
+    try:
+        return get_dfm_service().analysis("prepare_review", project_id=project_id,
+            expected_revision=request.expected_revision, expected_snapshot_id=request.expected_snapshot_id)
     except Exception as exc:
         _raise_dfm_http_error(exc)
 

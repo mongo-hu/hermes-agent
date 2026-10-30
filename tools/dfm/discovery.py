@@ -34,6 +34,11 @@ def _content_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def discovery_context_identity(manifest: ProjectManifest) -> str:
+    return _content_hash({item.name: item.value for item in manifest.facts
+                          if item.status == "confirmed" and item.name in {"pull_dir", "model_units"}})
+
+
 def _normalize_coverage(raw: Any) -> list[dict[str, Any]]:
     """Validate the public discovery-coverage rows used by planning gates."""
 
@@ -123,7 +128,7 @@ class DiscoveryEngine:
         return [item for item in manifest.inputs if item.input_id not in superseded]
 
     def refresh_candidates(
-        self, manifest: ProjectManifest, *, project_dir: Path | None = None
+        self, manifest: ProjectManifest, *, project_dir: Path | None = None, force: bool = False
     ) -> ProjectManifest:
         """Run v2 geometry discovery; an unavailable selected backend is an error."""
 
@@ -138,10 +143,7 @@ class DiscoveryEngine:
         capabilities = dict(manifest.capabilities)
         discovery_state = dict(capabilities.get("geometry_discovery") or {})
         by_input = dict(discovery_state.get("inputs") or {})
-        discovery_context_sha256 = _content_hash({
-            item.name: item.value for item in manifest.facts
-            if item.status == "confirmed" and item.name in {"pull_dir", "model_units"}
-        })
+        discovery_context_sha256 = discovery_context_identity(manifest)
         provider_capability = self.geometry_provider.capability(manifest.project_id)
         provider_capability_signature = _content_hash({
             "contract_version": provider_capability.get("contract_version"),
@@ -174,7 +176,7 @@ class DiscoveryEngine:
                     for item in features
                 )
                 if (
-                    already_discovered
+                    not force and already_discovered
                     and cached_discovery.get("capability_signature")
                     == provider_capability_signature
                     and cached_discovery.get("discovery_context_sha256") == discovery_context_sha256

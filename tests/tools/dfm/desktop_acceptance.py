@@ -91,6 +91,8 @@ def electron_runtime(tmp_path, *, backend=None):
         "HERMES_DESKTOP_BOOT_FAKE_STEP_MS": "10",
         "HERMES_DESKTOP_DISABLE_GPU": "0",
         **(backend or {}),
+        **({"HERMES_DESKTOP_DEV_SERVER": os.environ["DFM_DESKTOP_E2E_RENDERER_URL"]}
+           if os.environ.get("DFM_DESKTOP_E2E_RENDERER_URL") else {}),
     })
     log_path = tmp_path / "electron-acceptance.log"
     process = None
@@ -159,10 +161,13 @@ def viewer_window(main, context, manifest_path):
         )
         assert result["ok"], result
     page = opened.value
+    page_errors = []
+    page.on("pageerror", lambda error: page_errors.append(str(error)))
     try:
         page.get_by_role("heading", name="DFM 三维模型").wait_for()
         page.locator("canvas").wait_for()
         yield page
+        assert not page_errors, page_errors
     finally:
         if not page.is_closed():
             page.close()

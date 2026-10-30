@@ -206,7 +206,7 @@ def test_native_first_round_requires_direction_and_merges_structure_with_forming
     not os.environ.get("DFM_GEOMETRY_E2E_EXECUTABLE"),
     reason="native Worker is not configured",
 )
-def test_native_service_runs_ready_groups_then_resumes_after_main_review(tmp_path):
+def test_native_service_uses_confirmed_direction_without_an_extra_main_review(tmp_path):
     source = (
         Path(__file__).resolve().parents[2]
         / "fixtures/dfm/step/injection_plate_with_hole.step"
@@ -257,9 +257,10 @@ def test_native_service_runs_ready_groups_then_resumes_after_main_review(tmp_pat
         assert "plan" in planned, planned
         plan = planned["plan"]
         assert any(item["status"] == "ready" for item in plan["plan_fragments"])
-        assert any(
+        assert not any(
             item["status"] == "pending_review" for item in plan["plan_fragments"]
         )
+        assert all(scope["status"] == "confirmed" for scope in context["forming_scopes"] if scope["mode"] == "main")
         run_id = service.analysis(
             "start", project_id=project_id, plan_id=plan["plan_id"]
         )["run"]["run_id"]
@@ -279,43 +280,22 @@ def test_native_service_runs_ready_groups_then_resumes_after_main_review(tmp_pat
                 f"native run did not reach {stages}: {service.jobs.status(project_id, run_id)}"
             )
 
-        parked = wait_for({"waiting_review"})
-        assert parked.stage == "waiting_review", parked
-        assert parked.completed_fragment_refs
-        assert {"geometric_results", "evaluations", "dfm_viewer"} <= {
-            item.kind for item in parked.artifacts
-        }
-        assert "report_html_runtime" not in {item.kind for item in parked.artifacts}
-        viewer = next(item for item in parked.artifacts if item.kind == "dfm_viewer")
-        view = json.loads(
-            (
-                service.workspace.project_dir(project_id) / viewer.relative_path
-            ).read_text(encoding="utf-8")
-        )
-        assert view["analysis_coverage"]["status"] == "partial"
-        assert view["status"] == "partial"
-        assert view["analysis_coverage"]["incomplete_fragments"]
-        completed_before = set(parked.completed_fragment_refs)
-        context = service.analysis("review_context", project_id=project_id)
-        remaining = [
-            group["review_group_id"]
-            for group in context["review_groups"]
-            if group["status"] == "pending_review"
-            and group["kind"] in {"ordinary_structure", "product_forming"}
-        ]
-        confirmed = service.analysis(
-            "confirm_discovery",
-            project_id=project_id,
-            expected_revision=context["revision"],
-            review_group_ids=remaining,
-        )
-        assert any(
-            item["run_id"] == run_id and item["status"] in {"queued", "running"}
-            for item in confirmed.get("workflow", [])
-        ), confirmed
         finished = wait_for({"report_editing", "complete"})
         assert finished.stage in {"report_editing", "complete"}, finished
-        assert completed_before <= set(finished.completed_fragment_refs)
+        assert finished.completed_fragment_refs
+        assert {"geometric_results", "evaluations", "dfm_viewer"} <= {
+            item.kind for item in finished.artifacts
+        }
+        assert "report_html" not in {item.kind for item in finished.artifacts}
+        viewer = next(item for item in finished.artifacts if item.kind == "dfm_viewer")
+        view = json.loads(
+            (service.workspace.project_dir(project_id) / viewer.relative_path).read_text(encoding="utf-8")
+        )
+        # Unsupported catalog Gs may still make coverage partial. They must not
+        # be confused with an extra pending MAIN confirmation.
+        assert view["status"] == "completed"
+        assert not view["analysis_coverage"]["pending_inputs"]
+        assert not view["analysis_coverage"]["incomplete_fragments"]
         frozen = service._latest_discovery_snapshot(service._store(project_id).load())
         live = service.geometry_sessions.call(
             project_id,
