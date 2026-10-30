@@ -132,6 +132,13 @@ export function reviewTargetLabel(group: ReviewGroup): string {
 }
 
 export function reviewGroupNote(context: ReviewContext, group: ReviewGroup): string | null {
+  if (group.kind === 'undercut_scope') {
+    const scope = context.forming_scopes.find(item => item.forming_scope_id === group.target_refs[0])
+    const faces = scope?.geometry_refs.filter(ref => ref.kind === 'face').length ?? 0
+
+    return `${faces} 个面；确认范围后补充识别局部结构，再确认结构和退出方向。`
+  }
+
   if (group.kind === 'local_structure') {
     const features = context.features.filter(feature => group.target_refs.includes(feature.feature_id))
 

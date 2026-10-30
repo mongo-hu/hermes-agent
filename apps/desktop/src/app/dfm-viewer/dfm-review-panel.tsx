@@ -70,6 +70,7 @@ export function DfmReviewPanel({
   const [limits, setLimits] = useState<Record<string, number>>({})
   const [error, setError] = useState('')
   const [openCategories, setOpenCategories] = useState<Set<ReviewCategory>>(new Set(['structure']))
+  const [bucketNavigation, setBucketNavigation] = useState<{ id: string; sequence: number } | null>(null)
   const panelRef = useRef<HTMLElement | null>(null)
   const currentProject = useRef(projectId)
   currentProject.current = projectId
@@ -77,6 +78,12 @@ export function DfmReviewPanel({
   onRefreshedRef.current = onRefreshed
   const base = `/api/dfm/projects/${encodeURIComponent(projectId)}/discovery/review`
   const buckets = useMemo(() => (context ? reviewBuckets(context, true) : []), [context])
+  const undercutBuckets = buckets.filter(bucket => bucket.groups[0]?.kind === 'undercut_scope')
+  const pendingUndercuts = undercutBuckets.filter(bucket => bucket.groups[0].status === 'pending_review')
+  const undercutTarget = pendingUndercuts[0] ?? undercutBuckets[0]
+
+  const undercutCount = (pendingUndercuts.length ? pendingUndercuts : undercutBuckets)
+    .reduce((count, bucket) => count + bucket.groups.length, 0)
 
   useEffect(() => {
     setBusy(false)
@@ -84,6 +91,7 @@ export function DfmReviewPanel({
     setOpenBuckets(new Set())
     setLimits({})
     setOpenCategories(new Set(['structure']))
+    setBucketNavigation(null)
   }, [projectId])
 
   const refresh = useCallback(async () => {
@@ -146,6 +154,27 @@ export function DfmReviewPanel({
     element?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   }, [navigation, openCategories, openBuckets, limits])
 
+  useEffect(() => {
+    if (!bucketNavigation) {
+      return
+    }
+
+    const element = Array.from(panelRef.current?.querySelectorAll<HTMLElement>('[data-review-bucket]') ?? [])
+      .find(item => item.dataset.reviewBucket === bucketNavigation.id)
+
+    element?.querySelector<HTMLElement>('summary')?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+  }, [bucketNavigation])
+
+  const showUndercuts = () => {
+    if (!undercutTarget) {
+      return
+    }
+
+    setOpenCategories(previous => new Set([...previous, 'forming']))
+    setOpenBuckets(previous => new Set([...previous, undercutTarget.id]))
+    setBucketNavigation(previous => ({ id: undercutTarget.id, sequence: (previous?.sequence ?? 0) + 1 }))
+  }
+
   const submit = async (path: string, body: Record<string, unknown>) => {
     if (!context || busy || editing) {
       return
@@ -167,7 +196,9 @@ export function DfmReviewPanel({
       }
 
       setContext(next)
-      setSelected([])
+      setSelected(previous => previous.filter(id => next.review_groups.some(
+        group => group.review_group_id === id && group.status === 'pending_review'
+      )))
       onChanged(next)
     } catch (cause) {
       if (currentProject.current !== projectId) {
@@ -218,6 +249,12 @@ export function DfmReviewPanel({
           刷新
         </button>
       </div>
+      {undercutTarget && (
+        <button className="mb-2 rounded border border-cyan-300/30 px-2 py-1 text-cyan-100 disabled:opacity-40"
+          disabled={busy || editing} onClick={showUndercuts} type="button">
+          倒扣范围（{undercutCount} 组{pendingUndercuts.length ? '待确认' : '已确认'}）
+        </button>
+      )}
       {pendingCount > 0 && (
         <p className="mb-2 text-[10px] text-slate-400">待确认 · {pendingCount} 组；每组独立确认。</p>
       )}
@@ -256,6 +293,11 @@ export function DfmReviewPanel({
           >
             <summary className="cursor-pointer font-semibold text-slate-100">
               {category.label}
+              {context.review_groups.some(group => reviewCategory(group) === category.id && group.status === 'pending_review') && (
+                <span className="ml-2 text-[10px] font-normal text-amber-200">
+                  {context.review_groups.filter(group => reviewCategory(group) === category.id && group.status === 'pending_review').length} 组待确认
+                </span>
+              )}
               <span className="ml-2 text-[10px] font-normal text-slate-400">
                 {
                   context.review_groups.filter(
@@ -309,6 +351,7 @@ export function DfmReviewPanel({
                     )}
                     <details
                       className="mb-1 rounded border border-white/10 p-1.5"
+                      data-review-bucket={bucket.id}
                       key={bucket.id}
                       onToggle={event => {
                         const open = event.currentTarget.open
@@ -386,6 +429,14 @@ export function DfmReviewPanel({
                               <span className="text-[9px] text-slate-400">
                                 {group.status === 'confirmed' ? '已确认' : '待确认'}
                               </span>
+                              {group.kind === 'undercut_scope' && group.status === 'pending_review' && (
+                                <button className="shrink-0 text-[10px] text-cyan-100 disabled:opacity-40"
+                                  disabled={busy || editing}
+                                  onClick={() => void submit('confirm', { review_group_ids: [group.review_group_id] })}
+                                  type="button">
+                                  确认范围
+                                </button>
+                              )}
                               {group.kind === 'ordinary_structure' && onEditFeature && (
                                 <button
                                   className="text-[10px] text-cyan-200 disabled:opacity-40"

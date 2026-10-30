@@ -304,7 +304,9 @@ def test_desktop_confirms_two_rounds_edits_native_attributes_and_previews_report
                 expect(vector_input).to_have_value(rotated_vector)
                 axis_editor.get_by_role("button", name="取消方向编辑", exact=True).click()
                 expect(page.locator('[data-direction-scope="MAIN"]')).to_have_attribute("data-direction-vector", "[0,0,1]")
-                undercut = bucket("第一轮 · 倒扣范围")
+                panel.get_by_role("button", name="倒扣范围（1 组待确认）", exact=True).click()
+                undercut = panel.locator('[data-review-bucket="forming:undercut_scope"]')
+                expect(undercut.get_by_role("button", name="确认范围", exact=True)).to_be_visible()
                 undercut.get_by_role("button", name="编辑范围", exact=True).click()
                 range_editor = page.get_by_role("region", name="编辑倒扣范围")
                 expect(range_editor).to_be_visible()
@@ -348,10 +350,21 @@ def test_desktop_confirms_two_rounds_edits_native_attributes_and_previews_report
                 staged = service.analysis("review_context", project_id=project_id)
                 candidate = next(scope for scope in staged["forming_scopes"] if scope["forming_scope_id"] == "SIDE_TEST")
                 assert candidate["status"] == "candidate" and candidate["draw_direction"] == [1, 0, 0]
-                undercut.get_by_role(
-                    "checkbox", name="选择 SIDE_TEST", exact=True
-                ).check()
-                confirm_selected(1)
+                undercut.get_by_role("button", name="确认范围", exact=True).click()
+                confirmed_shortcut = panel.get_by_role("button", name="倒扣范围（1 组已确认）", exact=True)
+                expect(confirmed_shortcut).to_be_visible(timeout=20000)
+                after_range = service.analysis("review_context", project_id=project_id)
+                assert any(group["kind"] == "local_structure" and group["status"] == "pending_review"
+                           for group in after_range["review_groups"]), after_range["review_groups"]
+                confirmed_shortcut.click()
+                confirmed_range = panel.locator('[data-review-bucket="forming:undercut_scope:confirmed"]')
+                expect(confirmed_range.get_by_role("button", name="编辑范围", exact=True)).to_be_visible()
+                confirmed_range.get_by_role("button", name="编辑范围", exact=True).click()
+                page.get_by_role("region", name="编辑倒扣范围").get_by_role("button", name="取消", exact=True).click()
+                after_cancel = service.analysis("review_context", project_id=project_id)
+                assert any(group["kind"] == "local_structure" and group["status"] == "pending_review"
+                           for group in after_cancel["review_groups"]), after_cancel["review_groups"]
+                expect(panel.locator("summary").filter(has_text="第二轮 · 局部结构")).to_have_count(1, timeout=20000)
                 local = bucket("第二轮 · 局部结构")
                 local.get_by_role("checkbox", name="选择 SIDE_TEST", exact=True).check()
                 confirm_selected(1)

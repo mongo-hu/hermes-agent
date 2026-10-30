@@ -90,6 +90,53 @@ function mount(initial: ReviewContext, next = initial) {
 }
 
 describe('DFM grouped review interaction', () => {
+  it('exposes undercut editing and individual confirmation through the collapsed category', async () => {
+    const initial = { ...context(), snapshot_id: 'review-current' }
+    initial.review_groups = initial.review_groups.map(group =>
+      group.review_group_id === 'range' ? { ...group, status: 'pending_review' } : group
+    )
+
+    const next: ReviewContext = { ...initial, revision: 8, review_groups: initial.review_groups.map(group =>
+      group.review_group_id === 'range' ? { ...group, status: 'confirmed' } : group
+    ) }
+
+    const { api, onChanged, onEditScope } = mount(initial, next)
+    const shortcut = await screen.findByRole('button', { name: '倒扣范围（1 组待确认）' })
+    const forming = screen.getByText(/^出模设置/, { selector: 'summary' }).closest('details')!
+    expect(forming.open).toBe(false)
+    expect(within(forming).getByText('2 组待确认')).toBeTruthy()
+    fireEvent.click(shortcut)
+    const confirm = await screen.findByRole('button', { name: '确认范围' })
+    const row = confirm.closest('[data-review-object]') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: '编辑范围' }))
+    expect(onEditScope).toHaveBeenCalledWith(initial.forming_scopes[0], initial)
+    // Reopen an explicitly collapsed category from the same shortcut.
+    forming.open = false
+    fireEvent(forming, new Event('toggle'))
+    fireEvent.click(shortcut)
+    await waitFor(() => expect(forming.open).toBe(true))
+    // Confirming this range must leave another selected group unsubmitted.
+    openBucket(/带孔 Boss 柱/)
+    fireEvent.click(screen.getByRole('checkbox', { name: '选择 BOSS_1' }))
+    fireEvent.click(confirm)
+    await waitFor(() => expect(onChanged).toHaveBeenCalledWith(next))
+    expect(api.mock.calls[1][0].body).toEqual({ review_group_ids: ['range'], expected_revision: 7, expected_snapshot_id: 'review-current' })
+    expect(screen.getByRole('button', { name: '确认选中组（1）' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '倒扣范围（1 组已确认）' }))
+    const confirmedBucket = screen.getByText(/第一轮 · 倒扣范围/, { selector: 'summary' }).closest('details')!
+    expect(within(confirmedBucket).getByRole('button', { name: '编辑范围' })).toBeTruthy()
+    expect(within(confirmedBucket).getByRole('button', { name: '编辑方向' })).toBeTruthy()
+    expect(within(confirmedBucket).queryByRole('button', { name: '确认范围' })).toBeNull()
+  })
+
+  it('does not show an undercut shortcut when discovery has no undercut ranges', async () => {
+    const initial = context()
+    initial.review_groups = initial.review_groups.filter(group => group.kind !== 'undercut_scope')
+    mount(initial)
+    await screen.findByText(/带孔 Boss 柱/)
+    expect(screen.queryByRole('button', { name: /^倒扣范围/ })).toBeNull()
+  })
+
   it('pins the reviewed snapshot while submitting a group confirmation', async () => {
     const initial = { ...context(), snapshot_id: 'discovery.snapshot.reviewed', edit_timeout_ms: 180_000 }
     const { api } = mount(initial, { ...initial, revision: 8 })
