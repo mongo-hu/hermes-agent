@@ -595,11 +595,11 @@ runtime/result_documents.py 统一管理 geometric_results 和 evaluations 两�
 
 结构类型统一使用 hollow_boss，技术指标使用 G_HOLLOW_BOSS_*，页面显示“带孔 Boss 柱”；规则匹配不要求证明其螺钉用途。当前 Worker 的 10 类公开结构识别及范围，维护在 Worker 会话文档第 8.12 节。Hermes 依据实际 capabilities 请求识别，不以旧静态目录中的 placeholder 状态代替当前能力声明。
 
-2026-10-29 排查确认：Worker 1.12.0 的能力声明、Hermes 确认页源码、问题分类源码及 V1.0.11 规则概念名称已采用新名称；本地 Desktop dist 仍包含 8 处旧“螺钉柱”标签。已重新构建 Desktop，并补齐三维特征列表中主体壁、实心 Boss 柱的中文标签。
+2026-10-29 排查确认：Worker 1.12.0 的能力声明、Hermes 确认页源码、问题分类源码及 V1.0.11 规则概念名称已采用新名称；当时本地 Desktop dist 仍包含 8 处旧功能名称标签。已重新构建 Desktop，并补齐三维特征列表中主体壁、实心 Boss 柱的中文标签。
 
 源码更新后，开发模式重新运行 `npm run dev --workspace apps/desktop`；使用 dist 的启动方式需执行 `npm run build --workspace apps/desktop` 并关闭重开 Desktop。已经加载到窗口中的旧脚本不会随磁盘构建结果自动替换。已生成的历史 HTML 报告为静态文件，需重新生成才使用当前报告标签。
 
-规则包 explanation_text 中仍有原始 Excel 工作表名“螺钉柱”，属于来源追溯字符串；不改写不可变发布包，也不拿工作表名称推断当前 Feature 类型。历史 Feature/Check ID 在界面仅映射显示名，不回写其身份，不恢复旧 Worker 执行接口。
+规则包 explanation_text 可能保留原始 Excel 工作表名称，属于来源追溯字符串；不改写不可变发布包，也不拿工作表名称推断当前 Feature 类型。历史 Feature/Check ID 在界面仅映射显示名，不回写其身份，不恢复旧 Worker 执行接口。现行研发文档与示例统一使用 `hollow_boss`、`FEATURE_HOLLOW_BOSS`、`C_HOLLOW_BOSS_*`、`G_HOLLOW_BOSS_*`；新增指标是否可用仍以规则发布物及 capabilities 为准。
 
 ### 10.19 待确认、已确认结果与选面编辑
 

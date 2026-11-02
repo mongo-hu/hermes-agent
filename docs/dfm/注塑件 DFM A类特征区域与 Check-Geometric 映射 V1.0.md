@@ -1,10 +1,12 @@
 # 注塑件 DFM A类特征区域与 Check-Geometric 映射 V1.0
 
-状态：工程映射设计，非已发布能力清单。更新：2026-10-19。[开发导航](README.md)
+状态：工程映射设计，非已发布能力清单。更新：2026-10-30。[开发导航](README.md)
 
 本文维护 A 类 44 条来源需求的 Feature、部位、配对、Check 与 G 定义，不再维护完整流程或通信字段。流程见[主流程](dfm-main-workflow-explained.md)，来源边界见[统一需求台账](dfm-injection-requirements-and-coverage.md)，实现交付见[任务与验收](%E6%B3%A8%E5%A1%91%E4%BB%B6%20DFM%20%E7%89%B9%E5%BE%81%E8%AF%86%E5%88%AB%E4%B8%8E%E5%87%A0%E4%BD%95%E8%AE%A1%E7%AE%97%E5%BC%80%E5%8F%91%E4%BB%BB%E5%8A%A1%E6%B8%85%E5%8D%95%20V1.0.md)。
 
 映射最初对照资料为 `D:\notes\MoldMind\V1.2.5.xlsx`；这是历史资料身份，不证明当前数据库仍与其一致。表内“现有”仅指该次对照资料，“新增”表示候选命名。正式 G ID、Check 和规则以已审核发布物为准；发布前逐项核对差异、冻结定义，不根据名称推定算法已实现。
+
+本文使用当前几何结构名称“带孔 Boss 柱”，对应 Worker 的 `hollow_boss` 和本体概念 `FEATURE_HOLLOW_BOSS`。它指柱体中具有盲孔或通孔的 Boss 结构，识别和规则匹配不要求确认其紧固、定位或装配用途。下文大写 `HOLLOW_BOSS` 是工程分类名；`C_HOLLOW_BOSS_*`、`G_HOLLOW_BOSS_*` 中标注为新增的项仍是设计建议，不能当作当前能力。来源编号继续保留，显示名称按当前分类规范化。
 
 ## 1. 映射的职责
 
@@ -12,15 +14,15 @@
 
 外壁、孔壁、孔底、根部和邻近主体壁是 Worker 理解的工程部位，不另建本体 Region 或公开 Region Role 路由。几何证据必须保留实际选中的面、边、体或采样位置。
 
-## 2. 用螺钉柱还原完整模型
+## 2. 用带孔 Boss 柱还原完整模型
 
-### 2.1 螺钉柱Geometric内部需要理解的区域和配对
+### 2.1 带孔 Boss 柱Geometric内部需要理解的区域和配对
 
 | 类型 | 内部目标语义 | 含义 | 结果中应返回的证据 |
 | --- | --- | --- | --- |
-| Feature | 螺钉柱实例 | 已确认螺钉用途的中空BOSS | `feature_id`及组成拓扑引用 |
+| Feature | 带孔 Boss 柱实例 | 由柱体外壁、内孔及连接部位组成的几何结构 | `feature_id`及组成拓扑引用 |
 | 自身区域 | 柱体外壁 | 柱体外侧成型壁 | 参与量测的Faces、极值位置 |
-| 自身区域 | 螺钉孔壁 | 螺钉孔/芯针形成的内壁 | 参与量测的Faces、有效段 |
+| 自身区域 | 内孔壁 | 柱体内孔的成型壁，不推断孔的功能 | 参与量测的Faces、有效段 |
 | 自身区域 | 柱顶环面 | 柱顶环形端面 | Faces及边界环 |
 | 自身区域 | 盲孔底 | 通孔时不存在 | 底面Faces及底部类型 |
 | 自身区域 | 柱外根部过渡 | 柱外壁与承载壁之间的根部blend | Faces/Edges、最小R位置 |
@@ -32,24 +34,26 @@
 | 特征集合 | 支撑筋集合 | 与柱体及主壁有效连接的筋 | 支撑筋`feature_id`列表和连接证据；没有时返回空集合 |
 | 外部配对 | 最近有效外壁 | 用于BOSS外侧净距，排除根部共边 | 被选外壁、见证点和排除原因 |
 
-这些区域和配对不需要各自拥有对外ID。它们是相应Geometric ID定义的一部分。例如`G_SCREW_BOSS_BOTTOM_THK_MIN`天然要求Worker找到“该螺钉柱的盲孔底”和“与其对应的产品外壁”；结果除数值外，还应返回这两组面的拓扑引用和最小厚度见证点。这样规则失败后可以直接高亮证据。
+这些区域和配对不需要各自拥有对外ID。它们是相应Geometric ID定义的一部分。例如建议扩展的`G_HOLLOW_BOSS_BOTTOM_THK_MIN`要求Worker找到“该带孔 Boss 柱的盲孔底”和“与其对应的产品外壁”；结果除数值外，还应返回这两组面的拓扑引用和最小厚度见证点。这样规则失败后可以直接高亮证据。
 
-### 2.2 螺钉柱Check与Geometric的正确对应
+### 2.2 带孔 Boss 柱Check与Geometric的正确对应
 
 | Check | 目标区域/关系 | 依赖Geometric | 对现表的建议 |
 | --- | --- | --- | --- |
-| `C_SCREW_BOSS_WALL_THK` | 外壁＋孔壁＋局部主壁参考 | `G_SCREW_BOSS_WALL_THK_FIELD/MIN/MAX`、`G_SCREW_BOSS_WALL_REF_THK` | 现表只有`MAX/REF`。同时存在下限和上限时，应以`MIN`发现过薄、以`MAX`发现过厚；单用最大值会漏掉局部过薄 |
-| `C_SCREW_BOSS_HOLE_DEPTH` | 孔壁＋孔底＋轴线 | `G_SCREW_BOSS_CORE_DEPTH`、`G_SCREW_BOSS_HOLE_DIA_EFFECTIVE`、二者比值 | “取孔底处孔径”对锥底、阶梯孔不充分；需定义有效成型段和控制直径。规则页第二分支表达式为`≤4`，改进建议却写“超过3:1”，需统一 |
-| `C_SCREW_BOSS_BOTTOM_THK` | 孔底＋对应外壁＋局部主壁参考 | `G_SCREW_BOSS_BOTTOM_THK_MIN`、`G_SCREW_BOSS_WALL_REF_THK` | 将现有`BOTTOM_THK`明确为配对区域内最小底厚，并返回见证点/线 |
-| `C_SCREW_BOSS_DRAFT` | 外壁、孔壁＋用户主出模方向 | `G_SCREW_BOSS_DRAFT_OUT_FIELD/MIN`、`G_SCREW_BOSS_DRAFT_IN_FIELD/MIN` | A类统一使用用户提供的`F_TOOL_MAIN_DRAW_DIR`并分别处理内外壁符号；孔轴/柱轴只能用于一致性检查，不能替代主方向。若需要侧向芯针，先返回主方向下不适用/倒扣证据，取得局部方向后转相应扩展检查 |
-| `C_SCREW_BOSS_OUTER_ROOT_FILLET` | 外根过渡＋局部主壁参考 | `G_SCREW_BOSS_OUTER_ROOT_FILLET_R_MIN`、`G_SCREW_BOSS_WALL_REF_THK` | 现有名称`G_SCREW_BOSS_FILLET_TOP_R`与规则页“外根部”不一致，经工程确认后迁移为语义明确的外根部ID；新 Worker 协议不增加旧 ID 路由别名，旧发布物只保留追溯 |
-| `C_SCREW_BOSS_HOLE_BOTTOM_FILLET` | 孔底内圆角＋局部主壁参考 | `G_SCREW_BOSS_HOLE_BOTTOM_FILLET_R_MIN`、`G_SCREW_BOSS_WALL_REF_THK` | 不应与外根部圆角共用一个Check，否则不同区域、风险和改进建议无法独立出Finding |
+| `C_HOLLOW_BOSS_WALL_THK` | 外壁＋孔壁＋局部主壁参考 | `G_HOLLOW_BOSS_WALL_THK_FIELD/MIN/MAX`、`G_HOLLOW_BOSS_WALL_REF_THK` | 现表只有`MAX/REF`。同时存在下限和上限时，应以`MIN`发现过薄、以`MAX`发现过厚；单用最大值会漏掉局部过薄 |
+| `C_HOLLOW_BOSS_HOLE_DEPTH` | 孔壁＋孔底＋轴线 | `G_HOLLOW_BOSS_CORE_DEPTH`、`G_HOLLOW_BOSS_HOLE_DIA_EFFECTIVE`、二者比值 | “取孔底处孔径”对锥底、阶梯孔不充分；需定义有效成型段和控制直径。规则页第二分支表达式为`≤4`，改进建议却写“超过3:1”，需统一 |
+| `C_HOLLOW_BOSS_BOTTOM_THK` | 孔底＋对应外壁＋局部主壁参考 | `G_HOLLOW_BOSS_BOTTOM_THK_MIN`、`G_HOLLOW_BOSS_WALL_REF_THK` | 将现有`BOTTOM_THK`明确为配对区域内最小底厚，并返回见证点/线 |
+| `C_HOLLOW_BOSS_DRAFT` | 外壁、孔壁＋用户主出模方向 | `G_HOLLOW_BOSS_DRAFT_OUT_FIELD/MIN`、`G_HOLLOW_BOSS_DRAFT_IN_FIELD/MIN` | A类统一使用用户提供的`F_TOOL_MAIN_DRAW_DIR`并分别处理内外壁符号；孔轴/柱轴只能用于一致性检查，不能替代主方向。若需要侧向芯针，先返回主方向下不适用/倒扣证据，取得局部方向后转相应扩展检查 |
+| `C_HOLLOW_BOSS_OUTER_ROOT_FILLET` | 外根过渡＋局部主壁参考 | `G_HOLLOW_BOSS_OUTER_ROOT_FILLET_R_MIN`、`G_HOLLOW_BOSS_WALL_REF_THK` | 现有名称`G_HOLLOW_BOSS_FILLET_TOP_R`与规则页“外根部”不一致，经工程确认后迁移为语义明确的外根部ID；新 Worker 协议不增加旧 ID 路由别名，旧发布物只保留追溯 |
+| `C_HOLLOW_BOSS_HOLE_BOTTOM_FILLET` | 孔底内圆角＋局部主壁参考 | `G_HOLLOW_BOSS_HOLE_BOTTOM_FILLET_R_MIN`、`G_HOLLOW_BOSS_WALL_REF_THK` | 不应与外根部圆角共用一个Check，否则不同区域、风险和改进建议无法独立出Finding |
 | `C_BOSS_ROOT_CONNECTION` | 柱根＋主壁＋支撑筋关系 | `G_BOSS_ROOT_THK_MAX`、`G_BOSS_ROOT_CONTACT_AREA`、`G_BOSS_ROOT_FILLET_R_MIN` | A类01.08，现表缺少 |
-| `C_SCREW_BOSS_RIB_SUPPORT` | 螺钉柱＋支撑筋集合＋主壁 | `G_BOSS_SUPPORT_RIB_COUNT`、筋尺度、连接和根R | A类11.02；即使没有筋也要从螺钉柱触发，返回数量0及“期望关系缺失”证据 |
+| `C_HOLLOW_BOSS_RIB_SUPPORT` | 带孔 Boss 柱＋支撑筋集合＋主壁 | `G_BOSS_SUPPORT_RIB_COUNT`、筋尺度、连接和根R | A类11.02；即使没有筋也要从带孔 Boss 柱触发，返回数量0及“期望关系缺失”证据 |
 | `C_BOSS_TO_OUTER_WALL_CLEARANCE` | 柱外壁/根与最近外壁的指定配对 | `G_BOSS_TO_OUTER_WALL_MIN_DIST` | A类11.04；不要用根部共边产生的零距离，也不要直接等同薄钢结论 |
 | `C_LOCAL_THICK_MASS` | 柱根实体域＋背面区域 | `G_LOCAL_THICK_MASS_EQ_THK_MAX`、`G_LOCAL_THICK_MASS_VOLUME` | A类01.04，现表缺少 |
 
-现有`C_SCREW_BOSS_THIN_STEEL`需要钢材类型、成型侧、钢料高度和支撑条件。产品几何可以先输出BOSS到外壁净距作为预筛，但“薄钢是否合格”应放在B类模具对象补齐后确认，不应占用A类11.04的几何净距Check。
+现有`C_HOLLOW_BOSS_THIN_STEEL`需要钢材类型、成型侧、钢料高度和支撑条件。产品几何可以先输出BOSS到外壁净距作为预筛，但“薄钢是否合格”应放在B类模具对象补齐后确认，不应占用A类11.04的几何净距Check。
+
+当前柱壁调用使用已声明的 `G_HOLLOW_BOSS_WALL_THK_MAX` 与 `G_HOLLOW_BOSS_WALL_REF_THK`。本表中的 `WALL_THK_FIELD/MIN`、`HOLE_DIA_EFFECTIVE`、`BOTTOM_THK_MIN` 等是待审核的扩展口径；不能仅替换 ID 前缀就向 Worker 派发。正式执行时，规则发布物和实际 capabilities 必须共同确认所选 G。
 
 ### 2.3 柱壁两项 G 的测量口径
 
@@ -83,7 +87,7 @@
 
 | 字段 | 必须定义的内容 |
 | --- | --- |
-| 目标Feature/Scope | 适用于`SCREW_BOSS`、`RIB`、`HOLE`还是整件；是否支持子型继承 |
+| 目标Feature/Scope | 适用于`HOLLOW_BOSS`、`RIB`、`HOLE`还是整件；是否支持子型继承 |
 | 内部目标区域 | 外壁、孔壁、孔底、根部、实体域等如何识别，允许哪些拓扑变体 |
 | 外部参考/配对 | 邻近主壁、对应外壁、配对孔、支撑筋如何选择；歧义时如何处理 |
 | 上下文 | A类主方向必须取用户Fact；说明正/负半模符号、坐标系和成型侧。局部退出方向只在补充输入后用于侧向扩展任务 |
@@ -94,12 +98,12 @@
 
 ### 3.3.1 划分粒度原则
 
-1. 按几何操作数区分内部区域：螺钉柱外壁和孔壁必须分开，因为方向和拔模阈值不同，但无需为两者发布独立Region ID。
+1. 按几何操作数区分内部区域：带孔 Boss 柱外壁和孔壁必须分开，因为方向和拔模阈值不同，但无需为两者发布独立Region ID。
 2. 按部位语义定位，不按业务阈值定位：Worker可以识别筋根；“R/t不合格部分”由规则结果确定。
 3. 参考对象的选择写进Geometric契约：主壁参考、对应外壁、对称配对和邻近对象不能靠各算法临时采用不同策略。
 4. 保留未分类作用域：未识别为筋/BOSS的面仍须进入基础厚度、拔模和圆角扫描。
 5. 允许候选和歧义：多个可能主壁、多个可能对称面时，Measurement返回候选、匹配质量或歧义状态，由Hermes询问确认。
-6. Feature子型复用Geometric实现：`SCREW_BOSS`是`HOLLOW_BOSS`的业务子型，可复用BOSS外壁、内壁、根部和主壁参考算法，再增加螺钉用途和孔底语义。
+6. 按几何子型复用Geometric实现：`HOLLOW_BOSS`与`SOLID_BOSS`分别表示带孔和实心 Boss 柱。它们共享外壁、根部和参考主壁算法；带孔子型另有孔壁、顶环面和可选盲孔底，不增设功能用途子型。
 
 ### 3.4 主出模方向的输入和执行边界
 
@@ -125,7 +129,7 @@
 
 | 状态 | A类原检查行数 | 说明 |
 | --- | ---: | --- |
-| 已有直接对应框架 | 16 | 壁厚范围、筋厚、孔底厚、各类基础拔模/根R、螺钉柱壁厚、孔边/孔间距等 |
+| 已有直接对应框架 | 16 | 壁厚范围、筋厚、孔底厚、各类基础拔模/根R、带孔 Boss 柱壁厚、孔边/孔间距等 |
 | 可复用现有Geometric但需新增/拆分Check | 7 | 壁厚均匀性、普通BOSS壁厚、零/反拔模、外圆角、BOSS外壁距、普通盲孔深径比 |
 | 当前未表示 | 21 | 厚肉/交汇、倒扣、卡扣、对称、止口、悬臂、孔筋距、深槽、超小特征等 |
 | 合计 | 44 | 其中01.09与12.03是同一业务概念的重复来源行 |
@@ -133,10 +137,10 @@
 现有Excel还存在以下结构性缺口：
 
 - `C_RIB_SPACING`被用于“筋薄钢”占位，ID语义不一致；应撤销该映射，规则未定义前保持TBD，不要复用错误Check ID。
-- `C_SCREW_BOSS_FILLET`同时容纳外根部和孔底圆角，建议拆成两个Check。
-- `G_SCREW_BOSS_FILLET_TOP_R`与“外根部圆角”的文字定义不一致。
+- `C_HOLLOW_BOSS_FILLET`同时容纳外根部和孔底圆角，建议拆成两个Check。
+- `G_HOLLOW_BOSS_FILLET_TOP_R`与“外根部圆角”的文字定义不一致。
 - 壁厚、拔模和圆角已有数值ID，但Geometric契约尚未完整说明内部区域选择、有效域、统计口径和见证几何。
-- 普通BOSS没有壁厚Check；现有柱壁厚只覆盖螺钉柱子型。
+- 普通BOSS没有壁厚Check；现有柱壁厚只覆盖带孔 Boss 柱子型。
 - `C_HOLE_CLEARANCE`包含孔到孔、孔到外壁两种操作数，执行时必须通过子指标或Check参数区分，不能只返回一个无语义的最小距离。
 
 ## 5. A类44项是否需要调整
@@ -147,7 +151,7 @@
 2. **合并同一范围检查**：01.02和01.03继续使用Excel已有的`C_WALL_THK_RANGE`，分别产生`BELOW_MIN`和`ABOVE_MAX`原因；不要建立两套厚度算法。
 3. **规范零/反拔模**：05.06和05.07统一为`C_DRAFT_SIGN`规则族，零拔模和反拔模作为不同Finding reason；特征专属拔模Check仍保留。
 4. **重命名04.01**：启动阶段必须取得用户主出模方向，业务含义应为“用户给定主出模方向的可脱模性评价”。OCCT不得生成候选方向或自动替换输入；若未来需要推荐方向，应另立外层方案搜索能力，不混入该Check。
-5. **保留泛型与子型**：01.07普通BOSS壁厚和11.01螺钉BOSS壁厚不是重复项。对已确认的`SCREW_BOSS`只执行更具体规则，避免同一实例重复报普通BOSS结果。
+5. **保留泛型与几何子型**：01.07普通BOSS壁厚和11.01带孔 Boss 柱壁厚保留各自来源编号；同一几何目标已由具体子型规则覆盖时，不重复报告普通BOSS结论。规则选择依据结构类别与适用条件，不增加螺钉用途确认。
 6. **将09.01/09.02设为条件性A类**：只有存在已确认的比较区域/对称基准时执行；可以自动提出候选基准，但歧义时必须询问。
 7. **缺失结构由父Feature触发Geometric**：11.02不能只在已识别到筋时触发。应由BOSS触发“需要支撑筋”Check，再调用支撑筋数量Geometric；`support_rib_count=0`是合法结果，并返回空集合证据。
 8. **薄钢分层**：A类11.04只计算产品几何净距；真实薄钢规则在B类取得模具域、成型侧和钢材Factor后确认。
@@ -172,7 +176,8 @@ PART [S]：整个塑件/当前分析实体
 │   └── RIB_INTERSECTION [D]：多筋交汇域、参与筋集合
 ├── BOSS [F]：普通凸台/柱体
 │   ├── 外壁、可选内壁、顶、根、根部圆角、实体域、轴线
-│   └── SCREW_BOSS [F]：螺钉用途BOSS子型
+│   ├── SOLID_BOSS [F]：实心 Boss 柱
+│   └── HOLLOW_BOSS [F]：带孔 Boss 柱
 │       ├── 继承BOSS全部部位
 │       └── 孔壁、孔底、孔底圆角、顶环面、支撑筋集合
 ├── HOLE [F]：孔/开口父类型
@@ -201,7 +206,7 @@ PART [S]：整个塑件/当前分析实体
 └── MICRO_FEATURE_CANDIDATE [D]：小面、小边、小孔/槽/凸起候选
 ```
 
-`SCREW_BOSS`同时具有BOSS子型和“包含孔结构”的组合语义；一个螺钉柱实例不需要再复制成一个互不相关的普通BOSS和普通孔。Worker可以复用BOSS/HOLE底层算法，但Hermes应按最具体的Feature类型选择Check，避免重复Finding。
+`HOLLOW_BOSS`同时具有BOSS子型和“包含孔结构”的组合语义；一个带孔 Boss 柱实例不需要再复制成一个互不相关的普通BOSS和普通孔。独立孔实例可通过包含关系与柱体关联。Worker复用BOSS/HOLE底层算法，Hermes按几何类别选择适用Check，并对同一业务目标去重。
 
 ### 6.0.1 Feature、内部区域、Check与Geometric总表
 
@@ -215,7 +220,7 @@ PART [S]：整个塑件/当前分析实体
 | 工程Feature | `RIB` | 两侧壁、根、顶、端、实体域、邻近主壁参考、方向和高度范围 | 01.05、05.03、06.03、09.02、11.02、12.06 | `G_RIB_ROOT_THK`、`G_RIB_WALL_REF_THK`、`G_RIB_DRAFT_SIDE_A/B_FIELD/MIN`、`G_RIB_ROOT_FILLET_R`、布局量和距离量 |
 | 派生结构 | `RIB_INTERSECTION` | 交汇实体域、参与筋集合、交汇根部、邻近主壁 | 01.06 | `G_RIB_INTERSECTION_EQ_THK_MAX`、`G_RIB_INTERSECTION_VOLUME`、`G_RIB_WALL_REF_THK` |
 | 工程Feature | `BOSS` | 外壁、可选内壁、顶、根、根部blend、实体域、轴线、局部主壁、最近有效外壁、支撑筋集合 | 01.07/01.08、05.04、06.04、11.02/11.04 | `G_BOSS_WALL_THK_FIELD/MIN/MAX`、`G_BOSS_ROOT_THK_MAX`、`G_BOSS_DRAFT_OUT/IN_FIELD/MIN`、`G_BOSS_ROOT_FILLET_R`、`G_BOSS_SUPPORT_RIB_COUNT`、`G_BOSS_TO_OUTER_WALL_MIN_DIST` |
-| Feature子型 | `SCREW_BOSS` | 继承BOSS；增加孔壁、孔底、孔底blend、顶环面和螺钉用途 | 11.01；按结构复用01.09、05.04、06.04、11.02/11.04、12.02/12.03 | `G_SCREW_BOSS_WALL_THK_FIELD/MIN/MAX`、`G_SCREW_BOSS_WALL_REF_THK`、`G_SCREW_BOSS_CORE_DEPTH`、`G_SCREW_BOSS_HOLE_DIA_EFFECTIVE`、`G_SCREW_BOSS_BOTTOM_THK_MIN`、内外拔模和两类圆角量 |
+| Feature子型 | `HOLLOW_BOSS` | 继承BOSS；增加孔壁、可选盲孔底、孔底blend和顶环面 | 11.01；按结构复用01.09、05.04、06.04、11.02/11.04、12.02/12.03 | `G_HOLLOW_BOSS_WALL_THK_FIELD/MIN/MAX`、`G_HOLLOW_BOSS_WALL_REF_THK`、`G_HOLLOW_BOSS_CORE_DEPTH`、`G_HOLLOW_BOSS_HOLE_DIA_EFFECTIVE`、`G_HOLLOW_BOSS_BOTTOM_THK_MIN`、内外拔模和两类圆角量 |
 | Feature父型 | `HOLE` | 孔壁、开口、有效成型段、轴线；按子型决定是否有第二开口或孔底 | 12.01—12.06及01.09 | 复用通孔/盲孔Geometric，不直接产生父型Finding |
 | Feature子型 | `HOLE_THROUGH` | 孔壁、入口/出口、有效贯通段、轴线、有效直径 | 12.01、12.04—12.06 | `G_HOLE_EFFECTIVE_LEN`、`G_HOLE_DIA_EFFECTIVE_MIN`、`G_HOLE_LD_RATIO`、孔到壁/孔/筋距离 |
 | Feature子型 | `HOLE_BLIND` | 孔壁、开口、有效段、轴线、孔底、孔底blend、对应外壁 | 01.09、12.02—12.06 | `G_HOLE_EFFECTIVE_DEPTH`、`G_HOLE_DIA_EFFECTIVE_MIN`、`G_HOLE_BOTTOM_THK`、`G_HOLE_LD_RATIO`、孔到壁/孔/筋距离 |
@@ -248,7 +253,7 @@ PART [S]：整个塑件/当前分析实体
 | --- | --- | --- | --- |
 | `RIB` | 两侧壁、根、顶、端、实体域、邻近主壁参考 | 连接主壁、筋间交汇、支撑BOSS | 01.05/01.06、05.03、06.03、09.02、11.02、12.06 |
 | `BOSS` | 外壁、可选内壁、顶、根、根部blend、实体域、轴线、主壁参考 | 连接主壁、被筋支撑、最近有效外壁 | 01.07/01.08、05.04、06.04、11.02/11.04 |
-| `SCREW_BOSS` | 继承BOSS；增加孔壁、孔底、孔底blend、顶环面 | 螺钉用途、孔底对应外壁、支撑筋集合 | 11.01及螺钉柱专属规则 |
+| `HOLLOW_BOSS` | 继承BOSS；增加孔壁、可选盲孔底、孔底blend、顶环面 | 孔底对应外壁、支撑筋集合；按几何结构匹配 | 11.01及带孔 Boss 柱专属规则 |
 | `HOLE` | 孔壁、开口、有效段、轴线；具体部位由通孔/盲孔/非圆开口子型决定 | 最近外壁、配对孔、附近筋 | 01.09、05.02、12.01—12.06、12.08 |
 | `HOLE_THROUGH` | 孔壁、两端开口、有效成型段、轴线 | 最近外壁、配对孔、附近筋 | 12.01、12.04—12.06 |
 | `HOLE_BLIND` | 孔壁、开口、孔底、有效段、轴线、对应外壁 | 孔底对应外壁、最近壁/孔/筋 | 01.09/12.02—12.06 |
@@ -286,9 +291,9 @@ PART [S]：整个塑件/当前分析实体
 | 01.04 | `C_LOCAL_THICK_MASS` | BOSS/筋根/交汇等候选实体域＋背面 | 新增`G_LOCAL_THICK_MASS_EQ_THK_MAX`、`G_LOCAL_THICK_MASS_VOLUME`、`G_LOCAL_THICK_MASS_SECTION_MAX` | 新增 |
 | 01.05 | `C_RIB_THK_RATIO` | RIB根/侧壁＋内部选择的局部主壁参考 | `G_RIB_ROOT_THK`、`G_RIB_WALL_REF_THK`、局部最小/最大比 | 已有；补全区域选择和证据契约 |
 | 01.06 | `C_RIB_INTERSECTION_THICK_MASS` | RIB交汇域＋局部主壁 | 新增`G_RIB_INTERSECTION_EQ_THK_MAX`、`G_RIB_INTERSECTION_VOLUME`、`G_RIB_WALL_REF_THK` | 新增 |
-| 01.07 | `C_BOSS_WALL_THK` | 普通BOSS内/外壁＋主壁参考 | 新增`G_BOSS_WALL_THK_FIELD/MIN/MAX`、`G_BOSS_WALL_REF_THK` | 部分：只有螺钉柱子型 |
+| 01.07 | `C_BOSS_WALL_THK` | 普通BOSS内/外壁＋主壁参考 | 新增`G_BOSS_WALL_THK_FIELD/MIN/MAX`、`G_BOSS_WALL_REF_THK` | 部分：只有带孔 Boss 柱子型 |
 | 01.08 | `C_BOSS_ROOT_CONNECTION` | BOSS根、主壁、根blend、支撑筋关系 | 新增`G_BOSS_ROOT_THK_MAX`、`G_BOSS_ROOT_CONTACT_AREA`、`G_BOSS_ROOT_FILLET_R_MIN`、`G_BOSS_SUPPORT_RIB_COUNT` | 新增 |
-| 01.09 | `C_HOLE_BOTTOM_THK` | 盲孔底＋内部配对的对应外壁 | `G_HOLE_BOTTOM_THK`/螺钉柱专用量、`G_HOLE_WALL_REF_THK` | 已有；与12.03共享 |
+| 01.09 | `C_HOLE_BOTTOM_THK` | 盲孔底＋内部配对的对应外壁 | `G_HOLE_BOTTOM_THK`/带孔 Boss 柱专用量、`G_HOLE_WALL_REF_THK` | 已有；与12.03共享 |
 | 01.10 | `C_WALL_THK_TRANSITION` | 厚薄侧A/B＋过渡路径 | `G_WALL_TRANS_T1/T2/DT/LEN/STEP_COUNT`，建议补`G_WALL_TRANS_GRAD_MAX` | 已有 |
 
 ### 7.2 脱模方向、倒扣和拔模
@@ -302,7 +307,7 @@ PART [S]：整个塑件/当前分析实体
 | 05.01 | `C_WALL_DRAFT_OUT` | WALL外侧壁＋用户主方向 | `G_WALL_OUT_DRAFT_FIELD/MIN`；现`G_WALL_OUT_DRAFT`保留为汇总 | 已有框架；补角度场和面证据 |
 | 05.02 | `C_WALL_DRAFT_IN` | WALL内侧壁/一般孔壁＋用户主方向 | `G_WALL_IN_DRAFT_FIELD/MIN`、按孔时`G_HOLE_DRAFT_FIELD/MIN` | 已有框架；不得以孔轴替代方向 |
 | 05.03 | `C_RIB_DRAFT` | RIB两侧壁＋用户主方向 | `G_RIB_DRAFT_SIDE_A/B_FIELD/MIN`；现`G_RIB_DRAFT`作汇总 | 已有框架 |
-| 05.04 | `C_BOSS_DRAFT` | BOSS或SCREW_BOSS内/外壁＋用户主方向 | `G_BOSS_DRAFT_OUT/IN_FIELD/MIN`；螺钉柱复用专用ID | 已有框架；轴线只作一致性证据 |
+| 05.04 | `C_BOSS_DRAFT` | BOSS或HOLLOW_BOSS内/外壁＋用户主方向 | `G_BOSS_DRAFT_OUT/IN_FIELD/MIN`；带孔 Boss 柱复用专用ID | 已有框架；轴线只作一致性证据 |
 | 05.05 | `C_SNAP_DRAFT` | SNAP侧壁/钩部＋用户主方向 | 新增`G_SNAP_DRAFT_FIELD/MIN`、`G_SNAP_HOOK_UNDERCUT_DEPTH` | 新增；侧抽/强脱方向需另行输入后检查 |
 | 05.06 | `C_DRAFT_SIGN` / `ZERO_DRAFT` | 全部有效侧壁；按用户主方向得到零拔模规则派生域 | 新增通用`G_DRAFT_SIGNED_FIELD`；各Feature已有角度场可复用 | 部分：量可复用，无Check |
 | 05.07 | `C_DRAFT_SIGN` / `REVERSE_DRAFT` | 已归属成型侧的侧壁；按用户主方向得到反拔模规则派生域 | `G_DRAFT_SIGNED_FIELD`＋可见性/遮挡量 | 部分：量可复用，无Check |
@@ -314,7 +319,7 @@ PART [S]：整个塑件/当前分析实体
 | 06.01 | `C_PRODUCT_FILLET_IN` | 通用凹blend＋相邻母面 | `G_WALL_IN_FILLET_R_MIN`、新增曲率/拟合误差 | 已有框架 |
 | 06.02 | `C_PRODUCT_FILLET_OUT` | 通用凸blend＋相邻母面 | 新增`G_WALL_OUT_FILLET_R_MIN`、曲率/拟合误差、局部厚度 | 部分：现表只有内圆角 |
 | 06.03 | `C_RIB_ROOT_FILLET` | RIB根blend＋主壁参考 | `G_RIB_ROOT_FILLET_R`、`G_RIB_WALL_REF_THK` | 已有框架 |
-| 06.04 | `C_BOSS_ROOT_FILLET` | BOSS外根blend＋主壁参考 | `G_BOSS_ROOT_FILLET_R`、`G_BOSS_ROOT_REF_THK`；螺钉柱用更具体ID | 已有；修正螺钉柱TOP/ROOT命名 |
+| 06.04 | `C_BOSS_ROOT_FILLET` | BOSS外根blend＋主壁参考 | `G_BOSS_ROOT_FILLET_R`、`G_BOSS_ROOT_REF_THK`；带孔 Boss 柱用更具体ID | 已有；修正带孔 Boss 柱TOP/ROOT命名 |
 | 06.05 | `C_SNAP_ROOT_FILLET` | SNAP固定根blend＋梁/母壁 | 新增`G_SNAP_ROOT_FILLET_R_MIN`、`G_SNAP_ROOT_THK` | 新增 |
 | 06.06 | `C_THK_TRANSITION_FILLET` | WALL厚薄过渡blend＋两侧厚度域 | 新增`G_WALL_TRANS_FILLET_R_MIN`、连续性等级；复用T1/T2 | 新增 |
 
@@ -324,8 +329,8 @@ PART [S]：整个塑件/当前分析实体
 | --- | --- | --- | --- | --- |
 | 09.01 | `C_WALL_THK_ASYMMETRY` | 两组壁厚域＋确认的对称/比较映射 | 新增`G_WALL_PAIR_THK_DIFF_MAX/MEAN`、`G_WALL_PAIR_AREA_MISMATCH` | 新增；需比较基准 |
 | 09.02 | `C_RIB_LAYOUT_ASYMMETRY` | RIB网络＋Geometric内部建立的对称对应 | 新增`G_RIB_LAYOUT_COUNT_DIFF`、`G_RIB_LAYOUT_POS_DEV_MAX`、长度/方向差 | 新增；需比较基准 |
-| 11.01 | `C_SCREW_BOSS_WALL_THK` | SCREW_BOSS内/外壁＋主壁参考 | `G_SCREW_BOSS_WALL_THK_FIELD/MIN/MAX`、`G_SCREW_BOSS_WALL_REF_THK` | 已有；补MIN和场 |
-| 11.02 | `C_SCREW_BOSS_RIB_SUPPORT` | BOSS＋支撑筋集合＋主壁连接 | 新增`G_BOSS_SUPPORT_RIB_COUNT`、`G_BOSS_SUPPORT_RIB_THK/HEIGHT`、连接长度、根R | 新增；支持数量0 |
+| 11.01 | `C_HOLLOW_BOSS_WALL_THK` | HOLLOW_BOSS内/外壁＋主壁参考 | `G_HOLLOW_BOSS_WALL_THK_FIELD/MIN/MAX`、`G_HOLLOW_BOSS_WALL_REF_THK` | 已有；补MIN和场 |
+| 11.02 | `C_HOLLOW_BOSS_RIB_SUPPORT` | BOSS＋支撑筋集合＋主壁连接 | 新增`G_BOSS_SUPPORT_RIB_COUNT`、`G_BOSS_SUPPORT_RIB_THK/HEIGHT`、连接长度、根R | 新增；支持数量0 |
 | 11.04 | `C_BOSS_TO_OUTER_WALL_CLEARANCE` | BOSS外壁/根＋有效外壁配对 | 新增`G_BOSS_TO_OUTER_WALL_MIN_DIST`及见证点；可复用现`STEEL_THK`底层距离 | 部分：不得直接判薄钢 |
 | 11.06 | `C_SNAP_CANTILEVER_LEN` | SNAP固定根、梁中性路径、自由端/加载点 | 新增`G_SNAP_CANTILEVER_LEN`、`G_SNAP_BEAM_THK_MIN/WIDTH` | 新增 |
 | 11.07 | `C_SNAP_ROOT` | SNAP固定根和过渡域 | 新增`G_SNAP_ROOT_THK`、`G_SNAP_ROOT_FILLET_R_MIN`、`G_SNAP_ROOT_TRANS_LEN` | 新增 |
@@ -337,7 +342,7 @@ PART [S]：整个塑件/当前分析实体
 | 原编号 | 建议Check | Feature及Geometric内部目标语义 | 依赖Geometric | Excel状态 |
 | --- | --- | --- | --- | --- |
 | 12.01 | `C_HOLE_THROUGH_LD` | 通孔有效段、两开口、轴线 | 新增`G_HOLE_EFFECTIVE_LEN`、`G_HOLE_DIA_EFFECTIVE_MIN`、`G_HOLE_LD_RATIO` | 新增 |
-| 12.02 | `C_HOLE_BLIND_LD` | 盲孔有效段、开口、孔底、轴线 | 通用`G_HOLE_EFFECTIVE_DEPTH`、`G_HOLE_DIA_EFFECTIVE_MIN`、`G_HOLE_LD_RATIO` | 部分：现有只覆盖螺钉柱孔 |
+| 12.02 | `C_HOLE_BLIND_LD` | 盲孔有效段、开口、孔底、轴线 | 通用`G_HOLE_EFFECTIVE_DEPTH`、`G_HOLE_DIA_EFFECTIVE_MIN`、`G_HOLE_LD_RATIO` | 部分：现有只覆盖带孔 Boss 柱孔 |
 | 12.03 | `C_HOLE_BOTTOM_THK` | 与01.09相同 | 与01.09共享同一Measurement | 已有；来源别名，不重复执行 |
 | 12.04 | `C_HOLE_CLEARANCE` / `TO_OUTER_WALL` | 孔边界＋有效外壁配对 | `G_HOLE_TO_EDGE_MIN_DIST`、见证点/边界；保留孔径和壁厚上下文 | 已有框架；补Region配对规则 |
 | 12.05 | `C_HOLE_CLEARANCE` / `TO_HOLE` | 两个孔实例＋真实边界 | `G_HOLE_TO_HOLE_MIN_DIST`、轴距、有效孔径及见证点 | 已有框架 |
@@ -347,9 +352,9 @@ PART [S]：整个塑件/当前分析实体
 
 ## 8. 推荐落地顺序
 
-1. 先补Geometric契约：明确螺钉柱各Geometric内部使用的外壁、孔壁、孔底、外根、参考主壁和对象配对，并定义结果中的拓扑证据；不新增独立Region/Relation协议。
-2. 用一个螺钉柱样件跑通：识别区域和关系→只请求所需Geometric→Factor选Rule→产生Finding及三维证据。
-3. 修正螺钉柱三个现有问题：壁厚补MIN/场、圆角拆Check并修正TOP/ROOT、孔深第二分支阈值冲突。
+1. 先补Geometric契约：明确带孔 Boss 柱各Geometric内部使用的外壁、孔壁、孔底、外根、参考主壁和对象配对，并定义结果中的拓扑证据；不新增独立Region/Relation协议。
+2. 用一个带孔 Boss 柱样件跑通：识别区域和关系→只请求所需Geometric→Factor选Rule→产生Finding及三维证据。
+3. 修正带孔 Boss 柱三个现有问题：壁厚补MIN/场、圆角拆Check并修正TOP/ROOT、孔深第二分支阈值冲突。
 4. 按共享几何能力扩展到普通BOSS、筋、主体壁和孔，先完成已有规则页对应的16行。
 5. 再补倒扣、卡扣、对称、止口、悬臂、槽和微小特征等21个当前缺失来源行。
 6. 最后将A类44个来源行映射到41个执行Check，并建立自动校验：每个Check至少有目标Feature/Scope、Geometric依赖、Factor依赖和适用能力声明；每个Geometric至少有内部区域/配对定义及证据返回契约。

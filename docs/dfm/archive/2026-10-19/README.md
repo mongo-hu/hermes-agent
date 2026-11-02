@@ -4,6 +4,8 @@
 
 这里只保留 4 份有独立追溯价值的历史记录，不再保存每篇现行文档的完整副本。它们说明当时如何设计和验证，不是当前开发规范或最新测试结果。
 
+归档中的旧功能名称、`SCREW_BOSS` / `screw_boss`、旧 Region／Operation 协议及旧能力数量按原始记录保留。当前统一使用“带孔 Boss 柱”与 `hollow_boss`，结构识别和柱壁规则匹配不以功能用途为前提；新实现请使用导航中的现行规范。
+
 | 历史记录 | 保留理由 | 当前维护位置 |
 | --- | --- | --- |
 | [dfm-catalog-contract-alignment.md](dfm-catalog-contract-alignment.md) | 仅作历史契约和测试记录；旧 Metric／Quantity 路由及规则选择方式不用于新 Worker。 | [现行规范](../../dfm-rule-catalog-database-design.md) |
