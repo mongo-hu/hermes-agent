@@ -144,7 +144,7 @@ Check 的 `default_severity` 不得自动填入 Rule Version，也不得在规�
 新规则的权威严重度由工程师在具体 Rule Version 上审核确定。历史快照保留该属性供兼容读取，
 新建 Check 不要求填写，待历史数据完成迁移后废弃。
 
-两轮确认中的`forming_scope_id`、确认组、方向绑定、coverage、计划片段和结果来源属于项目/Worker运行数据，不新增本体Region、CheckOperand或会话管理表。规则发布的`scope_id/scope_version`与运行时成型范围分开。
+单轮识别、分组确认中的`forming_scope_id`、机构／退出方向候选、确认组、方向绑定、coverage、`face_membership_index`、计划片段和结果来源属于项目/Worker运行数据，不新增本体Region、CheckOperand或会话管理表。面索引是快照记录的派生缓存，不是本体关系表。规则发布的`scope_id/scope_version`与运行时成型范围分开。
 
 同一G的工程定义须明确是否允许主/局部方向及分域求值，实际输入Schema与能力由Worker声明。限定主方向的G不得仅改变context就变成局部指标；语义不兼容时按现有规则创建新G。产品外观和成型侧的实例范围由用户确认，不能从可见性候选直接固化为本体事实。
 

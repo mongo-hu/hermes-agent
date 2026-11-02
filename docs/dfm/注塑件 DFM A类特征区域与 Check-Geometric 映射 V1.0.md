@@ -1,6 +1,6 @@
 # 注塑件 DFM A类特征区域与 Check-Geometric 映射 V1.0
 
-状态：工程映射设计，非已发布能力清单。更新：2026-10-30。[开发导航](README.md)
+状态：工程映射设计，非已发布能力清单。更新：2026-11-02。[开发导航](README.md)
 
 本文维护 A 类 44 条来源需求的 Feature、部位、配对、Check 与 G 定义，不再维护完整流程或通信字段。流程见[主流程](dfm-main-workflow-explained.md)，来源边界见[统一需求台账](dfm-injection-requirements-and-coverage.md)，实现交付见[任务与验收](%E6%B3%A8%E5%A1%91%E4%BB%B6%20DFM%20%E7%89%B9%E5%BE%81%E8%AF%86%E5%88%AB%E4%B8%8E%E5%87%A0%E4%BD%95%E8%AE%A1%E7%AE%97%E5%BC%80%E5%8F%91%E4%BB%BB%E5%8A%A1%E6%B8%85%E5%8D%95%20V1.0.md)。
 
@@ -13,6 +13,8 @@
 每个 Check 绑定明确的业务目标；每个 G 固定要测的部位、参考对象、几何量和聚合口径。一个 G 可以服务多个 Check，内部算法也可复用，但不能因底层算法相同而混淆外根部与孔底、最小值与最大值。
 
 外壁、孔壁、孔底、根部和邻近主体壁是 Worker 理解的工程部位，不另建本体 Region 或公开 Region Role 路由。几何证据必须保留实际选中的面、边、体或采样位置。
+
+单轮识别统一保存结构与参考关系。面归属索引按 face ID 反查多个 Feature，并区分自身组成面 owned 与参考面 reference：邻近主体壁可以为 Boss 提供参考厚度，但不成为 Boss 的自身面。结构、外观属性和成型范围允许重叠；索引与快照的更新规则见[会话设计](dfm-geometric-session-contract.md#96-面归属索引的消费与缓存)，本表不重复维护缓存格式。
 
 ## 2. 用带孔 Boss 柱还原完整模型
 
