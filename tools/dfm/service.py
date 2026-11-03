@@ -3408,7 +3408,7 @@ class DFMService:
                     if isinstance(item, dict)
                 }
 
-            def context_choices(geometric_id, feature):
+            def context_choices(geometric_id, feature, selector=None):
                 declaration = geometric_capabilities.get(geometric_id, {})
                 required = set(
                     declaration.get("context_schema", {}).get("required", [])
@@ -3440,6 +3440,9 @@ class DFMService:
                         })
                 # Empty context is a deliberate waiting-input identity.  It is
                 # frozen into a non-runnable fragment and never sent to Worker.
+                if "feature_role" in required:
+                    for choice in matching:
+                        choice["feature_role"] = (selector or {}).get("feature_role", "body")
                 return matching or [{}]
 
             def candidates(selector):
@@ -3447,7 +3450,8 @@ class DFMService:
                 return [
                     item
                     for item in available
-                    if not feature_kind or item.kind == feature_kind
+                    if (not feature_kind or item.kind == feature_kind
+                        or (feature_kind == "*" and item.kind in selector.get("feature_kinds", [])))
                 ]
 
             def relationship_refs(feature):
@@ -3527,7 +3531,7 @@ class DFMService:
                     if not complete:
                         continue
                     choices = [
-                        context_choices(binding.geometric_id, primary),
+                        context_choices(binding.geometric_id, primary, selector_map.get(binding.operand_alias, {})),
                         *[
                             context_choices(
                                 operand.geometric_id,
@@ -3536,6 +3540,7 @@ class DFMService:
                                     for item in available
                                     if item.feature_id == operand.feature_refs[0]
                                 ),
+                                selector_map.get(operand.alias, {}),
                             )
                             for operand in selected_additional
                         ],
@@ -5094,6 +5099,19 @@ class DFMService:
                                           else {"product_forming"} if scope_id else set())
                         required_groups.extend(item for item in active_groups
                                                if item.kind in required_kinds and scope_id in item.target_refs)
+                        local_ids: set[str] = set()
+                        # Main intersection draft depends on local ownership, including pending assignments.
+                        if "intersection" in declaration.get("scope_modes", []) and any(
+                            raw.get("forming_scope_id") == scope_id and raw.get("mode") == "main"
+                            for raw in discovery_snapshot.forming_scopes
+                        ):
+                            own_faces = {(ref.get("kind"), ref.get("index")) for ref in feature.properties.get("geometry_refs", [])}
+                            local_ids = {raw["forming_scope_id"] for raw in discovery_snapshot.forming_scopes
+                                if raw.get("mode") == "local" and raw.get("status") != "stale"
+                                and any((ref.get("kind"), ref.get("index")) in own_faces for ref in [
+                                    *raw.get("geometry_refs", []), *raw.get("undercut_geometry_refs", [])])}
+                            required_groups.extend(group for group in active_groups
+                                if group.kind == "forming_scope" and local_ids.intersection(group.target_refs))
                         review_refs = {item.review_group_id for item in required_groups}
                         blocking_reasons: list[dict[str, Any]] = []
                         if required_context - set(operand.context):
@@ -5104,16 +5122,19 @@ class DFMService:
                                     required_context - set(operand.context)
                                 ),
                             })
+                        missing_local_ids = local_ids - {target for group in required_groups
+                                                         if group.kind == "forming_scope" for target in group.target_refs}
                         missing_kinds = required_kinds - {item.kind for item in required_groups}
                         if (not any(item.kind == "ordinary_structure" for item in required_groups)
                             or any(item.status != "confirmed" for item in required_groups)
-                            or missing_kinds):
+                            or missing_kinds or missing_local_ids):
                             blocking_reasons.append({
                                 "code": "pending_review",
                                 "feature_id": feature.feature_id,
                                 "forming_scope_id": scope_id or None,
                                 "review_group_refs": sorted(item.review_group_id for item in required_groups if item.status != "confirmed"),
                                 "missing_group_kinds": sorted(missing_kinds),
+                                "missing_local_scope_ids": sorted(missing_local_ids),
                             })
                         reference_dependencies, reference_reviews, reference_blockers = resolve_reference_dependencies(
                             feature, operand.geometric_id, declaration["requires_relationships"],

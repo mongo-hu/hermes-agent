@@ -415,3 +415,23 @@ def test_discovery_contract_links_observations_features_regions_and_analysis_pla
     assert ProjectManifest.from_dict(manifest.to_dict()) == manifest
     assert analysis.phase == "analysis"
     assert analysis.discovery_snapshot_refs[0].startswith("feature-set:")
+
+
+def test_recovery_hash_ignores_wall_clock_but_preserves_geometry_and_diagnostic_status():
+    from copy import deepcopy
+    from tools.dfm.runtime.process import _snapshot_state_sha256
+
+    original = {"features": [{"geometry_refs": [{"kind": "face", "index": 1}],
+                              "diagnostics": {"timings_seconds": {"rays": 1},
+                                              "work_seconds_by_phase": {"exact_rays": 2},
+                                              "measurement_binding": "validated"}}]}
+    replayed = deepcopy(original)
+    replayed["features"][0]["diagnostics"]["timings_seconds"]["rays"] = 9
+    replayed["features"][0]["diagnostics"]["work_seconds_by_phase"]["exact_rays"] = 8
+    assert _snapshot_state_sha256(original) == _snapshot_state_sha256(replayed)
+    replayed["features"][0]["diagnostics"]["measurement_binding"] = "invalid"
+    assert _snapshot_state_sha256(original) != _snapshot_state_sha256(replayed)
+    replayed = deepcopy(original)
+    replayed["features"][0]["geometry_refs"][0]["index"] = 2
+    assert _snapshot_state_sha256(original) != _snapshot_state_sha256(replayed)
+    assert original["features"][0]["diagnostics"]["timings_seconds"] == {"rays": 1}

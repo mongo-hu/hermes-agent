@@ -1,5 +1,7 @@
 # Hermes：Geometric 契约接入与模型会话管理
 
+> 当前合并基线（2026-11-03）：Worker **3.0.0** / `dfm.geometry/v2` / bundle **2.4.0**。采用分组审核、按依赖计算；取消 `reviews.commit` 和 Worker 快照全局 `review` 门槛，保留本地预计算、通用交集拔模及预算。下文 1.13.0 的安装哈希和 Desktop 验收属于历史记录；本次适配及验证见[整合记录](dfm-geometric-session-contract.md#12-本地算法与远端编排整合)。
+
 更新：2026-11-03。目标方案为“一轮识别、统一快照、面归属索引、按组确认后计算”。总体流程见[DFM 主流程](dfm-main-workflow-explained.md)，本篇负责 Hermes 的调用、缓存、确认和计划实现。
 
 引擎 1.12.0、dfm.geometry/v2 / bundle 2.3.0 及规则 V1.0.11 的旧联调记录保留在第 10 节。本次源码、独立安装及 Hermes 实际运行目录均为 1.13.0 / bundle 2.4.0；私有面索引、单轮接入与 Desktop 全链路的验证记录见第 11 节。其他机器须完整安装同版 EXE、DLL 和 Schema，不能混用 2.3.0 旧包。
@@ -800,3 +802,20 @@ PATCH discovery/scopes/{forming_scope_id} 返回最新审核状态，并保留�
 跨仓库开发分工及逐场景交付要求见[任务清单的框架联调验收](注塑件%20DFM%20特征识别与几何计算开发任务清单%20V1.0.md#单轮会话框架联调验收)。
 
 允许显式 fixture 验证编排与数据一致性；模拟结果不能用作正式算法能力或工程认证。各项分别记录“设计／开发中／专项通过／联调通过”；完整用例和配套运行包通过前，不标记新版已交付。
+
+
+## 12. 本地算法与远端编排整合
+
+采用 Worker 3.0.0 / bundle 2.4.0。Schema bundle 版本按集成约定保持 2.4.0，配套运行目录仍为 `dfm-geometry-exe/windows-x64`，必须整体同步本次构建的 EXE、运行库、Schema 和许可证。
+
+- Worker 提供不可变语义快照、拓扑面索引、成型候选和客观 G 计算；Hermes 维护审核组、依赖计划及规则求值。取消全局 `reviews.commit`；每次 `features.revise`、`annotations.revise`、`forming_scopes.revise` 单独原子发布。
+- 保留本地 STEP 兼容、射线预算、缓存和 `fields.prepare`。识别结束后预热基础场；正式通用拔模计算前预热实际请求的方向。预热失败可回退到普通计算，取消请求仍正常终止。
+- 基础场是可重建缓存，不加入语义快照恢复日志。恢复哈希排除主壁算法两项计时统计，仍验证几何、参考关系、覆盖率、预算及诊断状态。
+- `G_SCOPE_DRAFT_MIN` 支持通配 Feature 类型；Hermes 仍按发布 Check 的 Feature 范围筛选，并传入 `feature_role=body`。现有规则发布格式和专用 G 保持原有语义；部位专用请求由显式 context 指定，未擅自重写本体规则。
+- 无方向厚度只等待自身及所需参考特征组。通用主方向交集拔模还依赖相交局部范围的面归属确认；未确定局部机构和方向不会阻塞无关指标。
+- Web 可保存当前组或全部已就绪项，保留其他草稿；局部范围冲突单独报告。Worker 与独立 Web 保留手工创建/改类能力，Hermes 继续使用已有结构选面、部位、参考关系及范围修订入口。
+- 多次 RPC 允许部分成功；Hermes 沿用修改意图日志和崩溃恢复，不以一个全局确认调用覆盖已成功的组。
+
+验证入口：Worker 的 CTest、`web/npm run check`、`web/review-ui-smoke.py`；Hermes 使用 `scripts/run_tests.sh tests/tools/dfm tests/hermes_cli/test_dfm_review_routes.py tests/dfm/test_service_normalization.py -j 4`，设置 `DFM_GEOMETRY_E2E_EXECUTABLE` 指向配套安装、`DFM_GEOMETRY_SCHEMA_ROOT` 指向同包 Schema。真实模型及报告测试使用隔离的 HERMES_HOME。本次不替代历史的人工 Electron 聊天全场景验收。
+
+本次自动回归结果：Worker CTest 184/184；Hermes 实际运行包回归 567 项通过，另使用同哈希构建 EXE 补跑需要样件生成器的 14 项，合计 581 项通过。4 项条件测试跳过（2 项 Electron 桌面验收、2 项 pythonocc 旧后端 E2E）；Web 12 组单元检查、真实 API、真实浏览器及 7 种窗口布局通过。Hermes 安装的 58 个配套文件已逐项校验，EXE SHA-256 为 `f21abd2f4bb77c898709e4969ab70f1449e771f3ad51a5d5c5644619783b3c7a`，能力依赖指纹为 `231ae0f3b87294f3a1e3eaeb5050708b833b016059e1926605c8dab92a7454b8`。

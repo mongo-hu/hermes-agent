@@ -750,7 +750,7 @@ class LocalOntologyStore:
                 continue
             feature_kind = str(capability["feature_kind"])
             declared_feature_kinds = features_by_check.get(check_id, set())
-            if feature_kind not in declared_feature_kinds:
+            if feature_kind != "*" and feature_kind not in declared_feature_kinds:
                 raise DFMError(
                     "ontology_geometric_scope_mismatch",
                     "A published Check and Worker G capability disagree on feature kind.",
@@ -767,6 +767,7 @@ class LocalOntologyStore:
                 "alias": str(qualifiers.get("alias") or ""),
                 "geometric_id": geometric_id,
                 "feature_kind": feature_kind,
+                "feature_kinds": sorted(declared_feature_kinds),
                 "scope_modes": list(capability["scope_modes"]),
                 "direction_modes": list(capability["direction_modes"]),
                 "requires_complete_inventory": list(
@@ -1966,7 +1967,7 @@ class LocalOntologyStore:
                     "feature_kinds": published_feature_kinds,
                 }
             feature_kind = str(capability_binding["feature_kind"])
-            if feature_kind not in published_feature_kinds:
+            if feature_kind != "*" and feature_kind not in published_feature_kinds:
                 cls._invalid(
                     "A published Check and Worker G capability disagree on feature kind.",
                     {
@@ -1981,6 +1982,7 @@ class LocalOntologyStore:
                 "geometric_id": geometric_id,
                 "feature_kind": feature_kind,
                 "feature_kinds": published_feature_kinds,
+                "feature_role": str(qualifiers.get("feature_role") or "body"),
                 "scope_modes": list(capability_binding["scope_modes"]),
                 "direction_modes": list(capability_binding["direction_modes"]),
                 "requires_complete_inventory": list(

@@ -76,6 +76,15 @@ def _snapshot_state_sha256(payload: Mapping[str, Any]) -> str:
                 "A snapshot-producing Worker method returned invalid semantic state.",
                 {"field": key},
             )
+        if key == "features":
+            # Main-wall watchdog timings change on replay, but carry no geometry semantics.
+            # Keep all other diagnostics (coverage, binding status, budgets) in the hash.
+            values = [
+                {**row, "diagnostics": {name: value for name, value in row["diagnostics"].items()
+                                       if name not in {"timings_seconds", "work_seconds_by_phase"}}}
+                if isinstance(row, dict) and isinstance(row.get("diagnostics"), dict) else row
+                for row in values
+            ]
         state[key] = sorted(
             values,
             key=lambda value: json.dumps(

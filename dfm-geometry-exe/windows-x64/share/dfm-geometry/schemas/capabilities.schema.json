@@ -70,7 +70,8 @@
         "snapshots.merge",
         "geometrics.compute",
         "jobs.status",
-        "jobs.cancel"
+        "jobs.cancel",
+        "fields.prepare"
       ],
       "properties": {
         "capabilities.get": {
@@ -113,6 +114,9 @@
           "const": "available"
         },
         "jobs.cancel": {
+          "const": "available"
+        },
+        "fields.prepare": {
           "const": "available"
         }
       }

@@ -736,6 +736,7 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
             "project-v2", input_sha256, opened, confirmed_scope
         )
         forming_context = {
+            "feature_role": "body",
             "forming_scope_id": "MAIN_POS",
             "draw_direction": confirmed["draw_direction"],
             "coordinate_system": "model",
@@ -743,7 +744,7 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
         }
         request = GeometricRequest(wall.feature_id, ["G_WALL_THK_MIN"], {})
         direction_request = GeometricRequest(
-            wall.feature_id, ["G_WALL_IN_DRAFT"], forming_context
+            wall.feature_id, ["G_SCOPE_DRAFT_MIN"], forming_context
         )
         shared_g_bindings = [
             GeometricRuleBinding(
@@ -857,12 +858,11 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
         direction_result = next(
             item
             for item in payload["results"]
-            if item["geometric_id"] == "G_WALL_IN_DRAFT"
+            if item["geometric_id"] == "G_SCOPE_DRAFT_MIN"
         )
-        # The flat fixture has no qualifying inner-wall draft sample, but the
-        # confirmed context must be accepted (not rejected as missing or
-        # ambiguous) and the unavailable value must stay explicit.
-        assert direction_result["status"] in {"ok", "not_applicable"}
+        # Generic draft uses the selected body faces and prepares the final direction.
+        assert direction_result["status"] == "ok", json.dumps(direction_result)
+        assert discovery.diagnostics["field_preparation"]["fields"]
         assert direction_result["context"] == forming_context
         evaluations_artifact = EvaluationEngine().materialize(
             project_dir,

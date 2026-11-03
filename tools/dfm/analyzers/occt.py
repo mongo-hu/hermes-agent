@@ -467,6 +467,7 @@ class OcctAnalyzer:
         results_by_binding = {_result_binding_key(record): record for record in results}
         processed = set(context.completed_plan_fragment_refs)
 
+        prepared_directions: set[str] = set()
         while batch := next_geometric_batch(
             context.plan, processed, selected=context.selected_plan_fragment_refs
         ):
@@ -476,6 +477,35 @@ class OcctAnalyzer:
             cancellation.raise_if_cancelled()
             items = batch.items()
             owners = batch.owners()
+            # Final local directions may differ from discovery. Prepare only demanded new variants.
+            directions = {json.dumps(item["context"]["draw_direction"]): item["context"]["draw_direction"]
+                          for item in items if "G_SCOPE_DRAFT_MIN" in item["geometric_ids"]
+                          and "draw_direction" in item["context"]}
+            directions = {key: value for key, value in directions.items() if key not in prepared_directions}
+            if directions and live_capability.get("methods", {}).get("fields.prepare") == "available":
+                try:
+                    warmup = self.session_pool.call(context.project_id, "fields.prepare", {
+                        "snapshot_id": live_snapshot_id, "fields": ["draft"],
+                        "draw_directions": list(directions.values()),
+                    })
+                    warmup_id = str(warmup["job_id"])
+
+                    def preparation_progress(status):
+                        if context.event_sink is not None:
+                            progress = status.get("progress") or {}
+                            context.event_sink(WorkerEvent(
+                                schema_version=1, type="progress", stage="fields.prepare",
+                                percent=int(progress.get("percent") or 0), external_job_id=warmup_id,
+                            ))
+
+                    self.session_pool.wait_job(context.project_id, warmup_id, cancellation=cancellation,
+                                               on_progress=preparation_progress)
+                except DFMError as error:
+                    if error.code == "run_cancelled":
+                        raise
+                    # A failed cache warmup must leave the ordinary calculator available.
+                    cancellation.raise_if_cancelled()
+                prepared_directions.update(directions)
             batch_results: list[GeometricResultRecord] = []
             submitted_keys = {
                 request_key(str(item["feature_id"]), str(geometric_id), item["context"])

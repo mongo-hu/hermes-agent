@@ -492,7 +492,7 @@ def test_more_than_256_native_g_results_and_check_evaluations_survive_all_batche
             context = {"forming_scope_id": f"CAPACITY_{index}",
                        "draw_direction": [scale * math.cos(angle), scale * math.sin(angle), scale],
                        "coordinate_system": "model", "direction_source": "user_confirmed"}
-            scopes.append({**context, "kind": "local_forming", "mode": "local", "mechanism_kind": "slider",
+            scopes.append({**context, "kind": "main_forming", "mode": "main", "mechanism_kind": "none",
                            "geometry_refs": refs, "status": "confirmed"})
             contexts.append(context)
         scoped = pool.call(project_dir.name, "forming_scopes.revise",
@@ -574,7 +574,7 @@ def test_native_job_capacity_keeps_controls_live_and_releases_terminal_job_model
             context = {"forming_scope_id": f"QUEUE_{index}",
                        "draw_direction": [scale * math.cos(angle), scale * math.sin(angle), scale],
                        "coordinate_system": "model", "direction_source": "user_confirmed"}
-            scopes.append({**context, "kind": "local_forming", "mode": "local", "mechanism_kind": "slider",
+            scopes.append({**context, "kind": "main_forming", "mode": "main", "mechanism_kind": "none",
                            "geometry_refs": feature["geometry_refs"], "status": "confirmed"})
             items.append({"feature_id": feature["feature_id"], "geometric_ids": ["G_WALL_IN_DRAFT"], "context": context})
         scoped = session.call("forming_scopes.revise", {"snapshot_id": discovery["snapshot_id"], "scopes": scopes})

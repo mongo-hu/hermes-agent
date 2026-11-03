@@ -934,3 +934,17 @@ def test_bundled_catalog_contains_only_public_geometric_identities():
         "task_id",
     ):
         assert f'"{forbidden}"' not in serialized
+
+
+def test_generic_g_keeps_published_feature_kinds_and_defaults_to_body():
+    value = legacy_schema4_payload("hollow_boss")
+    store = LocalOntologyStore.from_package(rehash(value))
+    store.configure_geometric_bindings(wall_geometric_capability("*"))
+    compiled = store.compile("injection", {"material": "ABS"}, operations())
+    assert compiled.rule_bindings
+    selector = next(iter(compiled.binding_selectors.values()))["actual"]
+    assert selector["feature_kind"] == "*"
+    assert selector["feature_kinds"] == ["hollow_boss"]
+    assert selector["feature_role"] == "body"
+    spec = store.geometric_scope_specs("injection")[0]
+    assert spec["feature_kind"] == "*" and spec["feature_kinds"] == ["hollow_boss"]

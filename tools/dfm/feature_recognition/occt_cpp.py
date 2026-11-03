@@ -316,6 +316,19 @@ class OCCTCppFeatureRecognitionProvider:
             project_id, input_record.sha256, opened, result
         )
 
+        # Preparation produces rebuildable caches, never a review or semantic revision.
+        preparation = None
+        if self._capability.get("methods", {}).get("fields.prepare") == "available":
+            try:
+                queued = self.session_pool.call(project_id, "fields.prepare", {
+                    "snapshot_id": result["snapshot_id"],
+                    "fields": ["wall_thickness", "normal_thickness", "draft"],
+                    "draw_directions": [list(draw_direction)],
+                })
+                preparation = self.session_pool.wait_job(project_id, queued["job_id"])
+            except DFMError as error:
+                # A cache warmup failure does not turn valid discovery into a failure.
+                preparation = {"fields": [], "status": "failed", "reason": error.code}
         projection = self.project_snapshot(input_record, result)
 
         opened_artifacts = opened.get("artifacts")
@@ -337,6 +350,7 @@ class OCCTCppFeatureRecognitionProvider:
                 "base_snapshot_id": result.get("base_snapshot_id"),
                 "worker_snapshot_id": result["snapshot_id"],
                 "coverage": list(result.get("coverage") or []),
+                "field_preparation": preparation,
                 "model_import_count": opened.get("diagnostics", {}).get(
                     "model_import_count"
                 ),
