@@ -27,7 +27,7 @@ interface DfmReviewPanelProps {
   onChanged: (context: ReviewContext) => void
   onRefreshed?: (context: ReviewContext) => void
   onHighlight: (refs: GeometryReference[]) => void
-  onEditScope?: (scope: ReviewScope, context: ReviewContext) => void
+  onEditScope?: (scope: ReviewScope, context: ReviewContext, faceRole?: 'forming' | 'undercut') => void
   onEditAnnotation?: (annotation: ReviewAnnotation, context: ReviewContext, values: string[]) => void
   onCreateAnnotation?: (kind: AnnotationKind, context: ReviewContext) => void
   onEditFeature?: (feature: ReviewFeature, context: ReviewContext) => void
@@ -78,7 +78,7 @@ export function DfmReviewPanel({
   onRefreshedRef.current = onRefreshed
   const base = `/api/dfm/projects/${encodeURIComponent(projectId)}/discovery/review`
   const buckets = useMemo(() => (context ? reviewBuckets(context, true) : []), [context])
-  const undercutBuckets = buckets.filter(bucket => bucket.groups[0]?.kind === 'undercut_scope')
+  const undercutBuckets = buckets.filter(bucket => bucket.groups[0]?.kind === 'forming_scope')
   const pendingUndercuts = undercutBuckets.filter(bucket => bucket.groups[0].status === 'pending_review')
   const undercutTarget = pendingUndercuts[0] ?? undercutBuckets[0]
 
@@ -384,12 +384,12 @@ export function DfmReviewPanel({
                             data-review-object={group.target_refs[0]}
                             key={group.review_group_id}
                           >
-                            <div className="flex items-center gap-1.5">
-                              {group.kind !== 'local_direction' && group.status === 'pending_review' && (
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {group.status === 'pending_review' && (
                                 <input
                                   aria-label={`选择 ${group.kind === 'product_forming' ? '主出模方向' : group.target_refs[0]}`}
                                   checked={selected.includes(group.review_group_id)}
-                                  disabled={busy || editing || group.status !== 'pending_review'}
+                                  disabled={busy || editing || group.status !== 'pending_review' || (group.kind === 'forming_scope' && !directionUnlocked(context, group))}
                                   onChange={event =>
                                     setSelected(previous =>
                                       event.target.checked
@@ -429,12 +429,12 @@ export function DfmReviewPanel({
                               <span className="text-[9px] text-slate-400">
                                 {group.status === 'confirmed' ? '已确认' : '待确认'}
                               </span>
-                              {group.kind === 'undercut_scope' && group.status === 'pending_review' && (
+                              {group.kind === 'forming_scope' && group.status === 'pending_review' && (
                                 <button className="shrink-0 text-[10px] text-cyan-100 disabled:opacity-40"
-                                  disabled={busy || editing}
+                                  disabled={busy || editing || !directionUnlocked(context, group)}
                                   onClick={() => void submit('confirm', { review_group_ids: [group.review_group_id] })}
                                   type="button">
-                                  确认范围
+                                  确认方案
                                 </button>
                               )}
                               {group.kind === 'ordinary_structure' && onEditFeature && (
@@ -455,7 +455,7 @@ export function DfmReviewPanel({
                                   编辑选面
                                 </button>
                               )}
-                              {group.kind === 'undercut_scope' && onEditScope && (
+                              {group.kind === 'forming_scope' && onEditScope && (
                                 <button
                                   className="text-[10px] text-cyan-200"
                                   disabled={busy || editing}
@@ -465,12 +465,22 @@ export function DfmReviewPanel({
                                     )
 
                                     if (scope) {
-                                      onEditScope(scope, context)
+                                      onEditScope(scope, context, 'forming')
                                     }
                                   }}
                                   type="button"
                                 >
-                                  编辑范围
+                                  编辑成型面
+                                </button>
+                              )}
+                              {group.kind === 'forming_scope' && onEditScope && (
+                                <button className="text-[10px] text-cyan-200" disabled={busy || editing}
+                                  onClick={() => {
+                                    const scope = context.forming_scopes.find(item => item.forming_scope_id === group.target_refs[0])
+
+                                    if (scope) {onEditScope(scope, context, 'undercut')}
+                                  }} type="button">
+                                  编辑倒扣面
                                 </button>
                               )}
                               {group.kind === 'surface_attribute' && onEditAnnotation && (
@@ -521,14 +531,28 @@ export function DfmReviewPanel({
                                 {reviewGroupNote(context, group)}
                               </p>
                             )}
-                            {(group.kind === 'local_direction' ||
-                              group.kind === 'product_forming' ||
-                              group.kind === 'undercut_scope') &&
+                            {group.kind === 'forming_scope' && (
+                              <div className="mt-1 flex gap-3 text-[10px]">
+                                <button className="text-cyan-200" disabled={busy || editing} onClick={() => {
+                                    const scope = context.forming_scopes.find(item => item.forming_scope_id === group.target_refs[0])
+
+                                    if (scope) {onHighlight(scope.undercut_geometry_refs)}
+                                  }}
+                                  type="button">定位倒扣面</button>
+                                <button className="text-cyan-200" disabled={busy || editing} onClick={() => {
+                                    const scope = context.forming_scopes.find(item => item.forming_scope_id === group.target_refs[0])
+
+                                    if (scope) {onHighlight(scope.geometry_refs)}
+                                  }}
+                                  type="button">定位成型面</button>
+                              </div>
+                            )}
+                            {(group.kind === 'forming_scope' || group.kind === 'product_forming') &&
                               onEditDirection && (
                                 <div className="mt-2">
-                                  {group.kind === 'local_direction' && !directionUnlocked(context, group) && (
+                                  {group.kind === 'forming_scope' && !directionUnlocked(context, group) && (
                                     <p className="mb-1 text-amber-200">
-                                      可先输入并暂存方向；正式确认需完成范围及局部结构审核。
+                                      请完善成型范围、机构和退出方向，再确认完整方案。结构在结构组独立审核。
                                     </p>
                                   )}
                                   <button
@@ -545,7 +569,7 @@ export function DfmReviewPanel({
                                     }}
                                     type="button"
                                   >
-                                    编辑方向
+                                    {group.kind === 'product_forming' ? '编辑主方向' : '编辑机构与方向'}
                                   </button>
                                 </div>
                               )}

@@ -1,9 +1,12 @@
 {
-  "session": {"contract_version": "dfm.geometry/v2", "schema_bundle_version": "2.3.0"},
+  "session": {
+    "contract_version": "dfm.geometry/v2",
+    "schema_bundle_version": "2.4.0"
+  },
   "request": {
     "schema_version": 2,
     "contract_version": "dfm.geometry/v2",
-    "schema_bundle_version": "2.3.0",
+    "schema_bundle_version": "2.4.0",
     "transport": "stdio-jsonrpc"
   },
   "event": {
@@ -16,7 +19,7 @@
   },
   "capabilities": {
     "contract_version": "dfm.geometry/v2",
-    "schema_bundle_version": "2.3.0"
+    "schema_bundle_version": "2.4.0"
   },
   "artifacts": {
     "preflight": {

@@ -1,8 +1,8 @@
 # Hermes：Geometric 契约接入与模型会话管理
 
-更新：2026-11-02。目标方案为“一轮识别、统一快照、面归属索引、按组确认后计算”。总体流程见[DFM 主流程](dfm-main-workflow-explained.md)，本篇负责 Hermes 的调用、缓存、确认和计划实现。
+更新：2026-11-03。目标方案为“一轮识别、统一快照、面归属索引、按组确认后计算”。总体流程见[DFM 主流程](dfm-main-workflow-explained.md)，本篇负责 Hermes 的调用、缓存、确认和计划实现。
 
-当前引擎 1.12.0、dfm.geometry/v2 / bundle 2.3.0 及规则 V1.0.11 的联调记录保留在第 10 节，属于此前两轮实现的基线。本次仅修改研发设计；单轮编排、新成型方案字段及 face_membership_index 仍需更新 Worker Schema、两端代码并完成第 11 节验收，不能视为当前 EXE 已具备的新能力。
+引擎 1.12.0、dfm.geometry/v2 / bundle 2.3.0 及规则 V1.0.11 的旧联调记录保留在第 10 节。本次源码、独立安装及 Hermes 实际运行目录均为 1.13.0 / bundle 2.4.0；私有面索引、单轮接入与 Desktop 全链路的验证记录见第 11 节。其他机器须完整安装同版 EXE、DLL 和 Schema，不能混用 2.3.0 旧包。
 
 [开发导航](README.md)
 
@@ -35,7 +35,7 @@ Hermes 负责决定“检查什么、需要算什么、结果是否符合要求�
 | 可执行契约和联调样例 | Worker 仓库 `schemas/` 及契约测试样例统一维护并随版本发布 | 固定所接入的契约制品版本，运行消费端契约测试 |
 | 客户端、计划、规则、Viewer 和报告接入 | 当前 Hermes 文档 | 由 Hermes 实现和验证 |
 
-主契约为 `dfm.geometry/v2`。Worker 仓库发布的 `schemas/session-v2.schema.json` 是会话可执行契约的唯一来源，Hermes 固定并校验 `2.3.0` Schema bundle；双方确认公共接口变更后更新同一套定义和样例，不在 Hermes 手工维护另一套近似协议。
+主契约为 `dfm.geometry/v2`。Worker 仓库发布的 `schemas/session-v2.schema.json` 是会话可执行契约的唯一来源，Hermes 当前开发分支固定并校验 `2.4.0` Schema bundle；双方确认公共接口变更后更新同一套定义和样例，不在 Hermes 手工维护另一套近似协议。
 
 契约版本用于校验通信格式；引擎构建及依赖指纹用于追溯与缓存。不能只检查 EXE 版本号，也不能以两篇说明文档的内容哈希相同作为兼容证明。
 
@@ -64,10 +64,11 @@ Hermes 负责决定“检查什么、需要算什么、结果是否符合要求�
 | `capabilities.get` | 连接建立后 | 契约版本、G/Feature、scope_modes、direction_modes、requires_complete_inventory与输入要求 |
 | `snapshots.open` | 没有有效模型快照时 | 新 `snapshot_id`、导入诊断、预览与拓扑映射引用 |
 | `features.discover` | 单轮内按依赖识别全模型结构；后续修订按需定向重评；长任务跟踪job_id | base/结果快照、实例、关联及coverage |
-| `snapshots.get` | 读取快照；新设计可用 include_face_index 与 face_ids 查询面索引 | 同版完整／子集投影及 face_index_is_full；新参数待 Schema 和代码落地 |
+| `snapshots.get` | 读取指定快照的公开语义投影 | 特征、属性、成型范围、关联、coverage；不下载 Worker 面索引 |
 | `features.revise` | 用户修正特征部位时 | 新快照及修订记录，不覆盖旧 Run 使用的版本 |
+| `annotations.revise` | 用户修正外观、定／动模等属性或选面时 | 新快照及属性记录，独立属性不混入 Feature.kind |
 | `forming_scopes.analyze` | 单轮内分析倒扣面、滑块／斜顶成型范围及退出方向候选；长任务返回job_id | base/结果快照、候选范围、覆盖和诊断 |
-| `forming_scopes.revise` | 保存用户修订的范围、成型侧和局部方向，校验引用与一致性 | 新快照及修订后的成型范围 |
+| `forming_scopes.revise` | 保存倒扣／成型范围、机构候选和退出方向；成型侧属性另走 annotations.revise | 新快照及修订后的成型范围 |
 | `snapshots.merge` | 校验共同base、读依赖和写冲突后合并派生结果 | 新快照，冲突返回snapshot_conflict |
 | `geometrics.compute` | 计划中仍有未取得的 G 结果 | Worker `job_id` 与本地 Run/JobManager 任务的关联 |
 | `jobs.status` / `jobs.cancel` | 查询或取消几何计算批次 | 任务状态；取消不等于强制结束共享 Worker |
@@ -109,7 +110,7 @@ RPC 即“远程过程调用”：Hermes 把方法名和参数交给另一个进
 | 属性标注 | 外观、定／动模等值及作用面；型腔／型芯侧独立保留 | 相关规则所需属性已确认 |
 | 出模设置 | 按 forming_scope_id 审核倒扣面、成型面、机构候选与退出方向 | 成型方案完整且方向已确认；结构审核另按其真实依赖判断 |
 
-局部方案使用一个 forming_scope 确认组，内容指纹覆盖倒扣面、成型面、mechanism_kind、方向及实际依赖。不再串行生成 undercut_scope、local_structure、local_direction 三段业务门禁；原局部结构引用回到已有 Feature 的结构审核，不复制实例。
+局部方案使用一个 forming_scope 确认组，内容指纹覆盖倒扣面、成型面、mechanism_kind、方向及实际依赖。智能体与 Desktop 共用此边界：stage_forming_direction 的 forming_scope 只保存草稿，省略字段沿用原值，draw_direction=null 明确清空方向；confirm_discovery 或 revise_forming_scopes 才提交整组确认。不再串行生成 undercut_scope、local_structure、local_direction 三段业务门禁；原局部结构引用回到已有 Feature 的结构审核，不复制实例。
 
 各组可独立编辑、暂存和确认，无固定先后顺序。暂存方案可以缺少方向，不能确认成完整方案；已识别的候选向量不等于用户已确认。确认 SIDE_01 不等待 SIDE_02，普通厚度或尺寸也不因位于倒扣区域就自动等待局部方向。
 
@@ -133,7 +134,7 @@ Feature、属性、范围和参考配对的修订先由 Worker 校验；正向�
 
 原始 STEP 保存在项目，模型使用期间续租。聊天关闭只释放对应引用，不释放其它快照或活动 G 所持有的模型。Worker 重启后重新打开输入、验证恢复的对象和拓扑，再取得新句柄。
 
-面索引是可重建缓存，不以磁盘 JSON 或旧句柄证明原生几何仍在。Hermes 的索引投影按新句柄及已验证状态重新读取；字段与存放见第 9 节。
+面索引是 Worker 私有可重建缓存，不以磁盘 JSON 或旧句柄证明原生几何仍在。Hermes 按已验证的新句柄恢复公开语义投影，重新生成当前 UI 导航；字段与存放见第 9 节。
 
 ## 5. 分阶段计划与任务依赖
 
@@ -224,7 +225,7 @@ Check实例同时绑定Feature、Check、适用成型context与规则版本，�
 }
 ```
 
-`forming_scope_id`、方向和作用面须与输入快照一致。严格限定主方向的 G 不可直接套局部方向；只有定义及 `scope_modes/direction_modes` 明确支持才派发分域请求。G 的有效 context 按声明归一化，不把主方向、材料等无关字段塞入所有厚度缓存键。
+`forming_scope_id`、方向和作用面须与输入快照一致。严格限定主方向的 G 不可直接套局部方向；只有定义及 `scope_modes/direction_modes` 明确支持才派发分域请求。方向在保存与派发时转为模型坐标单位向量，例如 [2,0,2] 与 [1,0,1] 表示同一方向；Worker 校验后以快照中的标准方向作为有效 context。不得通过向量倍率产生重复 G。G 的有效 context 按声明归一化，不把主方向、材料等无关字段塞入所有厚度缓存键。
 
 ### 6.3 接收与复用结果
 
@@ -268,7 +269,7 @@ Agent整理内容，JobManager后台渲染HTML，定位完善与内容准备可�
 | 代码入口 | 改造内容 |
 | --- | --- |
 | `tools/dfm/analyzers/occt.py`、`tools/dfm/runtime/process.py` | 常驻客户端、协议握手、应答/事件读取、取消与断线恢复 |
-| `tools/dfm/feature_recognition/occt_cpp.py`、`tools/dfm/service.py` | 单轮统一结果、成型方案确认、面索引投影、快照合并、续租和恢复 |
+| `tools/dfm/feature_recognition/occt_cpp.py`、`tools/dfm/service.py` | 单轮公开语义投影、成型方案确认、UI 导航、快照合并、续租和恢复 |
 | `tools/dfm/processes/occt_injection.py`、Plan/Operand模型 | 按G能力和确认依赖编排，plan_fragments、完整清单前置、去重与局部失效 |
 | `tools/dfm/ontology/` 与规则包 Schema | 对齐权威 G ID 和白名单，保持 Rule 字段名称及判定含义 |
 | `tools/dfm/runtime/`、结果/证据/Viewer模型 | provenance与stale处理，JobManager关联批次，result_manifest与报告覆盖状态 |
@@ -307,7 +308,6 @@ Hermes SessionState（按项目与 Run 隔离）
   revision / current_snapshot_id           当前已提交的业务版本与几何快照
   geometry_projection                     与 Worker 同版本的几何记录投影
     features / annotations / forming_scopes / relationships / coverage
-    face_membership_index                   同版 Worker 面归属索引的完整或按需投影
   facts / review_groups                    用户输入、确认指纹、来源与状态
   plans / active_plan_ref                  不可变计划及片段
   execution_records                        依赖、就绪/等待、job_id、进度与失败原因
@@ -316,7 +316,7 @@ Hermes SessionState（按项目与 Run 隔离）
   committed_sequence / checkpoint_sequence 日志提交与检查点边界
 ```
 
-默认由 Hermes 进程内结构化对象和索引管理，不在每次查询时读取/重写整个项目 JSON。按 `feature_id`、类别、面/边、范围、关系端点、确认组和 G 依赖建立查询投影；通用查询投影从同版记录生成；面归属索引以 Worker 返回的同版 face_membership_index 为准，不成为另一份可独立修改的数据。小型数值、列表、确认与任务记录在内存查询；大网格/数值场按需读取，不能全部复制到每个会话对象中。
+默认由 Hermes 进程内结构化对象和索引管理，不在每次查询时读取/重写整个项目 JSON。按 `feature_id`、类别、面/边、范围、关系端点、确认组和 G 依赖建立查询投影；通用查询投影从同版记录生成；Worker 的面归属索引不传输到 Hermes；Desktop 从正向面引用派生的导航表仅用于当前界面，不成为可独立修改的几何状态。小型数值、列表、确认与任务记录在内存查询；大网格/数值场按需读取，不能全部复制到每个会话对象中。
 
 几何字段由 Worker 校验和演化，Hermes 的用户确认、事实与计划由 Hermes 演化。通过接口交换小型记录、增量和内容指纹，引用共享目录中的不可变大制品；两进程不共享 C++ 指针。Worker 仅保存计算实际需要的状态，不装载企业规则和整个 Hermes 工作流。
 
@@ -329,7 +329,7 @@ forming_scopes 将产品成型面与方向绑定。新字段的完整定义由 W
 | forming_scope_id、kind、mode | 保持范围身份与主／局部角色；MAIN 不计为结构 Feature |
 | geometry_refs | 方案拟负责成型的产品面；不能默认等于倒扣面 |
 | undercut_geometry_refs | 主方向下的倒扣面，与成型面分别高亮和审核 |
-| mechanism_kind | none/slider/lifter/undetermined；后两种机构候选不能视为已导入真实模具组件 |
+| mechanism_kind | none/slider/lifter/undetermined；slider/lifter 表示产品面的成型方案，不能视为已导入真实模具组件；undetermined 表示机构尚未确定 |
 | draw_direction、coordinate_system | 模型坐标退出向量；未知为 null，不填零、主方向或柱轴 |
 | direction_source | inferred 可预览与编辑；正式 context 只能使用 user_confirmed |
 | candidate_solutions | 显示备选方案及证据；选定前不能把所有备选的面并成正式范围 |
@@ -377,27 +377,49 @@ Redis 不保存可供另一进程直接执行的 OCCT 指针，不反复搬运�
 
 新增验收需覆盖：用户确认应答后异常退出可恢复；单轮结构不重复、多范围关联和面归属索引可查询；小型状态走内存而非逐次全量文件读写；归档失败可独立重试；每个报告引用都能定位到已提交的制品。模拟算法与规则只用于验证这些框架性质，明确 fixture 来源，不宣称工程检测通过。
 
-### 9.6 面归属索引的消费与缓存
+### 9.6 Worker 内部索引与界面定位
 
-完整字段由 Worker 文档第 2.14 节维护。Hermes 使用相同名称 face_membership_index，并按 profile／project、模型输入、topology_snapshot_id 和 snapshot_id 隔离；face_id 取 geometry_ref.entity_id，不用三角形编号或从 1 开始的面 index 代替。
+face_membership_index 由 Worker 在快照内部派生并维护，不是 Hermes 必须读取的公共字段。识别、修订、snapshots.get、计算结果和 job.event 均不要求携带该索引；首版不实现索引下载、子集查询或跨快照索引同步。
+
+Hermes 的 geometry_projection 只保存同版公开语义记录：
 
 ```text
-Hermes 的当前几何投影
-  current_snapshot_id
+current_snapshot_id
+geometry_projection
   features / annotations / forming_scopes / relationships / coverage
-  face_membership_index
-    face_id → feature_memberships / annotation_ids / forming_scope_memberships
+artifacts：显示网格、拓扑映射及证据的登记引用
 ```
 
-feature_memberships 中 owned 表示结构自身面，reference 表示参考面，part_roles 解释部位。查询面 201 可能同时得到 MAIN_WALL_0001 的 owned 归属和 BOSS_0007 的 adjacent_main_wall/reference；结构选中优先使用 owned，不因某面参与 Boss 参考壁厚计算而把它显示为 Boss 自身。
+Hermes 为确认、计划和显示需要知道正向面引用：例如 BOSS_0007 有哪些自身面、SIDE_01 包含哪些成型面，以及哪个主体壁提供参考。这与复制 Worker 计算用反向索引不同。
 
-初次获取可调用 snapshots.get，携带 include_face_index=true；face_ids 省略时取完整索引，提供时取指定面。返回 face_index_is_full=false 仅表示子集；每个返回面仍包含该快照下完整的已有归属。子集结果合并到同版缓存，不能拿它替换全模型索引，也不能据此推断识别 coverage 已完整。
+Desktop 可从当前语义投影生成仅用于面板导航的 face ID → 界面条目查询表。先匹配结构自身 geometry_refs，再匹配属性，最后匹配出模设置；参考主壁不作为 Boss 自身选中。新投影提交时同步更新或重建该导航表，不混用旧快照或旧显示网格，也不从它推导 G 的实际几何部位。
 
-新快照提交后使旧查询投影失效，按需读取新快照索引。Hermes 首版不自行猜测跨快照增量，也不直接修改索引来修正 Feature。Worker 内部可共享不变映射、增量更新受影响面；进度查询不重复传完整面表。
+用户修正结构、属性或范围时，Hermes 提交对应 revise；Worker 负责更新权威对象、关系和内部索引。Hermes 消费返回的语义投影及明确版本，不直接增删 Worker 索引项。正式 G 仍按确认、coverage、适用性、方向和部位依赖解锁。
 
-普通 G 可从 Feature ID 直接读取部位；按面选择、范围检查或候选对象定位时用反向索引，再沿对象和关系查询。正式计算仍核验确认、coverage、G 适用性、方向及部位，不把索引命中当成计算完成。
+恢复保存正向语义记录与人工修订，Worker 校验模型／拓扑后重建私有索引；Hermes 从新投影重建 UI 导航。两端不共享可写 Redis 对象。公共消息与内部字段边界由 Worker 会话契约第 2.14、2.15 节维护。
 
-索引投影保存在 Hermes 内存，并可按容量淘汰或按面延迟加载；未被 Viewer／计划引用的旧版可以回收。恢复日志及项目历史保存权威对象和修订，不在每个 revision 复制整份面索引；需要时由 Worker 重建或重新查询。只读 SQLite 继续用于规则包，不为此新增会话数据库或 Redis 依赖。
+### 9.7 分阶段接收、提交与归档
+
+主流程的数据泳道和阶段表见[主流程](dfm-main-workflow-explained.md#各阶段数据如何变化)。公共字段与结果例子统一见 Worker 会话契约第 2.5、2.15 节；本节规定 Hermes 怎样提交这些数据，不维护第二套消息结构。
+
+| 接收阶段 | Hermes 必须处理 | 不能据此推定 |
+| --- | --- | --- |
+| snapshots.open / S0 | 关联模型输入、Worker 连接和快照；校验／登记预检、网格、拓扑映射引用 | 已完成特征识别；内存句柄可用于重启恢复 |
+| 单轮识别 / S1 | 跟踪内部 jobs，合并到同一语义基线；请求任务终态后发布审核组；保存 coverage、来源及语义检查点 | 单个 Job 完成就是整轮完成；complete 就是人工已确认 |
+| 用户修订 / S2 | 意图先落日志；Worker 返回后再次检查当前几何版本，再提交语义投影、审核、依赖有效性和操作终态 | Worker 派生出 S2 就等于 Hermes 已提交成功 |
+| G 批次 / 仍为 S2 | 核验逐项 Feature/G/有效 context/状态；校验场文件与清单；按身份汇总并持久提交 | completed 意味着全部 G 为 ok；Worker 缓存含有全部历史结果 |
+| Check、问题与 Viewer | 按已就绪数据确定性求值；已过期绑定撤出当前统计；即时显示已有证据 | 参考面全部违规；缓存缺失等于检测通过 |
+| 运行终态与 HTML | 固定 result_manifest，保留有效与未完成项、规则身份、证据和恢复检查点；异步渲染可独立重试 | HTML 失败需要重新计算有效 G；业务库暂不可用允许丢弃本地唯一副本 |
+
+重型方法先返回 job_id，终态结果由 jobs.status.result 或 job.event.params.result 消费。事件可能重复、乱于 UI 刷新或晚于项目修订；按 job、来源片段和快照校验，不按到达顺序覆盖当前头。
+
+S0、S1、S2 是 Worker 语义版本；project revision、review_groups、plan_fragments 和 run_id 仍由 Hermes 维护。G 计算读取 S2，结果独立绑定到 S2，正常测量不会仅因新增数值就生成 S3；规则求值与 HTML 也不修改 Worker 的特征快照。
+
+Worker 缓存淘汰只意味着可能重算。Hermes 必须保留本次所有已提交 G 结果，检查请求项与响应项一一对应（包含失败状态），不得只保存最后 256 项或最后一个批次。累计工作表按身份更新，各批次制品保持不可变；已有来源结果不改写成新 snapshot_id。
+
+公开语义恢复材料必须包含实际记录或可靠持久引用。原始 STEP、导入参数、引擎身份、语义状态、人工修订、确认和制品登记共同支持恢复；不能只保存进程退出后失效的 snapshot_id。Worker 已派生但 Hermes 提交失败的分支保留待核对，未提交分支不用于正式规划，重试按操作身份和内容幂等。
+
+当前本地沿用项目文件恢复日志、阶段检查点及有界小型结果工作表；不新增会话 SQLite 或 Redis。结束后业务数据库归档仍为后续消费者。完整内存对象、进程指针、Worker 的 G 加速缓存和面索引不要求直接归档。
 
 ## 10. 既有两轮实现与验证记录
 
@@ -705,18 +727,60 @@ PATCH discovery/scopes/{forming_scope_id} 返回最新审核状态，并保留�
 
 ## 11. 单轮识别改造清单与验收
 
-本节为 2026-11-02 新目标，覆盖前文的新编排与索引约定。第 10 节的旧实施和测试记录不能作为本节已经完成的证据。
+本节为单轮方案的开发、联调与交付入口。第 10 节的旧实施和测试记录不能作为本节已经完成的证据。
+
+### 11.1 实施顺序
 
 | 顺序 | Worker 交付 | Hermes 接入 |
 | --- | --- | --- |
-| 1 契约 | 扩展成型方案字段、候选来源、索引结构和 snapshots.get 查询；同步能力及 Schema | DTO、协议校验、能力／版本检查及例子使用同一字段名 |
+| 1 契约 | 扩展公开成型方案字段与候选来源；私有面索引不进入协议；同步能力、Schema 与响应白名单 | DTO、协议校验、能力／版本检查及例子使用同一字段名 |
 | 2 单轮编排 | 全模型结构、属性、倒扣与局部方案在一轮内整理，coverage 记录真实缺口 | 单次启动业务识别、跟踪内部 job，统一发布可审核状态 |
-| 3 快照与索引 | face_id 多归属索引、owned/reference、原子修订与恢复 | 同版热缓存、完整／子集查询、换快照失效、按面导航 |
+| 3 快照与索引 | face_id 多归属索引、owned/reference、原子修订与恢复 | 同版公开语义投影、按正向引用生成 UI 导航；不依赖索引下载 |
 | 4 分组确认 | 保存已确认机构与方向的派生快照，计算前严格校验 | 三大组与按成型范围的单组方案确认；取消必经局部补识别和三段门禁 |
 | 5 计算与报告 | G 从已有快照取部位、关联和方向，不重新导入模型 | 按依赖生成片段、去重 G、即时问题／高亮、后台 HTML |
 | 6 发布 | 真实 EXE、Schema、构建身份和实现范围一致 | 配套安装与真实 Desktop 全链路验证，不只替换文档或版本号 |
 
-新字段与旧 2.3.0 Schema 不可混用；版本在实际接口实现时统一确定。机制候选与面索引不新增本体规则表，规则的 Feature／Check／G 语义保持现有职责。
+本次公开成型方案扩展使用 bundle 2.4.0，契约名仍为 dfm.geometry/v2，引擎开发版本为 1.13.0。版本来源分别为 Worker 的 schemas/protocol-versions.json、vcpkg.json 和 Hermes 的 runtime/process.py；旧 2.3.0 EXE 不接入本次源码。私有索引不因内部实现变更而增加公共字段。机制候选与面索引不新增本体规则表，规则的 Feature／Check／G 语义保持现有职责。
+
+### 11.2 本次实现与验证记录
+
+2026-11-03，单轮会话框架已完成本地跨端验证。Hermes 基线为 099403550552，Worker 基线为 7fb0a2f31a98，均包含本次未提交改动；不能只用 HEAD 还原本次构建。正式合入时补充最终提交号。
+
+| 内容 | 实现入口与本次证据 | 边界 |
+| --- | --- | --- |
+| 单轮识别与模型复用 | feature_recognition/occt_cpp.py、runtime/process.py；真实模型预览、结构与方向分支合并、后续 G 共用一次导入 | 一轮可含多个内部 Job；不要求确认后再做局部识别 |
+| 私有面索引、参考面与不可变修订 | Worker SnapshotState / FaceMembershipIndex；完整 CTest 120 项通过 | 索引仅在 Worker；公开投影不带反向索引；不代表所有几何算法完成 |
+| 审核、计划与恢复 | contracts.py、review.py、service.py；原生编辑、冲突、重启恢复、依赖与自动续算回归通过 | 一个局部 forming_scope 组，结构独立审核；只有实际依赖受阻 |
+| 智能体工具 | tools/dfm_tool.py、skills/manufacturing/dfm-analysis/SKILL.md；参数与提示使用单轮方案，工具/技能测试通过 | 草稿用 stage_forming_direction；整组确认与草稿保存分开 |
+| Desktop | 类型构建通过，12 个文件的 56 项界面测试通过；真实 Electron 模型展示与单轮审核流程通过 | 覆盖两类面、机构/方向草稿、整组确认、并发编辑保护、报告前高亮及异步 HTML |
+| 超过缓存容量 | Worker 与 Hermes 各以 300 个有效 G 需求验证；结果及 Check 汇总完整、证据可读、STEP 导入一次 | 256 只限制 Worker 加速缓存，不截断已返回结果；未改成 LRU |
+| Job 与结果发布 | 原生队列测试覆盖两个模型、容量 busy、续租/取消、终态资源释放；Windows 结果发布短暂锁重试测试通过 | 一个几何任务线程；持续文件权限错误仍失败并保留旧版本 |
+| Hermes 回归 | 实际安装 EXE 上 62 个文件，586 项通过、0 失败；另以相同哈希的构建 EXE 补跑 6 项参考壁场景通过 | 安装目录缺少测试专用样件导出器，6 项在那里跳过；另 2 项旧可选环境用例未执行，均不计通过 |
+| 配套安装 | 独立安装与 Hermes 运行目录均为 1.13.0 / bundle 2.4.0；58 个文件逐一核对，doctor 的会话与 HTML 环境可用 | 当前为本地验证包；自然语言聊天全场景、正式发布流程及工程精度认证另行验收 |
+
+运行目录仍为 dfm-geometry-exe/windows-x64，不需要修改现有 executable 配置。独立安装位于 Worker 的 out/install/session-1.13.0-20261103，旧运行目录备份位于 out/backups/hermes-windows-x64-1.12.0-20261103。EXE SHA-256 为 91ddeeab870f5cfd68271e72da34a1cb35706970f319c0eb8ca7744a12e486a8，dependency_fingerprint 为 c46079439281c7699b5fd286afb34ded533251fcd1f2ca133c560198d1cb0087。重构建后重新记录，不据版本号假定二进制相同。
+
+本机原始验证记录保存于 Worker 的 out/validation/single-round-1.13.0-20261103：validation.json 记录源码/安装哈希、命令、通过与跳过数量，目录内保留完整回归日志。此目录是本地产物，团队交付时将它上传到测试归档位置；规范文档保留场景、版本和复现入口。
+
+本次没有补齐自动外观、定/动模、型腔/型芯、分型边界或滑块/斜顶方案算法；其 not_implemented、null 与 coverage 缺口继续保留。未同步或修改 Mold 数据库和远程规则包。300 项用例中的规则数据明确为框架 fixture，不是生产规则审核结论。
+
+#### 测试代码与 FLOW 场景对照
+
+| 场景 | 现有验证入口 |
+| --- | --- |
+| FLOW-01、02 单轮与缺口 | test_native_session_transport.py、test_native_review_prepare.py；Worker test_json_contracts.py |
+| FLOW-03、04 多归属与版本 | Worker test_snapshot_state.cpp、test_session_service.cpp |
+| FLOW-05 分组与依赖 | test_review_groups.py、test_reference_dependencies.py、test_geometric_batches.py |
+| FLOW-06 提交冲突 | test_native_geometry_edits.py、test_geometry_edit_commits.py；Desktop dfm-review-edits.test.ts |
+| FLOW-07、08 超过容量与证据 | test_native_session_transport.py 的 300 项用例；Worker [cache-capacity] |
+| FLOW-09 排队与控制 | test_native_session_transport.py 的 native_job_capacity 用例 |
+| FLOW-10 重启恢复 | test_native_geometry_edits.py、test_native_review_prepare.py、test_manifest_journal.py |
+| FLOW-11 高亮与异步报告 | test_desktop_single_round_workflow.py、test_reporting_html.py、test_field_evidence.py |
+| FLOW-12 终态与持久化 | test_native_reference_workflow.py 的失败/取消/缺失/篡改场景，test_jobs.py、test_manifest_journal.py |
+
+这些用例验证框架行为。团队仍须用实际工程模型测算法精度、极大模型的耗时与峰值内存，并完成正式发布验收；不以小样件通过数量代替这些工作。
+
+### 11.3 联调验收范围
 
 | 验收场景 | 必须证明 |
 | --- | --- |
@@ -725,9 +789,14 @@ PATCH discovery/scopes/{forming_scope_id} 返回最新审核状态，并保留�
 | 多归属与参考 | 一张根部圆角面关联 Boss 与圆角实例；参考主壁标为 reference，不污染 Boss 自身选中 |
 | 候选与缺口 | 未知机构／方向保留备选、null 与 coverage；算法未实现不能输出成功空列表 |
 | 审核解锁 | 成型方案单组确认，结构引用不重复；未确认方向只阻塞依赖它的 G |
-| 索引一致性 | 人工删面、改属性、改范围、退役对象后无旧归属；空项、未知面和部分查询有明确语义 |
+| 索引一致性 | 人工删面、改属性、改范围、退役对象后无旧归属；内部空项、未知面有明确语义；公开消息无私有索引 |
 | 版本与恢复 | 两个项目／拓扑／快照不串用；新快照不改旧任务；恢复后正反向记录一致 |
 | 性能 | 同会话 STEP 只导入一次；记录索引构建、查询、修订耗时和内存；不在每次进度刷新复制全图 |
 | 业务闭环 | 柱壁两个 G、规则判定、初步／精确定位及异步报告走同源有效状态 |
+| 缓存超过容量 | 有效需求数量大于 256，累计结果不截断；缓存淘汰只影响复用；已返回证据仍可读取 |
+| 分层与公开边界 | G 计算前后语义快照不变；Job、G 缓存和业务结论分开；所有普通响应／事件均不含面索引 |
+| 异步与并发 | 同 Worker 的几何 Job 排队、控制消息可处理；不把多个就绪片段或一次识别误称为算法并行 |
 
-允许显式 fixture 验证编排与数据一致性；模拟结果不能用作正式算法能力或工程认证。代码实施及测试完成前，状态保持“目标设计／待落地”。
+跨仓库开发分工及逐场景交付要求见[任务清单的框架联调验收](注塑件%20DFM%20特征识别与几何计算开发任务清单%20V1.0.md#单轮会话框架联调验收)。
+
+允许显式 fixture 验证编排与数据一致性；模拟结果不能用作正式算法能力或工程认证。各项分别记录“设计／开发中／专项通过／联调通过”；完整用例和配套运行包通过前，不标记新版已交付。

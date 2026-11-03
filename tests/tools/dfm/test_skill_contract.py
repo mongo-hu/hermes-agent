@@ -68,3 +68,15 @@ def test_dfm_skill_defines_the_m1_injection_plan_boundary():
     assert "Agent interpretation -> validated persistence -> plan -> start" in text
     assert "never invent" in text.lower()
     assert "standards" in text.lower()
+
+
+def test_dfm_skill_prescribes_single_phase_and_whole_forming_proposal_review():
+    text = SKILL.read_text(encoding="utf-8")
+    for token in (
+        "one business phase", "undercut_geometry_refs", "mechanism",
+        "candidate_solutions", "stage_forming_direction", "face_role=undercut",
+        "Confirm structural features separately", "unrelated ready calculations",
+        "analyzer_key=occt_cpp_external",
+    ):
+        assert token in text
+    assert "omit it to retain the PythonOCC STEP reference path" not in text

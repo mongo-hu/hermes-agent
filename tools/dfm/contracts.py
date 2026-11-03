@@ -1666,6 +1666,9 @@ class FormingScopeRecord:
     diagnostics: dict[str, Any] = field(default_factory=dict)
     kind: str = ""
     supersedes_scope_ids: list[str] = field(default_factory=list)
+    mechanism_kind: str = "undetermined"
+    undercut_geometry_refs: list[GeometryRef] = field(default_factory=list)
+    candidate_solutions: list[dict[str, Any]] = field(default_factory=list)
 
     def validate(self) -> None:
         direction_required = self.mode == "main" or self.status == "confirmed"
@@ -1678,8 +1681,7 @@ class FormingScopeRecord:
                 and math.isfinite(float(value))
                 for value in self.draw_direction
             )
-            and math.sqrt(sum(float(value) ** 2 for value in self.draw_direction))
-            > 1e-12
+            and 1e-12 < math.hypot(*self.draw_direction) < math.inf
         )
         if (
             not self.forming_scope_id
@@ -1694,8 +1696,17 @@ class FormingScopeRecord:
             or any(not isinstance(value, str) or not value or value == self.forming_scope_id
                    for value in self.supersedes_scope_ids)
             or len(self.supersedes_scope_ids) != len(set(self.supersedes_scope_ids))
+            or self.mechanism_kind not in {"none", "slider", "lifter", "undetermined"}
+            or (self.mode == "main" and self.mechanism_kind != "none")
+            or (self.mode == "local" and self.mechanism_kind == "none")
+            or (self.status == "confirmed" and (
+                not self.geometry_refs or (self.mode == "local" and self.mechanism_kind == "undetermined")
+            ))
+            or not isinstance(self.candidate_solutions, list)
+            or any(not isinstance(value, dict) for value in self.candidate_solutions)
             or (direction_required and not direction_valid)
             or (direction_required and self.direction_source != "user_confirmed")
+            or (not direction_required and direction_valid and self.direction_source not in {"inferred", "user_confirmed"})
             or (
                 not direction_required
                 and self.draw_direction is not None
@@ -1714,7 +1725,7 @@ class FormingScopeRecord:
             )
         if any(
             ref.kind != "face" or ref.index < 1 or not ref.input_sha256
-            for ref in self.geometry_refs
+            for ref in [*self.geometry_refs, *self.undercut_geometry_refs]
         ):
             raise DFMError(
                 "forming_scope_invalid",
@@ -1727,6 +1738,7 @@ class FormingScopeRecord:
         return {
             **asdict(self),
             "geometry_refs": [item.to_dict() for item in self.geometry_refs],
+            "undercut_geometry_refs": [item.to_dict() for item in self.undercut_geometry_refs],
         }
 
     @classmethod
@@ -1734,6 +1746,9 @@ class FormingScopeRecord:
         values = dict(payload)
         values["geometry_refs"] = [
             GeometryRef.from_dict(item) for item in values.get("geometry_refs", [])
+        ]
+        values["undercut_geometry_refs"] = [
+            GeometryRef.from_dict(item) for item in values.get("undercut_geometry_refs", [])
         ]
         record = cls(**values)
         record.validate()
@@ -1762,6 +1777,7 @@ class ReviewGroupRecord:
                 "ordinary_structure",
                 "surface_attribute",
                 "product_forming",
+                "forming_scope",
                 "undercut_scope",
                 "local_structure",
                 "local_direction",

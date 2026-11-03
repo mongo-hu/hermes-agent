@@ -41,7 +41,7 @@ import { DfmFeatureEditor } from './dfm-feature-editor'
 import { DfmFeatureGroups } from './dfm-feature-groups'
 import type { ReviewNavigation } from './dfm-review'
 import { type AnnotationKind, confirmedFeatureIds, type ReviewAnnotation, type ReviewContext, type ReviewGroup, type ReviewScope } from './dfm-review'
-import { parseDirectionVector, reviewEditTimeout } from './dfm-review'
+import { parseDirectionVector, reviewEditTimeout, scopeDisplayGeometry } from './dfm-review'
 import { captureReviewEdit, isReviewConflict, type ReviewEditBase, reviewEditUnchanged } from './dfm-review-edits'
 import { DfmReviewPanel } from './dfm-review-panel'
 import { createFocusIndex, selectionCameraPose } from './dfm-viewer-focus'
@@ -1103,6 +1103,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
   const [pickedFaceIndex, setPickedFaceIndex] = useState<number | null>(null)
   const [editingFeatureId, setEditingFeatureId] = useState<string | null>(null)
   const [editingScopeId, setEditingScopeId] = useState<string | null>(null)
+  const [editingScopeRole, setEditingScopeRole] = useState<'forming' | 'undercut'>('forming')
   const [editingAnnotation, setEditingAnnotation] = useState<ReviewAnnotation | null>(null)
   const [editingSnapshotId, setEditingSnapshotId] = useState<string | undefined>()
   const [annotationValues, setAnnotationValues] = useState<string[]>([])
@@ -1340,7 +1341,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
         if (match.category !== 'structure' && latestReviewContext) {
           const refs = match.category === 'annotation'
             ? latestReviewContext.annotations.find(item => item.annotation_id === match.objectId)?.geometry_refs
-            : latestReviewContext.forming_scopes.find(item => item.forming_scope_id === match.objectId)?.geometry_refs
+            : latestReviewContext.forming_scopes.filter(item => item.forming_scope_id === match.objectId).flatMap(scopeDisplayGeometry)
 
           setReviewGeometryRefs(resolveReviewDisplayRefs(refs ?? [], topologyFaces, topologyEdges))
         }
@@ -1568,13 +1569,18 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
         const scope = fresh.forming_scopes.find(item => item.forming_scope_id === base.id)!
         setDirectionDraft({ ...directionDraft, scope, text: scope.draw_direction ? JSON.stringify(scope.draw_direction) : '',
           revision: fresh.revision, snapshotId: fresh.snapshot_id, origin: undefined,
-          canConfirm: scope.mode === 'main' || ['undercut_scope', 'local_structure'].every(kind => fresh.review_groups.some(group => group.kind === kind && group.status === 'confirmed' && group.target_refs.includes(scope.forming_scope_id))) })
+          mechanismKind: scope.mechanism_kind })
       } else if (base.kind === 'annotation') {
         const annotation = fresh.annotations.find(item => item.annotation_id === base.id)
 
         if (annotation) { setEditingAnnotation(annotation); setDraftFaceIndices(resolveGeometryRefFaceIndices(annotation.geometry_refs)) }
       } else {
-        const refs = base.kind === 'scope' ? fresh.forming_scopes.find(item => item.forming_scope_id === base.id)?.geometry_refs : fresh.features.find(item => item.feature_id === base.id)?.properties.geometry_refs
+        const scope = fresh.forming_scopes.find(item => item.forming_scope_id === base.id)
+
+        const refs = base.kind === 'scope'
+          ? (editingScopeRole === 'undercut' ? scope?.undercut_geometry_refs : scope?.geometry_refs)
+          : fresh.features.find(item => item.feature_id === base.id)?.properties.geometry_refs
+
         setDraftFaceIndices(resolveGeometryRefFaceIndices(refs))
       }
 
@@ -1589,7 +1595,11 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
   }
 
   const currentEditedScope = latestReviewContext?.forming_scopes.find(scope => scope.forming_scope_id === editingScopeId)
-  const scopeFaces = resolveGeometryRefFaceIndices(currentEditedScope?.geometry_refs)
+  const scopeFaces = resolveGeometryRefFaceIndices(editingScopeRole === 'undercut' ? currentEditedScope?.undercut_geometry_refs : currentEditedScope?.geometry_refs)
+
+  const scopeCanHaveEmptySelection = Boolean(currentEditedScope &&
+    (editingScopeRole === 'undercut' ? currentEditedScope.geometry_refs.length : currentEditedScope.undercut_geometry_refs.length))
+
   const scopeFacesChanged = Boolean(editingScopeId && (scopeFaces.size !== draftFaceIndices?.size || [...scopeFaces].some(face => !draftFaceIndices?.has(face))))
 
   const startDirectionEdit = useCallback(async (scope: ReviewScope, context: ReviewContext) => {
@@ -1611,15 +1621,14 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
       if (!current) {throw new Error('倒扣范围已重新识别，请从当前列表重新选择。')}
       editBase.current = captureReviewEdit(fresh, 'scope', current.forming_scope_id)
       setEditConflict(false)
-      highlightReview(current.geometry_refs)
+      highlightReview(scopeDisplayGeometry(current))
       setEditingScopeId(null)
       setDraftFaceIndices(null)
       setActiveDirectionId(current.forming_scope_id)
       setDirectionError('')
       setDirectionDraft({ scope: current, revision: fresh.revision, snapshotId: fresh.snapshot_id,
         text: current.draw_direction ? JSON.stringify(current.draw_direction) : '', mode: 'rotate', origin: axisOrigins[current.forming_scope_id],
-        canConfirm: current.mode === 'main' || ['undercut_scope', 'local_structure'].every(kind => fresh.review_groups.some(group =>
-          group.kind === kind && group.status === 'confirmed' && group.target_refs.includes(current.forming_scope_id))) })
+        mechanismKind: current.mechanism_kind })
     } catch (cause) {
       if (currentProjectId.current === projectId) {setReviewError(cause instanceof Error ? cause.message : String(cause))}
     } finally {
@@ -1631,7 +1640,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
     if (!directionDraft || !projectId || savingFeature || editConflict) {return}
     const vector = parseDirectionVector(directionDraft.text)
 
-    if (!vector) {return}
+    if (!vector && !(directionDraft.scope.mode === 'local' && directionDraft.text.trim() === '')) {return}
     setSavingFeature(true)
     setDirectionError('')
 
@@ -1640,6 +1649,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
         path: `/api/dfm/projects/${encodeURIComponent(projectId)}/discovery/review/direction`, method: 'POST',
         timeoutMs,
         body: { forming_scope_id: directionDraft.scope.forming_scope_id, draw_direction: vector,
+          mechanism_kind: directionDraft.mechanismKind, geometry_refs: directionDraft.scope.geometry_refs,
           ...pins }
       }))
 
@@ -1649,11 +1659,15 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
       applyReviewContext(context)
       setAxisOrigins(previous => directionDraft.origin ? { ...previous, [directionDraft.scope.forming_scope_id]: directionDraft.origin } :
         Object.fromEntries(Object.entries(previous).filter(([id]) => id !== directionDraft.scope.forming_scope_id)))
-      setManifest(current => current ? { ...current, status: 'discovery', issues: [], issue_count: 0, issue_type_counts: [] } : current)
+
+      if (context.direction_status !== 'forming_direction_unchanged') {
+        setManifest(current => current ? { ...current, status: 'discovery', issues: [], issue_count: 0, issue_type_counts: [] } : current)
+      }
+
       setDirectionDraft(null)
       editBase.current = null
       setEditConflict(false)
-      setReviewNotice(context.direction_status === 'forming_direction_staged' ? '退出方向已暂存。请确认倒扣范围和局部结构，再正式确认方向。' : '出模方向已更新。相关计算需重新分析，原报告保留为历史结果。')
+      setReviewNotice(context.direction_status === 'forming_direction_unchanged' ? '方案内容未改变，保留原确认和计算结果。' : context.direction_status === 'forming_direction_staged' ? '方案草稿已保存。请核对倒扣面、成型面、机构和方向，再确认完整方案。' : '出模方向已更新。相关计算需重新分析，原报告保留为历史结果。')
     } catch (cause) {
       if (currentProjectId.current === projectId) {setDirectionError(cause instanceof Error ? cause.message : String(cause))}
     } finally {
@@ -1665,14 +1679,14 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
 
   const axisState: DirectionAxisState | null = directionDraft ? {
     scopeId: directionDraft.scope.forming_scope_id, direction: parseDirectionVector(directionDraft.text),
-    geometryRefs: directionDraft.scope.geometry_refs, editing: true, mode: directionDraft.mode, origin: directionDraft.origin
+    geometryRefs: scopeDisplayGeometry(directionDraft.scope), editing: true, mode: directionDraft.mode, origin: directionDraft.origin
   } : activeDirectionScope ? { scopeId: activeDirectionScope.forming_scope_id, direction: activeDirectionScope.draw_direction,
-    geometryRefs: activeDirectionScope.geometry_refs, editing: false, mode: 'rotate', origin: axisOrigins[activeDirectionScope.forming_scope_id] } : null
+    geometryRefs: scopeDisplayGeometry(activeDirectionScope), editing: false, mode: 'rotate', origin: axisOrigins[activeDirectionScope.forming_scope_id] } : null
 
   const saveFeatureEdit = useCallback(async () => {
     if (
       editConflict || (!editingFeatureId && !editingScopeId && !editingAnnotation) ||
-      !draftFaceIndices?.size ||
+      (!draftFaceIndices || (!draftFaceIndices.size && !scopeCanHaveEmptySelection)) ||
       !projectId ||
       projectRevision == null
     ) {
@@ -1709,7 +1723,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
                 }
               ]
             }
-          : { ...pins, geometry_refs: geometryRefs }
+          : { ...pins, geometry_refs: geometryRefs, ...(editingScopeId ? { face_role: editingScopeRole } : {}) }
       }))
 
       if (currentProjectId.current !== projectId) {return}
@@ -1768,6 +1782,8 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
     draftFaceIndices,
     editingFeatureId,
     editingScopeId,
+    editingScopeRole,
+    scopeCanHaveEmptySelection,
     editingAnnotation,
     projectRevision,
     projectId,
@@ -1775,7 +1791,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
     target.manifestPath
   ])
 
-  const startScopeEdit = useCallback(async (scope: ReviewScope, reviewed: ReviewContext) => {
+  const startScopeEdit = useCallback(async (scope: ReviewScope, reviewed: ReviewContext, faceRole: 'forming' | 'undercut' = 'forming') => {
     if (preparingReview || editingGeometry || savingFeature) {return}
     setPreparingReview(true)
     setReviewError('')
@@ -1789,12 +1805,13 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
       if (!current) {throw new Error('倒扣范围已重新识别，请从当前列表重新选择。')}
       editBase.current = captureReviewEdit(context, 'scope', current.forming_scope_id)
       setEditConflict(false)
-      highlightReview(current.geometry_refs)
+      highlightReview(faceRole === 'undercut' ? current.undercut_geometry_refs : current.geometry_refs)
       setEditingFeatureId(null)
+      setEditingScopeRole(faceRole)
       setEditingScopeId(current.forming_scope_id)
       setEditingSnapshotId(context.snapshot_id)
       setEditingAnnotation(null)
-      setDraftFaceIndices(resolveGeometryRefFaceIndices(current.geometry_refs))
+      setDraftFaceIndices(resolveGeometryRefFaceIndices(faceRole === 'undercut' ? current.undercut_geometry_refs : current.geometry_refs))
       setProjectRevision(context.revision)
     } catch (cause) {
       if (currentProjectId.current === projectId) {setReviewError(cause instanceof Error ? cause.message : String(cause))}
@@ -2253,17 +2270,17 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
               />
             )}
             {editingScopeId && (
-              <div aria-label="编辑倒扣范围" className="mb-2 rounded border border-amber-300/30 p-2 text-[11px] text-amber-100" role="region">
+              <div aria-label={editingScopeRole === 'undercut' ? '编辑倒扣面' : '编辑成型面'} className="mb-2 rounded border border-amber-300/30 p-2 text-[11px] text-amber-100" role="region">
                 <p>
-                  编辑范围 {editingScopeId} · 已选 {draftFaceIndices?.size ?? 0} 个面
+                  编辑{editingScopeRole === 'undercut' ? '倒扣面' : '成型面'} {editingScopeId} · 已选 {draftFaceIndices?.size ?? 0} 个面
                 </p>
-                <p>保存后需重新确认范围、局部结构和退出方向。</p>
+                <p>保存后需重新确认本成型方案；结构在结构组独立审核。</p>
                 <button className="mt-2 mr-3 text-cyan-200 disabled:opacity-40" disabled={savingFeature || preparingReview || scopeFacesChanged}
-                  onClick={() => { if (currentEditedScope && latestReviewContext) {void startDirectionEdit(currentEditedScope, latestReviewContext)} }} type="button">输入退出方向</button>
+                  onClick={() => { if (currentEditedScope && latestReviewContext) {void startDirectionEdit(currentEditedScope, latestReviewContext)} }} type="button">编辑机构与方向</button>
                 {scopeFacesChanged && <p className="mt-1 text-[10px] text-slate-300">请先保存当前选面，再编辑方向。</p>}
                 <button
                   className="mr-3 mt-2"
-                  disabled={savingFeature || editConflict || !draftFaceIndices?.size}
+                  disabled={savingFeature || editConflict || (!draftFaceIndices?.size && !scopeCanHaveEmptySelection)}
                   onClick={() => void saveFeatureEdit()}
                   type="button"
                 >

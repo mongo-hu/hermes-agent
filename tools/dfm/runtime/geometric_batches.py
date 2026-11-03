@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import math
 from typing import Collection
 
 from ..contracts import PlanFragmentRecord, PlanRecord
@@ -15,10 +16,18 @@ MAX_BATCH_REQUESTS = 8
 def request_key(
     feature_id: str, geometric_id: str, context: dict
 ) -> tuple[str, str, str]:
+    canonical = dict(context)
+    direction = canonical.get("draw_direction")
+    if (isinstance(direction, list) and len(direction) == 3
+        and all(isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) for value in direction)):
+        magnitude = math.hypot(*direction)
+        if 1e-12 < magnitude < math.inf:
+            scale = 1.0 if abs(magnitude - 1.0) <= 1e-12 else magnitude
+            canonical["draw_direction"] = [float(value) / scale for value in direction]
     return (
         feature_id,
         geometric_id,
-        json.dumps(context, sort_keys=True, separators=(",", ":"), allow_nan=False),
+        json.dumps(canonical, sort_keys=True, separators=(",", ":"), allow_nan=False),
     )
 
 
@@ -56,7 +65,7 @@ class GeometricBatch:
                     {
                         "feature_id": item.feature_id,
                         "geometric_ids": [],
-                        "context": dict(item.context),
+                        "context": json.loads(context),
                     },
                 )
                 for geometric_id in item.geometric_ids:

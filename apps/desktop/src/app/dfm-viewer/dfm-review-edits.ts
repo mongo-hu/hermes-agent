@@ -26,7 +26,7 @@ function refsKey(refs: GeometryReference[] | undefined) {
 function modelKey(context: ReviewContext) {
   const refs = [
     ...context.features.flatMap(item => item.properties.geometry_refs ?? []),
-    ...context.forming_scopes.filter(item => item.status !== 'stale').flatMap(item => item.geometry_refs)
+    ...context.forming_scopes.filter(item => item.status !== 'stale').flatMap(item => [...item.geometry_refs, ...item.undercut_geometry_refs])
   ]
 
   return JSON.stringify(
@@ -41,7 +41,10 @@ function targetKey(context: ReviewContext, kind: ReviewEditKind, id: string) {
     const item = context.forming_scopes.find(row => row.forming_scope_id === id && row.status !== 'stale')
 
     if (item) {
-      value = { kind: item.kind, mode: item.mode, direction: item.draw_direction, refs: refsKey(item.geometry_refs) }
+      value = { kind: item.kind, mode: item.mode, direction: item.draw_direction,
+        mechanism: item.mechanism_kind, directionSource: item.direction_source, status: item.status,
+        refs: refsKey(item.geometry_refs), undercut: refsKey(item.undercut_geometry_refs),
+        candidates: item.candidate_solutions }
     }
   } else if (kind === 'annotation') {
     const item = context.annotations.find(row => row.annotation_id === id && row.status !== 'stale')

@@ -41,6 +41,7 @@ function context(): ReviewContext {
         forming_scope_id: 'SIDE',
         kind: 'undercut',
         mode: 'local',
+        mechanism_kind: 'undetermined', undercut_geometry_refs: [{ kind: 'face', index: 1 }], candidate_solutions: [], coordinate_system: 'model', direction_source: null,
         draw_direction: null,
         geometry_refs: [{ kind: 'face', index: 1 }]
       }
@@ -94,7 +95,7 @@ describe('DFM review state', () => {
   it('locates scope-only targets and deduplicates shared feature faces', () => {
     const group: ReviewGroup = {
       review_group_id: 'local',
-      kind: 'local_structure',
+      kind: 'forming_scope',
       target_refs: ['SIDE', 'BOSS_1'],
       status: 'pending_review'
     }
@@ -116,6 +117,7 @@ describe('DFM review state', () => {
       forming_scope_id: 'MAIN',
       kind: 'main_forming',
       mode: 'main',
+      mechanism_kind: 'none', undercut_geometry_refs: [], candidate_solutions: [], coordinate_system: 'model', direction_source: 'user_confirmed',
       draw_direction: [0, 0, 1],
       geometry_refs: state.features.flatMap(feature => feature.properties.geometry_refs ?? [])
     })
@@ -127,23 +129,24 @@ describe('DFM review state', () => {
     expect(state.features.some(feature => feature.feature_id === 'MAIN')).toBe(false)
   })
 
-  it('unlocks local direction only after its own range and structures are confirmed', () => {
+  it('confirms one complete forming plan independently of structural review', () => {
     const state = context()
 
     const group: ReviewGroup = {
-      review_group_id: 'direction',
-      kind: 'local_direction',
-      target_refs: ['SIDE'],
-      status: 'pending_review'
+      review_group_id: 'plan', kind: 'forming_scope', target_refs: ['SIDE'], status: 'pending_review'
     }
 
     expect(directionUnlocked(state, group)).toBe(false)
-    state.review_groups.push(
-      ...['undercut_scope', 'local_structure'].map(kind => ({ ...group, kind, status: 'confirmed' as const }))
-    )
+    state.forming_scopes[0].mechanism_kind = 'slider'
+    expect(directionUnlocked(state, group)).toBe(false)
+    state.forming_scopes[0].draw_direction = [1, 0, 0]
     expect(directionUnlocked(state, group)).toBe(true)
-    state.review_groups.push({ ...group, kind: 'local_structure', target_refs: ['OTHER'], status: 'pending_review' })
-    expect(directionUnlocked(state, group)).toBe(true)
+    expect(state.review_groups[0].status).toBe('pending_review')
+    state.forming_scopes[0].geometry_refs = []
+    expect(directionUnlocked(state, group)).toBe(false)
+    state.forming_scopes[0].geometry_refs = [{ kind: 'face', index: 1 }]
+    state.forming_scopes[0].status = 'stale'
+    expect(directionUnlocked(state, group)).toBe(false)
   })
 
   it('does not infer a direction from missing, zero or invalid input', () => {
@@ -156,6 +159,6 @@ describe('DFM review state', () => {
       expect(parseReviewDirection(value)).toBeNull()
     }
 
-    expect(parseReviewDirection(['1', '2', '-3'])).toEqual([1, 2, -3])
+    expect(parseReviewDirection(['1', '2', '-3'])).toEqual([1, 2, -3].map(value => value / Math.hypot(1, 2, -3)))
   })
 })

@@ -25,7 +25,8 @@ function context(): ReviewContext {
       }
     ],
     forming_scopes: [
-      { forming_scope_id: 'SIDE', kind: 'undercut', mode: 'local', draw_direction: [0, 0, 1], geometry_refs: refs }
+      { forming_scope_id: 'SIDE', kind: 'undercut', mode: 'local', draw_direction: [0, 0, 1], geometry_refs: refs,
+        mechanism_kind: 'slider', undercut_geometry_refs: [refs[0]], candidate_solutions: [], coordinate_system: 'model', direction_source: 'user_confirmed' }
     ],
     annotations: [
       { annotation_id: 'LOOK', kind: 'appearance', value: 'appearance', status: 'active', geometry_refs: refs }
@@ -48,6 +49,16 @@ describe('review edit conflict boundaries', () => {
     })
     latest.forming_scopes[0].geometry_refs.reverse()
     expect(reviewEditUnchanged(base, latest)).toBe(true)
+  })
+
+  it('protects both surface collections and the mechanism even when direction is unchanged', () => {
+    const original = context()
+    const base = captureReviewEdit(original, 'scope', 'SIDE')
+    const latest = context()
+    latest.forming_scopes[0].undercut_geometry_refs = [latest.features[0].properties.geometry_refs![1]]
+    expect(reviewEditUnchanged(base, latest)).toBe(false)
+    latest.forming_scopes[0] = { ...context().forming_scopes[0], mechanism_kind: 'lifter' }
+    expect(reviewEditUnchanged(base, latest)).toBe(false)
   })
 
   it('detects a changed or removed direction target instead of replacing its vector', () => {

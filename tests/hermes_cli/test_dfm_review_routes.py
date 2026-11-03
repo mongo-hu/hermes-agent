@@ -19,14 +19,14 @@ def api(monkeypatch):
         "revision": 7,
         "features": [],
         "review_groups": [
-            {"kind": "undercut_scope", "status": "confirmed", "target_refs": ["SIDE"]},
-            {"kind": "local_structure", "status": "confirmed", "target_refs": ["SIDE"]},
+            {"kind": "forming_scope", "status": "pending_review", "target_refs": ["SIDE"]},
         ],
         "forming_scopes": [
             {
                 "forming_scope_id": "SIDE",
                 "kind": "undercut",
-                "mode": "local",
+                "mode": "local", "mechanism_kind": "undetermined",
+                "undercut_geometry_refs": [], "candidate_solutions": [],
                 "geometry_refs": [{"kind": "face", "index": 12}],
             }
         ],
@@ -69,11 +69,37 @@ def test_direction_uses_current_server_geometry_and_user_supplied_vector(api):
         },
     )
     assert result.status_code == 200, result.text
-    scope = service.analysis.call_args_list[-2].kwargs["forming_scopes"][0]
+    call = service.analysis.call_args_list[-2]
+    assert call.args == ("stage_forming_direction",)
+    scope = call.kwargs["forming_scope"]
     assert scope["geometry_refs"] == [{"kind": "face", "index": 12}]
     assert scope["kind"] == "undercut"
     assert scope["draw_direction"] == [1, 2, 0]
     assert scope["direction_source"] == "user_confirmed"
+
+
+def test_partial_plan_route_preserves_unknown_direction_and_explicit_mechanism(api):
+    client, service = api
+    result = client.post("/api/dfm/projects/dfm_test/discovery/review/direction", json={
+        "forming_scope_id": "SIDE", "draw_direction": None, "mechanism_kind": "lifter", "expected_revision": 7})
+    assert result.status_code == 200, result.text
+    call = service.analysis.call_args_list[-2]
+    assert call.args == ("stage_forming_direction",)
+    assert call.kwargs["forming_scope"]["draw_direction"] is None
+    assert call.kwargs["forming_scope"]["mechanism_kind"] == "lifter"
+
+
+def test_main_direction_route_uses_confirmation_instead_of_local_staging(api):
+    client, service = api
+    state = service.analysis("review_context")
+    state["forming_scopes"][0].update(mode="main", kind="main_forming", mechanism_kind="none")
+    service.reset_mock()
+    result = client.post("/api/dfm/projects/dfm_test/discovery/review/direction", json={
+        "forming_scope_id": "SIDE", "draw_direction": [0, 0, 1], "expected_revision": 7})
+    assert result.status_code == 200, result.text
+    call = service.analysis.call_args_list[-2]
+    assert call.args == ("revise_forming_scopes",)
+    assert call.kwargs["forming_scopes"][0]["mechanism_kind"] == "none"
 
 
 def test_unreviewed_undercut_direction_is_staged_instead_of_confirmed(api):
@@ -236,6 +262,7 @@ def test_scope_geometry_edit_preserves_full_refs_and_returns_updated_review_cont
         "project_id": "dfm_test",
         "forming_scope_id": "SIDE",
         "geometry_refs": refs,
+        "face_role": "forming",
         "expected_revision": 7,
     }
     service.analysis.side_effect = lambda action, **params: {**state, "unchanged": True}

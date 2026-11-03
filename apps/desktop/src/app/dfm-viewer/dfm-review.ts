@@ -13,10 +13,23 @@ export interface ReviewFeature {
   }
 }
 
+export interface FormingCandidate {
+  mechanism_kind: 'slider' | 'lifter' | 'undetermined'
+  geometry_refs: GeometryReference[]
+  draw_direction: number[] | null
+  confidence?: number
+  evidence?: Record<string, unknown>
+}
+
 export interface ReviewScope {
   forming_scope_id: string
   kind: string
   mode: 'main' | 'local'
+  mechanism_kind: 'none' | 'slider' | 'lifter' | 'undetermined'
+  undercut_geometry_refs: GeometryReference[]
+  candidate_solutions: FormingCandidate[]
+  coordinate_system: 'model'
+  direction_source: 'inferred' | 'user_confirmed' | null
   draw_direction: number[] | null
   geometry_refs: GeometryReference[]
   status?: 'candidate' | 'confirmed' | 'stale'
@@ -101,9 +114,7 @@ const LABELS: Record<string, string> = {
   forming_side: '面属性 · 型腔／型芯侧',
   parting_boundary: '边属性 · 分型边界',
   product_forming: '整件设置 · 主出模方向',
-  undercut_scope: '第一轮 · 倒扣范围',
-  local_structure: '第二轮 · 局部结构',
-  local_direction: '第二轮 · 局部退出方向'
+  forming_scope: '局部成型方案'
 }
 
 export function confirmedFeatureIds(groups: readonly ReviewGroup[]): Set<string> {
@@ -132,27 +143,14 @@ export function reviewTargetLabel(group: ReviewGroup): string {
 }
 
 export function reviewGroupNote(context: ReviewContext, group: ReviewGroup): string | null {
-  if (group.kind === 'undercut_scope') {
-    const scope = context.forming_scopes.find(item => item.forming_scope_id === group.target_refs[0])
-    const faces = scope?.geometry_refs.filter(ref => ref.kind === 'face').length ?? 0
-
-    return `${faces} 个面；确认范围后补充识别局部结构，再确认结构和退出方向。`
-  }
-
-  if (group.kind === 'local_structure') {
-    const features = context.features.filter(feature => group.target_refs.includes(feature.feature_id))
-
-    return features.length
-      ? `关联结构：${features.map(feature => `${LABELS[feature.kind] ?? feature.kind} ${feature.feature_id}`).join('、')}。结构详情见“结构特征”。`
-      : '该范围内的结构将由第二轮识别补充。'
-  }
-
-  if (group.kind === 'local_direction') {
+  if (group.kind === 'forming_scope') {
     const scope = context.forming_scopes.find(item => item.forming_scope_id === group.target_refs[0])
 
-    return scope?.draw_direction
-      ? `局部退出方向 [${scope.draw_direction.join(', ')}]。${scope.status === 'candidate' ? '已暂存，尚未参与计算。' : ''}`
-      : '局部退出方向尚未确认。'
+    if (!scope) {return '成型方案已变化，请刷新当前审核状态。'}
+    const mechanisms = { none: '主方向', slider: '滑块', lifter: '斜顶', undetermined: '机构待确定' }
+    const direction = scope.draw_direction ? `[${scope.draw_direction.join(', ')}]` : '方向待补充'
+
+    return `倒扣面 ${scope.undercut_geometry_refs.length} 个，成型面 ${scope.geometry_refs.length} 个；${mechanisms[scope.mechanism_kind]}，${direction}。结构在结构组独立审核；本方案整体确认后解锁相关方向计算。`
   }
 
   if (group.kind !== 'product_forming') {
@@ -216,7 +214,9 @@ export function parseDirectionVector(text: string): number[] | null {
       return null
     }
 
-    return values
+    const magnitude = Math.hypot(...values)
+
+    return Math.abs(magnitude - 1) <= 1e-12 ? values : values.map(value => value / magnitude)
   } catch {
     return null
   }
@@ -235,7 +235,7 @@ export function reviewGeometry(context: ReviewContext, group: ReviewGroup): Geom
     ...context.features
       .filter(item => selected.has(item.feature_id))
       .flatMap(item => item.properties.geometry_refs ?? []),
-    ...context.forming_scopes.filter(item => selected.has(item.forming_scope_id)).flatMap(item => item.geometry_refs)
+    ...context.forming_scopes.filter(item => selected.has(item.forming_scope_id)).flatMap(scopeDisplayGeometry)
   ]
 
   return Array.from(
@@ -245,14 +245,22 @@ export function reviewGeometry(context: ReviewContext, group: ReviewGroup): Geom
   )
 }
 
-export function directionUnlocked(context: ReviewContext, group: ReviewGroup): boolean {
-  const scope = group.target_refs[0]
+export function formingPlanReady(scope: ReviewScope | undefined): boolean {
+  return Boolean(scope && scope.status !== 'stale' && scope.geometry_refs.length &&
+    parseDirectionVector(JSON.stringify(scope.draw_direction)) &&
+    (scope.mode === 'main' ? scope.mechanism_kind === 'none' : ['slider', 'lifter'].includes(scope.mechanism_kind)))
+}
 
-  return ['undercut_scope', 'local_structure'].every(kind =>
-    context.review_groups.some(
-      item => item.kind === kind && item.target_refs.includes(scope) && item.status === 'confirmed'
-    )
-  )
+export function scopeDisplayGeometry(scope: ReviewScope): GeometryReference[] {
+  return Array.from(new Map(
+    [...scope.geometry_refs, ...scope.undercut_geometry_refs].map(ref => [
+      JSON.stringify([ref.input_sha256, ref.topology_snapshot_id, ref.kind, ref.entity_id, ref.index]), ref
+    ])
+  ).values())
+}
+
+export function directionUnlocked(context: ReviewContext, group: ReviewGroup): boolean {
+  return formingPlanReady(context.forming_scopes.find(scope => scope.forming_scope_id === group.target_refs[0]))
 }
 
 export function parseReviewDirection(values: string[]): number[] | null {
@@ -262,5 +270,5 @@ export function parseReviewDirection(values: string[]): number[] | null {
 
   const direction = values.map(Number)
 
-  return direction.every(Number.isFinite) && direction.some(value => value !== 0) ? direction : null
+  return parseDirectionVector(JSON.stringify(direction))
 }

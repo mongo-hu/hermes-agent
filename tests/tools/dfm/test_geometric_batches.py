@@ -109,3 +109,13 @@ def test_oversized_existing_fragment_runs_alone_not_partially_completed():
     batch = next_geometric_batch(plan(large, small), set())
     assert batch.fragment_refs == {"large"}
     assert len(batch.items()[0]["geometric_ids"]) == 10
+
+def test_equivalent_direction_vectors_share_one_canonical_request_and_all_consumers():
+    first = fragment("first", "G_DRAFT", context={"forming_scope_id": "SIDE", "draw_direction": [0, 0, 2]})
+    second = fragment("second", "G_DRAFT", context={"forming_scope_id": "SIDE", "draw_direction": [0.0, 0.0, 1.0]})
+    batch = next_geometric_batch(plan(first, second), set())
+    assert len(batch.items()) == 1
+    assert batch.items()[0]["context"]["draw_direction"] == [0.0, 0.0, 1.0]
+    assert batch.fragment_refs == {"first", "second"}
+    assert len(next(iter(batch.owners().values()))) == 2
+    assert first.items[0].context["draw_direction"] == [0, 0, 2]

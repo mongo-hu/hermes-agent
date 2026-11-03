@@ -23,15 +23,36 @@
     "limits"
   ],
   "properties": {
-    "contract_version": {"const": "dfm.geometry/v2"},
-    "schema_bundle_version": {"const": "2.3.0"},
-    "engine_version": {"type": "string", "pattern": "^occt-dfm-geometry-[0-9]+\\.[0-9]+\\.[0-9]+$"},
-    "dependency_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "backend": {"const": "analysis_situs+occt"},
-    "occt_version": {"type": "string", "minLength": 1},
-    "analysis_situs_version": {"const": "v2025.2"},
-    "analysis_situs_commit": {"const": "aa5958932c8c85c068566ab685f2b99c0436b926"},
-    "transport": {"const": "stdio-jsonrpc"},
+    "contract_version": {
+      "const": "dfm.geometry/v2"
+    },
+    "schema_bundle_version": {
+      "const": "2.4.0"
+    },
+    "engine_version": {
+      "type": "string",
+      "pattern": "^occt-dfm-geometry-[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "dependency_fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "backend": {
+      "const": "analysis_situs+occt"
+    },
+    "occt_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "analysis_situs_version": {
+      "const": "v2025.2"
+    },
+    "analysis_situs_commit": {
+      "const": "aa5958932c8c85c068566ab685f2b99c0436b926"
+    },
+    "transport": {
+      "const": "stdio-jsonrpc"
+    },
     "methods": {
       "type": "object",
       "additionalProperties": false,
@@ -52,57 +73,127 @@
         "jobs.cancel"
       ],
       "properties": {
-        "capabilities.get": {"const": "available"},
-        "snapshots.open": {"const": "available"},
-        "snapshots.get": {"const": "available"},
-        "snapshots.renew": {"const": "available"},
-        "snapshots.close": {"const": "available"},
-        "features.discover": {"const": "available"},
-        "features.revise": {"const": "available"},
-        "annotations.revise": {"const": "available"},
-        "forming_scopes.analyze": {"const": "available"},
-        "forming_scopes.revise": {"const": "available"},
-        "snapshots.merge": {"const": "available"},
-        "geometrics.compute": {"const": "available"},
-        "jobs.status": {"const": "available"},
-        "jobs.cancel": {"const": "available"}
+        "capabilities.get": {
+          "const": "available"
+        },
+        "snapshots.open": {
+          "const": "available"
+        },
+        "snapshots.get": {
+          "const": "available"
+        },
+        "snapshots.renew": {
+          "const": "available"
+        },
+        "snapshots.close": {
+          "const": "available"
+        },
+        "features.discover": {
+          "const": "available"
+        },
+        "features.revise": {
+          "const": "available"
+        },
+        "annotations.revise": {
+          "const": "available"
+        },
+        "forming_scopes.analyze": {
+          "const": "available"
+        },
+        "forming_scopes.revise": {
+          "const": "available"
+        },
+        "snapshots.merge": {
+          "const": "available"
+        },
+        "geometrics.compute": {
+          "const": "available"
+        },
+        "jobs.status": {
+          "const": "available"
+        },
+        "jobs.cancel": {
+          "const": "available"
+        }
       }
     },
-    "annotation_kinds": {"$ref": "https://hermes.local/dfm/geometry/session-v2.schema.json#/$defs/capabilities/properties/annotation_kinds"},
+    "annotation_kinds": {
+      "$ref": "https://hermes.local/dfm/geometry/session-v2.schema.json#/$defs/capabilities/properties/annotation_kinds"
+    },
     "feature_kinds": {
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
-      "items": {"type": "string", "minLength": 1}
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
     },
     "coverage_statuses": {
       "type": "array",
       "minItems": 3,
       "uniqueItems": true,
-      "items": {"enum": ["complete", "partial", "failed"]},
-      "contains": {"const": "complete"}
+      "items": {
+        "enum": [
+          "complete",
+          "partial",
+          "failed"
+        ]
+      },
+      "contains": {
+        "const": "complete"
+      }
     },
     "geometric_result_statuses": {
       "type": "array",
       "minItems": 6,
       "uniqueItems": true,
-      "items": {"enum": ["ok", "unsupported", "not_applicable", "missing_context", "ambiguous_scope", "failed"]},
-      "contains": {"const": "ok"}
+      "items": {
+        "enum": [
+          "ok",
+          "unsupported",
+          "not_applicable",
+          "missing_context",
+          "ambiguous_scope",
+          "failed"
+        ]
+      },
+      "contains": {
+        "const": "ok"
+      }
     },
     "geometrics": {
       "type": "array",
       "uniqueItems": true,
-      "items": {"$ref": "#/$defs/geometricCapability"}
+      "items": {
+        "$ref": "#/$defs/geometricCapability"
+      }
     },
     "limits": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["default_lease_seconds", "minimum_lease_seconds", "maximum_lease_seconds"],
+      "required": [
+        "default_lease_seconds",
+        "minimum_lease_seconds",
+        "maximum_lease_seconds"
+      ],
       "properties": {
-        "max_concurrent_jobs": {"type": "integer", "minimum": 1},
-        "default_lease_seconds": {"type": "integer", "minimum": 1},
-        "minimum_lease_seconds": {"type": "integer", "minimum": 1},
-        "maximum_lease_seconds": {"type": "integer", "minimum": 1}
+        "max_concurrent_jobs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "default_lease_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "minimum_lease_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maximum_lease_seconds": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     }
   },
@@ -121,29 +212,72 @@
         "context_schema"
       ],
       "properties": {
-        "geometric_id": {"type": "string", "pattern": "^G_[A-Z0-9_]+$"},
-        "feature_kind": {"type": "string", "minLength": 1},
-        "support_status": {"const": "supported"},
+        "geometric_id": {
+          "type": "string",
+          "pattern": "^G_[A-Z0-9_]+$"
+        },
+        "feature_kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "support_status": {
+          "const": "supported"
+        },
         "scope_modes": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": {"enum": ["feature", "intersection"]}
+          "items": {
+            "enum": [
+              "feature",
+              "intersection"
+            ]
+          }
         },
         "direction_modes": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": {"enum": ["none", "main", "local"]}
+          "items": {
+            "enum": [
+              "none",
+              "main",
+              "local"
+            ]
+          }
         },
-        "requires_complete_inventory": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
-        "requires_relationships": {"$ref": "https://hermes.local/dfm/geometry/session-v2.schema.json#/$defs/geometric/properties/requires_relationships"},
-        "verification_status": {"type": "string"},
-        "dimension": {"type": "string"},
-        "canonical_unit": {"type": "string"},
-        "result_schema": {"type": "object"},
-        "evidence_kinds": {"type": "array", "items": {"type": "string"}},
-        "context_schema": {"type": "object"}
+        "requires_complete_inventory": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "requires_relationships": {
+          "$ref": "https://hermes.local/dfm/geometry/session-v2.schema.json#/$defs/geometric/properties/requires_relationships"
+        },
+        "verification_status": {
+          "type": "string"
+        },
+        "dimension": {
+          "type": "string"
+        },
+        "canonical_unit": {
+          "type": "string"
+        },
+        "result_schema": {
+          "type": "object"
+        },
+        "evidence_kinds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "context_schema": {
+          "type": "object"
+        }
       }
     },
     "recognizer_failure_policies": {

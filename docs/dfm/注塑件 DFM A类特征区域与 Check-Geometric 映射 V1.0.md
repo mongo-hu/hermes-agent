@@ -14,7 +14,7 @@
 
 外壁、孔壁、孔底、根部和邻近主体壁是 Worker 理解的工程部位，不另建本体 Region 或公开 Region Role 路由。几何证据必须保留实际选中的面、边、体或采样位置。
 
-单轮识别统一保存结构与参考关系。面归属索引按 face ID 反查多个 Feature，并区分自身组成面 owned 与参考面 reference：邻近主体壁可以为 Boss 提供参考厚度，但不成为 Boss 的自身面。结构、外观属性和成型范围允许重叠；索引与快照的更新规则见[会话设计](dfm-geometric-session-contract.md#96-面归属索引的消费与缓存)，本表不重复维护缓存格式。
+单轮识别统一保存结构与参考关系。面归属索引按 face ID 反查多个 Feature，并区分自身组成面 owned 与参考面 reference：邻近主体壁可以为 Boss 提供参考厚度，但不成为 Boss 的自身面。结构、外观属性和成型范围允许重叠；面索引是 Worker 私有数据，不随快照响应外传；公开正向面引用与 UI 导航的边界见[会话设计](dfm-geometric-session-contract.md#96-worker-内部索引与界面定位)，本表不重复维护缓存格式。
 
 ## 2. 用带孔 Boss 柱还原完整模型
 

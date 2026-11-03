@@ -37,6 +37,7 @@ function fixture() {
         forming_scope_id: 'MAIN',
         kind: 'main_forming',
         mode: 'main',
+        mechanism_kind: 'none', undercut_geometry_refs: [], candidate_solutions: [], coordinate_system: 'model', direction_source: 'user_confirmed',
         draw_direction: [0, 0, 1],
         geometry_refs: faces.map(item => item.geometry_ref)
       },
@@ -44,8 +45,9 @@ function fixture() {
         forming_scope_id: 'SIDE',
         kind: 'undercut',
         mode: 'local',
+        mechanism_kind: 'undetermined', undercut_geometry_refs: [face(3)], candidate_solutions: [], coordinate_system: 'model', direction_source: null,
         draw_direction: null,
-        geometry_refs: [face(1), face(2), face(3)]
+        geometry_refs: [face(1), face(2)]
       }
     ]
   }

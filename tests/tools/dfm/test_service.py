@@ -851,14 +851,14 @@ def test_geometric_binding_keeps_one_local_scope_waiting_while_another_is_ready(
             "user_confirmed",
             "confirmed",
             [geometry_ref],
-            kind="undercut",
+            kind="undercut", mechanism_kind="slider",
         ),
     ]
     review_groups = [
         ReviewGroupRecord(
-            f"review.structure.{scope_id}",
-            "local_structure",
-            [scope_id, feature.feature_id],
+            f"review.plan.{scope_id}",
+            "forming_scope",
+            [scope_id],
             character * 64,
             "user",
             "confirmed",

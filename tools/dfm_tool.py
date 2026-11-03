@@ -14,6 +14,55 @@ _session_projects_lock = threading.RLock()
 _TOOL_PREVIEW_LIMIT = 50
 _ACTIVE_RUN_STATUSES = {"queued", "running", "reporting"}
 
+_FACE_REFERENCE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "kind": {"type": "string", "const": "face"},
+        "index": {"type": "integer", "minimum": 1},
+        "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "topology_snapshot_id": {"type": "string", "minLength": 1},
+        "entity_id": {"type": "string", "minLength": 1},
+    },
+    "required": ["kind", "index", "input_sha256", "topology_snapshot_id", "entity_id"],
+}
+_FACE_REFERENCES_SCHEMA = {"type": "array", "items": _FACE_REFERENCE_SCHEMA}
+_DRAW_DIRECTION_SCHEMA = {
+    "type": ["array", "null"], "minItems": 3, "maxItems": 3,
+    "items": {"type": "number"},
+}
+_FORMING_SCOPE_PROPERTIES = {
+    "forming_scope_id": {"type": "string", "minLength": 1},
+    "kind": {"type": "string", "enum": ["main_forming", "undercut", "local_forming"]},
+    "mode": {"type": "string", "enum": ["main", "local"]},
+    "mechanism_kind": {"type": "string", "enum": ["none", "slider", "lifter", "undetermined"]},
+    "draw_direction": _DRAW_DIRECTION_SCHEMA,
+    "coordinate_system": {"type": "string", "const": "model"},
+    "direction_source": {"type": ["string", "null"], "enum": ["user_confirmed", "inferred", None]},
+    "geometry_refs": {**_FACE_REFERENCES_SCHEMA,
+                      "description": "Selected forming surfaces, distinct from main-direction undercut surfaces."},
+    "undercut_geometry_refs": {**_FACE_REFERENCES_SCHEMA,
+                               "description": "Surfaces identified as undercut along the confirmed main direction."},
+    "candidate_solutions": {
+        "type": "array",
+        "description": "Alternative proposals; only the selected proposal becomes active.",
+        "items": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "mechanism_kind": {"type": "string", "enum": ["slider", "lifter", "undetermined"]},
+                "geometry_refs": _FACE_REFERENCES_SCHEMA,
+                "draw_direction": _DRAW_DIRECTION_SCHEMA,
+                "coordinate_system": {"type": "string", "const": "model"},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "evidence": {"type": "object"},
+            },
+            "required": ["mechanism_kind", "geometry_refs", "draw_direction"],
+        },
+    },
+    "supersedes_scope_ids": {"type": "array", "uniqueItems": True, "items": {"type": "string"}},
+}
+
+
 
 def _project_status_summary(result: dict) -> dict:
     project = result["project"]
@@ -51,7 +100,11 @@ def _project_status_summary(result: dict) -> dict:
                     key: item[key]
                     for key in (
                         "forming_scope_id",
+                        "kind",
                         "mode",
+                        "mechanism_kind",
+                        "draw_direction",
+                        "direction_source",
                         "status",
                         "snapshot_id",
                     )
@@ -434,7 +487,7 @@ DFM_PROJECT_SCHEMA = {
 
 DFM_ANALYSIS_SCHEMA = {
     "name": "dfm_analysis",
-    "description": "Run the DFM workflow. The OCCT path uses persistent dfm.geometry/v2 sessions: calculation uses snapshot_id + feature_id + geometric_ids + context, never Region, face_indices, private operation/calculator/metric/quantity routing or per-G task IDs. Confirm the main draw direction before discover; discovery orchestrates supported structures and main-direction scopes together. Use review_context and confirm_discovery for independent groups. Confirming a local range triggers its supplemental discovery; then confirm local structures and submit its user direction with revise_forming_scopes. Editing geometry requires the current revision; use update_feature_geometry, update_forming_scope_geometry or restructure_forming_scopes. Follow next_action and exact feature_counts. Already-started runs resume automatically when their review/input dependencies change; do not recreate projects or restart analysis while waiting. Use analyze_forming_scope only for an explicit additional direction analysis, not as a mandatory repeat after discover. report_context may remain ready=false until analysis finishes. render_html validates issue IDs and runs asynchronously. Drawing OCR is deterministic; use drawing_context/submit_observations then fusion_context/submit_fusion_links. Unavailable or incomplete results are never passing.",
+    "description": "Run the DFM workflow. The OCCT path uses persistent dfm.geometry/v2 sessions: calculation uses snapshot_id + feature_id + geometric_ids + context, never Region, face_indices, private operation/calculator/metric/quantity routing or per-G task IDs. Confirm the main draw direction before discover; discovery orchestrates supported structures and main-direction scopes together. Use review_context and confirm_discovery for independent groups. Discovery is one business phase; local structures keep their existing Feature IDs. Save incomplete local proposals with stage_forming_direction, then confirm each complete proposal as one forming_scope group with confirm_discovery or revise_forming_scopes; confirmation never requires another discovery round. Unknown mechanism or direction remains pending and must not block unrelated ready calculations. Editing geometry requires the current revision; use update_feature_geometry, update_forming_scope_geometry or restructure_forming_scopes. Follow next_action and exact feature_counts. Already-started runs resume automatically when their review/input dependencies change; do not recreate projects or restart analysis while waiting. Use analyze_forming_scope only for an explicit additional direction analysis, not as a mandatory repeat after discover. report_context may remain ready=false until analysis finishes. render_html validates issue IDs and runs asynchronously. Drawing OCR is deterministic; use drawing_context/submit_observations then fusion_context/submit_fusion_links. Unavailable or incomplete results are never passing.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -453,6 +506,7 @@ DFM_ANALYSIS_SCHEMA = {
                     "confirm_discovery",
                     "review_context",
                     "analyze_forming_scope",
+                    "stage_forming_direction",
                     "revise_forming_scopes",
                     "plan",
                     "start",
@@ -576,33 +630,12 @@ DFM_ANALYSIS_SCHEMA = {
                 "description": "Worker feature identity returned by Discovery.",
             },
             "geometry_refs": {
-                "type": "array",
-                "minItems": 1,
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "kind": {"type": "string", "const": "face"},
-                        "index": {"type": "integer", "minimum": 1},
-                        "input_sha256": {
-                            "type": "string",
-                            "pattern": "^[0-9a-f]{64}$",
-                        },
-                        "topology_snapshot_id": {
-                            "type": "string",
-                            "minLength": 1,
-                        },
-                        "entity_id": {"type": "string", "minLength": 1},
-                    },
-                    "required": [
-                        "kind",
-                        "index",
-                        "input_sha256",
-                        "topology_snapshot_id",
-                        "entity_id",
-                    ],
-                },
-                "description": "Complete face references for update_feature_geometry or update_forming_scope_geometry.",
+                **_FACE_REFERENCES_SCHEMA,
+                "description": "Complete face selection for feature or scope editing; empty is allowed for one scope face collection if the other remains populated.",
+            },
+            "face_role": {
+                "type": "string", "enum": ["forming", "undercut"],
+                "description": "For update_forming_scope_geometry: edit forming surfaces or main-direction undercut surfaces.",
             },
             "forming_scope_id": {
                 "type": "string",
@@ -631,42 +664,21 @@ DFM_ANALYSIS_SCHEMA = {
             },
             "retire_annotation_ids": {"type": "array", "items": {"type": "string"},
                 "description": "Active annotation IDs to retire through revise_annotations."},
+            "forming_scope": {
+                "type": "object", "additionalProperties": False,
+                "description": "Partial local proposal for stage_forming_direction. Existing values are preserved when omitted; null direction explicitly clears it. Saving a draft does not confirm it.",
+                "properties": {key: _FORMING_SCOPE_PROPERTIES[key] for key in (
+                    "forming_scope_id", "mechanism_kind", "draw_direction", "geometry_refs"
+                )},
+                "required": ["forming_scope_id"],
+            },
             "forming_scopes": {
                 "type": "array",
-                "description": "Confirmed direction records for revise_forming_scopes; candidate local ranges for restructure_forming_scopes. Candidate ranges use null direction/source and may omit forming_scope_id to create a new range.",
+                "description": "Whole proposals for revise_forming_scopes, or candidate ranges for restructure_forming_scopes. Confirmation needs a known mechanism, nonempty forming surfaces and a user-confirmed direction. Drafts may retain only undercut surfaces and unknown direction.",
                 "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "forming_scope_id": {"type": "string", "minLength": 1},
-                        "kind": {"type": "string", "enum": ["main_forming", "undercut", "local_forming"]},
-                        "mode": {"type": "string", "enum": ["main", "local"]},
-                        "draw_direction": {
-                            "type": ["array", "null"],
-                            "minItems": 3,
-                            "maxItems": 3,
-                            "items": {"type": "number"},
-                        },
-                        "coordinate_system": {"type": "string", "const": "model"},
-                        "direction_source": {"type": ["string", "null"], "enum": ["user_confirmed", None]},
-                        "supersedes_scope_ids": {"type": "array", "uniqueItems": True, "items": {"type": "string"}},
-                        "geometry_refs": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "additionalProperties": False,
-                                "properties": {
-                                    "kind": {"type": "string", "const": "face"},
-                                    "index": {"type": "integer", "minimum": 1},
-                                    "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-                                    "topology_snapshot_id": {"type": "string", "minLength": 1},
-                                    "entity_id": {"type": "string", "minLength": 1},
-                                },
-                                "required": ["kind", "index", "input_sha256", "topology_snapshot_id", "entity_id"],
-                            },
-                        },
-                    },
-                    "required": ["kind", "mode", "geometry_refs"],
+                    "type": "object", "additionalProperties": False,
+                    "properties": _FORMING_SCOPE_PROPERTIES,
+                    "required": ["kind", "mode"],
                 },
             },
             "retire_scope_ids": {"type": "array", "uniqueItems": True, "items": {"type": "string"},

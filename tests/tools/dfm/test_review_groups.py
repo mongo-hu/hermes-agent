@@ -252,3 +252,62 @@ def test_feature_removed_from_scope_leaves_a_confirmable_local_inventory_review(
     assert refreshed[0].status == "stale"
     assert refreshed[1].status == "pending_review"
     assert refreshed[1].target_refs == ["SIDE"]
+
+
+def forming_scope(**changes):
+    ref = GeometryRef("face", 1, "a" * 64, "topology-a", "face-1")
+    scope = FormingScopeRecord(
+        "SIDE", "worker-s1", "local", [1, 0, 0], "model", "inferred", "candidate",
+        geometry_refs=[ref], undercut_geometry_refs=[ref], mechanism_kind="slider", kind="undercut",
+    )
+    return replace(scope, **changes)
+
+
+def test_single_phase_creates_one_plan_review_and_preserves_approval_across_handles():
+    from tools.dfm.review import forming_scope_review_groups
+
+    scope = forming_scope()
+    pending = forming_scope_review_groups([scope], [], snapshot_id="d1", created_at="now")
+    assert len(pending) == 1
+    assert pending[0].kind == "forming_scope"
+    assert pending[0].target_refs == ["SIDE"]
+    submitted = replace(scope, status="confirmed", direction_source="user_confirmed")
+    approved = forming_scope_review_groups(
+        [submitted], pending, snapshot_id="d2", created_at="later", confirmed_scope_ids={"SIDE"}
+    )
+    active = [group for group in approved if group.status != "stale"]
+    assert len(active) == 1
+    assert active[0].status == "confirmed"
+    refreshed = forming_scope_review_groups(
+        [replace(submitted, snapshot_id="worker-s3")], approved, snapshot_id="d3", created_at="latest"
+    )
+    assert [group for group in refreshed if group.status != "stale"] == active
+
+
+def test_forming_review_tracks_undercut_forming_mechanism_and_direction_independently():
+    from tools.dfm.review import forming_scope_review_groups
+
+    scope = forming_scope()
+    pending = forming_scope_review_groups([scope], [], snapshot_id="d1", created_at="now")
+    confirmed = [replace(pending[0], status="confirmed")]
+    ref2 = GeometryRef("face", 2, "a" * 64, "topology-a", "face-2")
+    for changed in (
+        replace(scope, undercut_geometry_refs=[ref2]),
+        replace(scope, geometry_refs=[ref2]),
+        replace(scope, mechanism_kind="lifter"),
+        replace(scope, draw_direction=[0, 1, 0]),
+    ):
+        groups = forming_scope_review_groups([changed], confirmed, snapshot_id="d2", created_at="later")
+        assert [group.status for group in groups] == ["stale", "pending_review"]
+
+
+def test_unknown_plan_remains_reviewable_but_cannot_be_confirmed_as_geometry():
+    import pytest
+    from tools.dfm.errors import DFMError
+    from tools.dfm.review import forming_scope_review_groups
+
+    scope = forming_scope(mechanism_kind="undetermined", draw_direction=None, direction_source=None)
+    scope.validate()
+    assert forming_scope_review_groups([scope], [], snapshot_id="d1", created_at="now")[0].status == "pending_review"
+    with pytest.raises(DFMError, match="forming scope"):
+        replace(scope, status="confirmed", draw_direction=[1, 0, 0], direction_source="user_confirmed").validate()

@@ -226,3 +226,58 @@ def local_structure_review_groups(
             and bool(scope_ids.intersection(group.target_refs))
         ),
     )
+
+def forming_scope_review_content(scope: FormingScopeRecord) -> dict:
+    """The proposal users review, independent of handles and execution progress."""
+    return {
+        "forming_scope_id": scope.forming_scope_id,
+        "kind": scope.kind,
+        "mode": scope.mode,
+        "mechanism_kind": scope.mechanism_kind,
+        "geometry_refs": sorted((ref.to_dict() for ref in scope.geometry_refs), key=_canonical),
+        "undercut_geometry_refs": sorted((ref.to_dict() for ref in scope.undercut_geometry_refs), key=_canonical),
+        "draw_direction": scope.draw_direction,
+        "coordinate_system": scope.coordinate_system,
+        "direction_source": scope.direction_source,
+        "candidate_solutions": scope.candidate_solutions,
+    }
+
+
+def forming_scope_review_groups(
+    scopes: list[FormingScopeRecord],
+    existing: list[ReviewGroupRecord],
+    *,
+    snapshot_id: str,
+    created_at: str,
+    confirmed_scope_ids: set[str] | None = None,
+) -> list[ReviewGroupRecord]:
+    """One forming-plan group per scope; structures retain their own reviews."""
+    expected = {}
+    for scope in scopes:
+        if scope.status == "stale":
+            continue
+        digest = hashlib.sha256(_canonical(forming_scope_review_content(scope)).encode("utf-8")).hexdigest()
+        identity = f"review.forming.{scope.forming_scope_id}.{digest[:16]}"
+        expected[identity] = ReviewGroupRecord(
+            review_group_id=identity,
+            kind="product_forming" if scope.mode == "main" else "forming_scope",
+            target_refs=[scope.forming_scope_id],
+            content_sha256=digest,
+            source="user",
+            status="pending_review",
+            created_at=created_at,
+            snapshot_id=snapshot_id,
+        )
+    groups = _reconcile_groups(
+        existing, expected,
+        lambda group: group.kind in {
+            "product_forming", "forming_scope", "undercut_scope", "local_structure", "local_direction"
+        },
+    )
+    confirmed_scope_ids = confirmed_scope_ids or set()
+    return [
+        replace(group, status="confirmed", confirmed_at=created_at)
+        if group.review_group_id in expected and confirmed_scope_ids.intersection(group.target_refs)
+        else group
+        for group in groups
+    ]

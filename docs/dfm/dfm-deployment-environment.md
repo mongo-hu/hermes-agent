@@ -1,7 +1,7 @@
 ---
 title: "DFM 部署环境定义"
 status: implementation-reference
-updated: 2026-10-29
+updated: 2026-11-03
 type: deployment-guide
 ---
 
@@ -11,11 +11,23 @@ type: deployment-guide
 
 本文件只维护依赖、配置、启动与环境验证。总体流程在[主流程](dfm-main-workflow-explained.md)，常驻 Worker、单轮识别与分组确认的目标接入在[会话设计](dfm-geometric-session-contract.md)，不在此复制全流程图。
 
-已验证的外部链路基线使用 dfm.geometry/v2 常驻 Worker，配套 Schema bundle 2.3.0；预览、原两轮识别、人工修订和 G 计算复用模型资源。真实 Worker、独立安装目录及 Electron 两轮确认到异步 HTML 演示已联调，记录见会话文档第 10 节。2026-11-02 的单轮统一快照、成型方案新字段和面归属索引为待实施设计，验收见第 11 节；更新文档不会改变现有 EXE 行为。自然语言聊天全场景与正式发布包仍单独验收；旧安装 EXE 不会因更新 Hermes 源码自动升级。PythonOCC 仅在选择内部参考后端时需要，不要求 C++ 引擎安装进 Agent 的 Python 环境。
+已验证的外部链路基线使用 dfm.geometry/v2 常驻 Worker，配套 Schema bundle 2.3.0；预览、原两轮识别、人工修订和 G 计算复用模型资源。真实 Worker、独立安装目录及 Electron 两轮确认到异步 HTML 演示已联调，记录见会话文档第 10 节。单轮统一快照、成型方案新字段和私有面索引已进入开发联调，实施状态及验收见第 11 节；旧版联调记录不证明新版已交付。自然语言聊天全场景与正式发布包仍单独验收；旧安装 EXE 不会因更新 Hermes 源码自动升级。PythonOCC 仅在选择内部参考后端时需要，不要求 C++ 引擎安装进 Agent 的 Python 环境。
 
 `available` 表示依赖与能力探测成功，不等于算法已获工程认证。不要将参考结果或旧 Capability 直接当作生产发布依据。
 
 ## 1. 版本基线
+
+当前版本核对（2026-11-03）：
+
+| 位置 | 实测或源码要求 | 用途 |
+| --- | --- | --- |
+| Hermes `tools/dfm/runtime/process.py` | 要求 bundle 2.4.0 | 开发分支的握手约束 |
+| Worker `out/build/session-v2/dfm-geometry.exe` | 引擎 1.13.0 / bundle 2.4.0 | 本次通过原生及跨端回归的构建 |
+| Hermes `dfm-geometry-exe/windows-x64/dfm-geometry.exe` | 引擎 1.13.0 / bundle 2.4.0 | 已更新为同版完整目录；doctor 的外部引擎、常驻会话及 HTML 环境可用 |
+
+本次独立安装目录为 Worker 的 out/install/session-1.13.0-20261103，旧 Hermes 运行目录备份在 out/backups/hermes-windows-x64-1.12.0-20261103；58 个配套文件已逐一核对。构建哈希与验证范围见[会话记录第 11.2 节](dfm-geometric-session-contract.md#112-本次实现与验证记录)。
+
+安装时交付完整目录中的 EXE、DLL 和 Schema；不能只把版本号或一个 EXE 替换掉。先验证独立安装目录，再修改 `dfm.geometry.executable` 并重启持有旧 Worker 的 Hermes 后台。详细构建与安装步骤由 Worker 仓库维护。
 
 ### 1.1 Hermes 与 PythonOCC 参考环境
 
@@ -237,11 +249,11 @@ Adapter 可执行，不代表 Django 发布、签名同步、生产认证或模�
 - 验证大模型的时间／内存、取消、超时、崩溃与恢复；外部后端失败不自动降级内部 PythonOCC。
 - HTML 在 Agent 同一解释器可渲染，报告任务独立排队，已有问题无需等待报告。
 
-每次部署仍需验证：同一健康会话 STEP 只导入一次；分组确认后就绪分支先算；续租／查询／取消通道可用；改局部方向只失效相关结果；Viewer 与同版报告使用一致证据；重启后旧句柄显式失效。单轮版本实施后，还须验证所有类别在同轮形成审核快照、倒扣面与成型面分开、面索引同版且无删除残留；不得沿用旧两轮演示结果宣称新方案通过。已有源码专项证据见会话文档第 10 节，不把 doctor 的 available 当作这些行为已在当前安装环境全部验收。
+每次部署仍需验证：同一健康会话 STEP 只导入一次；分组确认后就绪分支先算；续租／查询／取消通道可用；改局部方向只失效相关结果；Viewer 与同版报告使用一致证据；重启后旧句柄显式失效。单轮版本实施后，还须验证所有类别在同轮形成审核快照、倒扣面与成型面分开、Worker 私有面索引同版且无删除残留、普通响应不携带该索引；不得沿用旧两轮演示结果宣称新方案通过。已有源码专项证据见会话文档第 10 节，不把 doctor 的 available 当作这些行为已在当前安装环境全部验收。
 
-### 6.3 本轮 Worker 安装验证
+### 6.3 历史 Worker 安装验证
 
-Windows 开发验证目录为 D:/workspace/occt-worker/out/install/session-2.3.0-verification-20261028。该目录的 bin/dfm-geometry.exe、运行库及 share/dfm-geometry/schemas 一起交付；不能只复制 EXE。已从其它工作目录、仅包含 Windows/System32 和 Windows 的 PATH 运行公共会话契约 9 项及 Hermes 解析几何联调 5 项，均通过。具体命令及完整构建脚本见 Worker 会话文档第 8.10 节。
+以下是 2026-10-28 的历史记录，不能用于证明 2.4.0 已安装或通过验收。Windows 开发验证目录为 D:/workspace/occt-worker/out/install/session-2.3.0-verification-20261028。该目录的 bin/dfm-geometry.exe、运行库及 share/dfm-geometry/schemas 一起交付；不能只复制 EXE。已从其它工作目录、仅包含 Windows/System32 和 Windows 的 PATH 运行公共会话契约 9 项及 Hermes 解析几何联调 5 项，均通过。具体命令及完整构建脚本见 Worker 会话文档第 8.10 节。
 
 此目录没有覆盖用户配置或 Hermes 随包 EXE。开发接入应将 geometry.executable 明确指向匹配构建，再用同一 profile 的 doctor 核对实际版本；正式发布需固定可追溯源码和完整运行库，不能把当前含未提交修改的 Desktop build 当作发布包。
 

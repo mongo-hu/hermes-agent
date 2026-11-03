@@ -21,7 +21,7 @@ def _utc_now() -> str:
 
 class OCCTCppFeatureRecognitionProvider:
     key = "occt_cpp_feature_recognition"
-    version = "dfm.geometry-v2-feature-provider-1"
+    version = "dfm.geometry-v2-single-phase-provider-2"
 
     def __init__(
         self,
@@ -244,7 +244,7 @@ class OCCTCppFeatureRecognitionProvider:
         ):
             raise DFMError(
                 "direction_required",
-                "First-round discovery requires a confirmed main draw direction.",
+                "Single-phase discovery requires a confirmed main draw direction.",
             )
         capability = self.capability(project_dir.name)
         if capability["status"] != "available":

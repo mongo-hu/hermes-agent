@@ -1,4 +1,4 @@
-"""Native two-round workflow driven through real Desktop confirmation controls."""
+"""Native single-phase workflow driven through real Desktop confirmation controls."""
 
 from io import BytesIO
 import json
@@ -42,7 +42,7 @@ def wait_run(service, project_id, run_id, stages):
     pytest.fail(f"Run remained {run.status.value}/{run.stage}: {run.error}")
 
 
-def test_desktop_confirms_two_rounds_edits_native_attributes_and_previews_report(
+def test_desktop_confirms_one_phase_edits_forming_plans_and_previews_report(
     tmp_path,
     monkeypatch,
 ):
@@ -77,7 +77,7 @@ def test_desktop_confirms_two_rounds_edits_native_attributes_and_previews_report
     ]
     rules = ProcessPlan(
         "injection",
-        "fixture.desktop.two_rounds",
+        "fixture.desktop.single_phase",
         "injection.geometry-core",
         "fixture",
         {
@@ -271,7 +271,7 @@ def test_desktop_confirms_two_rounds_edits_native_attributes_and_previews_report
                 expect(page.locator('[data-direction-scope="MAIN"]')).to_have_attribute("data-direction-vector", "[0,0,1]")
                 # The displayed review is now old, although the main scope did not change.
                 advance_attribute_review("non_appearance")
-                primary.get_by_role("button", name="编辑方向", exact=True).click()
+                primary.get_by_role("button", name="编辑主方向", exact=True).click()
                 axis_editor = page.get_by_role("region", name="编辑出模方向")
                 vector_input = axis_editor.get_by_role("textbox", name="方向向量", exact=True)
                 vector_input.fill("[0,1,0]")
@@ -305,10 +305,10 @@ def test_desktop_confirms_two_rounds_edits_native_attributes_and_previews_report
                 axis_editor.get_by_role("button", name="取消方向编辑", exact=True).click()
                 expect(page.locator('[data-direction-scope="MAIN"]')).to_have_attribute("data-direction-vector", "[0,0,1]")
                 panel.get_by_role("button", name="倒扣范围（1 组待确认）", exact=True).click()
-                undercut = panel.locator('[data-review-bucket="forming:undercut_scope"]')
-                expect(undercut.get_by_role("button", name="确认范围", exact=True)).to_be_visible()
-                undercut.get_by_role("button", name="编辑范围", exact=True).click()
-                range_editor = page.get_by_role("region", name="编辑倒扣范围")
+                undercut = panel.locator('[data-review-bucket="forming:forming_scope"]')
+                expect(undercut.get_by_role("button", name="确认方案", exact=True)).to_be_disabled()
+                undercut.get_by_role("button", name="编辑成型面", exact=True).click()
+                range_editor = page.get_by_role("region", name="编辑成型面")
                 expect(range_editor).to_be_visible()
                 before_scope = next(row for row in service.analysis("review_context", project_id=project_id)["forming_scopes"]
                                     if row["forming_scope_id"] == "SIDE_TEST")
@@ -339,44 +339,43 @@ def test_desktop_confirms_two_rounds_edits_native_attributes_and_previews_report
                 assert current_scope["draw_direction"] is None
                 assert any(row["status"] == "committed" and row["method"] == "forming_scopes.revise"
                            for row in service._store(project_id).load().geometry_edits)
-                # Continue from the Viewer returned by the completed save.
-                undercut = bucket("第一轮 · 倒扣范围")
-                undercut.get_by_role("button", name="编辑范围", exact=True).click()
-                page.get_by_role("button", name="输入退出方向", exact=True).click()
+                # Both collections are editable from the same forming-plan group.
+                plan_group = bucket("局部成型方案")
+                plan_group.get_by_role("button", name="编辑倒扣面", exact=True).click()
+                undercut_editor = page.get_by_role("region", name="编辑倒扣面")
+                expect(undercut_editor).to_be_visible()
+                undercut_editor.get_by_role("button", name="取消", exact=True).click()
+                plan_group.get_by_role("button", name="编辑机构与方向", exact=True).click()
                 early_direction = page.get_by_role("region", name="编辑出模方向")
+                early_direction.get_by_role("combobox", name="成型机构", exact=True).select_option("slider")
                 early_direction.get_by_role("textbox", name="方向向量", exact=True).fill("[1,0,0]")
-                early_direction.get_by_role("button", name="暂存方向", exact=True).click()
+                before_draft_requests = len(requests)
+                early_direction.get_by_role("button", name="保存方案草稿", exact=True).click()
                 expect(early_direction).to_have_count(0, timeout=20000)
                 staged = service.analysis("review_context", project_id=project_id)
                 candidate = next(scope for scope in staged["forming_scopes"] if scope["forming_scope_id"] == "SIDE_TEST")
                 assert candidate["status"] == "candidate" and candidate["draw_direction"] == [1, 0, 0]
-                undercut.get_by_role("button", name="确认范围", exact=True).click()
+                assert candidate["mechanism_kind"] == "slider"
+                assert len(requests) == before_draft_requests
+                plan_group.get_by_role("button", name="确认方案", exact=True).click()
                 confirmed_shortcut = panel.get_by_role("button", name="倒扣范围（1 组已确认）", exact=True)
                 expect(confirmed_shortcut).to_be_visible(timeout=20000)
-                after_range = service.analysis("review_context", project_id=project_id)
-                assert any(group["kind"] == "local_structure" and group["status"] == "pending_review"
-                           for group in after_range["review_groups"]), after_range["review_groups"]
+                after_plan = service.analysis("review_context", project_id=project_id)
+                assert not any(group["kind"] in {"local_structure", "local_direction", "undercut_scope"}
+                               and group["status"] != "stale" for group in after_plan["review_groups"])
                 confirmed_shortcut.click()
-                confirmed_range = panel.locator('[data-review-bucket="forming:undercut_scope:confirmed"]')
-                expect(confirmed_range.get_by_role("button", name="编辑范围", exact=True)).to_be_visible()
-                confirmed_range.get_by_role("button", name="编辑范围", exact=True).click()
-                page.get_by_role("region", name="编辑倒扣范围").get_by_role("button", name="取消", exact=True).click()
-                after_cancel = service.analysis("review_context", project_id=project_id)
-                assert any(group["kind"] == "local_structure" and group["status"] == "pending_review"
-                           for group in after_cancel["review_groups"]), after_cancel["review_groups"]
-                expect(panel.locator("summary").filter(has_text="第二轮 · 局部结构")).to_have_count(1, timeout=20000)
-                local = bucket("第二轮 · 局部结构")
-                local.get_by_role("checkbox", name="选择 SIDE_TEST", exact=True).check()
-                confirm_selected(1)
-                direction = bucket("第二轮 · 局部退出方向")
-                direction.get_by_role("button", name="编辑方向", exact=True).click()
+                confirmed_plan = panel.locator('[data-review-bucket="forming:forming_scope:confirmed"]')
+                confirmed_plan.get_by_role("button", name="编辑成型面", exact=True).click()
+                page.get_by_role("region", name="编辑成型面").get_by_role("button", name="取消", exact=True).click()
+                confirmed_plan.get_by_role("button", name="编辑机构与方向", exact=True).click()
                 direction_editor = page.get_by_role("region", name="编辑出模方向")
-                direction_editor.get_by_role("textbox", name="方向向量", exact=True).fill("[1,0,0]")
+                direction_editor.get_by_role("combobox", name="成型机构", exact=True).select_option("lifter")
                 expect(page.locator('[data-direction-scope="SIDE_TEST"]')).to_have_attribute("data-direction-vector", "[1,0,0]")
-                # Keep the direction draft while another review publishes a new snapshot.
+                # Keep the local draft while an unrelated attribute creates a new snapshot.
                 advance_attribute_review("appearance")
-                direction_editor.get_by_role("button", name="保存方向", exact=True).click()
+                direction_editor.get_by_role("button", name="保存方案草稿", exact=True).click()
                 expect(direction_editor).to_have_count(0, timeout=20000)
+                bucket("局部成型方案").get_by_role("button", name="确认方案", exact=True).click()
                 finished = wait_run(
                     service, project_id, run_id, {"report_editing", "complete"}
                 )

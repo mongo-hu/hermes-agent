@@ -75,7 +75,7 @@ export function createFaceNavigationIndex(
     candidates.push({
       category: 'forming',
       objectId: scope.forming_scope_id,
-      refs: scope.geometry_refs,
+      refs: [...scope.geometry_refs, ...scope.undercut_geometry_refs],
       fallback: scope.mode === 'main'
     })
   }

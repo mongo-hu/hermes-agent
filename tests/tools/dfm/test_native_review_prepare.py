@@ -56,34 +56,99 @@ def test_prepare_regenerates_a_missing_review_head_and_archives_recovery(project
     assert again["snapshot_id"] == prepared["snapshot_id"]
 
 
-def test_direction_can_be_staged_before_range_confirmation_then_used_after_review(project):
+def test_one_forming_plan_is_staged_and_confirmed_without_structural_gates(project, monkeypatch):
     service, identity = project
     context = service.analysis("review_context", project_id=identity)
     refs = context["features"][0]["properties"]["geometry_refs"]
     service.analysis("restructure_forming_scopes", project_id=identity, expected_revision=context["revision"],
         expected_snapshot_id=context["snapshot_id"], forming_scopes=[{
-            "forming_scope_id": "SIDE", "kind": "undercut", "mode": "local", "geometry_refs": refs}])
+            "forming_scope_id": "SIDE", "kind": "undercut", "mode": "local",
+            "geometry_refs": refs, "undercut_geometry_refs": refs[:1]}])
     context = service.analysis("review_context", project_id=identity)
     scope = next(row for row in context["forming_scopes"] if row["forming_scope_id"] == "SIDE")
     staged = service.analysis("stage_forming_direction", project_id=identity, forming_scope={**scope, "draw_direction": [1, 0, 0]},
         expected_revision=context["revision"], expected_snapshot_id=context["snapshot_id"])
     assert staged["status"] == "forming_direction_staged"
     context = service.analysis("review_context", project_id=identity)
+    groups = [row for row in context["review_groups"] if "SIDE" in row["target_refs"]]
+    assert len(groups) == 1 and groups[0]["kind"] == "forming_scope"
+    assert groups[0]["status"] == "pending_review"
+    with pytest.raises(DFMError) as missing:
+        service.analysis("confirm_discovery", project_id=identity, review_group_ids=[groups[0]["review_group_id"]],
+            expected_revision=context["revision"], expected_snapshot_id=context["snapshot_id"])
+    assert missing.value.code == "forming_scope_invalid"
     scope = next(row for row in context["forming_scopes"] if row["forming_scope_id"] == "SIDE")
     assert scope["status"] == "candidate" and scope["draw_direction"] == [1, 0, 0]
-    assert all(row["status"] == "pending_review" for row in context["review_groups"] if "SIDE" in row["target_refs"])
-    for kind in ("undercut_scope", "local_structure"):
-        group = next(row for row in context["review_groups"] if row["kind"] == kind and "SIDE" in row["target_refs"])
-        service.analysis("confirm_discovery", project_id=identity, review_group_ids=[group["review_group_id"]],
-            expected_revision=context["revision"], expected_snapshot_id=context["snapshot_id"])
-        context = service.analysis("review_context", project_id=identity)
-    scope = next(row for row in context["forming_scopes"] if row["forming_scope_id"] == "SIDE")
-    assert scope["draw_direction"] == [1, 0, 0]
-    payload = {key: scope[key] for key in ("forming_scope_id", "kind", "mode", "draw_direction", "coordinate_system", "direction_source", "geometry_refs")}
-    service.analysis("revise_forming_scopes", project_id=identity, forming_scopes=[payload],
+    service.analysis("stage_forming_direction", project_id=identity,
+        forming_scope={**scope, "mechanism_kind": "slider"},
+        expected_revision=context["revision"], expected_snapshot_id=context["snapshot_id"])
+    context = service.analysis("review_context", project_id=identity)
+    group = next(row for row in context["review_groups"] if row["kind"] == "forming_scope")
+    session = service.geometry_sessions.acquire(identity).session
+    original_call = session.call
+    methods = []
+    def tracked(method, params, **kwargs):
+        methods.append(method)
+        return original_call(method, params, **kwargs)
+    monkeypatch.setattr(session, "call", tracked)
+    service.analysis("confirm_discovery", project_id=identity, review_group_ids=[group["review_group_id"]],
         expected_revision=context["revision"], expected_snapshot_id=context["snapshot_id"])
     final = service.analysis("review_context", project_id=identity)
-    assert next(row for row in final["forming_scopes"] if row["forming_scope_id"] == "SIDE")["status"] == "confirmed"
+    plan = next(row for row in final["forming_scopes"] if row["forming_scope_id"] == "SIDE")
+    assert plan["status"] == "confirmed"
+    assert plan["mechanism_kind"] == "slider" and plan["direction_source"] == "user_confirmed"
+    assert plan["undercut_geometry_refs"] == refs[:1] and plan["geometry_refs"] == refs
+    assert any(row["kind"] == "ordinary_structure" and row["status"] == "pending_review" for row in final["review_groups"])
+    assert "features.discover" not in methods
+
+
+def test_unchanged_confirmed_plan_keeps_its_snapshot_and_approval(project, monkeypatch):
+    service, identity = project
+    context = service.analysis("review_context", project_id=identity)
+    refs = context["features"][0]["properties"]["geometry_refs"]
+    service.analysis("restructure_forming_scopes", project_id=identity,
+        expected_revision=context["revision"], expected_snapshot_id=context["snapshot_id"],
+        forming_scopes=[{"forming_scope_id": "SIDE", "kind": "undercut", "mode": "local",
+                         "geometry_refs": refs, "mechanism_kind": "slider"}])
+    context = service.analysis("review_context", project_id=identity)
+    service.analysis("revise_forming_scopes", project_id=identity,
+        forming_scopes=[{"forming_scope_id": "SIDE", "draw_direction": [2, 0, 0]}],
+        expected_revision=context["revision"], expected_snapshot_id=context["snapshot_id"])
+    context = service.analysis("review_context", project_id=identity)
+    plan = next(row for row in context["forming_scopes"] if row["forming_scope_id"] == "SIDE")
+    monkeypatch.setattr(service, "_prepare_geometry_edit", lambda *args, **kwargs: pytest.fail("no-op must not revise Worker"))
+    assert plan["draw_direction"] == [1, 0, 0]
+    result = service.analysis("stage_forming_direction", project_id=identity, forming_scope={**plan, "draw_direction": [3, 0, 0]},
+        expected_revision=context["revision"], expected_snapshot_id=context["snapshot_id"])
+    assert result["status"] == "forming_direction_unchanged"
+    final = service.analysis("review_context", project_id=identity)
+    assert final["snapshot_id"] == context["snapshot_id"]
+    assert any(row["kind"] == "forming_scope" and row["status"] == "confirmed" for row in final["review_groups"])
+
+
+def test_unknown_direction_and_unresolved_forming_faces_can_be_saved_as_a_draft(project):
+    service, identity = project
+    context = service.analysis("review_context", project_id=identity)
+    refs = context["features"][0]["properties"]["geometry_refs"]
+    service.analysis("restructure_forming_scopes", project_id=identity,
+        expected_revision=context["revision"], expected_snapshot_id=context["snapshot_id"],
+        forming_scopes=[{"forming_scope_id": "SIDE", "kind": "undercut", "mode": "local",
+                         "geometry_refs": [], "undercut_geometry_refs": refs[:1]}])
+    context = service.analysis("review_context", project_id=identity)
+    scope = next(row for row in context["forming_scopes"] if row["forming_scope_id"] == "SIDE")
+    service.analysis("stage_forming_direction", project_id=identity,
+        forming_scope={**scope, "mechanism_kind": "lifter", "draw_direction": None},
+        expected_revision=context["revision"], expected_snapshot_id=context["snapshot_id"])
+    final = service.analysis("review_context", project_id=identity)
+    plan = next(row for row in final["forming_scopes"] if row["forming_scope_id"] == "SIDE")
+    assert plan["mechanism_kind"] == "lifter" and plan["draw_direction"] is None
+    assert plan["direction_source"] is None and plan["status"] == "candidate"
+    assert plan["geometry_refs"] == [] and plan["undercut_geometry_refs"] == refs[:1]
+    group = next(row for row in final["review_groups"] if row["kind"] == "forming_scope")
+    with pytest.raises(DFMError) as missing:
+        service.analysis("confirm_discovery", project_id=identity, review_group_ids=[group["review_group_id"]],
+            expected_revision=final["revision"], expected_snapshot_id=final["snapshot_id"])
+    assert missing.value.code == "direction_invalid"
 
 
 def test_missing_replay_does_not_overwrite_manual_edits(project):

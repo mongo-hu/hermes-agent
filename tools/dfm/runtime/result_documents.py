@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 from threading import RLock
+import time
 from uuid import uuid4
 
 
@@ -25,6 +26,7 @@ _MAX_ENCODED_BYTES = 16 * 1024 * 1024
 _LOCK = RLock()
 _CACHE: OrderedDict[tuple[str, str], "_Entry"] = OrderedDict()
 _ENCODED_BYTES = 0
+_WINDOWS_REPLACE_ATTEMPTS = 6 if os.name == "nt" else 1
 
 
 @dataclass(frozen=True)
@@ -174,7 +176,17 @@ def write_result_document(path: Path, kind: str, payload: dict) -> tuple[int, st
             stream.flush()
             os.fsync(stream.fileno())
             written_identity = _signature(os.fstat(stream.fileno()))[:4]
-        os.replace(temporary, path)
+        # Windows readers/AV may briefly deny replacing an otherwise writable file.
+        # Keep the previous document valid until replacement succeeds; never
+        # turn a persistent permission failure into a successful publication.
+        for attempt in range(_WINDOWS_REPLACE_ATTEMPTS):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if attempt == _WINDOWS_REPLACE_ATTEMPTS - 1:
+                    raise
+                time.sleep(0.01 * (2**attempt))
         created = False
         signature = _signature(path.stat())
         if normalized is not None and signature[:4] == written_identity:

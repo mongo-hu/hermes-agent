@@ -96,10 +96,12 @@ describe('candidate confirmation and feature editing', () => {
             forming_scope_id: 'MAIN',
             kind: 'main_forming',
             mode: 'main',
+            mechanism_kind: 'none', undercut_geometry_refs: [], candidate_solutions: [], coordinate_system: 'model', direction_source: 'user_confirmed',
             draw_direction: [0, 0, 1],
             geometry_refs: refs
           },
-          { forming_scope_id: 'SIDE', kind: 'undercut', mode: 'local', draw_direction: null, geometry_refs: [refs[3]] }
+          { forming_scope_id: 'SIDE', kind: 'undercut', mode: 'local', draw_direction: null, geometry_refs: [refs[3]],
+            mechanism_kind: 'undetermined', undercut_geometry_refs: [refs[3]], candidate_solutions: [], coordinate_system: 'model', direction_source: null }
         ],
         features: [
           { feature_id: 'BOSS_1', kind: 'hollow_boss', confidence: 1, properties: { geometry_refs: [refs[0]] } },
@@ -113,7 +115,7 @@ describe('candidate confirmation and feature editing', () => {
             status: 'pending_review'
           },
           { review_group_id: 'main', kind: 'product_forming', target_refs: ['MAIN'], status: 'confirmed' },
-          { review_group_id: 'side', kind: 'undercut_scope', target_refs: ['SIDE'], status: 'pending_review' },
+          { review_group_id: 'side', kind: 'forming_scope', target_refs: ['SIDE'], status: 'pending_review' },
           { review_group_id: 'boss', kind: 'ordinary_structure', target_refs: ['BOSS_1'], status: 'pending_review' },
           { review_group_id: 'blend', kind: 'ordinary_structure', target_refs: ['BLEND_1'], status: 'pending_review' }
         ]
@@ -367,16 +369,16 @@ describe('candidate confirmation and feature editing', () => {
       expect(document.querySelector('[data-review-object="SIDE"]')?.className).toContain('border-amber-400')
       fireEvent.click(
         within(document.querySelector('[data-review-object="SIDE"]') as HTMLElement).getByRole('button', {
-          name: '编辑范围'
+          name: '编辑成型面'
         })
       )
-      await screen.findByText(/编辑范围 SIDE/)
-      fireEvent.click(screen.getByRole('button', { name: '输入退出方向' }))
+      await screen.findByText(/编辑成型面 SIDE/)
+      fireEvent.click(within(screen.getByRole('region', { name: '编辑成型面' })).getByRole('button', { name: '编辑机构与方向' }))
       const stagedEditor = await screen.findByRole('region', { name: '编辑出模方向' })
       fireEvent.change(within(stagedEditor).getByRole('textbox', { name: '方向向量' }), {
         target: { value: '[1,0,0]' }
       })
-      fireEvent.click(within(stagedEditor).getByRole('button', { name: '暂存方向' }))
+      fireEvent.click(within(stagedEditor).getByRole('button', { name: '保存方案草稿' }))
       await waitFor(() => expect(screen.queryByRole('region', { name: '编辑出模方向' })).toBeNull())
       expect(state.review_groups.find(group => group.review_group_id === 'side')?.status).toBe('pending_review')
       await waitFor(() => expect(document.querySelector('canvas')).not.toBeNull())
@@ -385,7 +387,7 @@ describe('candidate confirmation and feature editing', () => {
       expect(document.querySelector('[data-review-object="MAIN"]')?.className).toContain('border-amber-400')
       fireEvent.click(
         within(document.querySelector('[data-review-object="MAIN"]') as HTMLElement).getByRole('button', {
-          name: '编辑方向'
+          name: '编辑主方向'
         })
       )
       const directionEditor = await screen.findByRole('region', { name: '编辑出模方向' })
@@ -395,7 +397,7 @@ describe('candidate confirmation and feature editing', () => {
       expect(document.querySelector('[data-direction-vector]')?.getAttribute('data-direction-vector')).toBe('[1,0,0]')
       state = { ...state, revision: state.revision + 1, snapshot_id: 'unrelated-new-review' }
       const mainPins = { expected_revision: state.revision, expected_snapshot_id: state.snapshot_id }
-      fireEvent.click(within(directionEditor).getByRole('button', { name: '保存方向' }))
+      fireEvent.click(within(directionEditor).getByRole('button', { name: '保存主方向' }))
       await screen.findByText('Direction save failed')
       expect((within(directionEditor).getByRole('textbox', { name: '方向向量' }) as HTMLInputElement).value).toBe(
         '[1,0,0]'
@@ -408,12 +410,12 @@ describe('candidate confirmation and feature editing', () => {
           scope.mode === 'main' ? { ...scope, draw_direction: [0, 1, 0] } : scope
         )
       }
-      fireEvent.click(within(directionEditor).getByRole('button', { name: '保存方向' }))
+      fireEvent.click(within(directionEditor).getByRole('button', { name: '保存主方向' }))
       await screen.findByRole('button', { name: '重新载入最新区域' })
       expect((within(directionEditor).getByRole('textbox', { name: '方向向量' }) as HTMLInputElement).value).toBe(
         '[1,0,0]'
       )
-      expect((within(directionEditor).getByRole('button', { name: '保存方向' }) as HTMLButtonElement).disabled).toBe(
+      expect((within(directionEditor).getByRole('button', { name: '保存主方向' }) as HTMLButtonElement).disabled).toBe(
         true
       )
       expect(
@@ -430,7 +432,7 @@ describe('candidate confirmation and feature editing', () => {
       fireEvent.change(within(directionEditor).getByRole('textbox', { name: '方向向量' }), {
         target: { value: '[1,0,0]' }
       })
-      fireEvent.click(within(directionEditor).getByRole('button', { name: '保存方向' }))
+      fireEvent.click(within(directionEditor).getByRole('button', { name: '保存主方向' }))
       await waitFor(() => expect(screen.queryByRole('region', { name: '编辑出模方向' })).toBeNull())
 
       const savedDirection = api.mock.calls.filter(
@@ -438,10 +440,11 @@ describe('candidate confirmation and feature editing', () => {
       )
 
       expect(savedDirection).toHaveLength(3)
-      expect(savedDirection[0][0].body).toEqual({ forming_scope_id: 'MAIN', draw_direction: [1, 0, 0], ...mainPins })
+      expect(savedDirection[0][0].body).toEqual({ forming_scope_id: 'MAIN', draw_direction: [1, 0, 0], mechanism_kind: 'none', geometry_refs: refs, ...mainPins })
       expect(savedDirection[2][0].body).toEqual({
         forming_scope_id: 'MAIN',
         draw_direction: [1, 0, 0],
+        mechanism_kind: 'none', geometry_refs: refs,
         expected_revision: Number(savedDirection[1][0].body?.expected_revision) + 1,
         expected_snapshot_id: 'discovery-raced'
       })

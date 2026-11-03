@@ -478,11 +478,7 @@ class OcctAnalyzer:
             owners = batch.owners()
             batch_results: list[GeometricResultRecord] = []
             submitted_keys = {
-                (
-                    str(item["feature_id"]),
-                    str(geometric_id),
-                    json.dumps(item["context"], sort_keys=True, separators=(",", ":")),
-                )
+                request_key(str(item["feature_id"]), str(geometric_id), item["context"])
                 for item in items
                 for geometric_id in item["geometric_ids"]
             }
@@ -583,10 +579,10 @@ class OcctAnalyzer:
                         "geometry_protocol_invalid",
                         "A Worker Geometric result has an invalid context.",
                     )
-                result_key = (
+                result_key = request_key(
                     str(raw.get("feature_id") or ""),
                     str(raw.get("geometric_id") or ""),
-                    json.dumps(raw["context"], sort_keys=True, separators=(",", ":")),
+                    dict(raw["context"]),
                 )
                 if result_key not in submitted_keys or result_key in returned_keys:
                     raise DFMError(

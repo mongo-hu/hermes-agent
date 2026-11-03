@@ -218,3 +218,42 @@ def test_large_geometry_kinds_are_not_accepted(tmp_path):
     path.write_text("{}", encoding="utf-8")
     with pytest.raises(ValueError):
         documents.read_result_document(path, "render_scene")
+
+
+@pytest.mark.parametrize("persistent", [False, True])
+def test_windows_reader_lock_keeps_previous_document_until_atomic_publication(
+    tmp_path, monkeypatch, persistent
+):
+    path = tmp_path / "geometric_results.json"
+    old_size, old_digest = documents.write_result_document(path, "geometric_results", table(2))
+    old_bytes = path.read_bytes()
+    replace = os.replace
+    attempts = []
+    waits = []
+    monkeypatch.setattr(documents, "_WINDOWS_REPLACE_ATTEMPTS", 3)
+    monkeypatch.setattr(documents.time, "sleep", waits.append)
+
+    def locked_replace(source, target):
+        attempts.append(source)
+        assert path.read_bytes() == old_bytes
+        assert source.is_file()
+        if persistent or len(attempts) < 3:
+            raise PermissionError("reader temporarily prevents Windows replacement")
+        replace(source, target)
+
+    monkeypatch.setattr(documents.os, "replace", locked_replace)
+    if persistent:
+        with pytest.raises(PermissionError):
+            documents.write_result_document(path, "geometric_results", table(3))
+        assert path.read_bytes() == old_bytes
+        assert documents.read_result_document(
+            path, "geometric_results", size_bytes=old_size, sha256=old_digest
+        ) == table(2)
+    else:
+        size, digest = documents.write_result_document(path, "geometric_results", table(3))
+        assert documents.read_result_document(
+            path, "geometric_results", size_bytes=size, sha256=digest
+        ) == table(3)
+    assert len(attempts) == 3
+    assert len(waits) == 2
+    assert not list(tmp_path.glob(".*.tmp"))

@@ -66,7 +66,8 @@ from .reporting.html.template import ContractError, normalize_editorial_content
 from .reference_dependencies import resolve_reference_dependencies
 from .runtime.jobs import JobManager
 from .runtime.process import GeometrySessionPool, geometry_capability_identity
-from .review import annotation_review_groups, local_structure_review_content, local_structure_review_groups, structure_review_groups
+from .review import (annotation_review_groups, forming_scope_review_content, forming_scope_review_groups,
+                     structure_review_groups)
 from .geometry.artifact_metadata import inspect_geometry_file
 from .viewer import (
     materialize_discovery_viewer_manifest,
@@ -469,14 +470,14 @@ class DFMService:
                 "pull_dir must contain finite numbers",
                 {"fact_name": fact_name, "value": raw_value},
             )
-        magnitude = math.sqrt(sum(item * item for item in vector))
-        if magnitude == 0:
+        magnitude = math.hypot(*vector)
+        if not 1e-12 < magnitude < math.inf:
             raise DFMError(
                 "fact_invalid",
                 "pull_dir must be a non-zero vector",
                 {"fact_name": fact_name, "value": raw_value},
             )
-        return [item / magnitude for item in vector]
+        return vector if abs(magnitude - 1.0) <= 1e-12 else [item / magnitude for item in vector]
 
     @staticmethod
     def _factor_value_matches_schema(value: Any, schema: Any) -> bool:
@@ -1405,7 +1406,7 @@ class DFMService:
 
         MAIN is an execution scope, not another structure for users to confirm.
         Only synchronize an unchanged, user-supplied direction; local scopes still
-        require their own range, structure and direction reviews.
+        require their own complete forming-plan review.
         """
         fact = next((item for item in reversed(manifest.facts)
             if item.status == "confirmed" and item.check_id is None and item.feature_id is None
@@ -1442,13 +1443,18 @@ class DFMService:
         self,
         manifest: ProjectManifest,
         snapshot,
+        *,
+        confirmed_scope_ids: set[str] | None = None,
     ) -> list[ReviewGroupRecord]:
         groups = structure_review_groups(
             [feature for feature in manifest.features if feature.feature_id in snapshot.feature_refs],
             manifest.review_groups, snapshot_id=snapshot.snapshot_id, created_at=_utc_now(),
         )
-        return annotation_review_groups(snapshot.annotations, groups,
+        groups = annotation_review_groups(snapshot.annotations, groups,
             snapshot_id=snapshot.snapshot_id, created_at=_utc_now())
+        scopes = [self._forming_scope_record(raw, snapshot.snapshot_id) for raw in snapshot.forming_scopes]
+        return forming_scope_review_groups(scopes, groups, snapshot_id=snapshot.snapshot_id,
+            created_at=_utc_now(), confirmed_scope_ids=confirmed_scope_ids)
 
     def _open_committed_geometry(self, project_id, manifest, input_record):
         project_dir = self.workspace.project_dir(project_id)
@@ -1654,28 +1660,7 @@ class DFMService:
 
     @staticmethod
     def _forming_scope_review_payload(scope: FormingScopeRecord) -> dict[str, Any]:
-        return {
-            "forming_scope_id": scope.forming_scope_id,
-            "kind": scope.kind,
-            "mode": scope.mode,
-            "draw_direction": (
-                list(scope.draw_direction)
-                if scope.draw_direction is not None
-                else None
-            ),
-            "coordinate_system": scope.coordinate_system,
-            "direction_source": scope.direction_source,
-            "geometry_refs": sorted(
-                (item.to_dict() for item in scope.geometry_refs),
-                key=lambda item: (
-                    item["kind"],
-                    item["index"],
-                    item["input_sha256"],
-                    item["topology_snapshot_id"],
-                    item["entity_id"],
-                ),
-            ),
-        }
+        return forming_scope_review_content(scope)
 
     @staticmethod
     def _forming_scope_record(
@@ -1706,6 +1691,11 @@ class DFMService:
             ],
             diagnostics=dict(raw.get("diagnostics") or {}),
             supersedes_scope_ids=list(raw.get("supersedes_scope_ids") or []),
+            mechanism_kind=str(raw.get("mechanism_kind") or ""),
+            undercut_geometry_refs=[
+                GeometryRef.from_dict(dict(value)) for value in raw.get("undercut_geometry_refs", [])
+            ],
+            candidate_solutions=list(raw.get("candidate_solutions") or []),
         )
         record.validate()
         return record
@@ -1726,34 +1716,28 @@ class DFMService:
     ) -> tuple[ProjectManifest, Any]:
         snapshot_id = str(result.get("snapshot_id") or "")
         raw_scopes = result.get("forming_scopes")
-        if not snapshot_id or not isinstance(raw_scopes, list):
-            raise DFMError(
-                "geometry_protocol_invalid",
-                "A forming-scope response omitted its immutable snapshot state.",
-            )
-        scopes = [
-            self._forming_scope_record(dict(item), snapshot_id)
-            for item in raw_scopes
-            if isinstance(item, dict)
-        ]
+        if not snapshot_id or not isinstance(raw_scopes, list) or any(not isinstance(item, dict) for item in raw_scopes):
+            raise DFMError("geometry_protocol_invalid", "A forming response omitted its immutable semantic state.")
+        scopes = [self._forming_scope_record(item, snapshot_id) for item in raw_scopes]
         if reviewed_scope_ids.difference(item.forming_scope_id for item in scopes):
-            raise DFMError(
-                "geometry_protocol_invalid",
-                "The Worker omitted a requested forming scope from its result.",
-            )
+            raise DFMError("geometry_protocol_invalid", "The Worker omitted a requested forming scope.")
         store = self._store(project_id)
         edited_scope_ids = set(edited_scope_ids or [])
         feature_edit_ids = set(feature_edit_ids or [])
         staged_direction_ids = set(staged_direction_ids or [])
-        direction_fact = FactRecord(f"fact_{uuid4().hex[:16]}", "pull_dir", main_direction, "user", "confirmed") if main_direction is not None else None
+        direction_fact = (
+            FactRecord(f"fact_{uuid4().hex[:16]}", "pull_dir", main_direction, "user", "confirmed")
+            if main_direction is not None else None
+        )
+        invalidate_scopes = bool(confirmed or edited_scope_ids or staged_direction_ids)
 
         def apply(current: ProjectManifest) -> ProjectManifest:
             facts = [*current.facts, direction_fact] if direction_fact is not None else current.facts
             capabilities = dict(current.capabilities)
-            geometry_discovery = dict(capabilities.get("geometry_discovery") or {})
-            inputs = dict(geometry_discovery.get("inputs") or {})
+            discovery = dict(capabilities.get("geometry_discovery") or {})
+            inputs = dict(discovery.get("inputs") or {})
             if self.occt_geometry_capability is not None:
-                geometry_discovery["annotation_kinds"] = list(self.occt_geometry_capability.get("annotation_kinds", []))
+                discovery["annotation_kinds"] = list(self.occt_geometry_capability.get("annotation_kinds", []))
             inputs[input_sha256] = {
                 **dict(inputs.get(input_sha256) or {}),
                 "worker_snapshot_id": snapshot_id,
@@ -1763,324 +1747,84 @@ class DFMService:
             }
             if direction_fact is not None:
                 inputs[input_sha256]["discovery_context_sha256"] = discovery_context_identity(replace(current, facts=facts))
-            geometry_discovery["inputs"] = inputs
-            capabilities["geometry_discovery"] = geometry_discovery
-
+            discovery["inputs"] = inputs
+            capabilities["geometry_discovery"] = discovery
             history = list(current.forming_scopes)
             known = {(item.forming_scope_id, item.snapshot_id) for item in history}
-            history.extend(
-                item
-                for item in scopes
-                if (item.forming_scope_id, item.snapshot_id) not in known
-            )
-            review_groups = list(current.review_groups)
-            if edited_scope_ids or feature_edit_ids:
-                review_groups = [replace(item, status="stale")
-                    if item.status in {"pending_review", "confirmed"} and (
-                        item.kind in {"undercut_scope", "local_structure", "local_direction"}
-                        and (edited_scope_ids | feature_edit_ids).intersection(item.target_refs)
-                    ) else item for item in review_groups]
-            for scope in scopes:
-                if scope.forming_scope_id not in reviewed_scope_ids:
-                    continue
-                if scope.status == "stale":
-                    continue
-                scope_payload = self._forming_scope_review_payload(scope)
-                digest = self._scope_content_sha256(scope_payload)
-                group_kind = (
-                    "product_forming"
-                    if scope.mode == "main"
-                    else "local_direction"
-                    if confirmed or scope.forming_scope_id in staged_direction_ids
-                    else "undercut_scope"
-                )
-                review_groups = [
-                    replace(item, status="stale")
-                    if item.kind == group_kind
-                    and scope.forming_scope_id in item.target_refs
-                    and item.status in {"pending_review", "confirmed"}
-                    and item.content_sha256 != digest
-                    else item
-                    for item in review_groups
-                ]
-                if confirmed:
-                    review_groups = [
-                        replace(
-                            item,
-                            status="confirmed",
-                            confirmed_at=_utc_now(),
-                        )
-                        if item.kind == group_kind
-                        and item.status == "pending_review"
-                        and item.content_sha256 == digest
-                        and scope.forming_scope_id in item.target_refs
-                        else item
-                        for item in review_groups
-                    ]
-                if any(
-                    item.kind == group_kind
-                    and scope.forming_scope_id in item.target_refs
-                    and item.content_sha256 == digest
-                    and item.status
-                    == ("confirmed" if confirmed else "pending_review")
-                    for item in review_groups
-                ):
-                    continue
-                status = "confirmed" if confirmed else "pending_review"
-                review_groups.append(
-                    ReviewGroupRecord(
-                        review_group_id=(
-                            f"review.forming.{scope.forming_scope_id}.{digest[:16]}"
-                        ),
-                        kind=group_kind,
-                        target_refs=[scope.forming_scope_id],
-                        content_sha256=digest,
-                        source="user",
-                        status=status,
-                        created_at=_utc_now(),
-                        confirmed_at=_utc_now() if confirmed else None,
-                        snapshot_id=snapshot_id,
-                    )
-                )
-            plans = (
-                self._invalidate_plans_for_semantics(
-                    current, f"forming_scope:{','.join(sorted(reviewed_scope_ids))}"
-                )
-                if confirmed or edited_scope_ids or staged_direction_ids
-                else current.plans
-            )
-            newly_confirmed_targets = {
-                target
-                for item in review_groups
-                if item.status == "confirmed"
-                and item.kind in {"product_forming", "local_structure"}
-                and item.confirmed_at is not None
-                for target in item.target_refs
-            }
-            if feature_edit_ids:
-                review = dict(capabilities.get("discovery_review") or {})
-                review["edited_feature_ids"] = sorted(set(review.get("edited_feature_ids", [])) | feature_edit_ids)
-                capabilities["discovery_review"] = review
-                plans = self._invalidate_plans_for_semantics(current, "feature:" + ",".join(sorted(feature_edit_ids)))
+            history.extend(item for item in scopes if (item.forming_scope_id, item.snapshot_id) not in known)
             features = current.features
             if "features" in result:
                 input_record = next(item for item in current.inputs if item.sha256 == input_sha256)
                 projection = self.discovery.geometry_provider.project_snapshot(input_record, result)
                 features = reconcile_worker_features(features, projection.features, input_sha256)
-            return replace(
-                current,
-                facts=facts,
-                features=[
-                    replace(item, status="confirmed")
-                    if item.feature_id in newly_confirmed_targets
-                    else item
-                    for item in features
-                ],
-                forming_scopes=history,
-                review_groups=review_groups,
-                plans=plans,
-                findings=(
-                    self._invalidate_findings_for_semantics(
-                        current,
-                        f"forming_scope:{','.join(sorted(reviewed_scope_ids))}",
-                    )
-                    if confirmed or edited_scope_ids or staged_direction_ids
-                    else current.findings
-                ),
-                capabilities=capabilities,
-                updated_at=_utc_now(),
-            )
-
-        def prepare(current):
-            updated = apply(current)
-            frozen, discovery_snapshot = self.discovery.freeze(updated)
-            groups = self._structure_review_groups(frozen, discovery_snapshot)
+            changed = replace(current, facts=facts, features=features, forming_scopes=history,
+                              capabilities=capabilities, updated_at=_utc_now())
+            if invalidate_scopes:
+                reason = f"forming_scope:{','.join(sorted(reviewed_scope_ids))}"
+                changed = replace(changed,
+                    plans=self._invalidate_plans_for_semantics(changed, reason),
+                    findings=self._invalidate_findings_for_semantics(changed, reason))
             if feature_edit_ids:
-                affected_local_scopes = {
-                    scope.forming_scope_id for scope in scopes if scope.mode == "local" and any(
-                        group.kind == "local_structure" and scope.forming_scope_id in group.target_refs
-                        and feature_edit_ids.intersection(group.target_refs)
-                        for group in current.review_groups
-                    )
-                }
-                affected_local_scopes.update(
-                    str(row["to_ref"]) for row in result.get("relationships", [])
-                    if row.get("from_ref") in feature_edit_ids
-                    and row.get("type") in {"intersects_forming_scope", "contained_in_forming_scope"}
-                    and any(group.kind == "local_structure" and row["to_ref"] in group.target_refs
-                            for group in current.review_groups)
-                )
-                groups = local_structure_review_groups(
-                    scopes, frozen.features, list(result.get("relationships", [])), groups,
-                    scope_ids=affected_local_scopes, snapshot_id=discovery_snapshot.snapshot_id, created_at=_utc_now(),
-                )
+                review = dict(capabilities.get("discovery_review") or {})
+                review["edited_feature_ids"] = sorted(set(review.get("edited_feature_ids", [])) | feature_edit_ids)
+                capabilities["discovery_review"] = review
+                reason = "feature:" + ",".join(sorted(feature_edit_ids))
+                changed = replace(changed, capabilities=capabilities,
+                    plans=self._invalidate_plans_for_semantics(changed, reason),
+                    findings=self._invalidate_findings_for_semantics(changed, reason))
+            return changed
+
+        def prepare(current: ProjectManifest) -> ProjectManifest:
+            frozen, discovery_snapshot = self.discovery.freeze(apply(current))
+            groups = self._structure_review_groups(
+                frozen, discovery_snapshot,
+                confirmed_scope_ids=reviewed_scope_ids if confirmed else set(),
+            )
             capabilities = dict(frozen.capabilities)
             review = dict(capabilities.get("discovery_review") or {})
             if review or feature_edit_ids:
                 pending = any(item.kind == "ordinary_structure" and item.status == "pending_review" for item in groups)
-                review.update({"snapshot_id": discovery_snapshot.snapshot_id, "status": "pending" if pending else "confirmed"})
+                review.update({"snapshot_id": discovery_snapshot.snapshot_id,
+                               "status": "pending" if pending else "confirmed"})
                 capabilities["discovery_review"] = review
-            if feature_edit_ids:
-                frozen = replace(frozen, findings=self._invalidate_findings_for_semantics(frozen, "feature:" + ",".join(sorted(feature_edit_ids))))
             return replace(frozen, capabilities=capabilities, review_groups=groups)
 
         persisted = edit.commit(snapshot_id, prepare) if edit is not None else store.update(prepare)
-        discovery_snapshot = self._latest_discovery_snapshot(persisted)
-        return persisted, discovery_snapshot
+        return persisted, self._latest_discovery_snapshot(persisted)
 
     def _supplement_local_scopes(
-        self,
-        project_id: str,
-        scope_ids: set[str],
+        self, project_id: str, scope_ids: set[str],
     ) -> tuple[ProjectManifest, Any]:
+        """Explicit targeted repair, never an automatic confirmation prerequisite."""
         store = self._store(project_id)
         manifest = store.load()
-        inputs = [item for item in self._active_inputs(manifest) if item.kind == "step"]
-        if len(inputs) != 1:
-            raise DFMError(
-                "input_selection_invalid",
-                "Scoped feature discovery requires exactly one active STEP input.",
-            )
-        input_record = inputs[0]
-        project_dir = self.workspace.project_dir(project_id)
-        latest_scopes = {
-            item.forming_scope_id: item for item in manifest.forming_scopes
-        }
         for scope_id in sorted(scope_ids):
-            scope = latest_scopes.get(scope_id)
-            if scope is None or scope.mode != "local":
-                raise DFMError(
-                    "forming_scope_invalid",
-                    "Local supplemental discovery requires a reviewed local scope.",
-                    {"forming_scope_id": scope_id},
+            inputs = [item for item in self._active_inputs(manifest) if item.kind == "step"]
+            if len(inputs) != 1:
+                raise DFMError("input_selection_invalid", "Targeted repair requires one active STEP input.")
+            input_record = inputs[0]
+            metadata = manifest.capabilities.get("geometry_discovery", {}).get("inputs", {}).get(input_record.sha256, {})
+            worker_snapshot_id = str(metadata.get("worker_snapshot_id") or "")
+            if not worker_snapshot_id:
+                raise DFMError("geometry_snapshot_missing", "Targeted repair requires a live semantic snapshot.")
+            kinds = list((self.occt_geometry_capability or {}).get("feature_kinds") or [])
+            if not kinds:
+                raise DFMError("geometry_capability_missing", "No structural recognizers are available.")
+            edit, result = self._prepare_geometry_edit(
+                project_id, manifest, input_record.sha256, manifest.revision, "features.discover",
+                {"snapshot_id": worker_snapshot_id, "feature_kinds": kinds,
+                 "context": {"forming_scope_id": scope_id}},
+            )
+            try:
+                manifest, _ = self._persist_forming_snapshot(
+                    project_id, input_record.sha256, result, reviewed_scope_ids={scope_id},
+                    confirmed=False, edit=edit, edited_scope_ids={scope_id},
                 )
-            metadata = (
-                manifest.capabilities
-                .get("geometry_discovery", {})
-                .get("inputs", {})
-                .get(input_record.sha256, {})
-            )
-            logical_snapshot_id = str(metadata.get("worker_snapshot_id") or "")
-            projection = self.discovery.geometry_provider.recognize_scope(
-                    input_record,
-                    snapshot_id=logical_snapshot_id,
-                    forming_scope_id=scope_id,
-                    project_dir=project_dir,
-            )
-            coverage = list(projection.diagnostics["coverage"])
-            worker_snapshot_id = projection.worker_snapshot_id
-            merged_features = reconcile_worker_features(
-                manifest.features, projection.features, input_record.sha256
-            )
-            scoped_feature_ids = sorted(
-                {str(item["from_ref"]) for item in projection.relationships
-                 if item.get("to_ref") == scope_id and item.get("type") in {
-                     "intersects_forming_scope", "contained_in_forming_scope"
-                 }}
-            )
-            content = local_structure_review_content(scope, merged_features, projection.relationships)
-            digest = self._scope_content_sha256(content)
-            structure_group = ReviewGroupRecord(
-                review_group_id=f"review.local-structure.{scope_id}.{digest[:16]}",
-                kind="local_structure",
-                target_refs=[scope_id, *scoped_feature_ids],
-                content_sha256=digest,
-                source="user",
-                status="pending_review",
-                created_at=_utc_now(),
-                snapshot_id=worker_snapshot_id,
-            )
-            direction_payload = self._forming_scope_review_payload(scope)
-            direction_digest = self._scope_content_sha256(direction_payload)
-            direction_group = ReviewGroupRecord(
-                review_group_id=(
-                    f"review.local-direction.{scope_id}.{direction_digest[:16]}"
-                ),
-                kind="local_direction",
-                target_refs=[scope_id],
-                content_sha256=direction_digest,
-                source="user",
-                status="pending_review",
-                created_at=_utc_now(),
-                snapshot_id=worker_snapshot_id,
-            )
-
-            def apply(current: ProjectManifest) -> ProjectManifest:
-                capabilities = dict(current.capabilities)
-                geometry = dict(capabilities.get("geometry_discovery") or {})
-                by_input = dict(geometry.get("inputs") or {})
-                input_state = dict(by_input.get(input_record.sha256) or {})
-                prior_coverage = [
-                    dict(item)
-                    for item in input_state.get("coverage", [])
-                    if not (
-                        isinstance(item, dict)
-                        and item.get("context", {}).get("forming_scope_id")
-                        == scope_id
-                    )
-                ]
-                input_state.update({
-                    "worker_snapshot_id": worker_snapshot_id,
-                    "coverage": coverage,
-                    "annotations": projection.annotations,
-                    "relationships": projection.relationships,
-                    "forming_scopes": projection.forming_scopes,
-                })
-                by_input[input_record.sha256] = input_state
-                geometry["inputs"] = by_input
-                capabilities["geometry_discovery"] = geometry
-                review_groups = list(current.review_groups)
-                for new_group in (structure_group, direction_group):
-                    review_groups = [
-                        replace(item, status="stale")
-                        if item.kind == new_group.kind
-                        and scope_id in item.target_refs
-                        and item.status in {"pending_review", "confirmed"}
-                        and item.content_sha256 != new_group.content_sha256
-                        else item
-                        for item in review_groups
-                    ]
-                    if not any(
-                        item.kind == new_group.kind
-                        and scope_id in item.target_refs
-                        and item.content_sha256 == new_group.content_sha256
-                        and item.status in {"pending_review", "confirmed"}
-                        for item in review_groups
-                    ):
-                        review_groups.append(new_group)
-                invalidation_reason = f"forming_scope:{scope_id}"
-                return replace(
-                    current,
-                    features=merged_features,
-                    review_groups=review_groups,
-                    plans=self._invalidate_plans_for_semantics(
-                        current, invalidation_reason
-                    ),
-                    findings=self._invalidate_findings_for_semantics(
-                        current, invalidation_reason
-                    ),
-                    capabilities=capabilities,
-                    updated_at=_utc_now(),
-                )
-
-            manifest = store.update(apply, expected_revision=manifest.revision)
-        frozen, snapshot = self.discovery.freeze(manifest)
-
-        def persist(current: ProjectManifest) -> ProjectManifest:
-            capabilities = dict(current.capabilities)
-            review = dict(capabilities.get("discovery_review") or {})
-            if review.get("status") == "confirmed":
-                review["snapshot_id"] = snapshot.snapshot_id
-                capabilities["discovery_review"] = review
-            return replace(
-                current,
-                discovery_snapshots=frozen.discovery_snapshots,
-                capabilities=capabilities,
-                updated_at=_utc_now(),
-            )
-
-        persisted = store.update(persist, expected_revision=manifest.revision)
-        return persisted, snapshot
+            except Exception as exc:
+                self._fail_geometry_edit(project_id, edit, exc)
+                raise
+            self._adopt_committed_geometry(project_id, input_record.sha256)
+        return manifest, self._latest_discovery_snapshot(manifest)
 
     def _analyze_forming_scope(
         self,
@@ -2225,7 +1969,8 @@ class DFMService:
         scopes = []
         for raw in raw_scopes:
             if not isinstance(raw, dict) or set(raw) - {"forming_scope_id", "kind", "mode", "geometry_refs", "supersedes_scope_ids",
-                                                      "draw_direction", "direction_source", "coordinate_system", "status"}:
+                                                      "draw_direction", "direction_source", "coordinate_system", "status",
+                                                      "mechanism_kind", "undercut_geometry_refs", "candidate_solutions"}:
                 raise DFMError("forming_scope_invalid", "Candidate scope edits contain undeclared fields.")
             if (raw.get("draw_direction") is not None or raw.get("direction_source") is not None
                 or raw.get("coordinate_system", "model") != "model" or raw.get("status", "candidate") != "candidate"):
@@ -2234,13 +1979,21 @@ class DFMService:
             previous = prior.get(identity, {})
             if previous and (previous["mode"] != "local" or previous["status"] == "stale"):
                 raise DFMError("forming_scope_invalid", "The main or retired scope cannot be edited as a local range.")
-            scope = {"forming_scope_id": identity, "kind": raw.get("kind", previous.get("kind", "undercut")),
-                     "mode": raw.get("mode", "local"), "geometry_refs": raw.get("geometry_refs"),
-                     "draw_direction": None, "coordinate_system": "model", "direction_source": None, "status": "candidate"}
+            scope = {
+                "forming_scope_id": identity, "kind": raw.get("kind", previous.get("kind", "undercut")),
+                "mode": raw.get("mode", "local"),
+                "geometry_refs": raw.get("geometry_refs", previous.get("geometry_refs", [])),
+                "undercut_geometry_refs": raw.get("undercut_geometry_refs", previous.get("undercut_geometry_refs", [])),
+                "mechanism_kind": raw.get("mechanism_kind", previous.get("mechanism_kind", "undetermined")),
+                "candidate_solutions": raw.get("candidate_solutions", previous.get("candidate_solutions", [])),
+                "draw_direction": previous.get("draw_direction"), "coordinate_system": "model",
+                "direction_source": previous.get("direction_source"), "status": "candidate",
+            }
             if scope["mode"] != "local" or scope["kind"] not in {"undercut", "local_forming"}:
                 raise DFMError("forming_scope_invalid", "Range editing accepts local scopes only.")
-            if not isinstance(scope["geometry_refs"], list) or not scope["geometry_refs"]:
-                raise DFMError("forming_scope_invalid", "A local range requires nonempty geometry_refs.")
+            if (not isinstance(scope["geometry_refs"], list) or not isinstance(scope["undercut_geometry_refs"], list)
+                or not (scope["geometry_refs"] or scope["undercut_geometry_refs"])):
+                raise DFMError("forming_scope_invalid", "A candidate needs forming faces or known undercut faces.")
             if not previous and retire_scope_ids:
                 scope["supersedes_scope_ids"] = raw.get("supersedes_scope_ids", retire_scope_ids)
             elif "supersedes_scope_ids" in raw:
@@ -2256,12 +2009,18 @@ class DFMService:
         # clear its staged/confirmed direction and dependent review groups.
         def unchanged(raw, scope):
             previous = prior.get(scope["forming_scope_id"])
-            return (previous is not None
-                and set(raw) <= {"forming_scope_id", "kind", "mode", "geometry_refs"}
-                and previous["kind"] == scope["kind"] and previous["mode"] == scope["mode"]
-                and all(isinstance(ref, dict) for ref in scope["geometry_refs"])
-                and sorted(json.dumps(ref, sort_keys=True) for ref in previous["geometry_refs"])
-                    == sorted(json.dumps(ref, sort_keys=True) for ref in scope["geometry_refs"]))
+            if previous is None:
+                return False
+            for key in raw:
+                if key == "forming_scope_id":
+                    continue
+                before, after = previous.get(key), scope.get(key)
+                if key in {"geometry_refs", "undercut_geometry_refs"}:
+                    before = sorted(json.dumps(ref, sort_keys=True) for ref in (before or []))
+                    after = sorted(json.dumps(ref, sort_keys=True) for ref in (after or []))
+                if before != after:
+                    return False
+            return True
         if (not retire_scope_ids and len({scope["forming_scope_id"] for scope in scopes}) == len(scopes)
             and all(unchanged(raw, scope) for raw, scope in zip(raw_scopes, scopes))):
             return {"ok": True, "project_id": project_id, "revision": manifest.revision,
@@ -2285,28 +2044,57 @@ class DFMService:
                 "review_groups": [group.to_dict() for group in persisted.review_groups if group.status == "pending_review"],
                 "viewer_manifest": str(viewer) if viewer else None, "next_action": "confirm_discovery"}
 
-    def _update_forming_scope_geometry(self, project_id, scope_id, geometry_refs, expected_revision, expected_snapshot_id=None):
-        if not isinstance(scope_id, str) or not scope_id:
-            raise DFMError("forming_scope_invalid", "A forming_scope_id is required.")
-        return self._revise_scope_candidates(project_id, [{"forming_scope_id": scope_id, "geometry_refs": geometry_refs}],
+    def _update_forming_scope_geometry(
+        self, project_id, scope_id, geometry_refs, expected_revision,
+        expected_snapshot_id=None, face_role="forming",
+    ):
+        if not isinstance(scope_id, str) or not scope_id or face_role not in {"forming", "undercut"}:
+            raise DFMError("forming_scope_invalid", "A current scope ID and forming/undercut face role are required.")
+        field = "undercut_geometry_refs" if face_role == "undercut" else "geometry_refs"
+        return self._revise_scope_candidates(project_id, [{"forming_scope_id": scope_id, field: geometry_refs}],
                                              [], expected_revision, expected_snapshot_id)
 
     def _stage_forming_direction(self, project_id, scope, expected_revision, expected_snapshot_id):
         manifest = self._store(project_id).load()
         review_identity = self._review_edit_identity(manifest, expected_snapshot_id)
+        if isinstance(expected_revision, bool) or not isinstance(expected_revision, int):
+            raise DFMError("manifest_revision_required", "Plan editing requires the current project revision.")
+        if review_identity is None and expected_revision != manifest.revision:
+            raise DFMError("manifest_conflict", "Reload the current geometry before editing.")
         snapshot = self._latest_discovery_snapshot(manifest)
         original = next((item for item in snapshot.forming_scopes if item["forming_scope_id"] == scope["forming_scope_id"]
                          and item["mode"] == "local" and item.get("status") != "stale"), None) if snapshot else None
-        direction = scope.get("draw_direction")
-        if (original is None or not isinstance(direction, list) or len(direction) != 3
+        if original is None:
+            raise DFMError("forming_scope_invalid", "A plan draft requires a current local scope.")
+        direction = scope.get("draw_direction", original.get("draw_direction"))
+        direction_source = original.get("direction_source")
+        if "draw_direction" in scope:
+            direction_source = "user_confirmed" if direction is not None else None
+        if direction is not None and (
+            not isinstance(direction, list) or len(direction) != 3
             or any(isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value) for value in direction)
-            or not 1e-12 < math.hypot(*direction) < math.inf):
-            raise DFMError("direction_invalid", "A candidate direction requires a current local scope and a finite nonzero vector.")
+            or not 1e-12 < math.hypot(*direction) < math.inf
+        ):
+            raise DFMError("direction_invalid", "A candidate direction must be unknown or a finite nonzero vector.")
         inputs = [item for item in self._active_inputs(manifest) if item.kind == "step"]
         if len(inputs) != 1:
             raise DFMError("input_selection_invalid", "Direction editing requires one active STEP input.")
-        payload = {key: original[key] for key in ("forming_scope_id", "kind", "mode", "geometry_refs")}
-        payload.update(draw_direction=direction, direction_source="user_confirmed", coordinate_system="model", status="candidate")
+        payload = {key: original[key] for key in (
+            "forming_scope_id", "kind", "mode", "geometry_refs", "undercut_geometry_refs",
+            "mechanism_kind", "candidate_solutions"
+        )}
+        for key in ("geometry_refs", "mechanism_kind"):
+            if key in scope:
+                payload[key] = scope[key]
+        if direction is not None:
+            direction = self._normalize_fact_value("pull_dir", direction)
+        payload.update(draw_direction=direction, direction_source=direction_source,
+                       coordinate_system="model", status="candidate")
+        record = self._forming_scope_record(payload, snapshot.snapshot_id)
+        original_record = self._forming_scope_record(original, snapshot.snapshot_id)
+        if self._forming_scope_review_payload(record) == self._forming_scope_review_payload(original_record):
+            return {"ok": True, "project_id": project_id, "status": "forming_direction_unchanged",
+                    "revision": manifest.revision, "snapshot": snapshot.to_dict(), "unchanged": True}
         edit, result = self._prepare_geometry_edit(project_id, manifest, inputs[0].sha256, expected_revision,
             "forming_scopes.revise", {"snapshot_id": snapshot.worker_snapshot_id, "scopes": [payload]},
             expected_identity=review_identity[1] if review_identity else None)
@@ -2335,73 +2123,51 @@ class DFMService:
         if len(scopes) != len(raw_scopes):
             raise DFMError("forming_scope_invalid", "Forming scopes must be objects.")
         allowed = {
-            "forming_scope_id",
-            "kind",
-            "mode",
-            "draw_direction",
-            "coordinate_system",
-            "direction_source",
-            "geometry_refs",
+            "forming_scope_id", "kind", "mode", "draw_direction", "coordinate_system",
+            "direction_source", "geometry_refs", "undercut_geometry_refs",
+            "mechanism_kind", "candidate_solutions",
         }
-        if any(set(item) != allowed for item in scopes):
-            raise DFMError(
-                "forming_scope_invalid",
-                "A confirmed forming scope contains undeclared fields.",
-            )
+        if any(set(item) - allowed or not item.get("forming_scope_id") for item in scopes):
+            raise DFMError("forming_scope_invalid", "A forming proposal contains undeclared fields or lacks its ID.")
         manifest = self._store(project_id).load()
         review_identity = self._review_edit_identity(manifest, expected_snapshot_id)
         if expected_revision is not None and (isinstance(expected_revision, bool)
             or not isinstance(expected_revision, int) or (review_identity is None and expected_revision != manifest.revision)):
             raise DFMError("manifest_conflict", "The project changed; reload the review before submitting.",
                            {"expected": expected_revision, "actual": manifest.revision})
-        for scope in scopes:
+        discovery_snapshot = self._latest_discovery_snapshot(manifest)
+        if discovery_snapshot is None:
+            raise DFMError("geometry_snapshot_missing", "A forming proposal requires a discovery snapshot.")
+        previous_scopes = {item["forming_scope_id"]: item for item in discovery_snapshot.forming_scopes}
+        hydrated = []
+        for patch in scopes:
+            scope_id = str(patch["forming_scope_id"])
+            previous = previous_scopes.get(scope_id)
+            if previous is None or previous.get("status") == "stale":
+                raise DFMError("forming_scope_invalid", "Only a current forming proposal can be confirmed.",
+                               {"forming_scope_id": scope_id})
+            record = self._forming_scope_record(previous, discovery_snapshot.snapshot_id)
+            scope = {**self._forming_scope_review_payload(record), **patch, "direction_source": "user_confirmed"}
             direction = scope["draw_direction"]
             if (not isinstance(direction, list) or len(direction) != 3
                 or any(isinstance(value, bool) or not isinstance(value, (int, float))
                        or not math.isfinite(value) for value in direction)
                 or not 1e-12 < math.hypot(*direction) < math.inf):
-                raise DFMError("direction_invalid", "A confirmed direction must contain three finite, non-zero model-coordinate numbers.")
-            scope_id = str(scope["forming_scope_id"])
-            mode = str(scope["mode"])
-            expected_kind = (
-                "product_forming" if mode == "main" else "local_direction"
+                raise DFMError("direction_invalid", "Confirm a finite, non-zero model-coordinate exit direction.")
+            scope["draw_direction"] = self._normalize_fact_value("pull_dir", direction)
+            confirmed_record = self._forming_scope_record(
+                {**scope, "status": "confirmed"}, discovery_snapshot.snapshot_id
             )
+            expected_kind = "product_forming" if confirmed_record.mode == "main" else "forming_scope"
             if not any(
-                item.kind == expected_kind
-                and scope_id in item.target_refs
+                item.kind == expected_kind and scope_id in item.target_refs
                 and item.status in {"pending_review", "confirmed"}
                 for item in manifest.review_groups
             ):
-                raise DFMError(
-                    "review_group_pending",
-                    "The forming scope must complete its current review group first.",
-                    {
-                        "forming_scope_id": scope_id,
-                        "review_group_kind": expected_kind,
-                    },
-                )
-            if mode == "local" and not any(
-                item.kind == "undercut_scope"
-                and scope_id in item.target_refs
-                and item.status == "confirmed"
-                for item in manifest.review_groups
-            ):
-                raise DFMError(
-                    "review_group_pending",
-                    "The undercut range must be confirmed before local direction review.",
-                    {"forming_scope_id": scope_id},
-                )
-            if mode == "local" and not any(
-                item.kind == "local_structure"
-                and scope_id in item.target_refs
-                and item.status == "confirmed"
-                for item in manifest.review_groups
-            ):
-                raise DFMError(
-                    "review_group_pending",
-                    "The local structure must be confirmed before local direction review.",
-                    {"forming_scope_id": scope_id},
-                )
+                raise DFMError("review_group_pending", "The forming proposal has no current review group.",
+                               {"forming_scope_id": scope_id, "review_group_kind": expected_kind})
+            hydrated.append(scope)
+        scopes = hydrated
         inputs = [item for item in self._active_inputs(manifest) if item.kind == "step"]
         if len(inputs) != 1:
             raise DFMError(
@@ -2530,7 +2296,7 @@ class DFMService:
                 independently_confirmable = [
                     item.review_group_id
                     for item in pending_groups.values()
-                    if item.kind in {"undercut_scope", "local_structure"}
+                    if item.kind == "forming_scope"
                 ]
                 if len(independently_confirmable) == 1:
                     requested_group_ids = set(independently_confirmable)
@@ -2551,23 +2317,13 @@ class DFMService:
                 "A selected review group is missing, stale, or already closed.",
                 {"review_group_ids": sorted(missing_groups)},
             )
-        direction_groups = sorted(
-            group_id
-            for group_id in requested_group_ids
-            if pending_groups[group_id].kind == "local_direction"
-        )
-        if direction_groups:
-            raise DFMError(
-                "review_group_invalid",
-                "Local direction groups must be confirmed through forming_scopes.revise.",
-                {"review_group_ids": direction_groups},
-            )
         product_groups = {identity for identity in requested_group_ids
-                          if pending_groups[identity].kind == "product_forming"}
+                          if pending_groups[identity].kind in {"product_forming", "forming_scope"}}
         if product_groups:
             scope_ids = {target for identity in product_groups for target in pending_groups[identity].target_refs}
             selected_scopes = [{key: value for key, value in scope.items() if key in {
-                "forming_scope_id", "kind", "mode", "draw_direction", "coordinate_system", "direction_source", "geometry_refs"
+                "forming_scope_id", "kind", "mode", "draw_direction", "coordinate_system", "direction_source",
+                "geometry_refs", "undercut_geometry_refs", "mechanism_kind", "candidate_solutions"
             }} for scope in snapshot.forming_scopes if scope["forming_scope_id"] in scope_ids]
             result = self._revise_forming_scopes(project_id, selected_scopes, revision, expected_snapshot_id)
             remaining = requested_group_ids - product_groups
@@ -2640,79 +2396,27 @@ class DFMService:
             )
 
         confirmed = store.update(apply, expected_revision=revision if review_identity is None else None)
-        confirmed_undercut_scope_ids = {
-            target
-            for group_id in requested_group_ids
-            if pending_groups[group_id].kind == "undercut_scope"
-            for target in pending_groups[group_id].target_refs
-        }
-        if confirmed_undercut_scope_ids:
-            confirmed, snapshot = self._supplement_local_scopes(
-                project_id, confirmed_undercut_scope_ids
-            )
         confirmed = self._ensure_clarifications(project_id, phase="analysis")
-        remaining_structure_groups = [item for item in confirmed.review_groups
-                                      if item.kind == "ordinary_structure" and item.status == "pending_review"]
+        pending_groups = [item for item in confirmed.review_groups if item.status == "pending_review"]
+        pending_objects = any(item.kind in {"ordinary_structure", "surface_attribute"} for item in pending_groups)
+        pending_forming = any(item.kind in {"forming_scope", "product_forming"} for item in pending_groups)
         open_clarifications = self._open_clarifications(confirmed, phase="analysis")
-        pending_local_structure_groups = [
-            item
-            for item in confirmed.review_groups
-            if item.kind == "local_structure" and item.status == "pending_review"
-        ]
-        pending_local_direction_groups = [
-            item
-            for item in confirmed.review_groups
-            if item.kind == "local_direction" and item.status == "pending_review"
-        ]
-        pending_review = bool(
-            remaining_structure_groups
-            or pending_local_structure_groups
-            or pending_local_direction_groups
-        )
         viewer_path = materialize_discovery_viewer_manifest(
-            self.workspace.project_dir(project_id),
-            confirmed,
-            review_status="pending" if pending_review else "confirmed",
+            self.workspace.project_dir(project_id), confirmed,
+            review_status="pending" if pending_groups else "confirmed",
         )
         return {
-            "ok": True,
-            "project_id": project_id,
-            "status": (
-                "discovery_review_required"
-                if remaining_structure_groups or pending_local_structure_groups
-                else "forming_scope_review_required"
-                if pending_local_direction_groups
-                else "discovery_confirmed"
-            ),
-            "phase": "discovery",
-            "snapshot": snapshot.to_dict(),
-            "annotations": snapshot.annotations,
-            "relationships": snapshot.relationships,
-            "forming_scopes": snapshot.forming_scopes,
-            "revision": confirmed.revision,
-            "viewer_manifest": str(viewer_path) if viewer_path else None,
-            "review_groups": [
-                item.to_dict()
-                for item in confirmed.review_groups
-                if item.status == "pending_review"
-            ],
-            "requires_user_response": bool(
-                remaining_structure_groups
-                or pending_local_structure_groups
-                or pending_local_direction_groups
-                or open_clarifications
-            ),
-            "next_action": (
-                "confirm_discovery"
-                if remaining_structure_groups
-                else "confirm_discovery"
-                if pending_local_structure_groups
-                else "revise_forming_scopes"
-                if pending_local_direction_groups
-                else "clarify"
-                if open_clarifications
-                else "plan"
-            ),
+            "ok": True, "project_id": project_id, "phase": "discovery",
+            "status": ("discovery_review_required" if pending_objects else
+                       "forming_scope_review_required" if pending_forming else "discovery_confirmed"),
+            "snapshot": snapshot.to_dict(), "annotations": snapshot.annotations,
+            "relationships": snapshot.relationships, "forming_scopes": snapshot.forming_scopes,
+            "revision": confirmed.revision, "viewer_manifest": str(viewer_path) if viewer_path else None,
+            "review_groups": [item.to_dict() for item in pending_groups],
+            "requires_user_response": bool(pending_groups or open_clarifications),
+            "next_action": ("confirm_discovery" if pending_objects else
+                            "revise_forming_scopes" if pending_forming else
+                            "clarify" if open_clarifications else "plan"),
             "open_clarifications": [item.to_dict() for item in open_clarifications],
         }
 
@@ -4715,7 +4419,8 @@ class DFMService:
                 params.get("retire_annotation_ids", []), params.get("expected_revision"), params.get("expected_snapshot_id"))
         if action == "update_forming_scope_geometry":
             return self._after_workflow_update(project_id, self._update_forming_scope_geometry(
-                project_id, params.get("forming_scope_id"), params.get("geometry_refs"), params.get("expected_revision"), params.get("expected_snapshot_id")))
+                project_id, params.get("forming_scope_id"), params.get("geometry_refs"), params.get("expected_revision"),
+                params.get("expected_snapshot_id"), params.get("face_role", "forming")))
         if action == "restructure_forming_scopes":
             return self._after_workflow_update(project_id, self._revise_scope_candidates(
                 project_id, params.get("forming_scopes", []), params.get("retire_scope_ids", []), params.get("expected_revision"), params.get("expected_snapshot_id")))
@@ -5383,7 +5088,7 @@ class DFMService:
                         scope_key = scope_id or "ordinary"
                         required_groups = [item for item in active_groups
                                            if item.kind == "ordinary_structure" and feature.feature_id in item.target_refs]
-                        required_kinds = ({"undercut_scope", "local_structure", "local_direction"}
+                        required_kinds = ({"forming_scope"}
                                           if scope_id and any(raw.get("forming_scope_id") == scope_id and raw.get("mode") == "local"
                                                               for raw in discovery_snapshot.forming_scopes)
                                           else {"product_forming"} if scope_id else set())
@@ -5401,8 +5106,8 @@ class DFMService:
                             })
                         missing_kinds = required_kinds - {item.kind for item in required_groups}
                         if (not any(item.kind == "ordinary_structure" for item in required_groups)
-                            or any(item.status != "confirmed" and item.kind != "local_direction" for item in required_groups)
-                            or missing_kinds - {"local_direction"}):
+                            or any(item.status != "confirmed" for item in required_groups)
+                            or missing_kinds):
                             blocking_reasons.append({
                                 "code": "pending_review",
                                 "feature_id": feature.feature_id,

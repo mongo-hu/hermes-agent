@@ -485,3 +485,37 @@ def test_dfm_is_not_part_of_core_platform_tools():
 
     assert "dfm_project" not in _HERMES_CORE_TOOLS
     assert "dfm_analysis" not in _HERMES_CORE_TOOLS
+
+
+def test_forming_proposal_tool_contract_matches_draft_and_confirmation_workflow():
+    from jsonschema import Draft202012Validator
+    from tools.dfm_tool import DFM_ANALYSIS_SCHEMA
+
+    schema = DFM_ANALYSIS_SCHEMA["parameters"]
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    assert "stage_forming_direction" in schema["properties"]["action"]["enum"]
+    validator.validate({
+        "action": "stage_forming_direction", "project_id": "dfm_1",
+        "forming_scope": {"forming_scope_id": "SIDE_01", "mechanism_kind": "slider"},
+        "expected_revision": 5,
+    })
+    validator.validate({
+        "action": "restructure_forming_scopes", "project_id": "dfm_1",
+        "forming_scopes": [{
+            "kind": "undercut", "mode": "local", "mechanism_kind": "undetermined",
+            "geometry_refs": [], "undercut_geometry_refs": [{
+                "kind": "face", "index": 1, "input_sha256": "a" * 64,
+                "topology_snapshot_id": "topology_1", "entity_id": "face_1",
+            }],
+            "draw_direction": None, "direction_source": None,
+            "candidate_solutions": [{
+                "mechanism_kind": "lifter", "geometry_refs": [],
+                "draw_direction": [1, 0, 1], "coordinate_system": "model",
+            }],
+        }],
+    })
+    assert schema["properties"]["face_role"]["enum"] == ["forming", "undercut"]
+    text = DFM_ANALYSIS_SCHEMA["description"]
+    assert "confirmation never requires another discovery round" in text
+    assert "triggers its supplemental discovery" not in text

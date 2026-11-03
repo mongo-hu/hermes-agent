@@ -28,9 +28,30 @@ def serve_v2():
     snapshots = {}
     jobs = {}
 
+    # Derived relations mirror the production public projection; fixture values
+    # validate orchestration only and are never algorithm measurements.
+    def associate_scopes(state):
+        state["relationships"] = [row for row in state["relationships"]
+            if row["type"] not in {"contained_in_forming_scope", "intersects_forming_scope"}]
+        for scope in state["forming_scopes"]:
+            if scope.get("status") == "stale":
+                continue
+            selected = {json.dumps(ref, sort_keys=True) for ref in [
+                *scope["geometry_refs"], *scope["undercut_geometry_refs"]]}
+            for feature in state["features"]:
+                own = feature.get("geometry_refs", [])
+                overlap = [ref for ref in own if json.dumps(ref, sort_keys=True) in selected]
+                if overlap:
+                    state["relationships"].append({
+                        "relation_id": "rel_" + feature["feature_id"] + "_" + scope["forming_scope_id"],
+                        "type": "contained_in_forming_scope" if len(overlap) == len(own) else "intersects_forming_scope",
+                        "from_ref": feature["feature_id"], "to_ref": scope["forming_scope_id"],
+                        "geometry_refs": overlap, "patch_mask_ref": None, "source": "fixture"})
+
     def semantic_result(result):
         if "features" in result and result.get("snapshot_id") in snapshots:
             state = snapshots[result["snapshot_id"]]
+            associate_scopes(state)
             result = {**result, **{key: deepcopy(state[key]) for key in (
                 "features", "annotations", "relationships", "forming_scopes", "coverage")}}
             result["diagnostics"] = {"model_import_count": 1, "fixture": True, **result.get("diagnostics", {})}
@@ -242,7 +263,7 @@ def serve_v2():
                 request_id,
                 {
                     "contract_version": contract,
-                    "schema_bundle_version": "2.3.0",
+                    "schema_bundle_version": "2.4.0",
                     "engine_version": "contract-fixture-1",
                     "dependency_fingerprint": dependency_fingerprint,
                     "backend": "analysis_situs+occt",
@@ -422,6 +443,8 @@ def serve_v2():
                 "forming_scope_id": params["forming_scope_id"],
                 "kind": "main_forming" if params["mode"] == "main" else "local_forming",
                 "mode": params["mode"],
+                "mechanism_kind": "none" if params["mode"] == "main" else "undetermined",
+                "undercut_geometry_refs": [], "candidate_solutions": [],
                 "draw_direction": [float(value) for value in params["draw_direction"]],
                 "coordinate_system": params["coordinate_system"],
                 "direction_source": params["direction_source"],
@@ -432,6 +455,7 @@ def serve_v2():
             local_scope = {
                 "forming_scope_id": "SIDE_01",
                 "kind": "undercut",
+                "mechanism_kind": "undetermined", "undercut_geometry_refs": [ref], "candidate_solutions": [],
                 "mode": "local",
                 "draw_direction": None,
                 "coordinate_system": "model",
@@ -475,19 +499,18 @@ def serve_v2():
             revisions = {
                 item["forming_scope_id"]: item for item in params.get("scopes", [])
             }
-            revised = []
-            for item in state["forming_scopes"]:
-                if item["forming_scope_id"] in revisions:
-                    item = {
-                        **revisions[item["forming_scope_id"]],
-                        "status": "confirmed",
-                        "diagnostics": {
-                            "fixture": True,
-                            "algorithm_certified": False,
-                        },
-                    }
-                revised.append(item)
-            state["forming_scopes"] = revised
+            revised = {row["forming_scope_id"]: row for row in state["forming_scopes"]}
+            for identity, patch in revisions.items():
+                item = {**revised.get(identity, {}), **patch}
+                item.setdefault("mechanism_kind", "none" if item["mode"] == "main" else "undetermined")
+                item.setdefault("undercut_geometry_refs", [])
+                item.setdefault("candidate_solutions", [])
+                item["status"] = patch.get("status", "confirmed" if
+                    item.get("draw_direction") is not None and item.get("direction_source") == "user_confirmed"
+                    else "candidate")
+                item["diagnostics"] = {"fixture": True, "algorithm_certified": False}
+                revised[identity] = item
+            state["forming_scopes"] = list(revised.values())
             response(
                 request_id,
                 {

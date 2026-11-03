@@ -1255,74 +1255,32 @@ def test_ready_scopes_run_once_while_another_local_direction_waits(tmp_path):
 def _confirm_service_scopes(service, project_id, scope):
     candidate = scope["forming_scope"]
     assert candidate["forming_scope_id"] == "MAIN"
-    service.analysis(
-        "revise_forming_scopes",
-        project_id=project_id,
-        forming_scopes=[
-            {
-                key: candidate[key]
-                for key in (
-                    "forming_scope_id",
-                    "kind",
-                    "mode",
-                    "draw_direction",
-                    "coordinate_system",
-                    "direction_source",
-                    "geometry_refs",
-                )
-            }
-        ],
-    )
-    # Native candidates depend on actual geometry. SIDE_01 is only a fixture ID.
+    service.analysis("revise_forming_scopes", project_id=project_id,
+        forming_scopes=[{key: candidate[key] for key in (
+            "forming_scope_id", "kind", "mode", "draw_direction", "coordinate_system",
+            "direction_source", "geometry_refs", "mechanism_kind", "undercut_geometry_refs", "candidate_solutions")}])
     for local_candidate in scope["forming_scopes"]:
         if local_candidate["mode"] != "local":
             continue
         scope_id = local_candidate["forming_scope_id"]
         assert local_candidate["draw_direction"] is None
         context = service.analysis("review_context", project_id=project_id)
-        group = next(
-            row
-            for row in context["review_groups"]
-            if row["kind"] == "undercut_scope" and scope_id in row["target_refs"]
-        )
-        supplemented = service.analysis(
-            "confirm_discovery",
-            project_id=project_id,
-            expected_revision=context["revision"],
-            review_group_ids=[group["review_group_id"]],
-        )
-        structure = next(
-            row
-            for row in supplemented["review_groups"]
-            if row["kind"] == "local_structure" and scope_id in row["target_refs"]
-        )
-        service.analysis(
-            "confirm_discovery",
-            project_id=project_id,
-            expected_revision=supplemented["revision"],
-            review_group_ids=[structure["review_group_id"]],
-        )
-        revised = service.analysis(
-            "revise_forming_scopes",
-            project_id=project_id,
-            forming_scopes=[
-                {
-                    "forming_scope_id": scope_id,
-                    "kind": local_candidate["kind"],
-                    "mode": "local",
-                    "draw_direction": [0, 1, 0],
-                    "coordinate_system": "model",
-                    "direction_source": "user_confirmed",
-                    "geometry_refs": local_candidate["geometry_refs"],
-                }
-            ],
-        )
-        assert revised["forming_scopes"][0]["draw_direction"] == [0, 1, 0]
-        assert any(
-            row.review_group_id == structure["review_group_id"]
-            and row.status == "confirmed"
-            for row in service._store(project_id).load().review_groups
-        )
+        service.analysis("stage_forming_direction", project_id=project_id,
+            forming_scope={**local_candidate, "draw_direction": [0, 1, 0], "mechanism_kind": "slider"},
+            expected_revision=context["revision"], expected_snapshot_id=context["snapshot_id"])
+        context = service.analysis("review_context", project_id=project_id)
+        group = next(row for row in context["review_groups"]
+                     if row["kind"] == "forming_scope" and scope_id in row["target_refs"])
+        service.analysis("confirm_discovery", project_id=project_id,
+            review_group_ids=[group["review_group_id"]], expected_revision=context["revision"],
+            expected_snapshot_id=context["snapshot_id"])
+        final = service.analysis("review_context", project_id=project_id)
+        plan = next(row for row in final["forming_scopes"] if row["forming_scope_id"] == scope_id)
+        assert plan["status"] == "confirmed" and plan["draw_direction"] == [0, 1, 0]
+        assert any(row["review_group_id"] == group["review_group_id"] and row["status"] == "confirmed"
+                   for row in final["review_groups"])
+        assert not any(row["kind"] in {"undercut_scope", "local_structure", "local_direction"}
+                       and row["status"] != "stale" for row in final["review_groups"])
 
 
 def _assert_complete_service_flow(

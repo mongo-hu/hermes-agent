@@ -10069,6 +10069,10 @@ class DFMFeatureGeometryRequest(BaseModel):
     expected_snapshot_id: Optional[str] = None
 
 
+class DFMFormingScopeGeometryRequest(DFMFeatureGeometryRequest):
+    face_role: str = "forming"
+
+
 class DFMReviewConfirmationRequest(BaseModel):
     review_group_ids: List[str]
     expected_revision: int
@@ -10084,7 +10088,9 @@ class DFMAnnotationRevisionRequest(BaseModel):
 
 class DFMReviewDirectionRequest(BaseModel):
     forming_scope_id: str
-    draw_direction: List[float]
+    draw_direction: Optional[List[float]]
+    mechanism_kind: Optional[str] = None
+    geometry_refs: Optional[List[Dict[str, Any]]] = None
     expected_revision: int
     expected_snapshot_id: Optional[str] = None
 
@@ -10144,12 +10150,12 @@ def revise_dfm_annotations(project_id: str, request: DFMAnnotationRevisionReques
 
 
 @app.patch("/api/dfm/projects/{project_id}/discovery/scopes/{forming_scope_id}")
-def update_dfm_forming_scope_geometry(project_id: str, forming_scope_id: str, request: DFMFeatureGeometryRequest):
+def update_dfm_forming_scope_geometry(project_id: str, forming_scope_id: str, request: DFMFormingScopeGeometryRequest):
     from tools.dfm.service import get_dfm_service
     try:
         service = get_dfm_service()
         result = service.analysis("update_forming_scope_geometry", project_id=project_id, forming_scope_id=forming_scope_id,
-                         geometry_refs=request.geometry_refs, expected_revision=request.expected_revision,
+                         geometry_refs=request.geometry_refs, face_role=request.face_role, expected_revision=request.expected_revision,
                          **({"expected_snapshot_id": request.expected_snapshot_id} if request.expected_snapshot_id is not None else {}))
         return {**service.analysis("review_context", project_id=project_id),
                 "viewer_manifest": result.get("viewer_manifest"), "unchanged": result.get("unchanged", False)}
@@ -10184,12 +10190,16 @@ def confirm_dfm_scope_direction(project_id: str, request: DFMReviewDirectionRequ
                       if item["forming_scope_id"] == request.forming_scope_id), None)
         if scope is None:
             raise DFMError("forming_scope_invalid", "The requested direction scope is not current.")
-        payload = {key: scope[key] for key in ("forming_scope_id", "kind", "mode", "geometry_refs")}
+        payload = {key: scope[key] for key in ("forming_scope_id", "kind", "mode", "geometry_refs",
+            "undercut_geometry_refs", "mechanism_kind", "candidate_solutions")}
+        if request.mechanism_kind is not None:
+            payload["mechanism_kind"] = request.mechanism_kind
+        if request.geometry_refs is not None:
+            payload["geometry_refs"] = request.geometry_refs
         payload.update({"draw_direction": request.draw_direction,
                         "coordinate_system": "model", "direction_source": "user_confirmed"})
-        ready = scope["mode"] == "main" or all(any(group["kind"] == kind and group["status"] == "confirmed"
-            and scope["forming_scope_id"] in group["target_refs"] for group in context["review_groups"])
-            for kind in ("undercut_scope", "local_structure"))
+        # Local edits remain drafts until the whole forming proposal is confirmed.
+        ready = scope["mode"] == "main"
         result = service.analysis("revise_forming_scopes" if ready else "stage_forming_direction", project_id=project_id,
             **({"forming_scopes": [payload]} if ready else {"forming_scope": payload}), expected_revision=request.expected_revision,
             **({"expected_snapshot_id": request.expected_snapshot_id} if request.expected_snapshot_id is not None else {}))

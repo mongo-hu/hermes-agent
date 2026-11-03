@@ -33,7 +33,7 @@ from .events import parse_worker_event
 
 
 SESSION_CONTRACT = "dfm.geometry/v2"
-SESSION_SCHEMA_BUNDLE_VERSION = "2.3.0"
+SESSION_SCHEMA_BUNDLE_VERSION = "2.4.0"
 TERMINAL_JOB_STATES = frozenset({"completed", "failed", "cancelled"})
 _RECOVERABLE_SNAPSHOT_METHODS = frozenset({
     "features.discover",
@@ -852,7 +852,14 @@ class GeometrySessionPool:
                 "The reopened model topology cannot validate persisted revisions.",
             ) from exc
         nested = [part for record in records for part in (record.get("parts") or {}).values()]
-        records = [*records, *({"geometry_refs": refs} for refs in nested)]
+        nested.extend(record["undercut_geometry_refs"] for record in records
+                      if isinstance(record.get("undercut_geometry_refs"), list))
+        candidates = [candidate for record in records for candidate in record.get("candidate_solutions", [])
+                      if isinstance(candidate, dict)]
+        relationships = params.get("relationships", [])
+        records = [*records, *candidates,
+                   *(row for row in relationships if isinstance(row, dict)),
+                   *({"geometry_refs": refs} for refs in nested)]
         for record in records:
             refs = record.get("geometry_refs")
             if not isinstance(refs, list):

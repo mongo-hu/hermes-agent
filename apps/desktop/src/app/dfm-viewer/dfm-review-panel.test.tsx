@@ -31,14 +31,13 @@ function context(): ReviewContext {
       properties: { geometry_refs: [ref] }
     })),
     forming_scopes: [
-      { forming_scope_id: 'SIDE', kind: 'undercut', mode: 'local', draw_direction: null, geometry_refs: [ref] }
+      { forming_scope_id: 'SIDE', kind: 'undercut', mode: 'local', draw_direction: [1, 0, 0], geometry_refs: [ref],
+        mechanism_kind: 'slider', undercut_geometry_refs: [ref], candidate_solutions: [], coordinate_system: 'model', direction_source: 'user_confirmed', status: 'candidate' }
     ],
     review_groups: [
       { review_group_id: 'boss-1', kind: 'ordinary_structure', target_refs: ['BOSS_1'], status: 'pending_review' },
       { review_group_id: 'boss-2', kind: 'ordinary_structure', target_refs: ['BOSS_2'], status: 'pending_review' },
-      { review_group_id: 'range', kind: 'undercut_scope', target_refs: ['SIDE'], status: 'confirmed' },
-      { review_group_id: 'structure', kind: 'local_structure', target_refs: ['SIDE'], status: 'confirmed' },
-      { review_group_id: 'direction', kind: 'local_direction', target_refs: ['SIDE'], status: 'pending_review' }
+      { review_group_id: 'plan', kind: 'forming_scope', target_refs: ['SIDE'], status: 'pending_review' }
     ]
   }
 }
@@ -93,23 +92,23 @@ describe('DFM grouped review interaction', () => {
   it('exposes undercut editing and individual confirmation through the collapsed category', async () => {
     const initial = { ...context(), snapshot_id: 'review-current' }
     initial.review_groups = initial.review_groups.map(group =>
-      group.review_group_id === 'range' ? { ...group, status: 'pending_review' } : group
+      group.review_group_id === 'plan' ? { ...group, status: 'pending_review' } : group
     )
 
     const next: ReviewContext = { ...initial, revision: 8, review_groups: initial.review_groups.map(group =>
-      group.review_group_id === 'range' ? { ...group, status: 'confirmed' } : group
+      group.review_group_id === 'plan' ? { ...group, status: 'confirmed' } : group
     ) }
 
     const { api, onChanged, onEditScope } = mount(initial, next)
     const shortcut = await screen.findByRole('button', { name: '倒扣范围（1 组待确认）' })
     const forming = screen.getByText(/^出模设置/, { selector: 'summary' }).closest('details')!
     expect(forming.open).toBe(false)
-    expect(within(forming).getByText('2 组待确认')).toBeTruthy()
+    expect(within(forming).getByText('1 组待确认')).toBeTruthy()
     fireEvent.click(shortcut)
-    const confirm = await screen.findByRole('button', { name: '确认范围' })
+    const confirm = await screen.findByRole('button', { name: '确认方案' })
     const row = confirm.closest('[data-review-object]') as HTMLElement
-    fireEvent.click(within(row).getByRole('button', { name: '编辑范围' }))
-    expect(onEditScope).toHaveBeenCalledWith(initial.forming_scopes[0], initial)
+    fireEvent.click(within(row).getByRole('button', { name: '编辑成型面' }))
+    expect(onEditScope).toHaveBeenCalledWith(initial.forming_scopes[0], initial, 'forming')
     // Reopen an explicitly collapsed category from the same shortcut.
     forming.open = false
     fireEvent(forming, new Event('toggle'))
@@ -120,18 +119,18 @@ describe('DFM grouped review interaction', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: '选择 BOSS_1' }))
     fireEvent.click(confirm)
     await waitFor(() => expect(onChanged).toHaveBeenCalledWith(next))
-    expect(api.mock.calls[1][0].body).toEqual({ review_group_ids: ['range'], expected_revision: 7, expected_snapshot_id: 'review-current' })
+    expect(api.mock.calls[1][0].body).toEqual({ review_group_ids: ['plan'], expected_revision: 7, expected_snapshot_id: 'review-current' })
     expect(screen.getByRole('button', { name: '确认选中组（1）' })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '倒扣范围（1 组已确认）' }))
-    const confirmedBucket = screen.getByText(/第一轮 · 倒扣范围/, { selector: 'summary' }).closest('details')!
-    expect(within(confirmedBucket).getByRole('button', { name: '编辑范围' })).toBeTruthy()
-    expect(within(confirmedBucket).getByRole('button', { name: '编辑方向' })).toBeTruthy()
-    expect(within(confirmedBucket).queryByRole('button', { name: '确认范围' })).toBeNull()
+    const confirmedBucket = screen.getByText(/局部成型方案/, { selector: 'summary' }).closest('details')!
+    expect(within(confirmedBucket).getByRole('button', { name: '编辑成型面' })).toBeTruthy()
+    expect(within(confirmedBucket).getByRole('button', { name: '编辑机构与方向' })).toBeTruthy()
+    expect(within(confirmedBucket).queryByRole('button', { name: '确认方案' })).toBeNull()
   })
 
   it('does not show an undercut shortcut when discovery has no undercut ranges', async () => {
     const initial = context()
-    initial.review_groups = initial.review_groups.filter(group => group.kind !== 'undercut_scope')
+    initial.review_groups = initial.review_groups.filter(group => group.kind !== 'forming_scope')
     mount(initial)
     await screen.findByText(/带孔 Boss 柱/)
     expect(screen.queryByRole('button', { name: /^倒扣范围/ })).toBeNull()
@@ -205,10 +204,10 @@ describe('DFM grouped review interaction', () => {
   it('opens the range editor with the authoritative scope and current revision', async () => {
     const initial = context()
     const { onEditScope, api } = mount(initial)
-    await screen.findByText(/第一轮 · 倒扣范围/)
-    const bucket = openBucket(/第一轮 · 倒扣范围/)
-    fireEvent.click(await within(bucket).findByRole('button', { name: '编辑范围' }))
-    expect(onEditScope).toHaveBeenCalledWith(initial.forming_scopes[0], initial)
+    await screen.findByText(/局部成型方案/)
+    const bucket = openBucket(/局部成型方案/)
+    fireEvent.click(await within(bucket).findByRole('button', { name: '编辑成型面' }))
+    expect(onEditScope).toHaveBeenCalledWith(initial.forming_scopes[0], initial, 'forming')
     expect(api).toHaveBeenCalledTimes(1)
   })
   it('does not carry a pending request or late result into another project', async () => {
@@ -274,12 +273,12 @@ describe('DFM grouped review interaction', () => {
     expect((screen.getByRole('checkbox', { name: '选择 BOSS_2' }) as HTMLInputElement).disabled).toBe(false)
   })
 
-  it('opens a versioned local direction editor only after its range and structures are confirmed', async () => {
+  it('opens the plan editor independently of pending structural confirmations', async () => {
     const initial = context()
     const { api, onEditDirection } = mount(initial)
-    await screen.findByText(/局部退出方向/)
-    const bucket = openBucket(/局部退出方向/)
-    fireEvent.click(within(bucket).getByRole('button', { name: '编辑方向' }))
+    await screen.findByText(/局部成型方案/)
+    const bucket = openBucket(/局部成型方案/)
+    fireEvent.click(within(bucket).getByRole('button', { name: '编辑机构与方向' }))
     expect(onEditDirection).toHaveBeenCalledWith(initial.forming_scopes[0], initial)
     expect(api).toHaveBeenCalledTimes(1)
   })
@@ -288,26 +287,24 @@ describe('DFM grouped review interaction', () => {
     const initial = context()
     initial.review_groups = initial.review_groups.map(group => ({ ...group, status: 'confirmed' }))
     mount(initial)
-    await screen.findByText(/第一轮 · 倒扣范围/)
+    await screen.findByText(/局部成型方案/)
     expect(screen.queryByText('待确认组')).toBeNull()
     expect(screen.queryByText(/待确认 · 0/)).toBeNull()
     expect(screen.queryByRole('button', { name: /确认选中组/ })).toBeNull()
     expect(screen.getAllByText('已确认组').length).toBeGreaterThan(0)
-    const bucket = openBucket(/第一轮 · 倒扣范围/)
-    expect(within(bucket).getByRole('button', { name: '编辑范围' })).toBeTruthy()
+    const bucket = openBucket(/局部成型方案/)
+    expect(within(bucket).getByRole('button', { name: '编辑成型面' })).toBeTruthy()
   })
 
-  it('offers direction input before local structure confirmation so it can be staged', async () => {
+  it('allows editing an incomplete plan while preventing its confirmation', async () => {
     const initial = context()
-    initial.review_groups = initial.review_groups.map(group =>
-      group.review_group_id === 'structure' ? { ...group, status: 'pending_review' } : group
-    )
+    initial.forming_scopes[0] = { ...initial.forming_scopes[0], draw_direction: null, direction_source: null, mechanism_kind: 'undetermined' }
     const { onEditDirection } = mount(initial)
-    await screen.findByText(/局部退出方向/)
-    openBucket(/局部退出方向/)
-    const button = await screen.findByRole('button', { name: '编辑方向' })
+    await screen.findByText(/局部成型方案/)
+    openBucket(/局部成型方案/)
+    const button = await screen.findByRole('button', { name: '编辑机构与方向' })
     expect((button as HTMLButtonElement).disabled).toBe(false)
-    expect(screen.getByText('可先输入并暂存方向；正式确认需完成范围及局部结构审核。')).toBeTruthy()
+    expect(screen.getByText('请完善成型范围、机构和退出方向，再确认完整方案。结构在结构组独立审核。')).toBeTruthy()
     fireEvent.click(button)
     expect(onEditDirection).toHaveBeenCalledWith(initial.forming_scopes[0], initial)
   })
