@@ -67,6 +67,7 @@ export interface ReviewContext {
   review_groups: ReviewGroup[]
   annotations: ReviewAnnotation[]
   annotation_kinds?: AnnotationKind[]
+  viewer_manifest?: string | null
 }
 
 /** Worker execution budget plus time for committing state and generating the Viewer. */
@@ -96,6 +97,30 @@ export function reviewCategory(group: ReviewGroup): ReviewCategory {
     : group.kind === 'surface_attribute'
       ? 'annotation'
       : 'forming'
+}
+
+/** Capture this batch only; incomplete forming plans still require user input. */
+export function confirmableReviewGroupIds(context: ReviewContext): string[] {
+  return context.review_groups.filter(group => {
+    if (group.status !== 'pending_review') {return false}
+
+    if (group.kind === 'product_forming' || group.kind === 'forming_scope') {
+      return formingPlanReady(context.forming_scopes.find(scope => group.target_refs.includes(scope.forming_scope_id)))
+    }
+
+    return group.kind === 'ordinary_structure' || group.kind === 'surface_attribute'
+  }).map(group => group.review_group_id)
+}
+
+export function removableReviewGroup(context: ReviewContext, group: ReviewGroup): boolean {
+  if (group.status !== 'pending_review') {return false}
+
+  if (group.kind === 'forming_scope') {
+    return context.forming_scopes.some(scope => group.target_refs.includes(scope.forming_scope_id) &&
+      scope.mode === 'local' && scope.status !== 'stale')
+  }
+
+  return group.kind === 'ordinary_structure' || group.kind === 'surface_attribute'
 }
 
 const LABELS: Record<string, string> = {

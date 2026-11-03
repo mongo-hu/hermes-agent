@@ -4,14 +4,13 @@ import {
   Group,
   type Line,
   type Mesh,
-  type PerspectiveCamera,
+  type OrthographicCamera,
   Quaternion,
   Raycaster,
   type Scene,
   Vector2,
   Vector3
 } from 'three'
-import type { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
 
 import type { FocusIndex } from './dfm-viewer-focus'
@@ -55,12 +54,13 @@ export function directionOrigin(index: FocusIndex, refs: GeometryReference[]) {
 
 export function createDirectionAxis(
   scene: Scene,
-  camera: PerspectiveCamera,
+  camera: OrthographicCamera,
   element: HTMLElement,
-  orbit: OrbitControls,
+  orbit: { enabled: boolean },
   focusIndex: FocusIndex,
   onChange: (direction: [number, number, number], origin: [number, number, number]) => void
 ) {
+  let currentOrbit = orbit
   const object = new Group()
   const length = Math.max(focusIndex.bounds.getSize(new Vector3()).length() * 0.45, 0.1)
   const arrow = new ArrowHelper(new Vector3(0, 0, 1), new Vector3(), length, 0x47e4f0, length * 0.2, length * 0.085)
@@ -85,7 +85,7 @@ export function createDirectionAxis(
   let visible = false
 
   const dragging = (event: { value?: unknown }) => {
-    orbit.enabled = !event.value
+    currentOrbit.enabled = !event.value
   }
 
   const changed = () => {
@@ -98,6 +98,10 @@ export function createDirectionAxis(
   ray.params.Line = { threshold: length * 0.04 }
 
   return {
+    setControls(nextControls: { enabled: boolean }) {
+      currentOrbit = nextControls
+      currentOrbit.enabled = !transform.dragging
+    },
     update(state: DirectionAxisState | null) {
       editing = Boolean(state?.editing)
       visible = Boolean(state?.direction)
@@ -106,7 +110,7 @@ export function createDirectionAxis(
 
       if (!visible || !state?.direction) {
         transform.detach()
-        orbit.enabled = true
+        currentOrbit.enabled = true
 
         return
       }
@@ -128,7 +132,7 @@ export function createDirectionAxis(
         transform.setMode(state.mode)
       } else {
         transform.detach()
-        orbit.enabled = true
+        currentOrbit.enabled = true
       }
     },
     hit(event: PointerEvent) {
@@ -153,7 +157,7 @@ export function createDirectionAxis(
 
       // ArrowHelper uses shared geometries; dispose only its private materials.
       for (const material of [arrow.line.material, arrow.cone.material].flat()) {material.dispose()}
-      orbit.enabled = true
+      currentOrbit.enabled = true
     }
   }
 }

@@ -105,6 +105,8 @@ def structure_review_groups(
 ) -> list[ReviewGroupRecord]:
     expected = {}
     for feature in sorted(features, key=lambda value: value.feature_id):
+        if feature.status == "rejected":
+            continue
         digest = hashlib.sha256(
             _canonical(feature_review_content(feature)).encode("utf-8")
         ).hexdigest()

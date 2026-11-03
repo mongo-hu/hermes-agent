@@ -1,8 +1,10 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, type Ref, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 
 import {
+  confirmableReviewGroupIds,
   directionUnlocked,
   featureNeedsPartReview,
+  removableReviewGroup,
   REVIEW_CATEGORIES,
   reviewBuckets,
   reviewCategory,
@@ -20,13 +22,30 @@ import {
 import type { AnnotationKind, ReviewAnnotation } from './dfm-review'
 import { isReviewConflict } from './dfm-review-edits'
 import type { GeometryReference } from './dfm-viewer-geometry'
+import { type DfmHighlightSelection, sameHighlightSelection } from './dfm-viewer-selection'
+
+export interface DfmReviewPanelActions {
+  removeObject: (target: Omit<ReviewNavigation, 'sequence'>) => Promise<void>
+}
+
+/** Resolve only the removable review group, not other groups referencing the same object. */
+export function removableObjectReviewGroup(
+  context: ReviewContext | null,
+  target: Omit<ReviewNavigation, 'sequence'>
+): ReviewGroup | undefined {
+  if (!context?.snapshot_id) {return undefined}
+
+  return context.review_groups.find(group => reviewCategory(group) === target.category &&
+    group.target_refs.includes(target.objectId) && removableReviewGroup(context, group))
+}
 
 interface DfmReviewPanelProps {
   projectId: string
   revision: number | null
   onChanged: (context: ReviewContext) => void
   onRefreshed?: (context: ReviewContext) => void
-  onHighlight: (refs: GeometryReference[]) => void
+  onHighlight: (refs: GeometryReference[], selection?: DfmHighlightSelection, force?: boolean) => void
+  highlightSelection?: DfmHighlightSelection | null
   onEditScope?: (scope: ReviewScope, context: ReviewContext, faceRole?: 'forming' | 'undercut') => void
   onEditAnnotation?: (annotation: ReviewAnnotation, context: ReviewContext, values: string[]) => void
   onCreateAnnotation?: (kind: AnnotationKind, context: ReviewContext) => void
@@ -37,6 +56,9 @@ interface DfmReviewPanelProps {
   navigation?: ReviewNavigation | null
   onSelectDirection?: (scope: ReviewScope) => void
   onEditDirection?: (scope: ReviewScope, context: ReviewContext) => void
+  actionsRef?: Ref<DfmReviewPanelActions>
+  onBusyChange?: (busy: boolean) => void
+  actionBusy?: boolean
 }
 
 export function DfmReviewPanel({
@@ -45,6 +67,7 @@ export function DfmReviewPanel({
   onChanged,
   onRefreshed,
   onHighlight,
+  highlightSelection,
   onEditScope,
   onEditAnnotation,
   onCreateAnnotation,
@@ -54,7 +77,10 @@ export function DfmReviewPanel({
   confirmedFeaturesContent,
   navigation,
   onSelectDirection,
-  onEditDirection
+  onEditDirection,
+  actionsRef,
+  onBusyChange,
+  actionBusy = false
 }: DfmReviewPanelProps) {
   const [loadedContext, setContext] = useState<ReviewContext | null>(null)
   const localContext = loadedContext?.project_id === projectId ? loadedContext : null
@@ -65,14 +91,26 @@ export function DfmReviewPanel({
       : localContext
 
   const [selected, setSelected] = useState<string[]>([])
-  const [busy, setBusy] = useState(false)
+  const [localBusy, setBusy] = useState(false)
+  const busy = localBusy || actionBusy
+  const submission = useRef<{ projectId: string } | null>(null)
+  const onBusyChangeRef = useRef(onBusyChange)
+  onBusyChangeRef.current = onBusyChange
+
+  const setSubmissionBusy = useCallback((value: boolean) => {
+    setBusy(value)
+    onBusyChangeRef.current?.(value)
+  }, [])
+
   const [openBuckets, setOpenBuckets] = useState<Set<string>>(new Set())
   const [limits, setLimits] = useState<Record<string, number>>({})
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [openCategories, setOpenCategories] = useState<Set<ReviewCategory>>(new Set(['structure']))
   const [bucketNavigation, setBucketNavigation] = useState<{ id: string; sequence: number } | null>(null)
   const panelRef = useRef<HTMLElement | null>(null)
   const currentProject = useRef(projectId)
+  const previousHighlightBucket = useRef<string | null>(null)
   currentProject.current = projectId
   const onRefreshedRef = useRef(onRefreshed)
   onRefreshedRef.current = onRefreshed
@@ -86,13 +124,21 @@ export function DfmReviewPanel({
     .reduce((count, bucket) => count + bucket.groups.length, 0)
 
   useEffect(() => {
-    setBusy(false)
+    currentProject.current = projectId
+    setSubmissionBusy(false)
     setSelected([])
     setOpenBuckets(new Set())
     setLimits({})
     setOpenCategories(new Set(['structure']))
     setBucketNavigation(null)
-  }, [projectId])
+    setNotice('')
+    previousHighlightBucket.current = null
+
+    return () => {
+      currentProject.current = ''
+      onBusyChangeRef.current?.(false)
+    }
+  }, [projectId, setSubmissionBusy])
 
   const refresh = useCallback(async () => {
     const next = await window.hermesDesktop.api<ReviewContext>({ path: base })
@@ -136,11 +182,30 @@ export function DfmReviewPanel({
     )
 
     if (bucket) {
-      setOpenBuckets(previous => (previous.has(bucket.id) ? previous : new Set([...previous, bucket.id])))
+      setOpenBuckets(new Set([bucket.id]))
       const position = bucket.groups.findIndex(group => group.target_refs.includes(navigation.objectId))
       setLimits(previous => ({ ...previous, [bucket.id]: Math.max(previous[bucket.id] ?? 50, position + 1) }))
     }
   }, [navigation, context, buckets])
+
+  useEffect(() => {
+    const previous = previousHighlightBucket.current
+    const current = highlightSelection?.bucketId ?? null
+    previousHighlightBucket.current = current
+    setOpenBuckets(open => {
+      const next = new Set(open)
+
+      if (previous && previous !== current) {next.delete(previous)}
+
+      if (current && buckets.some(bucket => bucket.id === current)) {next.add(current)}
+
+      return next.size === open.size && [...next].every(id => open.has(id)) ? open : next
+    })
+
+    if (highlightSelection?.category) {
+      setOpenCategories(open => open.has(highlightSelection.category!) ? open : new Set([...open, highlightSelection.category!]))
+    }
+  }, [highlightSelection, buckets])
 
   useEffect(() => {
     if (!navigation || !openCategories.has(navigation.category)) {
@@ -175,13 +240,21 @@ export function DfmReviewPanel({
     setBucketNavigation(previous => ({ id: undercutTarget.id, sequence: (previous?.sequence ?? 0) + 1 }))
   }
 
-  const submit = async (path: string, body: Record<string, unknown>) => {
-    if (!context || busy || editing) {
+  const submit = async (path: 'confirm' | 'remove', body: Record<string, unknown>) => {
+    if (!context || busy || editing || submission.current?.projectId === projectId) {
       return
     }
 
-    setBusy(true)
+    if (path === 'remove' && (!context.snapshot_id || !context.review_groups.some(group =>
+      group.review_group_id === body.review_group_id && removableReviewGroup(context, group)))) {
+      return
+    }
+
+    const pending = { projectId }
+    submission.current = pending
+    setSubmissionBusy(true)
     setError('')
+    setNotice('')
 
     try {
       const next = await window.hermesDesktop.api<ReviewContext>({
@@ -200,6 +273,8 @@ export function DfmReviewPanel({
         group => group.review_group_id === id && group.status === 'pending_review'
       )))
       onChanged(next)
+      const remaining = next.review_groups.filter(group => group.status === 'pending_review').length
+      setNotice(`${path === 'remove' ? '已删除识别项' : '已提交本次确认'}；剩余 ${remaining} 项待处理。`)
     } catch (cause) {
       if (currentProject.current !== projectId) {
         return
@@ -208,22 +283,38 @@ export function DfmReviewPanel({
       setError(isReviewConflict(cause) ? '审核状态已更新，已刷新列表。请核对后重新确认选中的组。' : cause instanceof Error ? cause.message : String(cause))
       await refresh().catch(() => undefined)
     } finally {
-      if (currentProject.current === projectId) {
-        setBusy(false)
+      if (submission.current === pending) {
+        submission.current = null
+
+        if (currentProject.current === projectId) {setSubmissionBusy(false)}
       }
     }
   }
 
-  const pendingCount = context?.review_groups.filter(group => group.status === 'pending_review').length ?? 0
+  useImperativeHandle(actionsRef, () => ({
+    async removeObject(target) {
+      const group = removableObjectReviewGroup(context, target)
 
-  const selectForming = (group: ReviewGroup) => {
+      if (group) {await submit('remove', { review_group_id: group.review_group_id })}
+    }
+  }))
+
+  const pendingCount = context?.review_groups.filter(group => group.status === 'pending_review').length ?? 0
+  const confirmableIds = context ? confirmableReviewGroupIds(context) : []
+
+  const selectForming = (group: ReviewGroup, bucketId: string, force = false) => {
     if (!context) {
       return
     }
 
-    onHighlight(reviewGeometry(context, group))
+    const selection = {
+      category: reviewCategory(group), bucketId, objectId: group.target_refs[0]
+    }
 
-    if (reviewCategory(group) === 'forming') {
+    onHighlight(reviewGeometry(context, group), selection, force)
+
+    if (reviewCategory(group) === 'forming' &&
+      (force || !sameHighlightSelection(highlightSelection ?? null, selection))) {
       const scope = context.forming_scopes.find(item => item.forming_scope_id === group.target_refs[0])
 
       if (scope) {
@@ -259,6 +350,7 @@ export function DfmReviewPanel({
         <p className="mb-2 text-[10px] text-slate-400">待确认 · {pendingCount} 组；每组独立确认。</p>
       )}
       {editing && <p className="mb-2 text-amber-200">正在编辑选面，请先保存或取消，再确认其他组。</p>}
+      {notice && <p className="mb-2 text-[10px] text-cyan-100" role="status">{notice}</p>}
       {error && (
         <p className="mb-2 break-words text-red-200" role="alert">
           {error}
@@ -373,7 +465,15 @@ export function DfmReviewPanel({
                       }}
                       open={openBuckets.has(bucket.id)}
                     >
-                      <summary className="cursor-pointer text-slate-200">
+                      <summary className="cursor-pointer text-slate-200"
+                        onClick={event => {
+                          if (bucket.category !== 'structure') {return}
+                          event.preventDefault()
+
+                          if (busy || editing) {return}
+                          const refs = bucket.groups.flatMap(group => reviewGeometry(context, group))
+                          onHighlight(refs, { bucketId: bucket.id, category: bucket.category })
+                        }}>
                         {bucket.label} · {bucket.groups.length}{' '}
                         {bucket.groups[0].status === 'confirmed' ? '组已确认' : '组待确认'}
                       </summary>
@@ -403,7 +503,7 @@ export function DfmReviewPanel({
                               <button
                                 className="min-w-0 flex-1 truncate text-left text-[10px] text-slate-300"
                                 disabled={busy || editing}
-                                onClick={() => selectForming(group)}
+                                onClick={() => selectForming(group, bucket.id)}
                                 title={
                                   group.kind === 'product_forming'
                                     ? reviewTargetLabel(group)
@@ -453,6 +553,15 @@ export function DfmReviewPanel({
                                   type="button"
                                 >
                                   编辑选面
+                                </button>
+                              )}
+                              {removableReviewGroup(context, group) && (
+                                <button className="text-[10px] text-rose-200 disabled:opacity-40"
+                                  disabled={busy || editing || !context.snapshot_id}
+                                  onClick={() => void submit('remove', { review_group_id: group.review_group_id })}
+                                  title="删除这条识别结果，不改变模型形状"
+                                  type="button">
+                                  删除
                                 </button>
                               )}
                               {group.kind === 'forming_scope' && onEditScope && (
@@ -520,7 +629,7 @@ export function DfmReviewPanel({
                               <button
                                 className="text-[10px] text-cyan-200"
                                 disabled={busy || editing}
-                                onClick={() => selectForming(group)}
+                                onClick={() => selectForming(group, bucket.id, true)}
                                 type="button"
                               >
                                 定位
@@ -603,14 +712,23 @@ export function DfmReviewPanel({
         ))
       )}
       {pendingCount > 0 && (
+        <div className="mt-2 grid gap-2">
+          <button className="w-full rounded bg-cyan-500/20 p-1.5 text-cyan-100 disabled:opacity-40"
+            disabled={busy || editing || !confirmableIds.length}
+            onClick={() => void submit('confirm', { review_group_ids: confirmableIds })}
+            type="button">
+            {localBusy ? '提交中…' : `接受全部可确认项（${confirmableIds.length}）`}
+          </button>
         <button
           className="mt-2 w-full rounded bg-cyan-500/20 p-1.5 text-cyan-100 disabled:opacity-40"
           disabled={busy || editing || !selected.length}
           onClick={() => void submit('confirm', { review_group_ids: selected })}
           type="button"
         >
-          {busy ? '提交中…' : `确认选中组（${selected.length}）`}
+          {localBusy ? '提交中…' : `确认选中组（${selected.length}）`}
         </button>
+          <p className="text-[10px] text-slate-400">仅接受当前这一批；新生成的项目及需补全机构、方向或成型面的方案继续待处理。</p>
+        </div>
       )}
     </section>
   )

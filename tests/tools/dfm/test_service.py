@@ -916,6 +916,7 @@ def test_geometric_binding_keeps_one_local_scope_waiting_while_another_is_ready(
             features=[feature],
             forming_scopes=scopes,
             review_groups=review_groups,
+            capabilities={},
         ),
         SimpleNamespace(
             worker_snapshot_id="snapshot_model_4",

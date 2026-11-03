@@ -57,6 +57,10 @@ def geometry_identity(manifest: ProjectManifest, input_sha256: str) -> str:
             )
         },
     }
+    exclusions = manifest.capabilities.get("feature_exclusions", {}).get(input_sha256)
+    if exclusions:
+        # An in-flight Worker edit must not revive a concurrently excluded feature.
+        content["feature_exclusions"] = exclusions
     return hashlib.sha256(
         json.dumps(
             content, sort_keys=True, separators=(",", ":"), allow_nan=False

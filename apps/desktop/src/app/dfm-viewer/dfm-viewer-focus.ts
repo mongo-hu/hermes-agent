@@ -1,5 +1,6 @@
-import { Box3, Ray, Vector3 } from 'three'
+import { Box3, type OrthographicCamera, Ray, Vector3 } from 'three'
 
+import { type CameraOrientation, orthographicCameraOrientation, orthographicVisibleHeight } from './dfm-viewer-camera'
 import type { MergedFaceMeshData } from './dfm-viewer-geometry'
 
 interface FocusFace {
@@ -70,10 +71,8 @@ export function createFocusIndex(mesh: MergedFaceMeshData): FocusIndex {
 export function selectionCameraPose(
   index: FocusIndex,
   selected: ReadonlySet<number>,
-  cameraPosition: Vector3,
-  fovDegrees: number,
-  aspect: number
-): { position: Vector3; target: Vector3; modelRadius: number } | null {
+  camera: OrthographicCamera
+): (CameraOrientation & { target: Vector3; visibleHeight: number; modelRadius: number }) | null {
   const faces = [...selected].flatMap(id => (index.faces.has(id) ? [index.faces.get(id)!] : []))
 
   if (!faces.length || index.bounds.isEmpty()) {
@@ -84,8 +83,7 @@ export function selectionCameraPose(
   const target = bounds.getCenter(new Vector3())
   const modelCenter = index.bounds.getCenter(new Vector3())
   const modelRadius = Math.max(index.bounds.getSize(new Vector3()).length() / 2, 1e-6)
-  const radius = Math.max(bounds.getSize(new Vector3()).length() / 2, modelRadius * 1e-4)
-  const currentDirection = cameraPosition.clone().sub(target).normalize()
+  const currentDirection = orthographicCameraOrientation(camera).direction
   const weightedNormal = faces.reduce((sum, face) => sum.addScaledVector(face.normal, face.area), new Vector3())
   const samples = [...faces].sort((left, right) => right.area - left.area).slice(0, 4)
   const directions: Vector3[] = []
@@ -108,20 +106,13 @@ export function selectionCameraPose(
 
     const candidate = direction.clone().normalize()
 
-    // Keep Z-up orbit controls away from their polar singularity.
-    if (Math.abs(candidate.z) > 0.995) {
-      candidate.add(new Vector3(0.04, -0.06, 0)).normalize()
-    }
-
     if (!directions.some(existing => existing.dot(candidate) > 0.995)) {
       directions.push(candidate)
     }
   }
 
-  const vertical = (fovDegrees * Math.PI) / 180
-  const horizontal = 2 * Math.atan(Math.tan(vertical / 2) * Math.max(aspect, 1e-6))
-  const fitDistance = (radius / Math.sin(Math.max(Math.min(vertical, horizontal), 0.02) / 2)) * 1.12
   const tolerance = modelRadius * 1e-5
+  const rayDistance = modelRadius * 4 + tolerance
 
   const ray = new Ray(),
     a = new Vector3(),
@@ -132,12 +123,13 @@ export function selectionCameraPose(
   // Bound work even for a face containing a very dense triangulation.
   let remainingTriangleTests = 250000
 
-  const visible = (origin: Vector3, point: Vector3): boolean | null => {
-    const distance = origin.distanceTo(point)
-    ray.set(origin, point.clone().sub(origin).normalize())
+  const visible = (direction: Vector3, point: Vector3): boolean | null => {
+    // Every sample has its own ray origin: orthographic sight lines are parallel.
+    const origin = point.clone().addScaledVector(direction, rayDistance)
+    ray.set(origin, direction.clone().negate())
 
     for (const face of index.faces.values()) {
-      if (!ray.intersectBox(face.bounds, hit) || origin.distanceTo(hit) > distance + tolerance) {
+      if (!ray.intersectBox(face.bounds, hit) || origin.distanceTo(hit) > rayDistance + tolerance) {
         continue
       }
 
@@ -150,7 +142,7 @@ export function selectionCameraPose(
         b.fromArray(index.mesh.positions, index.mesh.indices[i + 1] * 3)
         c.fromArray(index.mesh.positions, index.mesh.indices[i + 2] * 3)
 
-        if (ray.intersectTriangle(a, b, c, false, hit) && origin.distanceTo(hit) < distance - tolerance) {
+        if (ray.intersectTriangle(a, b, c, false, hit) && origin.distanceTo(hit) < rayDistance - tolerance) {
           return false
         }
       }
@@ -159,32 +151,17 @@ export function selectionCameraPose(
     return true
   }
 
-  let best: { position: Vector3; target: Vector3; modelRadius: number } | null = null
+  let bestDirection: Vector3 | null = null
   let bestScore = -Infinity
 
   for (const direction of directions) {
-    const exits = [0, 1, 2]
-      .filter(axis => Math.abs(direction.getComponent(axis)) > 1e-12)
-      .map(
-        axis =>
-          ((direction.getComponent(axis) > 0 ? index.bounds.max : index.bounds.min).getComponent(axis) -
-            target.getComponent(axis)) /
-          direction.getComponent(axis)
-      )
-
-    const exitDistance = Math.max(0, Math.min(...exits))
-
-    const position = target
-      .clone()
-      .addScaledVector(direction, Math.max(fitDistance, exitDistance + Math.max(modelRadius * 1e-6, radius * 0.05)))
-
     let exposed = 0,
       area = 0
 
     let exhausted = false
 
     for (const face of samples) {
-      const canSee = visible(position, face.sample)
+      const canSee = visible(direction, face.sample)
 
       if (canSee === null) {
         exhausted = true
@@ -195,11 +172,11 @@ export function selectionCameraPose(
       area += face.area
 
       if (canSee) {
-        exposed += face.area * Math.abs(face.normal.dot(position.clone().sub(face.sample).normalize()))
+        exposed += face.area * Math.abs(face.normal.dot(direction))
       }
     }
 
-    if (exhausted && best) {
+    if (exhausted && bestDirection) {
       break
     }
 
@@ -210,9 +187,18 @@ export function selectionCameraPose(
 
     if (score > bestScore) {
       bestScore = score
-      best = { position, target, modelRadius }
+      bestDirection = direction
     }
   }
 
-  return best
+  if (!bestDirection) {return null}
+
+  const up = Math.abs(bestDirection.z) > 0.9999
+    ? new Vector3(0, bestDirection.z > 0 ? 1 : -1, 0) : new Vector3(0, 0, 1)
+
+  const orientation = { direction: bestDirection, up }
+
+  return { ...orientation, target, modelRadius, visibleHeight: orthographicVisibleHeight(
+    bounds, orientation, (camera.right - camera.left) / (camera.top - camera.bottom)
+  ) }
 }
