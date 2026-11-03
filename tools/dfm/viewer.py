@@ -16,6 +16,7 @@ from .contracts import (
     validate_result_manifest_mesh_binding,
 )
 from .errors import DFMError
+from .feature_exclusions import active_features, excluded_feature_ids, without_excluded_relationships
 from .geometry.artifact_metadata import inspect_geometry_file
 from .issue_types import classify_issue_type, summarize_issue_types
 from .runtime.result_documents import SMALL_RESULT_KINDS, read_result_document
@@ -439,7 +440,7 @@ def materialize_discovery_viewer_manifest(
 
     regions = {item.region_id: item for item in manifest.regions}
     features: list[dict[str, Any]] = []
-    for feature in manifest.features:
+    for feature in active_features(manifest):
         if feature.input_sha256 != input_sha256 or feature.kind == "ordinary_part":
             continue
         refs: dict[tuple[str, int, str], dict[str, Any]] = {}
@@ -492,7 +493,8 @@ def materialize_discovery_viewer_manifest(
         "review_groups": [item.to_dict() for item in manifest.review_groups if item.status != "stale"],
         "forming_scopes": list(metadata.get("forming_scopes", [])),
         "annotations": list(metadata.get("annotations", [])),
-        "relationships": list(metadata.get("relationships", [])),
+        "relationships": without_excluded_relationships(list(metadata.get("relationships", [])),
+            excluded_feature_ids(manifest, input_sha256)),
         "input_sha256": input_sha256,
         "process": manifest.process,
         "scope_id": "discovery.feature-regions",

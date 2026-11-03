@@ -10,6 +10,8 @@ from tools.dfm.contracts import (
     ObservationRecord,
     RuleBinding,
 )
+from tools.dfm.discovery import _normalize_coverage
+from tools.dfm.errors import DFMError
 
 
 SCHEMA_ROOT = Path(__file__).parents[3] / "tools" / "dfm" / "schemas"
@@ -100,3 +102,103 @@ def test_rule_binding_fact_dependencies_match_formal_schema():
     )
 
     _validate("rule_binding.schema.json", binding.to_dict())
+
+
+def _coverage_row(**overrides):
+    return {
+        "feature_kind": "forming_plan",
+        "context": {},
+        "status": "partial",
+        "covered_geometry_ref": {"face_ids": ["face:1"]},
+        "unresolved_geometry_ref": None,
+        "diagnostics": {"requires_user_input": True},
+        **overrides,
+    }
+
+
+def _coverage_snapshot_payload(coverage):
+    snapshot = DiscoverySnapshotRecord(
+        snapshot_id="discovery.scoped", created_at="2026-11-03T00:00:00Z",
+        input_hashes={"input_model": "a" * 64}, observation_refs=[], feature_refs=[],
+        region_refs=[], fusion_link_refs=[], provider_versions={"worker": "test"},
+        content_sha256="b" * 64, coverage=coverage,
+    )
+    return json.loads(json.dumps(snapshot.to_dict()))
+
+
+def test_coverage_preserves_distinct_forming_scopes_through_snapshot_roundtrip():
+    # MAIN analysis emits one partial forming-plan row per local scope, all with context={}.
+    raw = [_coverage_row(forming_scope_id="undercut_left"),
+           _coverage_row(forming_scope_id="undercut_right")]
+    normalized = _normalize_coverage(raw)
+    assert normalized == raw
+    payload = _coverage_snapshot_payload(normalized)
+    _validate("discovery_snapshot.schema.json", payload)
+    assert DiscoverySnapshotRecord.from_dict(payload).coverage == raw
+
+
+@pytest.mark.parametrize("normalize", [False, True])
+@pytest.mark.parametrize("references", [
+    {},
+    {"covered_geometry_ref": None, "unresolved_geometry_ref": None},
+    {"covered_geometry_ref": {"body_ids": ["body:1"]},
+     "unresolved_geometry_ref": {"face_ids": ["face:1"]}},
+])
+def test_session_coverage_without_face_references_roundtrips(references, normalize):
+    # Session-v2 status rows may omit geometry references; the normalizer emits null.
+    row = _coverage_row(forming_scope_id="SIDE")
+    row.pop("covered_geometry_ref")
+    row.pop("unresolved_geometry_ref")
+    row.update(references)
+    coverage = _normalize_coverage([row]) if normalize else [row]
+    payload = _coverage_snapshot_payload(coverage)
+    _validate("discovery_snapshot.schema.json", payload)
+    assert DiscoverySnapshotRecord.from_dict(payload).coverage == coverage
+
+
+@pytest.mark.parametrize("reference", ["covered_geometry_ref", "unresolved_geometry_ref"])
+def test_coverage_snapshot_rejects_non_object_geometry_references(reference):
+    jsonschema = pytest.importorskip("jsonschema")
+    payload = _coverage_snapshot_payload([_coverage_row(**{reference: "not-a-reference"})])
+    with pytest.raises(jsonschema.ValidationError):
+        _validate("discovery_snapshot.schema.json", payload)
+
+
+@pytest.mark.parametrize("scope_fields", [{}, {"forming_scope_id": None}, {"forming_scope_id": ""}])
+def test_coverage_retains_optional_scope_representation(scope_fields):
+    raw = _coverage_row(**scope_fields)
+    assert _normalize_coverage([raw]) == [raw]
+
+
+@pytest.mark.parametrize("left_scope,right_scope", [
+    ({}, {}), ({}, {"forming_scope_id": None}),
+    ({"forming_scope_id": None}, {}),
+    ({"forming_scope_id": None}, {"forming_scope_id": None}),
+    ({"forming_scope_id": "SIDE"}, {"forming_scope_id": "SIDE"}),
+])
+def test_coverage_rejects_same_scope_and_context_regardless_of_key_order(left_scope, right_scope):
+    rows = [
+        _coverage_row(context={"direction": [0, 0, 1], "options": {"a": 1, "b": 2}}, **left_scope),
+        _coverage_row(context={"options": {"b": 2, "a": 1}, "direction": [0, 0, 1]}, **right_scope),
+    ]
+    with pytest.raises(DFMError, match="duplicate coverage identities") as caught:
+        _normalize_coverage(rows)
+    assert caught.value.code == "geometry_protocol_invalid"
+
+
+def test_coverage_distinguishes_kind_context_and_explicit_empty_scope():
+    rows = [
+        _coverage_row(),
+        _coverage_row(forming_scope_id=""),
+        _coverage_row(forming_scope_id="SIDE"),
+        _coverage_row(forming_scope_id="SIDE", context={"direction": [0, 0, 1]}),
+        _coverage_row(forming_scope_id="SIDE", feature_kind="forming_scope"),
+    ]
+    assert _normalize_coverage(rows) == rows
+
+
+@pytest.mark.parametrize("scope_id", [0, True, [], {}])
+def test_coverage_rejects_non_string_non_null_scope(scope_id):
+    with pytest.raises(DFMError, match="invalid coverage row") as caught:
+        _normalize_coverage([_coverage_row(forming_scope_id=scope_id)])
+    assert caught.value.code == "geometry_protocol_invalid"

@@ -172,6 +172,7 @@ def test_review_snapshot_condition_is_forwarded_to_all_mutation_routes(api):
     client, service = api
     requests = [
         ("POST", "review/confirm", {"review_group_ids": ["group1"]}),
+        ("POST", "review/remove", {"review_group_id": "group1"}),
         (
             "POST",
             "review/direction",
@@ -279,3 +280,28 @@ def test_scope_geometry_edit_preserves_full_refs_and_returns_updated_review_cont
         ).status_code
         == 409
     )
+
+
+def test_remove_one_review_item_returns_context_and_viewer_without_dropping_identity(api):
+    client, service = api
+    state = {"revision": 8, "features": [], "review_groups": [], "viewer_manifest": "/project/review.json"}
+    service.analysis.side_effect = lambda action, **params: state
+    payload = {"review_group_id": "group1", "expected_revision": 7, "expected_snapshot_id": "snapshot1"}
+    response = client.post("/api/dfm/projects/dfm_test/discovery/review/remove", json=payload)
+    assert response.status_code == 200
+    assert response.json() == state
+    service.analysis.assert_called_once_with("remove_review_group", project_id="dfm_test", **payload)
+    for code in ("manifest_conflict", "review_group_stale", "geometry_edit_conflict"):
+        service.analysis.side_effect = DFMError(code, "refresh required")
+        assert client.post("/api/dfm/projects/dfm_test/discovery/review/remove", json=payload).status_code == 409
+
+
+@pytest.mark.parametrize("change", [
+    {"review_group_id": ""}, {"review_group_id": ["one", "two"]},
+    {"expected_snapshot_id": ""}, {"expected_snapshot_id": None}, {"expected_revision": True},
+])
+def test_remove_requires_one_item_and_explicit_current_snapshot(api, change):
+    client, service = api
+    payload = {"review_group_id": "group1", "expected_revision": 7, "expected_snapshot_id": "snapshot1", **change}
+    assert client.post("/api/dfm/projects/dfm_test/discovery/review/remove", json=payload).status_code == 422
+    service.analysis.assert_not_called()

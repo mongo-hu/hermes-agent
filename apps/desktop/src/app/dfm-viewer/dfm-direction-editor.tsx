@@ -109,7 +109,7 @@ export function DfmDirectionEditor({ draft, busy, error, onChange, onCancel, onS
         </button>
       </div>
       <p className="mt-2 text-[10px] leading-4 text-slate-300">
-        选中三维轴线后拖动旋转环或平移手柄。平移只改变显示位置；方向向量用于计算。右键平移视图，滚轮缩放。
+        选中三维轴线后拖动旋转环或平移手柄。平移只改变显示位置；方向向量用于计算。中键平移视图，滚轮缩放。
       </p>
       {draft.scope.mode === 'local' && (
         <p className="mt-1 text-amber-200">

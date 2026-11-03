@@ -1,32 +1,5 @@
 import { useStore } from '@nanostores/react'
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import {
-  Box3,
-  BufferGeometry,
-  Color,
-  DirectionalLight,
-  DoubleSide,
-  EdgesGeometry,
-  Float32BufferAttribute,
-  Group,
-  HemisphereLight,
-  LineBasicMaterial,
-  LineSegments,
-  MathUtils,
-  Mesh,
-  MeshStandardMaterial,
-  PerspectiveCamera,
-  Quaternion,
-  Raycaster,
-  Scene,
-  Sphere,
-  SRGBColorSpace,
-  Uint32BufferAttribute,
-  Vector2,
-  Vector3,
-  WebGLRenderer
-} from 'three'
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 
 import { openDfmViewerWindow } from '@/lib/dfm-viewer-window'
 import { $clarifyRequest, type ClarifyRequest, clearClarifyRequest, type DfmClarificationItem } from '@/store/clarify'
@@ -34,25 +7,25 @@ import type { DfmViewerTarget } from '@/store/dfm-viewer'
 import { $gateway } from '@/store/gateway'
 
 import { DfmAnnotationEditor } from './dfm-annotation-editor'
-import { createDirectionAxis, type DirectionAxisState } from './dfm-direction-axis'
+import type { CanvasMenuPoint } from './dfm-canvas-menus'
+import type { DirectionAxisState } from './dfm-direction-axis'
 import { DfmDirectionEditor, type DirectionDraft } from './dfm-direction-editor'
-import { createFaceNavigationIndex } from './dfm-face-navigation'
+import { createFaceCandidateIndex, type FaceCandidate } from './dfm-face-navigation'
 import { DfmFeatureEditor } from './dfm-feature-editor'
 import { DfmFeatureGroups } from './dfm-feature-groups'
+import { ModelCanvas } from './dfm-model-canvas'
+import { DfmObjectMenu, type ObjectMenuItem } from './dfm-object-menu'
 import type { ReviewNavigation } from './dfm-review'
 import { type AnnotationKind, confirmedFeatureIds, type ReviewAnnotation, type ReviewContext, type ReviewGroup, type ReviewScope } from './dfm-review'
-import { parseDirectionVector, reviewEditTimeout, scopeDisplayGeometry } from './dfm-review'
+import { parseDirectionVector, reviewBuckets, reviewEditTimeout, reviewGeometry, scopeDisplayGeometry } from './dfm-review'
 import { captureReviewEdit, isReviewConflict, type ReviewEditBase, reviewEditUnchanged } from './dfm-review-edits'
-import { DfmReviewPanel } from './dfm-review-panel'
-import { createFocusIndex, selectionCameraPose } from './dfm-viewer-focus'
+import { DfmReviewPanel, type DfmReviewPanelActions, removableObjectReviewGroup } from './dfm-review-panel'
 import { resolveReviewDisplayRefs, type TopologyEdge } from './dfm-viewer-geometry'
 import {
   type GeometryReference,
-  mergeRenderScene,
   type RenderPrimitive,
   type RenderTriangleReference,
   resolveGeometryRefFaceIndices,
-  resolveTriangleRefPositions,
   type TopologyFace
 } from './dfm-viewer-geometry'
 import {
@@ -61,6 +34,7 @@ import {
   summarizeViewerIssueTypes,
   type ViewerIssueTypeCount
 } from './dfm-viewer-issues'
+import { type DfmHighlightSelection, objectHighlightSelection, sameHighlightSelection } from './dfm-viewer-selection'
 
 interface ViewerIssue {
   actual: unknown
@@ -118,19 +92,6 @@ interface TopologyDocument {
   schema_version: 2
 }
 
-interface SceneResources {
-  directionAxis: ReturnType<typeof createDirectionAxis>
-  focus: (faces: ReadonlySet<number>) => void
-  faceGroups: Map<number, number>
-  fit: () => void
-  geometry: BufferGeometry
-  issueOverlay: Mesh | null
-  modelGroup: Group
-  featureMaterial: MeshStandardMaterial
-  normalMaterial: MeshStandardMaterial
-  pickedMaterial: MeshStandardMaterial
-  problemMaterial: MeshStandardMaterial
-}
 
 function dirname(filePath: string): string {
   const index = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'))
@@ -156,419 +117,6 @@ async function readJson<T>(filePath: string): Promise<T> {
   return JSON.parse(result.text) as T
 }
 
-function ModelCanvas({
-  activeFeatures,
-  activeIssue,
-  document,
-  fitRequest,
-  focusRequest,
-  onFacePick,
-  pickedFaceIndex,
-  selectedFaceIndices,
-  topologyFaces,
-  directionAxis,
-  onDirectionChange,
-  onAxisSelected
-}: {
-  activeFeatures: ViewerFeature[]
-  activeIssue: ViewerIssue | null
-  document: RenderSceneDocument
-  fitRequest: number
-  focusRequest: { sequence: number; faceIndices: number[] }
-  onFacePick: (faceIndex: number) => void
-  pickedFaceIndex: number | null
-  selectedFaceIndices?: Set<number> | null
-  directionAxis: DirectionAxisState | null
-  onDirectionChange: (direction: [number, number, number], origin: [number, number, number]) => void
-  onAxisSelected: () => void
-  topologyFaces: TopologyFace[]
-}) {
-  const hostRef = useRef<HTMLDivElement>(null)
-  const resourcesRef = useRef<SceneResources | null>(null)
-  const onFacePickRef = useRef(onFacePick)
-  const directionRef = useRef(directionAxis)
-  const directionChangeRef = useRef(onDirectionChange)
-  const axisSelectedRef = useRef(onAxisSelected)
-  directionRef.current = directionAxis
-  directionChangeRef.current = onDirectionChange
-  axisSelectedRef.current = onAxisSelected
-
-  const issuePositions = useMemo(
-    () =>
-      resolveTriangleRefPositions(
-        document.primitives,
-        activeIssue?.triangle_refs,
-        document.render_mesh_snapshot.render_mesh_snapshot_id
-      ),
-    [activeIssue, document]
-  )
-
-  const problemFaces = useMemo(
-    () => (issuePositions.length ? new Set<number>() : resolveGeometryRefFaceIndices(activeIssue?.geometry_refs)),
-    [activeIssue, issuePositions]
-  )
-
-  const originalFeatureFaces = useMemo(() => {
-    const faceIndices = new Set<number>()
-
-    for (const feature of activeFeatures) {
-      for (const faceIndex of resolveGeometryRefFaceIndices(feature.geometry_refs)) {
-        faceIndices.add(faceIndex)
-      }
-    }
-
-    return faceIndices
-  }, [activeFeatures])
-
-  const featureFaces = selectedFaceIndices ?? originalFeatureFaces
-
-  useEffect(() => {
-    onFacePickRef.current = onFacePick
-  }, [onFacePick])
-
-  useEffect(() => {
-    const host = hostRef.current
-
-    if (!host) {
-      return
-    }
-
-    const scene = new Scene()
-    scene.background = new Color(0x091019)
-    const camera = new PerspectiveCamera(38, 1, 0.01, 100000)
-    camera.up.set(0, 0, 1)
-    const renderer = new WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' })
-    renderer.outputColorSpace = SRGBColorSpace
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-    renderer.domElement.style.cursor = 'grab'
-    renderer.domElement.style.display = 'block'
-    renderer.domElement.style.height = '100%'
-    renderer.domElement.style.width = '100%'
-    host.appendChild(renderer.domElement)
-
-    const modelGroup = new Group()
-    const merged = mergeRenderScene(document.primitives, topologyFaces)
-    const focusIndex = createFocusIndex(merged)
-    const geometry = new BufferGeometry()
-    geometry.setAttribute('position', new Float32BufferAttribute(merged.positions, 3))
-    geometry.setIndex(new Uint32BufferAttribute(merged.indices, 1))
-    geometry.clearGroups()
-
-    for (const faceGroup of merged.groups) {
-      geometry.addGroup(faceGroup.start, faceGroup.count, 0)
-    }
-
-    geometry.computeVertexNormals()
-    geometry.computeBoundingBox()
-    geometry.computeBoundingSphere()
-
-    const normalMaterial = new MeshStandardMaterial({
-      color: 0x8da8b8,
-      metalness: 0.16,
-      roughness: 0.64,
-      side: DoubleSide
-    })
-
-    const problemMaterial = new MeshStandardMaterial({
-      color: 0xff4057,
-      emissive: 0x7a0718,
-      emissiveIntensity: 0.9,
-      metalness: 0.02,
-      roughness: 0.34,
-      side: DoubleSide,
-      polygonOffset: true,
-      polygonOffsetFactor: -2,
-      polygonOffsetUnits: -2
-    })
-
-    const pickedMaterial = new MeshStandardMaterial({
-      color: 0x21d3c7,
-      emissive: 0x087870,
-      emissiveIntensity: 0.65,
-      metalness: 0.1,
-      roughness: 0.48,
-      side: DoubleSide
-    })
-
-    const featureMaterial = new MeshStandardMaterial({
-      color: 0xf6b84a,
-      emissive: 0x7a4305,
-      emissiveIntensity: 0.72,
-      metalness: 0.06,
-      roughness: 0.4,
-      side: DoubleSide
-    })
-
-    const edgeMaterial = new LineBasicMaterial({ color: 0x17232e, opacity: 0.5, transparent: true })
-    const modelMesh = new Mesh(geometry, [normalMaterial, problemMaterial, featureMaterial, pickedMaterial])
-    modelGroup.add(modelMesh)
-
-    const outline = new LineSegments(new EdgesGeometry(geometry, 24), edgeMaterial)
-    outline.renderOrder = 2
-    modelGroup.add(outline)
-    scene.add(modelGroup)
-
-    const bounds = new Box3().setFromObject(modelGroup)
-    const sphere = bounds.getBoundingSphere(new Sphere())
-    const radius = Math.max(sphere.radius, 0.5)
-
-    scene.add(new HemisphereLight(0xcce8ff, 0x16222c, 2.2))
-    const keyLight = new DirectionalLight(0xffffff, 2.5)
-    keyLight.position.copy(sphere.center).add(new Vector3(1, -1, 2).multiplyScalar(radius))
-    keyLight.target.position.copy(sphere.center)
-    scene.add(keyLight)
-    scene.add(keyLight.target)
-    const rimLight = new DirectionalLight(0x50d4d0, 1.2)
-    rimLight.position.copy(sphere.center).add(new Vector3(-2, 1, 0.5).multiplyScalar(radius))
-    rimLight.target.position.copy(sphere.center)
-    scene.add(rimLight)
-    scene.add(rimLight.target)
-
-    const controls = new OrbitControls(camera, renderer.domElement)
-    controls.enableDamping = true
-    controls.dampingFactor = 0.08
-
-    const axisController = createDirectionAxis(scene, camera, renderer.domElement, controls, focusIndex,
-      (direction, origin) => directionChangeRef.current(direction, origin))
-
-    axisController.update(directionRef.current)
-    let focusAnimation: { start: number; fromOffset: Vector3; rotation: Quaternion; fromDistance: number; toDistance: number; fromTarget: Vector3; toTarget: Vector3 } | null = null
-
-    const cancelFocus = () => { focusAnimation = null }
-    controls.addEventListener('start', cancelFocus)
-
-    const resize = () => {
-      const width = Math.max(host.clientWidth, 1)
-      const height = Math.max(host.clientHeight, 1)
-      camera.aspect = width / height
-      camera.updateProjectionMatrix()
-      renderer.setSize(width, height, false)
-    }
-
-    const fit = () => {
-      cancelFocus()
-      resize()
-      const verticalFov = MathUtils.degToRad(camera.fov)
-      const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * camera.aspect)
-      const limitingFov = Math.max(Math.min(verticalFov, horizontalFov), MathUtils.degToRad(8))
-      const distance = (radius / Math.sin(limitingFov / 2)) * 1.02
-      const direction = new Vector3(1.25, -1.55, 1.05).normalize()
-
-      camera.position.copy(sphere.center).add(direction.multiplyScalar(distance))
-      camera.near = Math.max(radius / 1000, 0.01)
-      camera.far = Math.max(radius * 100, distance + radius * 4)
-      camera.updateProjectionMatrix()
-      controls.target.copy(sphere.center)
-      controls.minDistance = radius * 0.04
-      controls.maxDistance = radius * 20
-      controls.update()
-    }
-
-    const observer = new ResizeObserver(resize)
-    observer.observe(host)
-    fit()
-
-    const faceGroups = new Map(merged.groups.map((faceGroup, index) => [faceGroup.faceIndex, index]))
-    resourcesRef.current = {
-      directionAxis: axisController,
-      focus: faces => {
-        const pose = selectionCameraPose(focusIndex, faces, camera.position, camera.fov, camera.aspect)
-
-        if (!pose) {return}
-        const fromOffset = camera.position.clone().sub(controls.target)
-        const toOffset = pose.position.clone().sub(pose.target)
-        focusAnimation = { start: performance.now(), fromOffset: fromOffset.clone().normalize(),
-          rotation: new Quaternion().setFromUnitVectors(fromOffset.clone().normalize(), toOffset.clone().normalize()),
-          fromDistance: fromOffset.length(), toDistance: toOffset.length(),
-          fromTarget: controls.target.clone(), toTarget: pose.target }
-        controls.minDistance = Math.max(pose.modelRadius * 1e-5, 1e-6)
-        camera.near = Math.max(Math.min(pose.modelRadius / 10000, toOffset.length() / 100), 1e-6)
-        camera.far = Math.max(pose.modelRadius * 100, pose.position.distanceTo(pose.target) + pose.modelRadius * 4)
-        camera.updateProjectionMatrix()
-      },
-      faceGroups,
-      featureMaterial,
-      fit,
-      geometry,
-      issueOverlay: null,
-      modelGroup,
-      normalMaterial,
-      pickedMaterial,
-      problemMaterial
-    }
-
-    const raycaster = new Raycaster()
-    const pointer = new Vector2()
-    let pointerDown: { x: number; y: number } | null = null
-
-    const pickFace = (event: PointerEvent): number | null => {
-      const rect = renderer.domElement.getBoundingClientRect()
-
-      if (rect.width <= 0 || rect.height <= 0) {
-        return null
-      }
-
-      pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
-      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
-      raycaster.setFromCamera(pointer, camera)
-      const intersection = raycaster.intersectObject(modelMesh, false)[0]
-      const triangleIndex = intersection?.faceIndex
-
-      return triangleIndex == null ? null : (merged.triangleFaceIndices[triangleIndex] ?? null)
-    }
-
-    const handlePointerDown = (event: PointerEvent) => {
-      if (event.button !== 0 || directionRef.current?.editing) {
-        return
-      }
-
-      pointerDown = { x: event.clientX, y: event.clientY }
-      renderer.domElement.style.cursor = 'grabbing'
-    }
-
-    const handlePointerUp = (event: PointerEvent) => {
-      renderer.domElement.style.cursor = 'grab'
-
-      if (!pointerDown || Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y) > 4) {
-        pointerDown = null
-
-        return
-      }
-
-      pointerDown = null
-
-      if (directionRef.current?.editing) {return}
-
-      if (axisController.hit(event)) { axisSelectedRef.current();
-
- return }
-
-      const faceIndex = pickFace(event)
-
-      if (faceIndex != null && faceIndex > 0) {
-        onFacePickRef.current(faceIndex)
-      }
-    }
-
-    const handlePointerCancel = () => {
-      pointerDown = null
-      renderer.domElement.style.cursor = 'grab'
-    }
-
-    renderer.domElement.addEventListener('pointerdown', handlePointerDown)
-    renderer.domElement.addEventListener('pointerup', handlePointerUp)
-    renderer.domElement.addEventListener('pointercancel', handlePointerCancel)
-    renderer.domElement.addEventListener('pointerleave', handlePointerCancel)
-
-    let frame = 0
-
-    const render = () => {
-      if (focusAnimation) {
-        const t = Math.min((performance.now() - focusAnimation.start) / 380, 1)
-        const blend = t * t * (3 - 2 * t)
-        controls.target.lerpVectors(focusAnimation.fromTarget, focusAnimation.toTarget, blend)
-        const rotation = new Quaternion().slerp(focusAnimation.rotation, blend)
-        camera.position.copy(focusAnimation.fromOffset).applyQuaternion(rotation)
-          .multiplyScalar(MathUtils.lerp(focusAnimation.fromDistance, focusAnimation.toDistance, blend)).add(controls.target)
-
-        if (t === 1) {focusAnimation = null}
-      }
-
-      controls.update()
-      renderer.render(scene, camera)
-      frame = requestAnimationFrame(render)
-    }
-
-    render()
-
-    return () => {
-      cancelAnimationFrame(frame)
-      observer.disconnect()
-      renderer.domElement.removeEventListener('pointerdown', handlePointerDown)
-      renderer.domElement.removeEventListener('pointerup', handlePointerUp)
-      renderer.domElement.removeEventListener('pointercancel', handlePointerCancel)
-      renderer.domElement.removeEventListener('pointerleave', handlePointerCancel)
-      axisController.dispose()
-      controls.dispose()
-      controls.removeEventListener('start', cancelFocus)
-      modelGroup.traverse(child => {
-        if (child instanceof Mesh || child instanceof LineSegments) {
-          child.geometry.dispose()
-        }
-      })
-      normalMaterial.dispose()
-      problemMaterial.dispose()
-      featureMaterial.dispose()
-      pickedMaterial.dispose()
-      edgeMaterial.dispose()
-      renderer.dispose()
-      renderer.domElement.remove()
-      resourcesRef.current = null
-    }
-  }, [document, topologyFaces])
-
-  useEffect(() => {
-    resourcesRef.current?.directionAxis.update(directionAxis)
-  }, [directionAxis, document])
-
-  useEffect(() => {
-    const resources = resourcesRef.current
-
-    if (!resources) {
-      return
-    }
-
-    for (const [faceIndex, groupIndex] of resources.faceGroups) {
-      const group = resources.geometry.groups[groupIndex]
-      group.materialIndex = problemFaces.has(faceIndex)
-        ? 1
-        : featureFaces.has(faceIndex)
-          ? 2
-          : pickedFaceIndex === faceIndex && selectedFaceIndices == null
-            ? 3
-            : 0
-    }
-  }, [featureFaces, originalFeatureFaces, pickedFaceIndex, problemFaces, selectedFaceIndices])
-
-  useEffect(() => {
-    const resources = resourcesRef.current
-
-    if (!resources) {
-      return
-    }
-
-    if (resources.issueOverlay) {
-      resources.modelGroup.remove(resources.issueOverlay)
-      resources.issueOverlay.geometry.dispose()
-      resources.issueOverlay = null
-    }
-
-    if (!issuePositions.length) {
-      return
-    }
-
-    const geometry = new BufferGeometry()
-    geometry.setAttribute('position', new Float32BufferAttribute(issuePositions, 3))
-    geometry.computeVertexNormals()
-
-    const overlay = new Mesh(geometry, resources.problemMaterial)
-    overlay.renderOrder = 3
-    resources.modelGroup.add(overlay)
-    resources.issueOverlay = overlay
-  }, [issuePositions])
-
-  useEffect(() => {
-    if (focusRequest.sequence > 0) {resourcesRef.current?.focus(new Set(focusRequest.faceIndices))}
-  }, [focusRequest, document])
-
-  useEffect(() => {
-    if (fitRequest > 0) {
-      resourcesRef.current?.fit()
-    }
-  }, [fitRequest])
-
-  return <div aria-label="DFM 三维画布" className="h-full min-h-0 w-full" data-direction-origin={directionAxis?.origin ? JSON.stringify(directionAxis.origin) : undefined} data-direction-scope={directionAxis?.scopeId} data-direction-vector={directionAxis?.direction ? JSON.stringify(directionAxis.direction) : undefined} ref={hostRef} />
-}
 
 const FEATURE_LABELS: Record<string, string> = {
   main_wall: '主体壁',
@@ -1085,6 +633,10 @@ export function DfmClarificationPanel({
 }
 
 export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean; target: DfmViewerTarget }) {
+  const reviewActions = useRef<DfmReviewPanelActions>(null)
+  const [reviewBusy, setReviewBusy] = useState(false)
+  const [objectMenu, setObjectMenu] = useState<{ point: CanvasMenuPoint; candidates: FaceCandidate[]; target: FaceCandidate | null; faceIndex: number } | null>(null)
+  const dismissObjectMenu = useCallback(() => setObjectMenu(null), [])
   const activeFeatureElementRef = useRef<HTMLDivElement | null>(null)
   const clarifyRequest = useStore($clarifyRequest)
   const [manifest, setManifest] = useState<ViewerManifest | null>(null)
@@ -1096,12 +648,14 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
   const [activeFeatureId, setActiveFeatureId] = useState<string | null>(null)
   const [reviewNavigation, setReviewNavigation] = useState<ReviewNavigation | null>(null)
   const [highlightedFeatureIds, setHighlightedFeatureIds] = useState<string[]>([])
+  const [highlightSelection, setHighlightSelection] = useState<DfmHighlightSelection | null>(null)
   const [reviewGeometryRefs, setReviewGeometryRefs] = useState<GeometryReference[]>([])
   const currentProjectId = useRef(projectId)
   currentProjectId.current = projectId
   const [clarificationPriorityFeatureId, setClarificationPriorityFeatureId] = useState<string | null>(null)
   const [pickedFaceIndex, setPickedFaceIndex] = useState<number | null>(null)
   const [editingFeatureId, setEditingFeatureId] = useState<string | null>(null)
+  const [editingFeatureBaseline, setEditingFeatureBaseline] = useState<ViewerFeature | null>(null)
   const [editingScopeId, setEditingScopeId] = useState<string | null>(null)
   const [editingScopeRole, setEditingScopeRole] = useState<'forming' | 'undercut'>('forming')
   const [editingAnnotation, setEditingAnnotation] = useState<ReviewAnnotation | null>(null)
@@ -1110,6 +664,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
   const [draftFaceIndices, setDraftFaceIndices] = useState<Set<number> | null>(null)
   const [projectRevision, setProjectRevision] = useState<number | null>(null)
   const [latestReviewContext, setLatestReviewContext] = useState<ReviewContext | null>(null)
+  const currentReviewContext = useRef<ReviewContext | null>(null)
   const [savingFeature, setSavingFeature] = useState(false)
   const [activeDirectionId, setActiveDirectionId] = useState<string | null>(null)
   const [axisOrigins, setAxisOrigins] = useState<Record<string, [number, number, number]>>({})
@@ -1129,8 +684,25 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
   const workingViewer = useRef<{ externalPath: string; path: string; projectId: string } | null>(null)
   const [reviewPaneTab, setReviewPaneTab] = useState<'features' | 'issues' | 'clarifications'>('features')
 
+  const clearHighlight = useCallback(() => {
+    setHighlightSelection(null)
+    setHighlightedFeatureIds([])
+    setActiveFeatureId(null)
+    setActiveIssueId(null)
+    setPickedFaceIndex(null)
+    setReviewGeometryRefs([])
+    setReviewNavigation(null)
+    setActiveDirectionId(null)
+    setClarificationPriorityFeatureId(null)
+  }, [])
+
+  const clearDisplaySelection = useCallback(() => {
+    if (!editingGeometry && !savingFeature) {clearHighlight()}
+  }, [editingGeometry, savingFeature, clearHighlight])
+
   useEffect(() => {
     setEditingFeatureId(null)
+    setEditingFeatureBaseline(null)
     setEditingScopeId(null)
     setEditingAnnotation(null)
     setDirectionDraft(null)
@@ -1167,14 +739,17 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
         setPickedFaceIndex(null)
         setActiveDirectionId(null)
         setLatestReviewContext(null)
+        currentReviewContext.current = null
         setFocusRequest({ sequence: 0, faceIndices: [] })
         setActiveIssueId(null)
         setActiveFeatureId(null)
         setReviewNavigation(null)
         setHighlightedFeatureIds([])
+        setHighlightSelection(null)
         setReviewGeometryRefs([])
         setClarificationPriorityFeatureId(null)
         setEditingFeatureId(null)
+        setEditingFeatureBaseline(null)
         setEditingScopeId(null)
         setEditingAnnotation(null)
         setDraftFaceIndices(null)
@@ -1298,16 +873,18 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
     return summarizeViewerIssueTypes(manifest?.issues ?? [])
   }, [manifest])
 
-  const faceNavigationIndex = useMemo(() => createFaceNavigationIndex(latestReviewContext ?? {
+  const faceCandidates = useMemo(() => createFaceCandidateIndex(latestReviewContext ?? {
     features: (manifest?.features ?? []).map(feature => ({
       feature_id: feature.feature_id, kind: feature.kind, confidence: 0,
       properties: { ...feature.parameters, geometry_refs: feature.geometry_refs }
     })), annotations: [], forming_scopes: []
   }, topologyFaces, topologyEdges), [latestReviewContext, manifest, topologyFaces, topologyEdges])
 
+  const faceNavigationIndex = useMemo(() => new Map([...faceCandidates].map(([face, items]) => [face, items[0]])), [faceCandidates])
+
   const handleFacePick = useCallback(
-    (faceIndex: number) => {
-      if (directionDraft || preparingReview) {return}
+    (faceIndex: number, explicitTarget?: FaceCandidate) => {
+      if (directionDraft || preparingReview || savingFeature || reviewBusy) {return}
       setPickedFaceIndex(faceIndex)
 
       if (editingFeatureId || editingScopeId || editingAnnotation) {
@@ -1326,7 +903,18 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
         return
       }
 
-      const match = faceNavigationIndex.get(faceIndex)
+      const match = explicitTarget ?? faceNavigationIndex.get(faceIndex)
+
+      const selection = match ? objectHighlightSelection(match.category, match.objectId, latestReviewContext,
+        manifest?.features?.find(feature => feature.feature_id === match.objectId)?.kind) : null
+
+      if (!explicitTarget && selection && sameHighlightSelection(highlightSelection, selection)) {
+        clearHighlight()
+
+        return
+      }
+
+      setHighlightSelection(selection)
       setActiveDirectionId(match?.category === 'forming' ? match.objectId : null)
       setReviewGeometryRefs([])
       setActiveIssueId(null)
@@ -1357,9 +945,40 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
         setReviewPaneTab('issues')
       }
     },
-    [directionDraft, preparingReview, editingFeatureId, editingScopeId, editingAnnotation, faceNavigationIndex, issueFacesById, manifest,
-      latestReviewContext, topologyFaces, topologyEdges]
+    [directionDraft, preparingReview, savingFeature, reviewBusy, editingFeatureId, editingScopeId, editingAnnotation, faceNavigationIndex, issueFacesById, manifest,
+      latestReviewContext, topologyFaces, topologyEdges, highlightSelection, clearHighlight]
   )
+
+  useEffect(() => { setObjectMenu(null) }, [projectId, target.manifestPath, latestReviewContext?.revision, latestReviewContext?.snapshot_id, editingGeometry, savingFeature, reviewBusy])
+
+  const objectMenuItem = (candidate: FaceCandidate): ObjectMenuItem => {
+    const context = latestReviewContext
+    const feature = context?.features.find(item => item.feature_id === candidate.objectId)
+    const annotation = context?.annotations.find(item => item.annotation_id === candidate.objectId)
+    const scope = context?.forming_scopes.find(item => item.forming_scope_id === candidate.objectId)
+
+    const label = candidate.category === 'structure' ? (FEATURE_LABELS[feature?.kind ?? ''] ?? feature?.kind ?? '结构特征')
+      : candidate.category === 'annotation' ? (annotation?.kind ?? '属性标注')
+        : scope?.mode === 'main' ? '主出模方向' : '倒扣范围'
+
+    const pending = context?.review_groups.some(group => group.target_refs.includes(candidate.objectId) && group.status === 'pending_review')
+
+    return { target: candidate, label: `${label} · ${candidate.objectId}`, status: pending ? '待确认' : '已确认',
+      removable: Boolean(context && removableObjectReviewGroup(context, candidate)) }
+  }
+
+  const openObjectMenu = (faceIndex: number, point: CanvasMenuPoint) => {
+    if (editingGeometry || savingFeature || reviewBusy || !latestReviewContext) {return}
+    const candidates = faceCandidates.get(faceIndex) ?? []
+
+    if (!candidates.length) {return}
+
+    const selected = candidates.find(item => item.objectId === highlightSelection?.objectId && item.category === highlightSelection.category)
+      ?? (candidates.length === 1 ? candidates[0] : null)
+
+    if (selected) {handleFacePick(faceIndex, selected)}
+    setObjectMenu({ point, candidates, target: selected, faceIndex })
+  }
 
   const requestFocus = useCallback((refs: GeometryReference[]) => {
     setFocusRequest(current => ({ sequence: current.sequence + 1, faceIndices: [...resolveGeometryRefFaceIndices(refs)] }))
@@ -1367,6 +986,8 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
 
   const handleIssueSelect = useCallback(
     (issue: ViewerIssue) => {
+      setHighlightSelection(null)
+      setReviewNavigation(null)
       setActiveDirectionId(null)
       setReviewGeometryRefs([])
       setActiveIssueId(issue.evaluation_id)
@@ -1382,6 +1003,8 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
 
   const handleFeatureSelect = useCallback(
     (feature: ViewerFeature) => {
+      setHighlightSelection(objectHighlightSelection('structure', feature.feature_id, latestReviewContext, feature.kind))
+      setReviewNavigation(null)
       setActiveDirectionId(null)
       setReviewGeometryRefs([])
       setActiveFeatureId(feature.feature_id)
@@ -1392,16 +1015,41 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
       setPickedFaceIndex(firstFace ?? null)
       requestFocus(feature.geometry_refs)
     },
-    [featureFacesById, requestFocus]
+    [featureFacesById, requestFocus, latestReviewContext]
   )
+
+  const toggleFeatureSelection = useCallback((feature: ViewerFeature) => {
+    if (editingGeometry || savingFeature) {return}
+    const selection = objectHighlightSelection('structure', feature.feature_id, latestReviewContext, feature.kind)
+
+    if (sameHighlightSelection(highlightSelection, selection)) {clearHighlight()}
+    else {handleFeatureSelect(feature)}
+  }, [editingGeometry, savingFeature, latestReviewContext, highlightSelection, clearHighlight, handleFeatureSelect])
+
+  const toggleFeatureKind = useCallback((kind: string, featureIds: string[]) => {
+    if (editingGeometry || savingFeature) {return}
+    const selection: DfmHighlightSelection = { bucketId: `confirmed:${kind}`, category: 'structure' }
+
+    if (sameHighlightSelection(highlightSelection, selection)) {
+      clearHighlight()
+
+      return
+    }
+
+    clearHighlight()
+    setHighlightSelection(selection)
+    setHighlightedFeatureIds(featureIds)
+    requestFocus((manifest?.features ?? []).filter(feature => featureIds.includes(feature.feature_id)).flatMap(feature => feature.geometry_refs))
+  }, [editingGeometry, savingFeature, highlightSelection, clearHighlight, requestFocus, manifest])
 
   const handleFeaturesHighlight = useCallback(
     (featureRefs: string[]) => {
+      clearHighlight()
       setReviewGeometryRefs([])
       setHighlightedFeatureIds([...new Set(featureRefs.filter(ref => featureFacesById.has(ref)))])
       setActiveIssueId(null)
     },
-    [featureFacesById]
+    [featureFacesById, clearHighlight]
   )
 
   const startFeatureEdit = useCallback(
@@ -1411,6 +1059,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
       setEditConflict(false)
       handleFeatureSelect(feature)
       setEditingFeatureId(feature.feature_id)
+      setEditingFeatureBaseline(feature)
       setEditingSnapshotId(context?.snapshot_id ?? manifest?.snapshot_id)
 
       if (context) {setProjectRevision(context.revision)}
@@ -1426,6 +1075,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
     editBase.current = null
     setEditConflict(false)
     setEditingFeatureId(null)
+    setEditingFeatureBaseline(null)
     setEditingScopeId(null)
     setEditingAnnotation(null)
     setDraftFaceIndices(null)
@@ -1434,9 +1084,24 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
 
   const applyReviewContext = useCallback((context: ReviewContext) => {
     if (currentProjectId.current !== context.project_id) {return}
-    setLatestReviewContext(previous => previous?.project_id === context.project_id && previous.revision > context.revision ? previous : context)
+    const previous = currentReviewContext.current
+
+    if (previous?.project_id === context.project_id && previous.revision > context.revision) {return}
+
+    const next = previous?.project_id === context.project_id && previous.revision === context.revision && !context.viewer_manifest
+      ? { ...context, viewer_manifest: previous.viewer_manifest } : context
+
+    if (editBase.current && !reviewEditUnchanged(editBase.current, next)) {setEditConflict(true)}
+
+    currentReviewContext.current = next
+    setLatestReviewContext(next)
     setProjectRevision(previous => (previous != null && previous > context.revision ? previous : context.revision))
-    setReviewGeometryRefs([])
+
+    if (context.viewer_manifest) {
+      workingViewer.current = { externalPath: target.manifestPath, path: context.viewer_manifest, projectId: context.project_id }
+      setReviewPaneTab('features')
+    }
+
     // Only semantic state changed. Keep the already loaded scene and mesh.
     setManifest(current =>
       current && (current.project_revision ?? 0) > context.revision
@@ -1444,6 +1109,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
         : current
           ? {
               ...current,
+              ...(context.viewer_manifest ? { status: 'discovery' as const, issues: [], issue_count: 0, issue_type_counts: [] } : {}),
               project_revision: context.revision,
               snapshot_id: context.snapshot_id,
               review_groups: context.review_groups,
@@ -1463,10 +1129,20 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
             }
           : current
     )
-  }, [])
+  }, [target.manifestPath])
 
   const highlightReview = useCallback(
-    (refs: GeometryReference[]) => {
+    (refs: GeometryReference[], selection?: DfmHighlightSelection, force = false) => {
+      if (selection && (editingGeometry || savingFeature)) {return}
+
+      if (selection && !force && sameHighlightSelection(highlightSelection, selection)) {
+        clearHighlight()
+
+        return
+      }
+
+      clearHighlight()
+      setHighlightSelection(selection ?? null)
       setActiveDirectionId(null)
       setActiveIssueId(null)
       setActiveFeatureId(null)
@@ -1476,8 +1152,48 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
       setReviewGeometryRefs(displayRefs)
       requestFocus(displayRefs)
     },
-    [topologyFaces, topologyEdges, requestFocus]
+    [topologyFaces, topologyEdges, requestFocus, editingGeometry, savingFeature, highlightSelection, clearHighlight]
   )
+
+  useEffect(() => {
+    if (!manifest || editingGeometry || savingFeature) {return}
+
+    if ((activeIssueId && !manifest.issues.some(issue => issue.evaluation_id === activeIssueId)) ||
+      (activeFeatureId && !manifest.features?.some(feature => feature.feature_id === activeFeatureId))) {
+      clearHighlight()
+    }
+  }, [manifest, activeIssueId, activeFeatureId, editingGeometry, savingFeature, clearHighlight])
+
+  useEffect(() => {
+    if (!highlightSelection || !latestReviewContext || editingGeometry || savingFeature) {return}
+
+    if (highlightSelection.bucketId.startsWith('confirmed:')) {
+      const kind = highlightSelection.bucketId.slice('confirmed:'.length)
+      const confirmed = confirmedFeatureIds(latestReviewContext.review_groups)
+      const features = latestReviewContext.features.filter(feature => feature.kind === kind && confirmed.has(feature.feature_id))
+      const ids = features.map(feature => feature.feature_id)
+
+      if (!ids.length || (highlightSelection.objectId && !ids.includes(highlightSelection.objectId))) {clearHighlight()}
+      else {setHighlightedFeatureIds(highlightSelection.objectId ? [highlightSelection.objectId] : ids)}
+
+      return
+    }
+
+    const bucket = reviewBuckets(latestReviewContext, true).find(item => item.id === highlightSelection.bucketId)
+    const groups = bucket?.groups.filter(group => !highlightSelection.objectId || group.target_refs.includes(highlightSelection.objectId)) ?? []
+
+    if (!groups.length) {clearHighlight();
+
+ return}
+
+    const refs = resolveReviewDisplayRefs(groups.flatMap(group => reviewGeometry(latestReviewContext, group)), topologyFaces, topologyEdges)
+
+    if (!refs.length) {clearHighlight();
+
+ return}
+
+    setReviewGeometryRefs(refs)
+  }, [highlightSelection, latestReviewContext, topologyFaces, topologyEdges, editingGeometry, savingFeature, clearHighlight])
 
   const prepareReviewForEdit = useCallback(async (pins: Pick<ReviewContext, 'revision' | 'snapshot_id' | 'edit_timeout_ms'>) => {
     if (!projectId) {throw new Error('请先打开当前项目。')}
@@ -1574,13 +1290,15 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
         const annotation = fresh.annotations.find(item => item.annotation_id === base.id)
 
         if (annotation) { setEditingAnnotation(annotation); setDraftFaceIndices(resolveGeometryRefFaceIndices(annotation.geometry_refs)) }
+      } else if (base.kind === 'feature') {
+        const feature = fresh.features.find(item => item.feature_id === base.id)!
+        setEditingFeatureBaseline({ feature_id: feature.feature_id, kind: feature.kind, confidence: feature.confidence,
+          subtype: String(feature.properties.subtype ?? ''), geometry_refs: feature.properties.geometry_refs ?? [],
+          parameters: feature.properties, method: String(feature.properties.method ?? ''), diagnostics: feature.properties.diagnostics ?? {} })
+        setDraftFaceIndices(resolveGeometryRefFaceIndices(feature.properties.geometry_refs))
       } else {
         const scope = fresh.forming_scopes.find(item => item.forming_scope_id === base.id)
-
-        const refs = base.kind === 'scope'
-          ? (editingScopeRole === 'undercut' ? scope?.undercut_geometry_refs : scope?.geometry_refs)
-          : fresh.features.find(item => item.feature_id === base.id)?.properties.geometry_refs
-
+        const refs = editingScopeRole === 'undercut' ? scope?.undercut_geometry_refs : scope?.geometry_refs
         setDraftFaceIndices(resolveGeometryRefFaceIndices(refs))
       }
 
@@ -1754,6 +1472,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
 
       if (!result.unchanged) {setReviewNotice('识别结果已更新。请重新确认受影响的条目，再更新分析；原报告保留为历史结果。')}
       setEditingFeatureId(null)
+      setEditingFeatureBaseline(null)
       setEditingScopeId(null)
       setEditingAnnotation(null)
       setDraftFaceIndices(null)
@@ -1807,6 +1526,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
       setEditConflict(false)
       highlightReview(faceRole === 'undercut' ? current.undercut_geometry_refs : current.geometry_refs)
       setEditingFeatureId(null)
+      setEditingFeatureBaseline(null)
       setEditingScopeRole(faceRole)
       setEditingScopeId(current.forming_scope_id)
       setEditingSnapshotId(context.snapshot_id)
@@ -1827,6 +1547,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
       setEditConflict(false)
       highlightReview(annotation.geometry_refs)
       setEditingFeatureId(null)
+      setEditingFeatureBaseline(null)
       setEditingScopeId(null)
       setEditingAnnotation(annotation)
       setEditingSnapshotId(context.snapshot_id)
@@ -1866,7 +1587,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
     manifest?.review_groups ? confirmedIds.has(feature.feature_id) : status !== 'discovery'
   )
 
-  const editedFeature = manifest?.features?.find(feature => feature.feature_id === editingFeatureId)
+  const editedFeature = editingFeatureBaseline
   const originalEditedFaces = resolveGeometryRefFaceIndices(editedFeature?.geometry_refs)
 
   const featureResults = ((manifest?.features?.length ?? 0) === 0 ? (
@@ -1881,9 +1602,11 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
                 activeFeatureId={activeFeatureId}
                 editingFeatureId={editingFeatureId}
                 features={confirmedFeatures}
+                highlightSelection={highlightSelection}
                 key={projectId ?? target.manifestPath}
                 labels={FEATURE_LABELS}
                 navigationSequence={reviewNavigation?.category === 'structure' ? reviewNavigation.sequence : undefined}
+                onToggleKind={toggleFeatureKind}
                 renderFeature={(feature, index) => {
                   const selected = feature.feature_id === activeFeatureId
                   const editing = feature.feature_id === editingFeatureId
@@ -1913,7 +1636,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
                         aria-pressed={selected}
                         className="flex min-w-0 flex-1 items-start gap-2 text-left"
                         disabled={editingGeometry || savingFeature}
-                        onClick={() => handleFeatureSelect(feature)}
+                        onClick={() => toggleFeatureSelection(feature)}
                         type="button"
                       >
                         <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-amber-500/20 text-[10px] text-amber-100">
@@ -1960,6 +1683,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
                     </div>
                   )
                 }}
+                selectionDisabled={editingGeometry || savingFeature}
               />
             ))
 
@@ -2069,16 +1793,25 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
 
               void startDirectionEdit(activeDirectionScope, latestReviewContext)
             }}
+            onBackgroundClick={clearDisplaySelection}
             onDirectionChange={(direction, origin) => setDirectionDraft(current => current ? { ...current, text: JSON.stringify(direction), origin } : current)}
+            onDismissMenu={dismissObjectMenu}
             onFacePick={handleFacePick}
+            onObjectMenu={openObjectMenu}
             pickedFaceIndex={pickedFaceIndex}
             selectedFaceIndices={editingFeatureId || editingScopeId || editingAnnotation ? draftFaceIndices : null}
             topologyFaces={topologyFaces}
           />
+          {objectMenu && <DfmObjectMenu busy={editingGeometry || savingFeature || reviewBusy} items={objectMenu.candidates.map(objectMenuItem)}
+            onClear={() => { clearDisplaySelection(); dismissObjectMenu() }}
+            onClose={dismissObjectMenu} onRemove={item => { dismissObjectMenu(); void reviewActions.current?.removeObject(item.target) }}
+            onSelect={item => { handleFacePick(objectMenu.faceIndex, item.target); setObjectMenu({ ...objectMenu, target: item.target }) }}
+            point={objectMenu.point}
+            selected={objectMenu.target ? objectMenuItem(objectMenu.target) : null} />}
           <div className="pointer-events-none absolute bottom-2 left-2 rounded-md bg-black/55 px-2 py-1 text-[10px] text-slate-300 backdrop-blur">
             {editingFeatureId || editingScopeId || editingAnnotation
-              ? '单击面切换选中 · 右键平移 · 滚轮缩放'
-              : '左键旋转 · 滚轮缩放 · 右键平移 · 单击选择面'}
+              ? '单击面切换选中 · 中键平移 · 滚轮缩放'
+              : '左键旋转 · 滚轮缩放 · 中键平移 · 空白处右键滑移 · 单击选择面，再点取消'}
           </div>
           {pickedFaceIndex != null && (
             <div className="pointer-events-none absolute right-2 top-2 rounded-md border border-cyan-300/20 bg-black/60 px-2 py-1 text-[10px] text-cyan-100 backdrop-blur">
@@ -2239,7 +1972,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
             {preparingReview && <p className="mb-2 text-[11px] text-cyan-100" role="status">正在准备编辑…</p>}
             {reviewNotice && <p className="mb-2 rounded border border-cyan-300/20 bg-cyan-500/10 p-2 text-[10px] text-cyan-100">{reviewNotice}</p>}
             {editConflict && <div className="mb-2 rounded border border-amber-400/40 p-2 text-[11px] text-amber-100" role="alert">
-              <p>当前区域已更新，草稿仍保留。重新载入会以最新内容替换草稿。</p>
+              <p>当前区域已修改或移除，草稿仍保留。请取消编辑，或重新载入最新区域。</p>
               <button className="mt-1 text-cyan-100" disabled={savingFeature || preparingReview} onClick={() => void reloadEdit()} type="button">重新载入最新区域</button>
             </div>}
             {editedFeature && (
@@ -2275,6 +2008,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
                   编辑{editingScopeRole === 'undercut' ? '倒扣面' : '成型面'} {editingScopeId} · 已选 {draftFaceIndices?.size ?? 0} 个面
                 </p>
                 <p>保存后需重新确认本成型方案；结构在结构组独立审核。</p>
+                {!draftFaceIndices?.size && !scopeCanHaveEmptySelection && <p role="alert">至少保留一类面的选面后才能保存。若要删除识别项，请先取消编辑，再使用列表中的“删除”。</p>}
                 <button className="mt-2 mr-3 text-cyan-200 disabled:opacity-40" disabled={savingFeature || preparingReview || scopeFacesChanged}
                   onClick={() => { if (currentEditedScope && latestReviewContext) {void startDirectionEdit(currentEditedScope, latestReviewContext)} }} type="button">编辑机构与方向</button>
                 {scopeFacesChanged && <p className="mt-1 text-[10px] text-slate-300">请先保存当前选面，再编辑方向。</p>}
@@ -2301,10 +2035,14 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
               onChange={setDirectionDraft} onSave={() => void saveDirectionEdit()} saveBlocked={editConflict} />}
             {projectId && status !== 'preview' && (
               <DfmReviewPanel
+                actionBusy={savingFeature || preparingReview}
+                actionsRef={reviewActions}
                 confirmedFeaturesContent={featureResults}
                 editing={Boolean(editingGeometry || savingFeature)}
+                highlightSelection={highlightSelection}
                 latestContext={latestReviewContext}
                 navigation={reviewNavigation}
+                onBusyChange={setReviewBusy}
                 onChanged={applyReviewContext}
                 onCreateAnnotation={createAnnotation}
                 onEditAnnotation={startAnnotationEdit}

@@ -27,6 +27,7 @@ export function DfmAnnotationEditor({
         编辑面属性 {identity} · 已选 {faceCount} 个面
       </p>
       <p className="mt-1 text-[10px] text-slate-400">单击模型调整选面；保存后只需重新确认这项属性。</p>
+      {faceCount === 0 && <p className="mt-1" role="alert">至少保留一个面后才能保存。若要删除识别项，请先取消编辑，再使用列表中的“删除”。</p>}
       <label className="mt-2 block">
         属性值
         <select

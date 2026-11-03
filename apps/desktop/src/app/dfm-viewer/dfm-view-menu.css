@@ -1,0 +1,156 @@
+.dfm-view-menu-theme {
+  --dfm-menu-surface: var(--dt-popover, light-dark(#ffffff, #192530));
+  --dfm-menu-chrome: var(--ui-bg-chrome, light-dark(#f7f9fa, #111922));
+  --dfm-menu-text: var(--dt-foreground, light-dark(#203342, #e6edf3));
+  --dfm-menu-muted: var(--ui-text-secondary, light-dark(#526778, #a2b3c2));
+  --dfm-menu-line: var(--dt-border, light-dark(#ccd6de, #344452));
+  --dfm-menu-active: light-dark(#d1eff5, #174954);
+  --dfm-menu-accent: light-dark(#006c82, #9ce9f4);
+  --dfm-cube-wire: light-dark(#627f92, #9bb6c8);
+  --dfm-cube-active: light-dark(#22c5dd, #64e2ed);
+  color: var(--dfm-menu-text);
+}
+
+.dfm-view-menu {
+  position: absolute;
+  z-index: 30;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--dfm-menu-line);
+  box-shadow: 0 8px 24px light-dark(#20334226, #00000066);
+  outline: 1px solid var(--dfm-menu-line);
+  user-select: none;
+  touch-action: none;
+}
+
+.dfm-view-sector {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  background: var(--dfm-menu-surface);
+  color: inherit;
+  cursor: default;
+}
+
+.dfm-view-sector[aria-pressed="true"], .dfm-view-sector:focus-visible {
+  background: var(--dfm-menu-active);
+  color: var(--dfm-menu-accent);
+}
+
+.dfm-view-sector:focus-visible {
+  outline: 2px solid var(--dfm-menu-accent);
+  outline-offset: -3px;
+}
+
+.dfm-view-sector-label {
+  position: absolute;
+  width: 66px;
+  height: 64px;
+  transform: translate(-50%, -50%) scale(var(--dfm-menu-scale));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.dfm-view-tool-symbol {
+  height: 36px;
+  display: flex;
+  align-items: center;
+}
+
+.dfm-view-menu-cancel {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--dfm-menu-line);
+  border-radius: 50%;
+  background: var(--dfm-menu-chrome);
+  color: var(--dfm-menu-text);
+  font-size: 11px;
+  line-height: 1.5;
+  cursor: default;
+}
+
+.dfm-view-menu-cancel:focus-visible {
+  outline: 2px solid var(--dfm-menu-accent);
+  outline-offset: 2px;
+}
+
+.dfm-view-menu-hint { color: var(--dfm-menu-muted); }
+
+.dfm-view-cube-space {
+  --dfm-cube-size: 23px;
+  width: 40px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.dfm-view-cube {
+  position: relative;
+  width: var(--dfm-cube-size);
+  height: var(--dfm-cube-size);
+  transform-style: preserve-3d;
+  transform: rotateX(-22deg) rotateY(-30deg);
+}
+
+.dfm-view-cube-face {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--dfm-cube-wire);
+  background: transparent;
+  backface-visibility: visible;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.dfm-view-cube-front { transform: translateZ(calc(var(--dfm-cube-size) / 2)); }
+.dfm-view-cube-back { transform: rotateY(180deg) translateZ(calc(var(--dfm-cube-size) / 2)); }
+.dfm-view-cube-top { transform: rotateX(90deg) translateZ(calc(var(--dfm-cube-size) / 2)); }
+.dfm-view-cube-bottom { transform: rotateX(-90deg) translateZ(calc(var(--dfm-cube-size) / 2)); }
+.dfm-view-cube-left { transform: rotateY(-90deg) translateZ(calc(var(--dfm-cube-size) / 2)); }
+.dfm-view-cube-right { transform: rotateY(90deg) translateZ(calc(var(--dfm-cube-size) / 2)); }
+
+.dfm-view-cube-space[data-face="top"] .dfm-view-cube-top,
+.dfm-view-cube-space[data-face="bottom"] .dfm-view-cube-bottom,
+.dfm-view-cube-space[data-face="left"] .dfm-view-cube-left,
+.dfm-view-cube-space[data-face="right"] .dfm-view-cube-right { background: var(--dfm-cube-active); }
+
+.dfm-view-compass {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  pointer-events: none;
+  user-select: none;
+  cursor: default;
+}
+
+.dfm-view-compass .dfm-view-cube-space { --dfm-cube-size: 29px; }
+.dfm-view-compass .dfm-view-cube-face {
+  background: var(--dfm-menu-chrome);
+  backface-visibility: hidden;
+}
+.dfm-view-compass .dfm-view-cube-top { background: var(--dfm-menu-surface); }

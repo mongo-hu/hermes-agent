@@ -10079,6 +10079,12 @@ class DFMReviewConfirmationRequest(BaseModel):
     expected_snapshot_id: Optional[str] = None
 
 
+class DFMReviewRemovalRequest(BaseModel):
+    review_group_id: str = Field(min_length=1)
+    expected_revision: int = Field(strict=True)
+    expected_snapshot_id: str = Field(min_length=1)
+
+
 class DFMAnnotationRevisionRequest(BaseModel):
     annotations: List[Dict[str, Any]]
     expected_revision: int
@@ -10175,6 +10181,17 @@ def confirm_dfm_discovery_groups(project_id: str, request: DFMReviewConfirmation
             review_group_ids=request.review_group_ids, expected_revision=request.expected_revision,
             **({"expected_snapshot_id": request.expected_snapshot_id} if request.expected_snapshot_id is not None else {}))
         return service.analysis("review_context", project_id=project_id)
+    except Exception as exc:
+        _raise_dfm_http_error(exc)
+
+
+@app.post("/api/dfm/projects/{project_id}/discovery/review/remove")
+def remove_dfm_discovery_group(project_id: str, request: DFMReviewRemovalRequest):
+    from tools.dfm.service import get_dfm_service
+    try:
+        return get_dfm_service().analysis("remove_review_group", project_id=project_id,
+            review_group_id=request.review_group_id, expected_revision=request.expected_revision,
+            expected_snapshot_id=request.expected_snapshot_id)
     except Exception as exc:
         _raise_dfm_http_error(exc)
 

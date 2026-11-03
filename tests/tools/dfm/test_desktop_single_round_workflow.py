@@ -2,6 +2,7 @@
 
 from io import BytesIO
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -16,6 +17,8 @@ from tests.tools.dfm.desktop_acceptance import (
     review_http_server,
     viewer_window,
 )
+from tests.tools.dfm.test_desktop_review_interactions import _drag_canvas
+from tests.tools.dfm.test_desktop_view_menus import _same_camera, _settled_camera
 from tools.dfm.config import DFMConfig
 from tools.dfm.contracts import EffectiveRule, GeometricRuleBinding
 from tools.dfm.processes.base import ProcessPlan
@@ -53,6 +56,10 @@ def test_desktop_confirms_one_phase_edits_forming_plans_and_previews_report(
     user_home = tmp_path / "user-home"
     user_home.mkdir()
     monkeypatch.setattr(Path, "home", classmethod(lambda _cls: user_home))
+    # Keep unrelated online model discovery out of this isolated Desktop run.
+    (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(
+        "model_catalog:\n  enabled: false\n", encoding="utf-8"
+    )
     worker = os.environ.get("DFM_GEOMETRY_E2E_EXECUTABLE", "")
     assert worker and Path(worker).is_file(), "configure the real Worker"
     bindings = [
@@ -109,7 +116,7 @@ def test_desktop_confirms_one_phase_edits_forming_plans_and_previews_report(
         reconcile_jobs=False,
     )
     try:
-        project_id = service.project("create", name="Desktop two-round acceptance")[
+        project_id = service.project("create", name="Desktop single-round acceptance")[
             "project_id"
         ]
         source = repo / "tests/fixtures/dfm/step/injection_plate_with_hole.step"
@@ -126,6 +133,7 @@ def test_desktop_confirms_one_phase_edits_forming_plans_and_previews_report(
             )
         service.analysis("discover", project_id=project_id)
         review = service.analysis("review_context", project_id=project_id)
+        edit_timeout = review["edit_timeout_ms"]
         wall = next(row for row in review["features"] if row["kind"] == "main_wall")
         original_ids = {row["feature_id"] for row in review["features"]}
         # The scope is an explicitly supplied test candidate, not an assertion
@@ -209,7 +217,7 @@ def test_desktop_confirms_one_phase_edits_forming_plans_and_previews_report(
                     button.click()
                     expect(
                         panel.get_by_role("button", name="确认选中组（0）", exact=True)
-                    ).to_be_visible(timeout=20000)
+                    ).to_be_visible(timeout=edit_timeout)
                     expect(panel.get_by_role("alert")).to_have_count(0)
 
                 def advance_attribute_review(value):
@@ -221,9 +229,22 @@ def test_desktop_confirms_one_phase_edits_forming_plans_and_previews_report(
                     assert service.analysis("review_context", project_id=project_id)["snapshot_id"] != current["snapshot_id"]
 
                 ordinary = bucket("主体壁")
+                # The category title already highlights and focuses its only
+                # wall. Move away with real mouse input before proving that
+                # the explicit location command restores that same focus.
+                focused_camera = _settled_camera(page)
+                _drag_canvas(page, "middle")
+                panned_camera = _settled_camera(page)
+                assert math.dist(panned_camera["target"], focused_camera["target"]) > 1e-6
                 canvas_before_location = page.locator("canvas").screenshot()
                 ordinary.get_by_role("button", name="定位", exact=True).click()
-                page.wait_for_timeout(550)
+                located_camera = _settled_camera(
+                    page,
+                    ready=lambda camera: math.dist(
+                        camera["target"], focused_camera["target"]
+                    ) < 1e-6,
+                )
+                _same_camera(located_camera, focused_camera)
                 assert page.locator("canvas").screenshot() != canvas_before_location
                 ordinary.get_by_role(
                     "checkbox", name=f"选择 {wall['feature_id']}", exact=True
@@ -287,16 +308,18 @@ def test_desktop_confirms_one_phase_edits_forming_plans_and_previews_report(
                     x, y = pixels[len(pixels) // 3]
                     box = canvas_node.bounding_box()
                     px, py = x * box["width"] / picture.width, y * box["height"] / picture.height
-                    dx, dy = px - box["width"] / 2, py - box["height"] / 2
-                    length = max((dx * dx + dy * dy) ** 0.5, 1)
                     page.mouse.move(box["x"] + px, box["y"] + py)
                     page.mouse.down()
-                    page.mouse.move(box["x"] + px - dy / length * 55, box["y"] + py + dx / length * 55, steps=15)
+                    # In a +Z face view the X rotation ring projects to a
+                    # vertical line; a horizontal tangent produces no rotation.
+                    # A diagonal drag also moves the X handle in translate mode.
+                    page.mouse.move(box["x"] + px + 35, box["y"] + py + 35, steps=15)
                     page.mouse.up()
 
                 drag_red_handle()
                 expect(vector_input).not_to_have_value("[0,1,0]")
                 rotated_vector = vector_input.input_value()
+                assert math.dist(json.loads(rotated_vector), [0, 1, 0]) > 0.05
                 axis_editor.get_by_role("button", name="平移轴线", exact=True).click()
                 page.wait_for_timeout(150)
                 drag_red_handle()
@@ -332,10 +355,11 @@ def test_desktop_confirms_one_phase_edits_forming_plans_and_previews_report(
                 # A slow edit uses a server worker thread, leaving HTTP responsive.
                 with urlopen(backend["HERMES_DESKTOP_REMOTE_URL"] + "/api/status", timeout=3) as response:
                     assert response.status == 200
-                expect(range_editor).to_have_count(0, timeout=30000)
+                expect(range_editor).to_have_count(0, timeout=edit_timeout)
                 current_scope = next(row for row in service.analysis("review_context", project_id=project_id)["forming_scopes"]
                                      if row["forming_scope_id"] == "SIDE_TEST")
                 assert len(current_scope["geometry_refs"]) == initial_count - 1
+                assert current_scope["undercut_geometry_refs"] == before_scope["undercut_geometry_refs"]
                 assert current_scope["draw_direction"] is None
                 assert any(row["status"] == "committed" and row["method"] == "forming_scopes.revise"
                            for row in service._store(project_id).load().geometry_edits)
@@ -351,7 +375,8 @@ def test_desktop_confirms_one_phase_edits_forming_plans_and_previews_report(
                 early_direction.get_by_role("textbox", name="方向向量", exact=True).fill("[1,0,0]")
                 before_draft_requests = len(requests)
                 early_direction.get_by_role("button", name="保存方案草稿", exact=True).click()
-                expect(early_direction).to_have_count(0, timeout=20000)
+                # Staging uses the backend's real geometry-edit budget.
+                expect(early_direction).to_have_count(0, timeout=edit_timeout)
                 staged = service.analysis("review_context", project_id=project_id)
                 candidate = next(scope for scope in staged["forming_scopes"] if scope["forming_scope_id"] == "SIDE_TEST")
                 assert candidate["status"] == "candidate" and candidate["draw_direction"] == [1, 0, 0]
@@ -359,7 +384,7 @@ def test_desktop_confirms_one_phase_edits_forming_plans_and_previews_report(
                 assert len(requests) == before_draft_requests
                 plan_group.get_by_role("button", name="确认方案", exact=True).click()
                 confirmed_shortcut = panel.get_by_role("button", name="倒扣范围（1 组已确认）", exact=True)
-                expect(confirmed_shortcut).to_be_visible(timeout=20000)
+                expect(confirmed_shortcut).to_be_visible(timeout=edit_timeout)
                 after_plan = service.analysis("review_context", project_id=project_id)
                 assert not any(group["kind"] in {"local_structure", "local_direction", "undercut_scope"}
                                and group["status"] != "stale" for group in after_plan["review_groups"])
@@ -374,8 +399,9 @@ def test_desktop_confirms_one_phase_edits_forming_plans_and_previews_report(
                 # Keep the local draft while an unrelated attribute creates a new snapshot.
                 advance_attribute_review("appearance")
                 direction_editor.get_by_role("button", name="保存方案草稿", exact=True).click()
-                expect(direction_editor).to_have_count(0, timeout=20000)
+                expect(direction_editor).to_have_count(0, timeout=edit_timeout)
                 bucket("局部成型方案").get_by_role("button", name="确认方案", exact=True).click()
+                expect(confirmed_shortcut).to_be_visible(timeout=edit_timeout)
                 finished = wait_run(
                     service, project_id, run_id, {"report_editing", "complete"}
                 )
@@ -389,11 +415,14 @@ def test_desktop_confirms_one_phase_edits_forming_plans_and_previews_report(
                     and row["to_ref"] == "SIDE_TEST"
                     for row in current["relationships"]
                 )
-                assert next(
+                confirmed_scope = next(
                     row
                     for row in current["forming_scopes"]
                     if row["forming_scope_id"] == "SIDE_TEST"
-                )["draw_direction"] == [1, 0, 0]
+                )
+                assert confirmed_scope["draw_direction"] == [1, 0, 0]
+                assert confirmed_scope["status"] == "confirmed"
+                assert confirmed_scope["mechanism_kind"] == "lifter"
                 assert any(
                     item.get("context", {}).get("draw_direction") == [1, 0, 0]
                     for request in requests
@@ -411,7 +440,7 @@ def test_desktop_confirms_one_phase_edits_forming_plans_and_previews_report(
                 )
                 page.get_by_role("button", name="保存属性", exact=True).click()
                 expect(page.get_by_role("combobox", name="面属性值")).not_to_be_visible(
-                    timeout=20000
+                    timeout=edit_timeout
                 )
                 current = service.analysis("review_context", project_id=project_id)
                 assert (
@@ -476,13 +505,15 @@ def test_desktop_confirms_one_phase_edits_forming_plans_and_previews_report(
                     },
                 )
                 assert accepted["accepted"] is True
-                deadline = time.monotonic() + 50
+                # Layout may use its 120-second subprocess budget before the
+                # completed artifact and run state become visible.
+                deadline = time.monotonic() + 150
                 while time.monotonic() < deadline:
                     final = service.jobs.status(project_id, run_id)
                     if final.status.value != "reporting":
                         break
-                    time.sleep(0.02)
-                assert final.status.value == "succeeded", final.error
+                    time.sleep(0.1)
+                assert final.status.value == "succeeded", (final.stage, final.error)
                 html = project_dir / next(
                     row.relative_path
                     for row in final.artifacts
