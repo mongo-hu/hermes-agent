@@ -170,11 +170,17 @@ def test_desktop_confirms_one_phase_edits_forming_plans_and_previews_report(
             project_dir.glob("artifacts/geometry_sessions/*/dfm_discovery_viewer.json")
         )
         requests = []
+        scope_revisions = []
+        recognition_requests = []
         call = service.geometry_sessions.call
         slow_range_save = Event()
         range_save_started = Event()
 
         def observe(pid, method, params):
+            if method == "forming_scopes.revise":
+                scope_revisions.append(json.loads(json.dumps(params)))
+            if method in {"features.discover", "forming_scopes.analyze"}:
+                recognition_requests.append(method)
             if method == "forming_scopes.revise" and slow_range_save.is_set():
                 slow_range_save.clear()
                 range_save_started.set()
@@ -327,16 +333,21 @@ def test_desktop_confirms_one_phase_edits_forming_plans_and_previews_report(
                 expect(vector_input).to_have_value(rotated_vector)
                 axis_editor.get_by_role("button", name="取消方向编辑", exact=True).click()
                 expect(page.locator('[data-direction-scope="MAIN"]')).to_have_attribute("data-direction-vector", "[0,0,1]")
-                panel.get_by_role("button", name="倒扣范围（1 组待确认）", exact=True).click()
+                panel.get_by_role("button", name="局部成型方案（1 组待确认）", exact=True).click()
                 undercut = panel.locator('[data-review-bucket="forming:forming_scope"]')
-                expect(undercut.get_by_role("button", name="确认方案", exact=True)).to_be_disabled()
-                undercut.get_by_role("button", name="编辑成型面", exact=True).click()
-                range_editor = page.get_by_role("region", name="编辑成型面")
-                expect(range_editor).to_be_visible()
+                proposal = undercut.locator('[data-review-object="SIDE_TEST"]')
+                if not proposal.get_by_role("button", name="补充缺失信息", exact=True).is_visible():
+                    proposal.get_by_role("button", name=re.compile(r"^SIDE_TEST ")).click()
+                expect(proposal.get_by_text("方向待补充", exact=True).first).to_be_visible()
+                expect(page.locator('[data-direction-scope="SIDE_TEST"][data-direction-vector]')).to_have_count(0)
+                proposal.get_by_role("button", name="补充缺失信息", exact=True).click()
+                plan_editor = page.get_by_role("region", name="编辑局部成型方案")
+                expect(plan_editor).to_be_visible()
                 before_scope = next(row for row in service.analysis("review_context", project_id=project_id)["forming_scopes"]
                                     if row["forming_scope_id"] == "SIDE_TEST")
                 initial_count = len(before_scope["geometry_refs"])
                 assert initial_count > 1
+                plan_editor.get_by_role("button", name="调整成型面", exact=True).click()
                 page.wait_for_timeout(550)  # Wait for the locating camera to settle.
                 canvas = page.locator("canvas")
                 box = canvas.bounding_box()
@@ -344,64 +355,74 @@ def test_desktop_confirms_one_phase_edits_forming_plans_and_previews_report(
                 # Remove a visible selected face through the real Three raycast.
                 for x, y in [(0.35, 0.4), (0.65, 0.4), (0.5, 0.65), (0.5, 0.5)]:
                     canvas.click(position={"x": box["width"] * x, "y": box["height"] * y})
-                    if f"已选 {initial_count} 个面" not in range_editor.inner_text():
+                    if f"成型面 {initial_count} 个" not in plan_editor.inner_text():
                         break
-                expect(range_editor).not_to_contain_text(f"已选 {initial_count} 个面")
+                expect(plan_editor).not_to_contain_text(f"成型面 {initial_count} 个")
+                plan_editor.get_by_role("button", name="结束选面", exact=True).click()
+                # Changing edit fields is local: no intermediate Worker snapshot.
+                plan_editor.get_by_role("button", name="调整倒扣面", exact=True).click()
+                plan_editor.get_by_role("button", name="结束选面", exact=True).click()
+                plan_editor.get_by_role("combobox", name="成型机构", exact=True).select_option("slider")
+                plan_editor.get_by_role("textbox", name="方向向量", exact=True).fill("[1,0,0]")
+                unchanged = service.analysis("review_context", project_id=project_id)
+                assert next(row for row in unchanged["forming_scopes"] if row["forming_scope_id"] == "SIDE_TEST") == before_scope
+                before_confirm_revisions = len(scope_revisions)
+                before_confirm_recognition = len(recognition_requests)
                 slow_range_save.set()
-                range_editor.get_by_role("button", name="保存范围", exact=True).click()
-                assert range_save_started.wait(5), "range save did not reach the actual Worker boundary"
-                expect(range_editor.get_by_role("status")).to_contain_text("正在保存范围")
-                expect(range_editor.get_by_role("button", name="保存中…", exact=True)).to_be_disabled()
+                plan_editor.get_by_role("button", name="确认方案", exact=True).click()
+                assert range_save_started.wait(5), "plan confirmation did not reach the actual Worker boundary"
+                expect(plan_editor.get_by_role("button", name="确认方案", exact=True)).to_be_disabled()
+                expect(plan_editor.get_by_role("button", name="保存中…", exact=True)).to_be_disabled()
                 # A slow edit uses a server worker thread, leaving HTTP responsive.
                 with urlopen(backend["HERMES_DESKTOP_REMOTE_URL"] + "/api/status", timeout=3) as response:
                     assert response.status == 200
-                expect(range_editor).to_have_count(0, timeout=edit_timeout)
+                expect(plan_editor).to_have_count(0, timeout=edit_timeout)
                 current_scope = next(row for row in service.analysis("review_context", project_id=project_id)["forming_scopes"]
                                      if row["forming_scope_id"] == "SIDE_TEST")
                 assert len(current_scope["geometry_refs"]) == initial_count - 1
                 assert current_scope["undercut_geometry_refs"] == before_scope["undercut_geometry_refs"]
-                assert current_scope["draw_direction"] is None
+                assert current_scope["draw_direction"] == [1, 0, 0]
+                assert current_scope["status"] == "confirmed"
+                assert current_scope["mechanism_kind"] == "slider"
+                assert len(scope_revisions) == before_confirm_revisions + 1
+                assert len(recognition_requests) == before_confirm_recognition
                 assert any(row["status"] == "committed" and row["method"] == "forming_scopes.revise"
                            for row in service._store(project_id).load().geometry_edits)
-                # Both collections are editable from the same forming-plan group.
-                plan_group = bucket("局部成型方案")
-                plan_group.get_by_role("button", name="编辑倒扣面", exact=True).click()
-                undercut_editor = page.get_by_role("region", name="编辑倒扣面")
-                expect(undercut_editor).to_be_visible()
-                undercut_editor.get_by_role("button", name="取消", exact=True).click()
-                plan_group.get_by_role("button", name="编辑机构与方向", exact=True).click()
-                early_direction = page.get_by_role("region", name="编辑出模方向")
-                early_direction.get_by_role("combobox", name="成型机构", exact=True).select_option("slider")
-                early_direction.get_by_role("textbox", name="方向向量", exact=True).fill("[1,0,0]")
-                before_draft_requests = len(requests)
-                early_direction.get_by_role("button", name="保存方案草稿", exact=True).click()
-                # Staging uses the backend's real geometry-edit budget.
-                expect(early_direction).to_have_count(0, timeout=edit_timeout)
-                staged = service.analysis("review_context", project_id=project_id)
-                candidate = next(scope for scope in staged["forming_scopes"] if scope["forming_scope_id"] == "SIDE_TEST")
-                assert candidate["status"] == "candidate" and candidate["draw_direction"] == [1, 0, 0]
-                assert candidate["mechanism_kind"] == "slider"
-                assert len(requests) == before_draft_requests
-                plan_group.get_by_role("button", name="确认方案", exact=True).click()
-                confirmed_shortcut = panel.get_by_role("button", name="倒扣范围（1 组已确认）", exact=True)
+                confirmed_shortcut = panel.get_by_role("button", name="局部成型方案（1 组已确认）", exact=True)
                 expect(confirmed_shortcut).to_be_visible(timeout=edit_timeout)
                 after_plan = service.analysis("review_context", project_id=project_id)
                 assert not any(group["kind"] in {"local_structure", "local_direction", "undercut_scope"}
                                and group["status"] != "stale" for group in after_plan["review_groups"])
                 confirmed_shortcut.click()
                 confirmed_plan = panel.locator('[data-review-bucket="forming:forming_scope:confirmed"]')
-                confirmed_plan.get_by_role("button", name="编辑成型面", exact=True).click()
-                page.get_by_role("region", name="编辑成型面").get_by_role("button", name="取消", exact=True).click()
-                confirmed_plan.get_by_role("button", name="编辑机构与方向", exact=True).click()
-                direction_editor = page.get_by_role("region", name="编辑出模方向")
+                if not confirmed_plan.get_by_role("button", name="修改方案", exact=True).is_visible():
+                    confirmed_plan.get_by_role("button", name=re.compile(r"^SIDE_TEST ")).click()
+                confirmed_plan.get_by_role("button", name="修改方案", exact=True).click()
+                direction_editor = page.get_by_role("region", name="编辑局部成型方案")
+                direction_editor.get_by_role("combobox", name="成型机构", exact=True).select_option("lifter")
+                direction_editor.get_by_role("button", name="取消修改", exact=True).click()
+                assert next(row for row in service.analysis("review_context", project_id=project_id)["forming_scopes"]
+                            if row["forming_scope_id"] == "SIDE_TEST")["mechanism_kind"] == "slider"
+                confirmed_plan.get_by_role("button", name="修改方案", exact=True).click()
                 direction_editor.get_by_role("combobox", name="成型机构", exact=True).select_option("lifter")
                 expect(page.locator('[data-direction-scope="SIDE_TEST"]')).to_have_attribute("data-direction-vector", "[1,0,0]")
                 # Keep the local draft while an unrelated attribute creates a new snapshot.
                 advance_attribute_review("appearance")
-                direction_editor.get_by_role("button", name="保存方案草稿", exact=True).click()
+                direction_editor.get_by_role("button", name="暂存，稍后处理", exact=True).click()
                 expect(direction_editor).to_have_count(0, timeout=edit_timeout)
-                bucket("局部成型方案").get_by_role("button", name="确认方案", exact=True).click()
+                staged = service.analysis("review_context", project_id=project_id)
+                candidate = next(scope for scope in staged["forming_scopes"] if scope["forming_scope_id"] == "SIDE_TEST")
+                assert candidate["status"] == "candidate" and candidate["draw_direction"] == [1, 0, 0]
+                assert candidate["mechanism_kind"] == "lifter"
+                pending_plan = bucket("局部成型方案").locator('[data-review-object="SIDE_TEST"]')
+                if not pending_plan.get_by_role("button", name="确认方案", exact=True).is_visible():
+                    pending_plan.get_by_role("button", name=re.compile(r"^SIDE_TEST ")).click()
+                # A complete saved candidate can be accepted without editing.
+                expect(direction_editor).to_have_count(0)
+                before_accept_revisions = len(scope_revisions)
+                pending_plan.get_by_role("button", name="确认方案", exact=True).click()
                 expect(confirmed_shortcut).to_be_visible(timeout=edit_timeout)
+                assert len(scope_revisions) == before_accept_revisions + 1
                 finished = wait_run(
                     service, project_id, run_id, {"report_editing", "complete"}
                 )

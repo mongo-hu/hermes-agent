@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { Mesh, Raycaster } from 'three'
+import { ArrowHelper, LineSegments, Mesh, Raycaster } from 'three'
 import type * as ThreeTypes from 'three'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -75,7 +75,7 @@ async function mountObjectMenuWorkflow() {
   Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
   const project = 'dfm_0123456789ab'
 
-  const refs = [1, 2, 3, 4, 5].map(index => ({ kind: 'face' as const, index,
+  const refs = [1, 2, 3, 4, 5].map(index => ({ kind: 'face' as const, index, entity_id: `face-${index}`,
     input_sha256: 'a'.repeat(64), topology_snapshot_id: 'topology-A' }))
 
   let state: ReviewContext = { project_id: project, revision: 7, snapshot_id: 'discovery-A',
@@ -126,7 +126,205 @@ async function mountObjectMenuWorkflow() {
   return { api, canvas, clickCanvas, readJsonFile, getState: () => state, setState: (next: ReviewContext) => { state = next } }
 }
 
+async function mountFormingWorkflow() {
+  const workflow = await mountObjectMenuWorkflow()
+  const refs = [1, 2, 3, 4, 5].map(index => ({ kind: 'face' as const, index, entity_id: `face-${index}`,
+    input_sha256: 'a'.repeat(64), topology_snapshot_id: 'topology-A' }))
+  workflow.setState({ ...workflow.getState(),
+    forming_scopes: [
+      { forming_scope_id: 'COMPLETE', kind: 'undercut', mode: 'local', status: 'candidate',
+        geometry_refs: refs.slice(0, 2), undercut_geometry_refs: refs.slice(0, 1),
+        draw_direction: [1, 0, 0], direction_source: 'inferred', mechanism_kind: 'slider',
+        coordinate_system: 'model', candidate_solutions: [] },
+      { forming_scope_id: 'UNKNOWN', kind: 'undercut', mode: 'local', status: 'candidate',
+        geometry_refs: refs.slice(3), undercut_geometry_refs: refs.slice(3, 4),
+        draw_direction: null, direction_source: null, mechanism_kind: 'undetermined',
+        coordinate_system: 'model', candidate_solutions: [] }
+    ],
+    review_groups: [
+      ...workflow.getState().review_groups,
+      { review_group_id: 'complete', kind: 'forming_scope', target_refs: ['COMPLETE'], status: 'pending_review' },
+      { review_group_id: 'unknown', kind: 'forming_scope', target_refs: ['UNKNOWN'], status: 'pending_review' }
+    ]
+  })
+  workflow.api.mockImplementation(async request => {
+    if (request.path.endsWith('/direction')) {
+      const body = request.body as Record<string, unknown>
+      const confirmed = body.action === 'confirm'
+      const state = workflow.getState()
+      workflow.setState({ ...state, revision: state.revision + 1, snapshot_id: 'discovery-edited',
+        forming_scopes: state.forming_scopes.map(scope => scope.forming_scope_id === body.forming_scope_id ? {
+          ...scope, geometry_refs: body.geometry_refs as typeof refs,
+          undercut_geometry_refs: body.undercut_geometry_refs as typeof refs,
+          draw_direction: body.draw_direction as number[] | null,
+          mechanism_kind: body.mechanism_kind as typeof scope.mechanism_kind,
+          direction_source: body.draw_direction ? 'user_confirmed' : null,
+          status: confirmed ? 'confirmed' : 'candidate'
+        } : scope),
+        review_groups: state.review_groups.map(group => group.target_refs.includes(String(body.forming_scope_id)) ? {
+          ...group, status: confirmed ? 'confirmed' : 'pending_review'
+        } : group)
+      })
+      return { ...structuredClone(workflow.getState()), direction_status: confirmed ? 'forming_scopes_confirmed' : 'forming_direction_staged' }
+    }
+    return structuredClone(workflow.getState())
+  })
+  fireEvent.click(screen.getByRole('button', { name: '刷新' }))
+  await screen.findByText('局部成型方案 · 2 组待确认')
+  const category = screen.getByText('出模设置', { exact: false, selector: 'summary' }).closest('details')!
+  category.open = true
+  fireEvent(category, new Event('toggle'))
+  expand('局部成型方案 · 2 组待确认')
+  await screen.findByRole('button', { name: /^COMPLETE/ })
+  return { ...workflow, refs }
+}
+
+function formingOutlineBounds() {
+  const outline = rendered.scene?.getObjectByName('forming-scope-outline')
+  expect(outline).toBeInstanceOf(LineSegments)
+  const geometry = (outline as LineSegments).geometry
+  geometry.computeBoundingBox()
+  return [geometry.boundingBox!.min.x, geometry.boundingBox!.max.x]
+}
+
+function directionArrowVisible() {
+  let visible = false
+  rendered.scene?.traverse(object => {
+    if (object instanceof ArrowHelper && object.parent?.visible) {visible = true}
+  })
+  return visible
+}
+
 describe('candidate confirmation and feature editing', () => {
+  it('shows both face roles and confirms all local proposal edits in one request', async () => {
+    const { api, clickCanvas, refs, getState } = await mountFormingWorkflow()
+    const row = document.querySelector('[data-review-object="COMPLETE"]') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: /^COMPLETE/ }))
+    const model = screen.getByLabelText('DFM 三维画布')
+    expect(model.getAttribute('data-undercut-faces')).toBe('[1]')
+    expect(model.getAttribute('data-forming-faces')).toBe('[1,2]')
+    expect(model.getAttribute('data-direction-vector')).toBe('[1,0,0]')
+    // The shared face retains its amber surface and the cyan forming boundary.
+    expect(faceMaterials()).toEqual([2, 0, 0, 0, 0])
+    expect(formingOutlineBounds()).toEqual([0, 3])
+    fireEvent.click(within(row).getByRole('button', { name: '修改' }))
+    const editor = await screen.findByRole('region', { name: '编辑局部成型方案' })
+    fireEvent.click(within(editor).getByRole('button', { name: '调整倒扣面' }))
+    clickCanvas(0)
+    clickCanvas(4)
+    fireEvent.click(within(editor).getByRole('button', { name: '结束选面' }))
+    fireEvent.click(within(editor).getByRole('button', { name: '调整成型面' }))
+    clickCanvas(0)
+    clickCanvas(6)
+    fireEvent.click(within(editor).getByRole('button', { name: '结束选面' }))
+    fireEvent.change(within(editor).getByRole('combobox', { name: '成型机构' }), { target: { value: 'lifter' } })
+    fireEvent.change(within(editor).getByRole('textbox', { name: '方向向量' }), { target: { value: '[0,2,0]' } })
+    expect(model.getAttribute('data-undercut-faces')).toBe('[3]')
+    expect(model.getAttribute('data-forming-faces')).toBe('[2,4]')
+    expect(faceMaterials()).toEqual([0, 0, 2, 0, 0])
+    expect(formingOutlineBounds()).toEqual([2, 7])
+    expect(api.mock.calls.filter(([request]) => request.path.endsWith('/direction') || request.method === 'PATCH')).toHaveLength(0)
+    fireEvent.click(within(editor).getByRole('button', { name: '确认方案' }))
+    await waitFor(() => expect(getState().forming_scopes[0].status).toBe('confirmed'))
+    const writes = api.mock.calls.filter(([request]) => request.method === 'PATCH' ||
+      (request.method === 'POST' && !request.path.endsWith('/prepare')))
+    expect(writes).toHaveLength(1)
+    expect(writes[0][0]).toMatchObject({ method: 'POST', path: '/api/dfm/projects/dfm_0123456789ab/discovery/review/direction',
+      body: { action: 'confirm', forming_scope_id: 'COMPLETE', geometry_refs: [refs[1], refs[3]],
+        undercut_geometry_refs: [refs[2]], mechanism_kind: 'lifter', draw_direction: [0, 1, 0],
+        expected_revision: 7, expected_snapshot_id: 'discovery-A' } })
+    await waitFor(() => expect(screen.queryByRole('region', { name: '编辑局部成型方案' })).toBeNull())
+  })
+
+  it('clears the previous arrow for unknown candidates, cancels edits, and stages missing fields without confirmation', async () => {
+    const { api, clickCanvas, refs, getState } = await mountFormingWorkflow()
+    fireEvent.click(screen.getByRole('button', { name: /^COMPLETE/ }))
+    const model = screen.getByLabelText('DFM 三维画布')
+    expect(model.getAttribute('data-direction-vector')).toBe('[1,0,0]')
+    expect(directionArrowVisible()).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: /^UNKNOWN/ }))
+    expect(model.getAttribute('data-direction-vector')).toBeNull()
+    expect(directionArrowVisible()).toBe(false)
+    expect(model.getAttribute('data-direction-scope')).toBe('UNKNOWN')
+    expect(model.getAttribute('data-undercut-faces')).toBe('[4]')
+    expect(formingOutlineBounds()).toEqual([6, 9])
+    fireEvent.click(screen.getByRole('button', { name: '补充缺失信息' }))
+    let editor = await screen.findByRole('region', { name: '编辑局部成型方案' })
+    fireEvent.click(within(editor).getByRole('button', { name: '调整成型面' }))
+    clickCanvas(6)
+    clickCanvas(8)
+    fireEvent.click(within(editor).getByRole('button', { name: '结束选面' }))
+    fireEvent.change(within(editor).getByRole('combobox', { name: '成型机构' }), { target: { value: 'lifter' } })
+    expect((within(editor).getByRole('button', { name: '确认方案' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(model.getAttribute('data-forming-faces')).toBe('[]')
+    expect(rendered.scene?.getObjectByName('forming-scope-outline')).toBeUndefined()
+    fireEvent.click(within(editor).getByRole('button', { name: '取消修改' }))
+    expect(model.getAttribute('data-forming-faces')).toBe('[4,5]')
+    expect(getState().forming_scopes[1].mechanism_kind).toBe('undetermined')
+    expect(api.mock.calls.filter(([request]) => request.path.endsWith('/direction') || request.method === 'PATCH')).toHaveLength(0)
+
+    fireEvent.click(screen.getByRole('button', { name: '补充缺失信息' }))
+    editor = await screen.findByRole('region', { name: '编辑局部成型方案' })
+    fireEvent.click(within(editor).getByRole('button', { name: '调整成型面' }))
+    clickCanvas(6)
+    clickCanvas(8)
+    fireEvent.click(within(editor).getByRole('button', { name: '结束选面' }))
+    fireEvent.change(within(editor).getByRole('combobox', { name: '成型机构' }), { target: { value: 'lifter' } })
+    fireEvent.click(within(editor).getByRole('button', { name: '暂存，稍后处理' }))
+    await waitFor(() => expect(screen.queryByRole('region', { name: '编辑局部成型方案' })).toBeNull())
+    const writes = api.mock.calls.filter(([request]) => request.path.endsWith('/direction') || request.method === 'PATCH')
+    expect(writes).toHaveLength(1)
+    expect(writes[0][0].body).toEqual({ action: 'stage', forming_scope_id: 'UNKNOWN', geometry_refs: [],
+      undercut_geometry_refs: [refs[3]], mechanism_kind: 'lifter', draw_direction: null,
+      expected_revision: 7, expected_snapshot_id: 'discovery-A' })
+    expect(getState().review_groups.find(group => group.review_group_id === 'unknown')?.status).toBe('pending_review')
+  })
+
+  it('selects faces beneath a visible direction arrow while editing either face role', async () => {
+    const { canvas } = await mountFormingWorkflow()
+    fireEvent.click(screen.getByRole('button', { name: /^COMPLETE/ }))
+    fireEvent.click(screen.getByRole('button', { name: '修改' }))
+    const editor = await screen.findByRole('region', { name: '编辑局部成型方案' })
+    vi.mocked(Raycaster.prototype.intersectObject).mockImplementation(object =>
+      object instanceof ArrowHelper || object.type === 'Mesh' ? ([{ faceIndex: 4 }] as never) : [])
+    const model = screen.getByLabelText('DFM 三维画布')
+    for (const role of ['倒扣面', '成型面']) {
+      fireEvent.click(within(editor).getByRole('button', { name: `调整${role}` }))
+      expect(directionArrowVisible()).toBe(true)
+      fireEvent.pointerDown(canvas, { button: 0, clientX: 180, clientY: 180 })
+      fireEvent.pointerUp(canvas, { button: 0, clientX: 180, clientY: 180 })
+      fireEvent.click(within(editor).getByRole('button', { name: '结束选面' }))
+    }
+    expect(model.getAttribute('data-undercut-faces')).toBe('[1,3]')
+    expect(model.getAttribute('data-forming-faces')).toBe('[1,2,3]')
+  })
+
+  it('preserves both face drafts and direction when another window changes the same local proposal', async () => {
+    const { api, clickCanvas, refs, getState, setState } = await mountFormingWorkflow()
+    fireEvent.click(screen.getByRole('button', { name: /^COMPLETE/ }))
+    fireEvent.click(screen.getByRole('button', { name: '修改' }))
+    const editor = await screen.findByRole('region', { name: '编辑局部成型方案' })
+    fireEvent.click(within(editor).getByRole('button', { name: '调整倒扣面' }))
+    clickCanvas(4)
+    fireEvent.click(within(editor).getByRole('button', { name: '结束选面' }))
+    fireEvent.click(within(editor).getByRole('button', { name: '调整成型面' }))
+    clickCanvas(6)
+    fireEvent.click(within(editor).getByRole('button', { name: '结束选面' }))
+    fireEvent.change(within(editor).getByRole('textbox', { name: '方向向量' }), { target: { value: '[0,1,0]' } })
+    setState({ ...getState(), revision: 8, snapshot_id: 'discovery-other-window',
+      forming_scopes: getState().forming_scopes.map(scope => scope.forming_scope_id === 'COMPLETE'
+        ? { ...scope, geometry_refs: [refs[4]] } : scope) })
+    fireEvent.click(within(editor).getByRole('button', { name: '确认方案' }))
+    await screen.findByRole('button', { name: '重新载入最新区域' })
+    expect((within(editor).getByRole('textbox', { name: '方向向量' }) as HTMLInputElement).value).toBe('[0,1,0]')
+    const model = screen.getByLabelText('DFM 三维画布')
+    expect(model.getAttribute('data-undercut-faces')).toBe('[1,3]')
+    expect(model.getAttribute('data-forming-faces')).toBe('[1,2,4]')
+    expect((within(editor).getByRole('button', { name: '确认方案' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((within(editor).getByRole('button', { name: '暂存，稍后处理' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(api.mock.calls.filter(([request]) => request.path.endsWith('/direction') || request.method === 'PATCH')).toHaveLength(0)
+  })
+
   it('requires an overlap choice, prefers an explicitly selected owner, and never treats raw model hits as background', async () => {
     const { api, clickCanvas } = await mountObjectMenuWorkflow()
     clickCanvas(2, 2)
@@ -730,20 +928,18 @@ describe('candidate confirmation and feature editing', () => {
       expect(document.querySelector('canvas')).toBe(originalCanvas)
       pick(6)
       await screen.findByRole('checkbox', { name: '选择 SIDE' })
-      expect(document.querySelector('[data-review-object="SIDE"]')?.className).toContain('border-amber-400')
+      expect(document.querySelector('[data-review-object="SIDE"]')?.className).toContain('border-cyan-300')
       fireEvent.click(
         within(document.querySelector('[data-review-object="SIDE"]') as HTMLElement).getByRole('button', {
-          name: '编辑成型面'
+          name: '补充缺失信息'
         })
       )
-      await screen.findByText(/编辑成型面 SIDE/)
-      fireEvent.click(within(screen.getByRole('region', { name: '编辑成型面' })).getByRole('button', { name: '编辑机构与方向' }))
-      const stagedEditor = await screen.findByRole('region', { name: '编辑出模方向' })
+      const stagedEditor = await screen.findByRole('region', { name: '编辑局部成型方案' })
       fireEvent.change(within(stagedEditor).getByRole('textbox', { name: '方向向量' }), {
         target: { value: '[1,0,0]' }
       })
-      fireEvent.click(within(stagedEditor).getByRole('button', { name: '保存方案草稿' }))
-      await waitFor(() => expect(screen.queryByRole('region', { name: '编辑出模方向' })).toBeNull())
+      await act(async () => { fireEvent.click(within(stagedEditor).getByRole('button', { name: '暂存，稍后处理' })) })
+      await waitFor(() => expect(screen.queryByRole('region', { name: '编辑局部成型方案' })).toBeNull())
       expect(state.review_groups.find(group => group.review_group_id === 'side')?.status).toBe('pending_review')
       await waitFor(() => expect(document.querySelector('canvas')).not.toBeNull())
       pick(8)
@@ -804,11 +1000,12 @@ describe('candidate confirmation and feature editing', () => {
       )
 
       expect(savedDirection).toHaveLength(3)
-      expect(savedDirection[0][0].body).toEqual({ forming_scope_id: 'MAIN', draw_direction: [1, 0, 0], mechanism_kind: 'none', geometry_refs: refs, ...mainPins })
+      expect(savedDirection[0][0].body).toEqual({ action: 'stage', forming_scope_id: 'MAIN', draw_direction: [1, 0, 0], mechanism_kind: 'none', geometry_refs: refs, undercut_geometry_refs: [], ...mainPins })
       expect(savedDirection[2][0].body).toEqual({
         forming_scope_id: 'MAIN',
+        action: 'stage',
         draw_direction: [1, 0, 0],
-        mechanism_kind: 'none', geometry_refs: refs,
+        mechanism_kind: 'none', geometry_refs: refs, undercut_geometry_refs: [],
         expected_revision: Number(savedDirection[1][0].body?.expected_revision) + 1,
         expected_snapshot_id: 'discovery-raced'
       })
@@ -818,14 +1015,16 @@ describe('candidate confirmation and feature editing', () => {
       await screen.findByText('带孔 Boss 柱 · 1 组待确认')
       const pending = expand('带孔 Boss 柱 · 1 组待确认')
       fireEvent.click(within(pending).getByRole('checkbox', { name: '选择 BOSS_1' }))
-      fireEvent.click(screen.getByRole('button', { name: '确认选中组（1）' }))
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: '确认选中组（1）' })) })
       await screen.findByText('已确认特征 · 1 个实例')
       expect(screen.queryByRole('checkbox', { name: '选择 BOSS_1' })).toBeNull()
       const featurePins = { expected_revision: state.revision, expected_snapshot_id: state.snapshot_id }
       const confirmedSummary = screen.getByText('带孔 BOSS 柱 · 1 个实例')
 
-      // Confirmation may preserve the selected object's open category.
-      if (!confirmedSummary.closest('details')!.open) {fireEvent.click(confirmedSummary)}
+      // Clear the previously selected pending identity before opening its confirmed category.
+      fireEvent.keyDown(window, { key: 'Escape' })
+      await waitFor(() => expect(confirmedSummary.closest('details')!.open).toBe(false))
+      fireEvent.click(confirmedSummary)
 
       fireEvent.click(await screen.findByRole('button', { name: '编辑' }))
       const editor = await screen.findByRole('region', { name: '编辑特征选面' })

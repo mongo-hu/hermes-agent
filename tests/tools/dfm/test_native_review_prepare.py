@@ -151,6 +151,105 @@ def test_unknown_direction_and_unresolved_forming_faces_can_be_saved_as_a_draft(
     assert missing.value.code == "direction_invalid"
 
 
+@pytest.mark.parametrize("action", ["stage", "confirm"])
+def test_local_plan_route_applies_all_fields_in_one_review_edit(project, monkeypatch, action):
+    from fastapi.testclient import TestClient
+    import hermes_cli.web_server as server
+    import tools.dfm.service as service_module
+
+    service, identity = project
+    context = service.analysis("review_context", project_id=identity)
+    refs = next(row for row in context["forming_scopes"] if row["mode"] == "main")["geometry_refs"]
+    service.analysis("restructure_forming_scopes", project_id=identity,
+        expected_revision=context["revision"], expected_snapshot_id=context["snapshot_id"],
+        forming_scopes=[{"forming_scope_id": "SIDE", "kind": "undercut", "mode": "local",
+                         "geometry_refs": refs[:1], "undercut_geometry_refs": refs[:1]}])
+    context = service.analysis("review_context", project_id=identity)
+    monkeypatch.setattr(service_module, "get_dfm_service", lambda: service)
+    session = service.geometry_sessions.acquire(identity).session
+    original_call = session.call
+    methods = []
+
+    def tracked(method, params, **kwargs):
+        methods.append(method)
+        return original_call(method, params, **kwargs)
+
+    monkeypatch.setattr(session, "call", tracked)
+    payload = {"forming_scope_id": "SIDE", "action": action, "mechanism_kind": "lifter",
+               "geometry_refs": refs[1:4], "undercut_geometry_refs": refs[1:3],
+               "draw_direction": [0, 2, 0] if action == "confirm" else None,
+               "expected_revision": context["revision"], "expected_snapshot_id": context["snapshot_id"]}
+    client = TestClient(server.app, base_url="http://127.0.0.1",
+                        headers={"Authorization": f"Bearer {server._SESSION_TOKEN}"})
+    route = f"/api/dfm/projects/{identity}/discovery/review/direction"
+    response = client.post(route, json=payload)
+    assert response.status_code == 200, response.text
+    final = response.json()
+    scope = next(row for row in final["forming_scopes"] if row["forming_scope_id"] == "SIDE")
+    assert scope["geometry_refs"] == refs[1:4] and scope["undercut_geometry_refs"] == refs[1:3]
+    assert scope["mechanism_kind"] == "lifter"
+    assert scope["draw_direction"] == ([0, 1, 0] if action == "confirm" else None)
+    assert scope["direction_source"] == ("user_confirmed" if action == "confirm" else None)
+    assert scope["status"] == ("confirmed" if action == "confirm" else "candidate")
+    group = next(row for row in final["review_groups"] if row["kind"] == "forming_scope" and row["status"] != "stale")
+    assert group["status"] == ("confirmed" if action == "confirm" else "pending_review")
+    assert methods.count("forming_scopes.revise") == 1
+    assert not {"features.discover", "forming_scopes.analyze"}.intersection(methods)
+
+    # A stale editor cannot overwrite the committed proposal, even through the new action.
+    methods.clear()
+    stale = client.post(route, json={**payload, "mechanism_kind": "slider"})
+    assert stale.status_code == 409
+    assert "forming_scopes.revise" not in methods
+    assert service.analysis("review_context", project_id=identity)["snapshot_id"] == final["snapshot_id"]
+    if action == "confirm":
+        repeated = client.post(route, json={**payload, "geometry_refs": list(reversed(payload["geometry_refs"])),
+            "undercut_geometry_refs": list(reversed(payload["undercut_geometry_refs"])), "draw_direction": [0, 3, 0],
+            "expected_revision": final["revision"], "expected_snapshot_id": final["snapshot_id"]})
+        assert repeated.status_code == 200, repeated.text
+        assert repeated.json()["direction_status"] == "forming_direction_unchanged"
+        assert repeated.json()["snapshot_id"] == final["snapshot_id"]
+        assert repeated.json()["revision"] == final["revision"]
+        assert repeated.json()["review_groups"] == final["review_groups"]
+        assert "forming_scopes.revise" not in methods
+    if action == "stage":
+        incomplete = client.post(route, json={**payload, "action": "confirm",
+            "expected_revision": final["revision"], "expected_snapshot_id": final["snapshot_id"]})
+        assert incomplete.status_code == 400
+        assert "forming_scopes.revise" not in methods
+        assert service.analysis("review_context", project_id=identity)["snapshot_id"] == final["snapshot_id"]
+
+
+@pytest.mark.parametrize("direction_source", ["inferred", "user_confirmed"])
+def test_complete_candidate_confirms_without_a_direction_draft(project, monkeypatch, direction_source):
+    service, identity = project
+    manifest = service._store(identity).load()
+    snapshot = service._latest_discovery_snapshot(manifest)
+    refs = next(row for row in snapshot.forming_scopes if row["mode"] == "main")["geometry_refs"]
+    input_sha256 = refs[0]["input_sha256"]
+    # Supply a complete recognizer candidate; current algorithms need not infer a slider for this fixture.
+    candidate = {"forming_scope_id": "SIDE_INFERRED", "kind": "undercut", "mode": "local",
+                 "geometry_refs": refs[:2], "undercut_geometry_refs": refs[:1], "mechanism_kind": "slider",
+                 "draw_direction": [1, 0, 0], "direction_source": direction_source, "coordinate_system": "model",
+                 "status": "candidate", "candidate_solutions": []}
+    edit, result = service._prepare_geometry_edit(identity, manifest, input_sha256, manifest.revision,
+        "forming_scopes.revise", {"snapshot_id": snapshot.worker_snapshot_id, "scopes": [candidate]})
+    service._persist_forming_snapshot(identity, input_sha256, result,
+        reviewed_scope_ids={"SIDE_INFERRED"}, confirmed=False, edit=edit)
+    service._adopt_committed_geometry(identity, input_sha256)
+    context = service.analysis("review_context", project_id=identity)
+    group = next(row for row in context["review_groups"] if row["target_refs"] == ["SIDE_INFERRED"])
+    monkeypatch.setattr(service, "_stage_forming_direction", lambda *args, **kwargs: pytest.fail("direct confirmation must not stage"))
+    service.analysis("confirm_discovery", project_id=identity, review_group_ids=[group["review_group_id"]],
+        expected_revision=context["revision"], expected_snapshot_id=context["snapshot_id"])
+    final = service.analysis("review_context", project_id=identity)
+    scope = next(row for row in final["forming_scopes"] if row["forming_scope_id"] == "SIDE_INFERRED")
+    assert scope["status"] == "confirmed" and scope["direction_source"] == "user_confirmed"
+    assert scope["draw_direction"] == candidate["draw_direction"]
+    assert scope["geometry_refs"] == candidate["geometry_refs"]
+    assert scope["undercut_geometry_refs"] == candidate["undercut_geometry_refs"]
+
+
 def test_missing_replay_does_not_overwrite_manual_edits(project):
     service, identity = project
     context = service.analysis("review_context", project_id=identity)

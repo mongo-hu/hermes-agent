@@ -44,7 +44,7 @@ import zipfile
 from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import yaml
 
@@ -10095,8 +10095,10 @@ class DFMAnnotationRevisionRequest(BaseModel):
 class DFMReviewDirectionRequest(BaseModel):
     forming_scope_id: str
     draw_direction: Optional[List[float]]
+    action: Literal["stage", "confirm"] = "stage"
     mechanism_kind: Optional[str] = None
     geometry_refs: Optional[List[Dict[str, Any]]] = None
+    undercut_geometry_refs: Optional[List[Dict[str, Any]]] = None
     expected_revision: int
     expected_snapshot_id: Optional[str] = None
 
@@ -10213,10 +10215,12 @@ def confirm_dfm_scope_direction(project_id: str, request: DFMReviewDirectionRequ
             payload["mechanism_kind"] = request.mechanism_kind
         if request.geometry_refs is not None:
             payload["geometry_refs"] = request.geometry_refs
+        if request.undercut_geometry_refs is not None:
+            payload["undercut_geometry_refs"] = request.undercut_geometry_refs
         payload.update({"draw_direction": request.draw_direction,
                         "coordinate_system": "model", "direction_source": "user_confirmed"})
-        # Local edits remain drafts until the whole forming proposal is confirmed.
-        ready = scope["mode"] == "main"
+        # Local drafts and whole-proposal confirmation are explicit, separate actions.
+        ready = scope["mode"] == "main" or request.action == "confirm"
         result = service.analysis("revise_forming_scopes" if ready else "stage_forming_direction", project_id=project_id,
             **({"forming_scopes": [payload]} if ready else {"forming_scope": payload}), expected_revision=request.expected_revision,
             **({"expected_snapshot_id": request.expected_snapshot_id} if request.expected_snapshot_id is not None else {}))
