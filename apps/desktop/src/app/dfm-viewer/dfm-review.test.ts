@@ -4,6 +4,8 @@ import {
   confirmableReviewGroupIds,
   confirmedFeatureIds,
   directionUnlocked,
+  formingDirectionLabel,
+  formingPlanMissing,
   parseReviewDirection,
   removableReviewGroup,
   reviewBuckets,
@@ -222,5 +224,17 @@ describe('DFM review state', () => {
     for (const kind of ['product_forming', 'future_kind']) {
       expect(removableReviewGroup(state, { ...range, kind })).toBe(false)
     }
+  })
+
+  it('reports only actual missing local-plan fields and does not require an undercut face', () => {
+    const scope = { ...context().forming_scopes[0], geometry_refs: [], undercut_geometry_refs: [],
+      mechanism_kind: 'undetermined' as const, draw_direction: null }
+    expect(formingPlanMissing(scope)).toEqual(['成型面', '成型机构', '退出方向'])
+    expect(formingDirectionLabel(scope)).toBe('方向待补充')
+    const ready = { ...scope, geometry_refs: [{ kind: 'face' as const, index: 1 }],
+      mechanism_kind: 'slider' as const, draw_direction: [0, -3, 0] }
+    expect(formingPlanMissing(ready)).toEqual([])
+    expect(formingDirectionLabel(ready)).toBe('−Y')
+    expect(formingDirectionLabel({ ...ready, draw_direction: [1, 1, 0] })).toBe('[0.707, 0.707, 0]')
   })
 })

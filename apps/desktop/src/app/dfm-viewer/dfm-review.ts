@@ -271,9 +271,29 @@ export function reviewGeometry(context: ReviewContext, group: ReviewGroup): Geom
 }
 
 export function formingPlanReady(scope: ReviewScope | undefined): boolean {
-  return Boolean(scope && scope.status !== 'stale' && scope.geometry_refs.length &&
-    parseDirectionVector(JSON.stringify(scope.draw_direction)) &&
-    (scope.mode === 'main' ? scope.mechanism_kind === 'none' : ['slider', 'lifter'].includes(scope.mechanism_kind)))
+  return Boolean(scope && scope.status !== 'stale' && formingPlanMissing(scope).length === 0)
+}
+
+/** Report actual contract requirements; an empty undercut set is not a new confirmation gate. */
+export function formingPlanMissing(scope: ReviewScope): string[] {
+  const missing: string[] = []
+
+  if (!scope.geometry_refs.length) {missing.push('成型面')}
+  if (scope.mode === 'main' ? scope.mechanism_kind !== 'none' : !['slider', 'lifter'].includes(scope.mechanism_kind)) {
+    missing.push('成型机构')
+  }
+  if (!parseDirectionVector(JSON.stringify(scope.draw_direction))) {missing.push('退出方向')}
+
+  return missing
+}
+
+export function formingDirectionLabel(scope: ReviewScope): string {
+  const direction = parseDirectionVector(JSON.stringify(scope.draw_direction))
+  if (!direction) {return '方向待补充'}
+  const axis = direction.findIndex(value => Math.abs(value) > 1 - 1e-8)
+
+  return axis >= 0 ? `${direction[axis] > 0 ? '+' : '−'}${'XYZ'[axis]}`
+    : `[${direction.map(value => Number(value.toFixed(3))).join(', ')}]`
 }
 
 export function scopeDisplayGeometry(scope: ReviewScope): GeometryReference[] {

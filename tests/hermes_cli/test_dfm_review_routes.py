@@ -89,6 +89,33 @@ def test_partial_plan_route_preserves_unknown_direction_and_explicit_mechanism(a
     assert call.kwargs["forming_scope"]["mechanism_kind"] == "lifter"
 
 
+def test_explicit_plan_confirmation_submits_all_edits_without_staging(api):
+    client, service = api
+    fields = {
+        "forming_scope_id": "SIDE", "draw_direction": [0, 1, 0], "mechanism_kind": "slider",
+        "geometry_refs": [{"kind": "face", "index": 10}, {"kind": "face", "index": 11}],
+        "undercut_geometry_refs": [{"kind": "face", "index": 11}],
+    }
+    result = client.post("/api/dfm/projects/dfm_test/discovery/review/direction", json={
+        **fields, "action": "confirm", "expected_revision": 7, "expected_snapshot_id": "snapshot-reviewed"})
+    assert result.status_code == 200, result.text
+    mutations = [call for call in service.analysis.call_args_list if call.args != ("review_context",)]
+    assert len(mutations) == 1 and mutations[0].args == ("revise_forming_scopes",)
+    assert mutations[0].kwargs == {
+        "project_id": "dfm_test", "expected_revision": 7, "expected_snapshot_id": "snapshot-reviewed",
+        "forming_scopes": [{**fields, "kind": "undercut", "mode": "local", "candidate_solutions": [],
+                            "coordinate_system": "model", "direction_source": "user_confirmed"}],
+    }
+
+
+def test_direction_rejects_unknown_action_instead_of_silently_saving_a_draft(api):
+    client, service = api
+    result = client.post("/api/dfm/projects/dfm_test/discovery/review/direction", json={
+        "forming_scope_id": "SIDE", "draw_direction": [1, 0, 0], "action": "accept", "expected_revision": 7})
+    assert result.status_code == 422
+    service.analysis.assert_not_called()
+
+
 def test_main_direction_route_uses_confirmation_instead_of_local_staging(api):
     client, service = api
     state = service.analysis("review_context")

@@ -4,6 +4,8 @@ import {
   confirmableReviewGroupIds,
   directionUnlocked,
   featureNeedsPartReview,
+  formingDirectionLabel,
+  formingPlanMissing,
   removableReviewGroup,
   REVIEW_CATEGORIES,
   reviewBuckets,
@@ -46,11 +48,12 @@ interface DfmReviewPanelProps {
   onRefreshed?: (context: ReviewContext) => void
   onHighlight: (refs: GeometryReference[], selection?: DfmHighlightSelection, force?: boolean) => void
   highlightSelection?: DfmHighlightSelection | null
-  onEditScope?: (scope: ReviewScope, context: ReviewContext, faceRole?: 'forming' | 'undercut') => void
   onEditAnnotation?: (annotation: ReviewAnnotation, context: ReviewContext, values: string[]) => void
   onCreateAnnotation?: (kind: AnnotationKind, context: ReviewContext) => void
   onEditFeature?: (feature: ReviewFeature, context: ReviewContext) => void
   editing?: boolean
+  editingScopeId?: string | null
+  scopeEditor?: ReactNode
   latestContext?: ReviewContext | null
   confirmedFeaturesContent?: ReactNode
   navigation?: ReviewNavigation | null
@@ -68,11 +71,12 @@ export function DfmReviewPanel({
   onRefreshed,
   onHighlight,
   highlightSelection,
-  onEditScope,
   onEditAnnotation,
   onCreateAnnotation,
   onEditFeature,
   editing = false,
+  editingScopeId,
+  scopeEditor,
   latestContext,
   confirmedFeaturesContent,
   navigation,
@@ -91,6 +95,7 @@ export function DfmReviewPanel({
       : localContext
 
   const [selected, setSelected] = useState<string[]>([])
+  const [activeScopeId, setActiveScopeId] = useState<string | null>(null)
   const [localBusy, setBusy] = useState(false)
   const busy = localBusy || actionBusy
   const submission = useRef<{ projectId: string } | null>(null)
@@ -122,11 +127,14 @@ export function DfmReviewPanel({
 
   const undercutCount = (pendingUndercuts.length ? pendingUndercuts : undercutBuckets)
     .reduce((count, bucket) => count + bucket.groups.length, 0)
+  const editingScopeHasCard = buckets.some(bucket => bucket.groups.some(group => group.kind === 'forming_scope' &&
+    group.target_refs.includes(editingScopeId ?? ''))) && context?.forming_scopes.some(scope => scope.forming_scope_id === editingScopeId)
 
   useEffect(() => {
     currentProject.current = projectId
     setSubmissionBusy(false)
     setSelected([])
+    setActiveScopeId(null)
     setOpenBuckets(new Set())
     setLimits({})
     setOpenCategories(new Set(['structure']))
@@ -190,7 +198,9 @@ export function DfmReviewPanel({
 
   useEffect(() => {
     const previous = previousHighlightBucket.current
-    const current = highlightSelection?.bucketId ?? null
+    const selectedBucket = highlightSelection?.objectId ? buckets.find(bucket => bucket.category === highlightSelection.category &&
+      bucket.groups.some(group => group.target_refs.includes(highlightSelection.objectId!))) : undefined
+    const current = selectedBucket?.id ?? highlightSelection?.bucketId ?? null
     previousHighlightBucket.current = current
     setOpenBuckets(open => {
       const next = new Set(open)
@@ -206,6 +216,17 @@ export function DfmReviewPanel({
       setOpenCategories(open => open.has(highlightSelection.category!) ? open : new Set([...open, highlightSelection.category!]))
     }
   }, [highlightSelection, buckets])
+
+  useEffect(() => {
+    if (!editingScopeId) {return}
+    const bucket = buckets.find(item => item.category === 'forming' &&
+      item.groups.some(group => group.target_refs.includes(editingScopeId)))
+    if (!bucket) {return}
+    setOpenCategories(previous => new Set([...previous, 'forming']))
+    setOpenBuckets(previous => new Set([...previous, bucket.id]))
+    const position = bucket.groups.findIndex(group => group.target_refs.includes(editingScopeId))
+    setLimits(previous => ({ ...previous, [bucket.id]: Math.max(previous[bucket.id] ?? 50, position + 1) }))
+  }, [editingScopeId, buckets])
 
   useEffect(() => {
     if (!navigation || !openCategories.has(navigation.category)) {
@@ -238,9 +259,10 @@ export function DfmReviewPanel({
     setOpenCategories(previous => new Set([...previous, 'forming']))
     setOpenBuckets(previous => new Set([...previous, undercutTarget.id]))
     setBucketNavigation(previous => ({ id: undercutTarget.id, sequence: (previous?.sequence ?? 0) + 1 }))
+    selectForming(undercutTarget.groups[0], undercutTarget.id, true)
   }
 
-  const submit = async (path: 'confirm' | 'remove', body: Record<string, unknown>) => {
+  const submit = async (path: 'confirm' | 'remove', body: Record<string, unknown>, localBatch = false) => {
     if (!context || busy || editing || submission.current?.projectId === projectId) {
       return
     }
@@ -273,8 +295,15 @@ export function DfmReviewPanel({
         group => group.review_group_id === id && group.status === 'pending_review'
       )))
       onChanged(next)
-      const remaining = next.review_groups.filter(group => group.status === 'pending_review').length
-      setNotice(`${path === 'remove' ? '已删除识别项' : '已提交本次确认'}；剩余 ${remaining} 项待处理。`)
+      const remaining = next.review_groups.filter(group => group.status === 'pending_review' &&
+        (!localBatch || group.kind === 'forming_scope')).length
+      if (localBatch) {
+        const ids = new Set(body.review_group_ids as string[])
+        const accepted = next.review_groups.filter(group => ids.has(group.review_group_id) && group.status === 'confirmed').length
+        setNotice(`已确认 ${accepted} 个方案；剩余 ${remaining} 个方案待处理。`)
+      } else {
+        setNotice(`${path === 'remove' ? '已删除识别项' : '已提交本次确认'}；剩余 ${remaining} 项待处理。`)
+      }
     } catch (cause) {
       if (currentProject.current !== projectId) {
         return
@@ -301,6 +330,9 @@ export function DfmReviewPanel({
 
   const pendingCount = context?.review_groups.filter(group => group.status === 'pending_review').length ?? 0
   const confirmableIds = context ? confirmableReviewGroupIds(context) : []
+  const localConfirmableIds = context?.review_groups.filter(group => group.kind === 'forming_scope' &&
+    confirmableIds.includes(group.review_group_id)).map(group => group.review_group_id) ?? []
+  const otherPending = context?.review_groups.some(group => group.status === 'pending_review' && group.kind !== 'forming_scope')
 
   const selectForming = (group: ReviewGroup, bucketId: string, force = false) => {
     if (!context) {
@@ -311,9 +343,13 @@ export function DfmReviewPanel({
       category: reviewCategory(group), bucketId, objectId: group.target_refs[0]
     }
 
+    if (group.kind === 'forming_scope') {
+      const current = highlightSelection === undefined ? activeScopeId : highlightSelection?.objectId
+      setActiveScopeId(!force && current === group.target_refs[0] ? null : group.target_refs[0])
+    }
     onHighlight(reviewGeometry(context, group), selection, force)
 
-    if (reviewCategory(group) === 'forming' &&
+    if (group.kind === 'product_forming' &&
       (force || !sameHighlightSelection(highlightSelection ?? null, selection))) {
       const scope = context.forming_scopes.find(item => item.forming_scope_id === group.target_refs[0])
 
@@ -321,6 +357,59 @@ export function DfmReviewPanel({
         onSelectDirection?.(scope)
       }
     }
+  }
+
+  const localScopeCard = (group: ReviewGroup, bucketId: string) => {
+    if (!context) {return null}
+    const scope = context.forming_scopes.find(item => item.forming_scope_id === group.target_refs[0])
+    if (!scope) {return <p key={group.review_group_id} className="text-amber-200">成型方案已变化，请刷新当前审核状态。</p>}
+    const id = scope.forming_scope_id
+    const active = editingScopeId === id || (highlightSelection === undefined ? activeScopeId === id :
+      highlightSelection?.category === 'forming' && highlightSelection.objectId === id)
+    const missing = formingPlanMissing(scope)
+    const ready = directionUnlocked(context, group)
+    const mechanism = { none: '主方向', slider: '滑块', lifter: '斜顶', undetermined: '机构待确定' }[scope.mechanism_kind]
+    const label = group.status === 'confirmed' ? '已确认' : ready ? '可确认' : '待补充'
+
+    return <div className={`mt-2 rounded border p-2 ${active ? 'border-cyan-300/50 bg-cyan-500/10' : 'border-white/10 bg-black/10'}`}
+      data-review-object={id} data-forming-status={label} key={group.review_group_id}>
+      <div className="flex items-start gap-2">
+        {group.status === 'pending_review' && <input aria-label={`选择 ${id}`} checked={selected.includes(group.review_group_id)}
+          className="mt-1" disabled={busy || editing || !ready} onChange={event => setSelected(previous => event.target.checked
+            ? [...previous, group.review_group_id] : previous.filter(item => item !== group.review_group_id))} type="checkbox" />}
+        <button aria-expanded={active} aria-label={`${id} ${mechanism} · ${formingDirectionLabel(scope)}`}
+          className="min-w-0 flex-1 text-left disabled:opacity-60" disabled={busy || editing}
+          onClick={() => selectForming(group, bucketId)} type="button">
+          <span className="block truncate font-medium text-slate-100">{id}</span>
+          <span className="text-[10px] text-slate-400">{mechanism} · {formingDirectionLabel(scope)}</span>
+        </button>
+        <span className={`rounded px-1.5 py-0.5 text-[9px] ${group.status === 'confirmed' ? 'bg-cyan-400/10 text-cyan-200' : 'bg-amber-400/10 text-amber-200'}`}>{label}</span>
+      </div>
+      {active && (editingScopeId === id && scopeEditor ? scopeEditor : <div className="mt-2 border-t border-white/10 pt-2">
+        <dl className="grid grid-cols-2 gap-x-2 gap-y-1.5 text-[10px]">
+          <dt className="text-amber-200">倒扣面</dt><dd>{scope.undercut_geometry_refs.length} 个</dd>
+          <dt className="text-cyan-200">成型面</dt><dd>{scope.geometry_refs.length} 个</dd>
+          <dt className="text-slate-400">成型机构</dt><dd>{mechanism}</dd>
+          <dt className="text-slate-400">退出方向</dt><dd>{formingDirectionLabel(scope)}</dd>
+        </dl>
+        {!ready && <p className="mt-2 text-[10px] text-amber-200">待补充：{missing.join('、') || '当前方案状态'}。可补充后确认，或稍后处理。</p>}
+        <div className="mt-3 flex flex-wrap gap-2">
+          {group.status === 'pending_review' && ready && <button className="rounded bg-cyan-500/25 px-2 py-1 text-cyan-100 disabled:opacity-40"
+            disabled={busy || editing} onClick={() => void submit('confirm', { review_group_ids: [group.review_group_id] })} type="button">确认方案</button>}
+          {onEditDirection && <button className="rounded border border-white/15 px-2 py-1 disabled:opacity-40" disabled={busy || editing}
+            onClick={() => { selectForming(group, bucketId, true); onEditDirection(scope, context) }} type="button">
+            {group.status === 'confirmed' ? '修改方案' : ready ? '修改' : '补充缺失信息'}
+          </button>}
+          {!ready && <button className="px-2 py-1 text-slate-300" disabled={busy || editing}
+            onClick={() => selectForming(group, bucketId)} type="button">稍后处理</button>}
+          <button className="text-[10px] text-cyan-200" disabled={busy || editing}
+            onClick={() => selectForming(group, bucketId, true)} type="button">定位</button>
+          {removableReviewGroup(context, group) && <button className="ml-auto text-[10px] text-rose-200 disabled:opacity-40"
+            disabled={busy || editing || !context.snapshot_id} onClick={() => void submit('remove', { review_group_id: group.review_group_id })}
+            title="删除这条识别结果，不改变模型形状" type="button">删除</button>}
+        </div>
+      </div>)}
+    </div>
   }
 
   return (
@@ -343,19 +432,23 @@ export function DfmReviewPanel({
       {undercutTarget && (
         <button className="mb-2 rounded border border-cyan-300/30 px-2 py-1 text-cyan-100 disabled:opacity-40"
           disabled={busy || editing} onClick={showUndercuts} type="button">
-          倒扣范围（{undercutCount} 组{pendingUndercuts.length ? '待确认' : '已确认'}）
+          局部成型方案（{undercutCount} 组{pendingUndercuts.length ? '待确认' : '已确认'}）
         </button>
       )}
       {pendingCount > 0 && (
         <p className="mb-2 text-[10px] text-slate-400">待确认 · {pendingCount} 组；每组独立确认。</p>
       )}
-      {editing && <p className="mb-2 text-amber-200">正在编辑选面，请先保存或取消，再确认其他组。</p>}
+      {editing && <p className="mb-2 text-amber-200">正在编辑，请先确认、暂存或取消修改，再处理其他组。</p>}
       {notice && <p className="mb-2 text-[10px] text-cyan-100" role="status">{notice}</p>}
       {error && (
         <p className="mb-2 break-words text-red-200" role="alert">
           {error}
         </p>
       )}
+      {context && editingScopeId && scopeEditor && !editingScopeHasCard && <div className="mb-2 rounded border border-amber-300/30 p-2">
+        <p className="mb-2 text-amber-200">原方案已变化，当前草稿保留。可取消修改，或重新载入最新区域。</p>
+        {scopeEditor}
+      </div>}
       {!context ? (
         <p className="text-slate-400">正在读取确认状态…</p>
       ) : (
@@ -383,7 +476,7 @@ export function DfmReviewPanel({
             }}
             open={openCategories.has(category.id)}
           >
-            <summary className="cursor-pointer font-semibold text-slate-100">
+            <summary className="cursor-pointer font-semibold text-slate-100" onClick={event => { if (editing) {event.preventDefault()} }}>
               {category.label}
               {context.review_groups.some(group => reviewCategory(group) === category.id && group.status === 'pending_review') && (
                 <span className="ml-2 text-[10px] font-normal text-amber-200">
@@ -427,11 +520,16 @@ export function DfmReviewPanel({
                   )}
                 </>
               )}
-              {category.id === 'forming' && (
+              {category.id === 'forming' && <>
                 <p className="mb-2 text-[10px] text-slate-400">
-                  全局方向与各倒扣范围的局部设置。局部结构引用已有特征。
+                  核对倒扣面、成型范围、机构和退出方向，一次确认整个方案。
                 </p>
-              )}
+                {pendingUndercuts.length > 0 && <button className="mb-2 w-full rounded bg-cyan-500/20 p-2 text-cyan-100 disabled:opacity-40"
+                  disabled={busy || editing || !localConfirmableIds.length}
+                  onClick={() => void submit('confirm', { review_group_ids: localConfirmableIds }, true)} type="button">
+                  {localBusy ? '提交中…' : `接受全部可确认方案（${localConfirmableIds.length}）`}
+                </button>}
+              </>}
               {buckets
                 .filter(bucket => bucket.category === category.id)
                 .map((bucket, index, categoryBuckets) => (
@@ -467,6 +565,7 @@ export function DfmReviewPanel({
                     >
                       <summary className="cursor-pointer text-slate-200"
                         onClick={event => {
+                          if (editing) {event.preventDefault(); return}
                           if (bucket.category !== 'structure') {return}
                           event.preventDefault()
 
@@ -478,7 +577,8 @@ export function DfmReviewPanel({
                         {bucket.groups[0].status === 'confirmed' ? '组已确认' : '组待确认'}
                       </summary>
                       {openBuckets.has(bucket.id) &&
-                        bucket.groups.slice(0, limits[bucket.id] ?? 50).map(group => (
+                        bucket.groups.slice(0, limits[bucket.id] ?? 50).map(group => group.kind === 'forming_scope'
+                          ? localScopeCard(group, bucket.id) : (
                           <div
                             className={`mt-2 rounded border p-1.5 ${navigation?.category === category.id && group.target_refs.includes(navigation.objectId) ? 'border-amber-400/70 bg-amber-500/10' : 'border-transparent bg-black/10'}`}
                             data-review-object={group.target_refs[0]}
@@ -489,7 +589,7 @@ export function DfmReviewPanel({
                                 <input
                                   aria-label={`选择 ${group.kind === 'product_forming' ? '主出模方向' : group.target_refs[0]}`}
                                   checked={selected.includes(group.review_group_id)}
-                                  disabled={busy || editing || group.status !== 'pending_review' || (group.kind === 'forming_scope' && !directionUnlocked(context, group))}
+                                  disabled={busy || editing || group.status !== 'pending_review'}
                                   onChange={event =>
                                     setSelected(previous =>
                                       event.target.checked
@@ -529,14 +629,6 @@ export function DfmReviewPanel({
                               <span className="text-[9px] text-slate-400">
                                 {group.status === 'confirmed' ? '已确认' : '待确认'}
                               </span>
-                              {group.kind === 'forming_scope' && group.status === 'pending_review' && (
-                                <button className="shrink-0 text-[10px] text-cyan-100 disabled:opacity-40"
-                                  disabled={busy || editing || !directionUnlocked(context, group)}
-                                  onClick={() => void submit('confirm', { review_group_ids: [group.review_group_id] })}
-                                  type="button">
-                                  确认方案
-                                </button>
-                              )}
                               {group.kind === 'ordinary_structure' && onEditFeature && (
                                 <button
                                   className="text-[10px] text-cyan-200 disabled:opacity-40"
@@ -562,34 +654,6 @@ export function DfmReviewPanel({
                                   title="删除这条识别结果，不改变模型形状"
                                   type="button">
                                   删除
-                                </button>
-                              )}
-                              {group.kind === 'forming_scope' && onEditScope && (
-                                <button
-                                  className="text-[10px] text-cyan-200"
-                                  disabled={busy || editing}
-                                  onClick={() => {
-                                    const scope = context.forming_scopes.find(
-                                      item => item.forming_scope_id === group.target_refs[0]
-                                    )
-
-                                    if (scope) {
-                                      onEditScope(scope, context, 'forming')
-                                    }
-                                  }}
-                                  type="button"
-                                >
-                                  编辑成型面
-                                </button>
-                              )}
-                              {group.kind === 'forming_scope' && onEditScope && (
-                                <button className="text-[10px] text-cyan-200" disabled={busy || editing}
-                                  onClick={() => {
-                                    const scope = context.forming_scopes.find(item => item.forming_scope_id === group.target_refs[0])
-
-                                    if (scope) {onEditScope(scope, context, 'undercut')}
-                                  }} type="button">
-                                  编辑倒扣面
                                 </button>
                               )}
                               {group.kind === 'surface_attribute' && onEditAnnotation && (
@@ -640,30 +704,9 @@ export function DfmReviewPanel({
                                 {reviewGroupNote(context, group)}
                               </p>
                             )}
-                            {group.kind === 'forming_scope' && (
-                              <div className="mt-1 flex gap-3 text-[10px]">
-                                <button className="text-cyan-200" disabled={busy || editing} onClick={() => {
-                                    const scope = context.forming_scopes.find(item => item.forming_scope_id === group.target_refs[0])
-
-                                    if (scope) {onHighlight(scope.undercut_geometry_refs)}
-                                  }}
-                                  type="button">定位倒扣面</button>
-                                <button className="text-cyan-200" disabled={busy || editing} onClick={() => {
-                                    const scope = context.forming_scopes.find(item => item.forming_scope_id === group.target_refs[0])
-
-                                    if (scope) {onHighlight(scope.geometry_refs)}
-                                  }}
-                                  type="button">定位成型面</button>
-                              </div>
-                            )}
-                            {(group.kind === 'forming_scope' || group.kind === 'product_forming') &&
+                            {group.kind === 'product_forming' &&
                               onEditDirection && (
                                 <div className="mt-2">
-                                  {group.kind === 'forming_scope' && !directionUnlocked(context, group) && (
-                                    <p className="mb-1 text-amber-200">
-                                      请完善成型范围、机构和退出方向，再确认完整方案。结构在结构组独立审核。
-                                    </p>
-                                  )}
                                   <button
                                     className="text-cyan-100 disabled:opacity-40"
                                     disabled={busy || editing}
@@ -678,7 +721,7 @@ export function DfmReviewPanel({
                                     }}
                                     type="button"
                                   >
-                                    {group.kind === 'product_forming' ? '编辑主方向' : '编辑机构与方向'}
+                                    编辑主方向
                                   </button>
                                 </div>
                               )}
@@ -713,12 +756,12 @@ export function DfmReviewPanel({
       )}
       {pendingCount > 0 && (
         <div className="mt-2 grid gap-2">
-          <button className="w-full rounded bg-cyan-500/20 p-1.5 text-cyan-100 disabled:opacity-40"
+          {otherPending && <button className="w-full rounded bg-cyan-500/20 p-1.5 text-cyan-100 disabled:opacity-40"
             disabled={busy || editing || !confirmableIds.length}
             onClick={() => void submit('confirm', { review_group_ids: confirmableIds })}
             type="button">
             {localBusy ? '提交中…' : `接受全部可确认项（${confirmableIds.length}）`}
-          </button>
+          </button>}
         <button
           className="mt-2 w-full rounded bg-cyan-500/20 p-1.5 text-cyan-100 disabled:opacity-40"
           disabled={busy || editing || !selected.length}

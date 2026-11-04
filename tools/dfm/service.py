@@ -2093,7 +2093,7 @@ class DFMService:
             "forming_scope_id", "kind", "mode", "geometry_refs", "undercut_geometry_refs",
             "mechanism_kind", "candidate_solutions"
         )}
-        for key in ("geometry_refs", "mechanism_kind"):
+        for key in ("geometry_refs", "undercut_geometry_refs", "mechanism_kind"):
             if key in scope:
                 payload[key] = scope[key]
         if direction is not None:
@@ -2197,6 +2197,19 @@ class DFMService:
                 "geometry_snapshot_missing",
                 "Forming-scope revision requires a live Discovery snapshot.",
             )
+        # Reconfirming an unchanged approved local plan must not invalidate its results.
+        # A candidate still needs a real confirmation, even when all fields are unchanged.
+        if len(scopes) == 1 and scopes[0]["mode"] == "local":
+            scope = scopes[0]
+            previous = previous_scopes[scope["forming_scope_id"]]
+            if (previous.get("status") == "confirmed"
+                and any(item.kind == "forming_scope" and item.status == "confirmed"
+                        and scope["forming_scope_id"] in item.target_refs
+                        and item.snapshot_id == discovery_snapshot.snapshot_id for item in manifest.review_groups)
+                and self._forming_scope_review_payload(self._forming_scope_record(scope, discovery_snapshot.snapshot_id))
+                    == self._forming_scope_review_payload(self._forming_scope_record(previous, discovery_snapshot.snapshot_id))):
+                return {"ok": True, "project_id": project_id, "status": "forming_direction_unchanged",
+                        "revision": manifest.revision, "snapshot": discovery_snapshot.to_dict(), "unchanged": True}
         current_snapshot = self._latest_discovery_snapshot(manifest)
         previous = {item["forming_scope_id"]: item for item in current_snapshot.forming_scopes} if current_snapshot else {}
         changed_main = [scope for scope in scopes if scope["mode"] == "main"

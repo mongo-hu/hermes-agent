@@ -362,6 +362,8 @@ def test_pending_deletions_survive_refresh_and_worker_reopen(
             ):
                 bucket = _bucket(panel, bucket_id)
                 row = bucket.locator(f'[data-review-object="{identity}"]')
+                if bucket_id == "forming:forming_scope":
+                    row.get_by_role("button", name=re.compile("^" + re.escape(identity) + " ")).click()
                 row.get_by_role("button", name="删除", exact=True).click()
                 expect(row).to_have_count(0, timeout=30000)
                 expect(panel.get_by_role("alert")).to_have_count(0)
