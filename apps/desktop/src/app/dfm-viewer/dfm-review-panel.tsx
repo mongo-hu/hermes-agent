@@ -30,6 +30,12 @@ export interface DfmReviewPanelActions {
   removeObject: (target: Omit<ReviewNavigation, 'sequence'>) => Promise<void>
 }
 
+export interface DfmScopePreparation {
+  scopeId: string
+  startedAt: number
+  error?: string
+}
+
 /** Resolve only the removable review group, not other groups referencing the same object. */
 export function removableObjectReviewGroup(
   context: ReviewContext | null,
@@ -53,6 +59,7 @@ interface DfmReviewPanelProps {
   onEditFeature?: (feature: ReviewFeature, context: ReviewContext) => void
   editing?: boolean
   editingScopeId?: string | null
+  scopePreparation?: DfmScopePreparation | null
   scopeEditor?: ReactNode
   latestContext?: ReviewContext | null
   confirmedFeaturesContent?: ReactNode
@@ -76,6 +83,7 @@ export function DfmReviewPanel({
   onEditFeature,
   editing = false,
   editingScopeId,
+  scopePreparation,
   scopeEditor,
   latestContext,
   confirmedFeaturesContent,
@@ -96,6 +104,14 @@ export function DfmReviewPanel({
 
   const [selected, setSelected] = useState<string[]>([])
   const [activeScopeId, setActiveScopeId] = useState<string | null>(null)
+  const [preparationSeconds, setPreparationSeconds] = useState(0)
+  useEffect(() => {
+    if (!scopePreparation || scopePreparation.error) {return}
+    const update = () => setPreparationSeconds(Math.max(0, Math.floor((Date.now() - scopePreparation.startedAt) / 1000)))
+    update()
+    const timer = window.setInterval(update, 1000)
+    return () => window.clearInterval(timer)
+  }, [scopePreparation])
   const [localBusy, setBusy] = useState(false)
   const busy = localBusy || actionBusy
   const submission = useRef<{ projectId: string } | null>(null)
@@ -364,6 +380,8 @@ export function DfmReviewPanel({
     const scope = context.forming_scopes.find(item => item.forming_scope_id === group.target_refs[0])
     if (!scope) {return <p key={group.review_group_id} className="text-amber-200">成型方案已变化，请刷新当前审核状态。</p>}
     const id = scope.forming_scope_id
+    const preparation = scopePreparation?.scopeId === id ? scopePreparation : null
+    const preparing = Boolean(preparation && !preparation.error)
     const active = editingScopeId === id || (highlightSelection === undefined ? activeScopeId === id :
       highlightSelection?.category === 'forming' && highlightSelection.objectId === id)
     const missing = formingPlanMissing(scope)
@@ -398,7 +416,7 @@ export function DfmReviewPanel({
             disabled={busy || editing} onClick={() => void submit('confirm', { review_group_ids: [group.review_group_id] })} type="button">确认方案</button>}
           {onEditDirection && <button className="rounded border border-white/15 px-2 py-1 disabled:opacity-40" disabled={busy || editing}
             onClick={() => { selectForming(group, bucketId, true); onEditDirection(scope, context) }} type="button">
-            {group.status === 'confirmed' ? '修改方案' : ready ? '修改' : '补充缺失信息'}
+            {preparing ? `正在准备编辑…（${preparationSeconds} 秒）` : group.status === 'confirmed' ? '修改方案' : ready ? '修改' : '补充缺失信息'}
           </button>}
           {!ready && <button className="px-2 py-1 text-slate-300" disabled={busy || editing}
             onClick={() => selectForming(group, bucketId)} type="button">稍后处理</button>}
@@ -408,6 +426,12 @@ export function DfmReviewPanel({
             disabled={busy || editing || !context.snapshot_id} onClick={() => void submit('remove', { review_group_id: group.review_group_id })}
             title="删除这条识别结果，不改变模型形状" type="button">删除</button>}
         </div>
+        {preparing && <p className="mt-2 text-[10px] text-cyan-100" role="status">
+          正在准备当前方案。若几何会话已释放，需要先恢复，请稍候。
+        </p>}
+        {preparation?.error && <p className="mt-2 rounded border border-red-400/25 bg-red-500/10 p-2 text-[10px] text-red-100" role="alert">
+          准备编辑失败：{preparation.error}
+        </p>}
       </div>)}
     </div>
   }

@@ -41,6 +41,7 @@ const previousBridge = window.hermesDesktop
 const previousScroll = Element.prototype.scrollIntoView
 afterEach(() => {
   cleanup()
+  vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
   Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: previousBridge })
@@ -196,6 +197,57 @@ function directionArrowVisible() {
 }
 
 describe('candidate confirmation and feature editing', () => {
+  it('shows preparation and elapsed time at the current plan while the prepare request is pending', async () => {
+    const { api, getState } = await mountFormingWorkflow()
+    let finish!: (context: ReviewContext) => void
+    const pending = new Promise<ReviewContext>(resolve => { finish = resolve })
+    api.mockImplementation(async request => request.path.endsWith('/prepare') ? pending : structuredClone(getState()))
+    const row = document.querySelector('[data-review-object="UNKNOWN"]') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: /^UNKNOWN/ }))
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    fireEvent.click(within(row).getByRole('button', { name: '补充缺失信息' }))
+
+    const waiting = within(row).getByRole('button', { name: '正在准备编辑…（0 秒）' }) as HTMLButtonElement
+    expect(waiting.disabled).toBe(true)
+    expect(within(row).getByRole('status').textContent).toContain('若几何会话已释放，需要先恢复')
+    expect(screen.queryByRole('region', { name: '编辑局部成型方案' })).toBeNull()
+    fireEvent.click(waiting)
+    expect(api.mock.calls.filter(([request]) => request.path.endsWith('/prepare'))).toHaveLength(1)
+    act(() => { vi.advanceTimersByTime(3000) })
+    expect(within(row).getByRole('button', { name: '正在准备编辑…（3 秒）' })).toBe(waiting)
+
+    await act(async () => { finish(structuredClone(getState())); await pending })
+    expect(within(row).queryByRole('status')).toBeNull()
+    expect(within(row).getByRole('region', { name: '编辑局部成型方案' })).toBeTruthy()
+    expect(api.mock.calls.filter(([request]) => request.path.endsWith('/direction'))).toHaveLength(0)
+  })
+
+  it('shows a failed prepare beside the affected plan and allows retry without changing its review state', async () => {
+    const { api, getState } = await mountFormingWorkflow()
+    const original = structuredClone(getState())
+    let fail!: (error: Error) => void
+    const pending = new Promise<ReviewContext>((_resolve, reject) => { fail = reject })
+    api.mockImplementation(async request => request.path.endsWith('/prepare') ? pending : structuredClone(getState()))
+    const row = document.querySelector('[data-review-object="UNKNOWN"]') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: /^UNKNOWN/ }))
+    fireEvent.click(within(row).getByRole('button', { name: '补充缺失信息' }))
+    await act(async () => { fail(new Error('几何会话恢复失败，请重试。')); await pending.catch(() => undefined) })
+
+    expect(within(row).getByRole('alert').textContent).toContain('准备编辑失败：几何会话恢复失败，请重试。')
+    expect(within(row).queryByRole('status')).toBeNull()
+    const retry = within(row).getByRole('button', { name: '补充缺失信息' }) as HTMLButtonElement
+    expect(retry.disabled).toBe(false)
+    expect(getState()).toEqual(original)
+    expect(screen.queryByRole('region', { name: '编辑局部成型方案' })).toBeNull()
+
+    api.mockImplementation(async () => structuredClone(getState()))
+    fireEvent.click(retry)
+    await screen.findByRole('region', { name: '编辑局部成型方案' })
+    expect(within(row).queryByRole('alert')).toBeNull()
+    expect(api.mock.calls.filter(([request]) => request.path.endsWith('/prepare'))).toHaveLength(2)
+    expect(getState()).toEqual(original)
+  })
+
   it('shows both face roles and confirms all local proposal edits in one request', async () => {
     const { api, clickCanvas, refs, getState } = await mountFormingWorkflow()
     const row = document.querySelector('[data-review-object="COMPLETE"]') as HTMLElement
