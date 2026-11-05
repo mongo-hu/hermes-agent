@@ -22,6 +22,7 @@ import subprocess
 import threading
 import time
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
+from uuid import uuid4
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 
@@ -44,6 +45,14 @@ _RECOVERABLE_SNAPSHOT_METHODS = frozenset({
     "snapshots.merge",
 })
 _ASYNC_SNAPSHOT_METHODS = frozenset({"features.discover", "forming_scopes.analyze"})
+# Only exact release builds whose replayed semantic state has been verified may
+# cross the recovery build boundary. Unknown builds still require explicit review.
+_RECOVERY_COMPATIBLE_BUILDS: frozenset[tuple[str, str]] = frozenset({
+    (
+        "2.4.0:occt-dfm-geometry-1.13.0:c46079439281c7699b5fd286afb34ded533251fcd1f2ca133c560198d1cb0087",
+        "2.4.0:occt-dfm-geometry-1.13.1:97a830c4283e93cb0131f432b3feeb52e114e852fe00f895d7686c50339b3871",
+    ),
+})
 
 
 def geometry_capability_identity(capability: Mapping[str, Any]) -> str:
@@ -682,12 +691,18 @@ class GeometrySessionPool:
     @staticmethod
     def _write_recovery(state: SnapshotRecoveryState) -> None:
         state.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = state.path.with_suffix(".json.tmp")
-        temporary.write_text(
-            json.dumps(state.to_dict(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        temporary.replace(state.path)
+        temporary = state.path.with_name(f".{state.path.name}.{uuid4().hex}.tmp")
+        created = False
+        try:
+            with temporary.open("x", encoding="utf-8") as handle:
+                created = True
+                handle.write(json.dumps(state.to_dict(), ensure_ascii=False, indent=2))
+                handle.flush()
+                os.fsync(handle.fileno())
+            temporary.replace(state.path)
+        finally:
+            if created:
+                temporary.unlink(missing_ok=True)
 
     def _load_recovery(
         self,
@@ -902,7 +917,8 @@ class GeometrySessionPool:
     ) -> dict[str, Any]:
         persisted_identity = geometry_capability_identity(state.to_dict())
         live_identity = geometry_capability_identity(owned.session.capability)
-        if persisted_identity != live_identity:
+        upgrading = persisted_identity != live_identity
+        if upgrading and (persisted_identity, live_identity) not in _RECOVERY_COMPATIBLE_BUILDS:
             raise DFMError(
                 "geometry_recovery_dependency_changed",
                 "The persisted geometry state belongs to a different Worker build.",
@@ -911,6 +927,18 @@ class GeometrySessionPool:
                     "live_identity": live_identity,
                 },
             )
+        original_state = state
+        if upgrading:
+            with self._lock:
+                original = state.path.read_bytes()
+                original_payload = json.loads(json.dumps(state.to_dict()))
+                persisted_payload = json.loads(original)
+                # Lease renewal is not a semantic change. Every other field must
+                # still describe the log whose state we are about to replay.
+                persisted_payload["lease_seconds"] = state.lease_seconds
+                if persisted_payload != original_payload:
+                    raise DFMError("geometry_recovery_conflict", "The recovery log changed; reload before retrying.")
+                state = SnapshotRecoveryState.from_dict(original_payload)
         opened = owned.session.call(
             "snapshots.open",
             {
@@ -927,6 +955,7 @@ class GeometrySessionPool:
         owned.snapshot_last_renewed[live_opened_id] = time.monotonic()
         owned.input_by_snapshot_id[live_opened_id] = state.input_sha256
         current_document = dict(opened)
+        replay_params = []
         for step in state.steps:
             method = str(step.get("method") or "")
             if method not in _RECOVERABLE_SNAPSHOT_METHODS:
@@ -935,10 +964,15 @@ class GeometrySessionPool:
                     "The geometry recovery log contains an unsupported method.",
                     {"method": method},
                 )
-            params = self._translated_params(step.get("params") or {}, aliases)
-            params = self._validated_recovery_geometry_refs(
-                params, opened, state.input_sha256
-            )
+            # Validate every persisted face/edge before expensive recognition.
+            # A late revision must not fail only after replaying earlier jobs.
+            replay_params.append(self._validated_recovery_geometry_refs(
+                json.loads(json.dumps(step.get("params") or {})),
+                opened, state.input_sha256,
+            ))
+        for step, validated_params in zip(state.steps, replay_params):
+            method = str(step["method"])
+            params = self._translated_params(validated_params, aliases)
             response = owned.session.call(method, params)
             if method in _ASYNC_SNAPSHOT_METHODS:
                 response = owned.session.wait_job(
@@ -979,6 +1013,34 @@ class GeometrySessionPool:
                 "geometry_recovery_invalid",
                 "The recovery log did not recreate its current snapshot.",
             )
+        if upgrading:
+            # Keep the original bytes for rollback, but never replace a recovery
+            # log or adopt the new identity until every original SHA has matched.
+            with self._lock:
+                if state.path.read_bytes() != original or original_state.to_dict() != original_payload:
+                    raise DFMError("geometry_recovery_conflict", "The recovery log changed during replay; reload before retrying.")
+                backup = state.path.with_name(
+                    f"session-recovery.pre-upgrade.{hashlib.sha256(original).hexdigest()}.json"
+                )
+                try:
+                    with backup.open("xb") as handle:
+                        handle.write(original)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                except FileExistsError:
+                    pass
+                if backup.read_bytes() != original:
+                    raise DFMError("geometry_recovery_invalid", "The original recovery backup is incomplete; preserve it and retry after repair.")
+                upgraded = replace(
+                    state,
+                    schema_bundle_version=str(owned.session.capability["schema_bundle_version"]),
+                    engine_version=str(owned.session.capability["engine_version"]),
+                    dependency_fingerprint=str(owned.session.capability["dependency_fingerprint"]),
+                )
+                self._write_recovery(upgraded)
+                original_state.schema_bundle_version = upgraded.schema_bundle_version
+                original_state.engine_version = upgraded.engine_version
+                original_state.dependency_fingerprint = upgraded.dependency_fingerprint
         owned.snapshot_aliases.update(aliases)
         recovered = {
             **dict(opened),

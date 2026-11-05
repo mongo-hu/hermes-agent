@@ -19,7 +19,7 @@ import type { ReviewNavigation } from './dfm-review'
 import { type AnnotationKind, confirmedFeatureIds, type ReviewAnnotation, type ReviewContext, type ReviewGroup, type ReviewScope } from './dfm-review'
 import { parseDirectionVector, reviewBuckets, reviewEditTimeout, reviewGeometry, scopeDisplayGeometry } from './dfm-review'
 import { captureReviewEdit, isReviewConflict, type ReviewEditBase, reviewEditUnchanged } from './dfm-review-edits'
-import { DfmReviewPanel, type DfmReviewPanelActions, removableObjectReviewGroup } from './dfm-review-panel'
+import { DfmReviewPanel, type DfmReviewPanelActions, type DfmScopePreparation, removableObjectReviewGroup } from './dfm-review-panel'
 import { resolveReviewDisplayRefs, type TopologyEdge } from './dfm-viewer-geometry'
 import {
   type GeometryReference,
@@ -671,6 +671,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
   const [directionDraft, setDirectionDraft] = useState<DirectionDraft | null>(null)
   const [directionError, setDirectionError] = useState('')
   const [preparingReview, setPreparingReview] = useState(false)
+  const [scopePreparation, setScopePreparation] = useState<DfmScopePreparation | null>(null)
   const [editConflict, setEditConflict] = useState(false)
   const editBase = useRef<ReviewEditBase | null>(null)
   const [reviewError, setReviewError] = useState('')
@@ -707,6 +708,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
     setEditingAnnotation(null)
     setDirectionDraft(null)
     setPreparingReview(false)
+    setScopePreparation(null)
     setEditConflict(false)
     editBase.current = null
     setActiveDirectionId(null)
@@ -1330,6 +1332,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
     if (savingFeature || preparingReview || editingGeometry) {return}
 
     setPreparingReview(true)
+    setScopePreparation(scope.mode === 'local' ? { scopeId: scope.forming_scope_id, startedAt: Date.now() } : null)
     setReviewError('')
 
     try {
@@ -1349,8 +1352,13 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
       setDirectionDraft({ scope: current, revision: fresh.revision, snapshotId: fresh.snapshot_id,
         text: current.draw_direction ? JSON.stringify(current.draw_direction) : '', mode: 'rotate', origin: axisOrigins[current.forming_scope_id],
         mechanismKind: current.mechanism_kind })
+      setScopePreparation(null)
     } catch (cause) {
-      if (currentProjectId.current === projectId) {setReviewError(cause instanceof Error ? cause.message : String(cause))}
+      if (currentProjectId.current === projectId) {
+        const message = cause instanceof Error ? cause.message : String(cause)
+        setReviewError(message)
+        setScopePreparation(current => current ? { ...current, error: message } : null)
+      }
     } finally {
       if (currentProjectId.current === projectId) {setPreparingReview(false)}
     }
@@ -2011,6 +2019,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
                 latestContext={latestReviewContext}
                 editingScopeId={directionDraft?.scope.mode === 'local' ? directionDraft.scope.forming_scope_id : null}
                 scopeEditor={directionDraft?.scope.mode === 'local' ? directionEditor : null}
+                scopePreparation={scopePreparation}
                 navigation={reviewNavigation}
                 onBusyChange={setReviewBusy}
                 onChanged={applyReviewContext}
