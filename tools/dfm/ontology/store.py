@@ -9,6 +9,7 @@ rules; replacing the complete publication is the only write operation.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from copy import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
@@ -212,6 +213,14 @@ class LocalOntologyStore:
             str(concept_id): dict(binding) for concept_id, binding in bindings.items()
         }
         self._geometric_binding_mode_configured = True
+
+    def with_geometric_bindings(
+        self, bindings: Mapping[str, Mapping[str, Any]]
+    ) -> "LocalOntologyStore":
+        """A query view with project-owned bindings, without changing other readers."""
+        view = copy(self)
+        view.configure_geometric_bindings(bindings)
+        return view
 
     @classmethod
     def from_package(

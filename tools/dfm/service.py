@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import copy
 import hashlib
 from itertools import product
 import json
@@ -48,13 +49,18 @@ from .contracts import (
     RunStatus,
 )
 from .discovery import DiscoveryEngine, discovery_context_identity
-from .errors import DFMError
+from .errors import DFMError, ReviewSaveError
 from .feature_recognition.occt_cpp import build_occt_feature_recognition_provider
 from .feature_recognition.base import reconcile_worker_features
 from .ontology import BackgroundOntologySync, LocalOntologyStore, OntologySynchronizer
 from .project.inputs import InputRegistrar
 from .project.manifest import ManifestStore
 from .project.geometry_edits import GeometryEdit, geometry_identity
+from .project.review_barrier import (
+    EDIT_ACTIONS, SAVE_FAILURES, save_identity, require_saved_review,
+    reconcile_legacy_confirmation_failure,
+)
+from .review_state import review_state
 from .project.workspace import DFMWorkspace
 from .processes.registry import ProcessAdapterRegistry, build_default_process_registry
 from .processes.occt_injection import (
@@ -1357,7 +1363,10 @@ class DFMService:
     def _persist_geometry_candidates(self, project_id: str, *, force: bool = False) -> ProjectManifest:
         store = self._store(project_id)
         current = store.load()
-        if geometry_backend_analyzer_key(self.config.geometry_backend) != "occt_cpp":
+        analyzer_key = self.config.geometry_analyzer_key
+        if analyzer_key != "occt_cpp":
+            # An unknown backend must not masquerade as empty discovery.
+            self.registry.get(analyzer_key)
             return current
         capability = self._ensure_occt_geometry_capability(project_id)
         refreshed = self.discovery.refresh_candidates(
@@ -1502,9 +1511,9 @@ class DFMService:
             if isinstance(exc, DFMError) and exc.code == "snapshot_conflict":
                 conflict = DFMError("geometry_edit_conflict", "A concurrent geometry edit changed the prepared branch.")
                 self._fail_geometry_edit(project_id, edit, conflict)
-                raise conflict from exc
+                raise ReviewSaveError.from_error(conflict, edit.edit_id) from exc
             self._fail_geometry_edit(project_id, edit, exc)
-            raise
+            raise ReviewSaveError.from_error(exc, edit.edit_id) from exc
 
     def _adopt_committed_geometry(self, project_id, input_sha256):
         try:
@@ -1598,7 +1607,7 @@ class DFMService:
                 edit=edit, feature_edit_ids={feature.feature_id})
         except Exception as exc:
             self._fail_geometry_edit(project_id, edit, exc)
-            raise
+            raise ReviewSaveError.from_error(exc, edit.edit_id) from exc
         self._adopt_committed_geometry(project_id, feature.input_sha256)
         updated_feature = next(item for item in updated_manifest.features if item.feature_id == feature_id)
         authoritative_refs = list(updated_feature.properties.get("geometry_refs", []))
@@ -1642,7 +1651,7 @@ class DFMService:
                 reviewed_scope_ids=set(), confirmed=False, edit=edit)
         except Exception as exc:
             self._fail_geometry_edit(project_id, edit, exc)
-            raise
+            raise ReviewSaveError.from_error(exc, edit.edit_id) from exc
         self._adopt_committed_geometry(project_id, input_record.sha256)
         # No current G reads these attributes. Do not replan unrelated geometry.
         return self._review_context(project_id)
@@ -1822,7 +1831,7 @@ class DFMService:
                 )
             except Exception as exc:
                 self._fail_geometry_edit(project_id, edit, exc)
-                raise
+                raise ReviewSaveError.from_error(exc, edit.edit_id) from exc
             self._adopt_committed_geometry(project_id, input_record.sha256)
         return manifest, self._latest_discovery_snapshot(manifest)
 
@@ -2036,7 +2045,7 @@ class DFMService:
                 reviewed_scope_ids=affected, confirmed=False, edit=edit, edited_scope_ids=affected)
         except Exception as exc:
             self._fail_geometry_edit(project_id, edit, exc)
-            raise
+            raise ReviewSaveError.from_error(exc, edit.edit_id) from exc
         self._adopt_committed_geometry(project_id, input_record.sha256)
         viewer = materialize_discovery_viewer_manifest(self.workspace.project_dir(project_id), persisted, review_status="pending")
         return {"ok": True, "project_id": project_id, "status": "forming_scope_review_required",
@@ -2104,7 +2113,7 @@ class DFMService:
                 staged_direction_ids={payload["forming_scope_id"]})
         except Exception as exc:
             self._fail_geometry_edit(project_id, edit, exc)
-            raise
+            raise ReviewSaveError.from_error(exc, edit.edit_id) from exc
         self._adopt_committed_geometry(project_id, inputs[0].sha256)
         viewer = materialize_discovery_viewer_manifest(self.workspace.project_dir(project_id), persisted, review_status="pending")
         return {"ok": True, "project_id": project_id, "status": "forming_direction_staged", "revision": persisted.revision,
@@ -2207,7 +2216,7 @@ class DFMService:
                     main_direction=list(scope["draw_direction"]))
             except Exception as exc:
                 self._fail_geometry_edit(project_id, edit, exc)
-                raise
+                raise ReviewSaveError.from_error(exc, edit.edit_id) from exc
             self._adopt_committed_geometry(project_id, input_record.sha256)
             return self._revise_forming_scopes(project_id, [scope], persisted.revision, snapshot.snapshot_id)
         edit, result = self._prepare_geometry_edit(project_id, manifest, input_record.sha256,
@@ -2220,7 +2229,7 @@ class DFMService:
                 project_id, input_record.sha256, result, reviewed_scope_ids=scope_ids, confirmed=True, edit=edit)
         except Exception as exc:
             self._fail_geometry_edit(project_id, edit, exc)
-            raise
+            raise ReviewSaveError.from_error(exc, edit.edit_id) from exc
         self._adopt_committed_geometry(project_id, input_record.sha256)
         pending = any(item.status == "pending_review" for item in persisted.review_groups)
         viewer = materialize_discovery_viewer_manifest(self.workspace.project_dir(project_id), persisted,
@@ -2268,6 +2277,9 @@ class DFMService:
             if isinstance(expected_revision, int)
             else manifest.revision
         )
+        if review_identity is None and revision != manifest.revision:
+            raise DFMError("manifest_conflict", "Reload the current review before confirming.",
+                           {"expected": revision, "actual": manifest.revision})
         review = manifest.capabilities.get("discovery_review", {})
         if raw_review_group_ids is not None and (
             not isinstance(raw_review_group_ids, list)
@@ -2286,27 +2298,27 @@ class DFMService:
             for item in discovered.review_groups
             if item.status == "pending_review"
         }
+        current_groups = {item.review_group_id: item for item in discovered.review_groups}
+        if requested_group_ids:
+            invalid = {identity for identity in requested_group_ids
+                       if identity not in current_groups
+                       or current_groups[identity].status not in {"pending_review", "confirmed"}}
+            if invalid:
+                raise DFMError("review_group_stale", "Selected review groups are no longer current; reload the review.",
+                               {"review_group_ids": sorted(invalid), "next_action": "review_context"})
+            requested_group_ids -= {identity for identity, group in current_groups.items()
+                                    if group.status == "confirmed"}
+            if not requested_group_ids:
+                return {**self._confirmation_response(manifest), "unchanged": True}
         if not requested_group_ids:
             requested_group_ids = {
                 item.review_group_id
                 for item in pending_groups.values()
                 if item.kind == "ordinary_structure"
             }
-            if not requested_group_ids:
-                independently_confirmable = [
-                    item.review_group_id
-                    for item in pending_groups.values()
-                    if item.kind == "forming_scope"
-                ]
-                if len(independently_confirmable) == 1:
-                    requested_group_ids = set(independently_confirmable)
-                elif len(independently_confirmable) > 1:
-                    raise DFMError(
-                        "review_group_required",
-                        "Independent local review groups require explicit review_group_ids.",
-                        {"review_group_ids": sorted(independently_confirmable)},
-                    )
         if not requested_group_ids:
+            if review.get("status") == "confirmed":
+                return {**self._confirmation_response(manifest), "unchanged": True}
             raise DFMError(
                 "discovery_review_closed", "Discovery is not awaiting confirmation."
             )
@@ -2397,6 +2409,11 @@ class DFMService:
 
         confirmed = store.update(apply, expected_revision=revision if review_identity is None else None)
         confirmed = self._ensure_clarifications(project_id, phase="analysis")
+        return self._confirmation_response(confirmed)
+
+    def _confirmation_response(self, confirmed: ProjectManifest) -> dict[str, Any]:
+        project_id = confirmed.project_id
+        snapshot = self._latest_discovery_snapshot(confirmed)
         pending_groups = [item for item in confirmed.review_groups if item.status == "pending_review"]
         pending_objects = any(item.kind in {"ordinary_structure", "surface_attribute"} for item in pending_groups)
         pending_forming = any(item.kind in {"forming_scope", "product_forming"} for item in pending_groups)
@@ -2415,7 +2432,6 @@ class DFMService:
             "review_groups": [item.to_dict() for item in pending_groups],
             "requires_user_response": bool(pending_groups or open_clarifications),
             "next_action": ("confirm_discovery" if pending_objects else
-                            "revise_forming_scopes" if pending_forming else
                             "clarify" if open_clarifications else "plan"),
             "open_clarifications": [item.to_dict() for item in open_clarifications],
         }
@@ -2466,6 +2482,19 @@ class DFMService:
         }
         result.update(control)
         return result
+
+    def review_state(self, project_id: str, *, cursor=None, status="pending_review", group_ids=None) -> dict[str, Any]:
+        """Read one journal-replayed revision for every model-facing review path."""
+        manifest = self._store(project_id).load()
+        snapshot = self._latest_discovery_snapshot(manifest)
+        if snapshot is None:
+            raise DFMError("discovery_required", "Feature discovery must finish before review.")
+        return review_state(
+            manifest, snapshot,
+            [group for group in self._structure_review_groups(manifest, snapshot) if group.status != "stale"],
+            self._open_clarifications(manifest, phase="analysis"),
+            cursor=cursor, status=status, group_ids=group_ids,
+        )
 
     def _review_context(self, project_id: str, *, manifest: ProjectManifest | None = None) -> dict[str, Any]:
         """Read current reviewable state without starting algorithms or changing it."""
@@ -2996,6 +3025,10 @@ class DFMService:
         adapter = self.process_registry.get(
             process or manifest.process or self.config.default_process
         )
+        ontology = self._analysis_ontology(manifest) if phase == "analysis" else self.ontology_store
+        if getattr(adapter, "ontology_store", None) is self.ontology_store:
+            adapter = copy(adapter)
+            adapter.ontology_store = ontology
         requirements = adapter.fact_requirements()
         applicable_check_ids: set[str] | None = None
         if phase == "analysis":
@@ -3010,7 +3043,7 @@ class DFMService:
             if snapshot is None:
                 return []
             applicable_check_ids = self._applicable_analysis_check_ids(
-                manifest, snapshot
+                manifest, snapshot, ontology=ontology
             )
         result = []
         scoped_result = []
@@ -3032,7 +3065,7 @@ class DFMService:
                 continue
             if phase == "analysis" and requirement.impact_scope == "特征实例级":
                 feature_refs: list[str] = []
-                for target in self._geometric_analysis_scopes(manifest, snapshot):
+                for target in self._geometric_analysis_scopes(manifest, snapshot, ontology=ontology):
                     target_checks = {str(target["check_id"])}
                     feature = target.get("feature")
                     feature_id = str(getattr(feature, "feature_id", "") or "")
@@ -3075,7 +3108,7 @@ class DFMService:
                             if fact_check_id == check_id
                         },
                     }
-                    choices = self.ontology_store.fact_check_choices(
+                    choices = ontology.fact_check_choices(
                         adapter.key, name, check_id, choice_facts
                     )
                     if (
@@ -3084,7 +3117,7 @@ class DFMService:
                         or (name, check_id) in confirmed_by_check
                     ):
                         continue
-                    check_name = self.ontology_store.check_context(check_id)["check"][
+                    check_name = ontology.check_context(check_id)["check"][
                         "name_zh"
                     ]
                     clarification_id = self._clarification_id(name, check_id=check_id)
@@ -3101,7 +3134,7 @@ class DFMService:
                         else ClarificationRecord(clarification_id, question, "open")
                     )
                 continue
-            choices = self.ontology_store.fact_enum_values(adapter.key, name)
+            choices = ontology.fact_enum_values(adapter.key, name)
             if name in confirmed and (not choices or confirmed[name] in choices):
                 continue
             question = requirement.question
@@ -3299,33 +3332,40 @@ class DFMService:
         return payload
 
     def _latest_discovery_snapshot(self, manifest: ProjectManifest):
-        _refreshed, current_snapshot = self.discovery.freeze(manifest)
-        return next(
-            (
-                item
-                for item in reversed(manifest.discovery_snapshots)
-                if item.content_sha256 == current_snapshot.content_sha256
-                and item.status == "frozen"
-            ),
-            None,
-        )
+        return self.discovery.current_snapshot(manifest)
+
+    def _analysis_ontology(self, manifest: ProjectManifest):
+        """Resolve business prerequisites against committed discovery evidence.
+
+        Older projects did not persist the handshake. Only those projects need
+        one lazy handshake; absence of initialized bindings is never evidence
+        that no checks or questions apply. No project facts are changed here.
+        """
+        capability = manifest.capabilities.get("geometry_discovery", {}).get("geometry_capability")
+        if capability is None:
+            capability = self.occt_geometry_capability
+            if capability is None and any(item.worker_snapshot_id for item in manifest.discovery_snapshots):
+                capability = self._ensure_occt_geometry_capability(manifest.project_id)
+        if capability is None:
+            return self.ontology_store
+        return self.ontology_store.with_geometric_bindings(geometry_binding_index(capability))
 
     def _applicable_analysis_check_ids(
-        self, manifest: ProjectManifest, snapshot
+        self, manifest: ProjectManifest, snapshot, *, ontology=None
     ) -> set[str]:
         """Return Checks backed by one discovered Feature and public G capability."""
 
         return {
             str(scope["check_id"])
-            for scope in self._geometric_analysis_scopes(manifest, snapshot)
+            for scope in self._geometric_analysis_scopes(manifest, snapshot, ontology=ontology)
         }
 
     def _geometric_analysis_scopes(
-        self, manifest: ProjectManifest, snapshot
+        self, manifest: ProjectManifest, snapshot, *, ontology=None
     ) -> list[dict[str, Any]]:
         """Resolve ontology operands directly to immutable Worker Features and G IDs."""
 
-        specs = self.ontology_store.geometric_scope_specs(
+        specs = (ontology or self._analysis_ontology(manifest)).geometric_scope_specs(
             manifest.process or self.config.default_process
         )
         features = [
@@ -3339,6 +3379,10 @@ class DFMService:
             for spec in specs
             for feature in features
             if feature.kind == spec["feature_kind"]
+            or (
+                spec["feature_kind"] == "*"
+                and feature.kind in spec.get("feature_kinds", [])
+            )
         ]
 
     def _bind_geometric_scope(
@@ -4373,6 +4417,10 @@ class DFMService:
         continued = []
         with self._workflow_lock:
             manifest = self._store(project_id).load()
+            if manifest.capabilities.get("review_save_failure") or any(
+                edit.get("status") == "pending" for edit in manifest.geometry_edits
+            ):
+                return response
             for run in manifest.runs:
                 if run.status not in {RunStatus.QUEUED, RunStatus.RUNNING} or not run.plan_snapshot:
                     continue
@@ -4409,6 +4457,47 @@ class DFMService:
                 "revision": self._store(project_id).load().revision}
 
     def analysis(self, action: str, **params: Any) -> dict[str, Any]:
+        project_id = params.get("project_id") or ""
+        guarded = action in EDIT_ACTIONS or action in {"plan", "start", "report_context", "render_html"}
+        if not guarded or not project_id:
+            return self._analysis(action, **params)
+        store = self._store(project_id)
+        manifest = reconcile_legacy_confirmation_failure(store)
+        identity = save_identity(action, params, manifest)
+        barrier = manifest.capabilities.get("review_save_failure")
+        retry = barrier and barrier.get("identity") == identity
+        # Draft corrections must remain possible after a failed confirmation.
+        # Only retrying the failed save clears the barrier; other edits cannot resume work.
+        if barrier and not retry and (action not in EDIT_ACTIONS or action == "confirm_discovery"):
+            require_saved_review(manifest)
+        if action not in EDIT_ACTIONS:
+            require_saved_review(manifest)
+            return self._analysis(action, **params)
+        try:
+            response = self._analysis(action, **params)
+        except SAVE_FAILURES as error:
+            def failed(current):
+                if current.capabilities.get("review_save_failure"):
+                    return current
+                return replace(current, capabilities={**current.capabilities, "review_save_failure": {
+                    "identity": identity, "reason": getattr(error, "code", "review_save_failed"),
+                    "message": str(error), "failure_category": "save_failed",
+                }}, updated_at=_utc_now())
+            store.update(failed)
+            raise
+        if retry:
+            def cleared(current):
+                capabilities = dict(current.capabilities)
+                if capabilities.get("review_save_failure") == barrier:
+                    capabilities.pop("review_save_failure", None)
+                return replace(current, capabilities=capabilities, updated_at=_utc_now())
+            saved = store.update(cleared)
+            response = {**response, "revision": saved.revision}
+            if action == "confirm_discovery":
+                response = self._after_workflow_update(project_id, response)
+        return response
+
+    def _analysis(self, action: str, **params: Any) -> dict[str, Any]:
         if self.ontology_synchronizer is not None and action not in {
             "status",
             "cancel",
@@ -5100,8 +5189,8 @@ class DFMService:
                         required_groups.extend(item for item in active_groups
                                                if item.kind in required_kinds and scope_id in item.target_refs)
                         local_ids: set[str] = set()
-                        # Main intersection draft depends on local ownership, including pending assignments.
-                        if "intersection" in declaration.get("scope_modes", []) and any(
+                        # Every main-direction draft depends on resolved local ownership.
+                        if "forming_scope_id" in required_context and any(
                             raw.get("forming_scope_id") == scope_id and raw.get("mode") == "main"
                             for raw in discovery_snapshot.forming_scopes
                         ):
@@ -5109,7 +5198,10 @@ class DFMService:
                             local_ids = {raw["forming_scope_id"] for raw in discovery_snapshot.forming_scopes
                                 if raw.get("mode") == "local" and raw.get("status") != "stale"
                                 and any((ref.get("kind"), ref.get("index")) in own_faces for ref in [
-                                    *raw.get("geometry_refs", []), *raw.get("undercut_geometry_refs", [])])}
+                                    *raw.get("geometry_refs", []), *raw.get("undercut_geometry_refs", []),
+                                    *(ref for candidate in raw.get("candidate_solutions", [])
+                                      if raw.get("status") != "confirmed"
+                                      for ref in candidate.get("geometry_refs", []))])}
                             required_groups.extend(group for group in active_groups
                                 if group.kind == "forming_scope" and local_ids.intersection(group.target_refs))
                         review_refs = {item.review_group_id for item in required_groups}
@@ -5493,21 +5585,34 @@ class DFMService:
                     else "ready"
                 ),
             )
-            if parent_plan is not None and (plan.plan_fragments == parent_plan.plan_fragments
-                                           and plan.pending_inputs == parent_plan.pending_inputs):
-                return {"ok": True, "project_id": project_id, "unchanged": True,
-                        "plan": parent_plan.to_dict(), "capability": capability.to_dict()}
-            store.update(
-                lambda current: replace(
-                    current, plans=[*current.plans, plan], updated_at=_utc_now()
-                ), expected_revision=manifest.revision,
+            unchanged = parent_plan is not None and (
+                plan.plan_fragments == parent_plan.plan_fragments
+                and plan.pending_inputs == parent_plan.pending_inputs
             )
-            return {
+            if unchanged:
+                plan = parent_plan
+            else:
+                store.update(
+                    lambda current: replace(current, plans=[*current.plans, plan], updated_at=_utc_now()),
+                    expected_revision=manifest.revision,
+                )
+            response = {
                 "ok": True,
                 "project_id": project_id,
                 "plan": plan.to_dict(),
                 "capability": capability.to_dict(),
             }
+            if unchanged:
+                response["unchanged"] = True
+            if plan.status == "waiting_input":
+                response.update({
+                    "status": "clarification_required" if plan.pending_inputs else "discovery_review_required",
+                    "phase": "analysis",
+                    "requires_user_response": True,
+                    "next_action": "clarify" if plan.pending_inputs else "confirm_discovery",
+                    "clarifications": plan.pending_inputs,
+                })
+            return response
         if action == "start":
             plan_id = str(params.get("plan_id") or "").strip()
             if not plan_id:
@@ -5544,7 +5649,8 @@ class DFMService:
                     {
                         "plan_id": plan.plan_id,
                         "status": plan.status,
-                        "next_action": "confirm_forming_scope",
+                        "next_action": "clarify" if plan.pending_inputs else "confirm_discovery",
+                        "pending_inputs": plan.pending_inputs,
                     },
                 )
             # A capability-blocked plan is still useful for surfacing the

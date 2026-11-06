@@ -1828,6 +1828,11 @@ class GeometricResultRecord:
         return self.result_id
 
     @property
+    def measurement_instance_id(self) -> str | None:
+        from .geometry.result_identity import measurement_instance_id
+        return measurement_instance_id(self.quality)
+
+    @property
     def feature_refs(self) -> list[str]:
         return [self.feature_id]
 
@@ -1876,6 +1881,7 @@ class GeometricResultRecord:
                 "A Worker Geometric result violates dfm.geometry/v2.",
                 {"result_id": self.result_id},
             )
+        _ = self.measurement_instance_id
         if self.status == "ok" and self.value is None:
             raise DFMError(
                 "geometric_result_invalid",

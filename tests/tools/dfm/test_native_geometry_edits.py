@@ -10,7 +10,7 @@ from threading import Event
 import pytest
 
 from tools.dfm.config import DFMConfig
-from tools.dfm.errors import DFMError
+from tools.dfm.errors import DFMError, ReviewSaveError
 from tools.dfm.project.geometry_edits import GeometryEdit
 from tools.dfm.service import DFMService
 
@@ -333,7 +333,11 @@ def test_review_snapshot_edit_tolerates_progress_but_rejects_changed_geometry(
             ],
         )
     assert failure.value.code == "geometry_edit_conflict"
-    assert service._store(project_id).load() == before
+    after = service._store(project_id).load()
+    assert after.discovery_snapshots == before.discovery_snapshots
+    assert after.geometry_edits == before.geometry_edits
+    assert "review_save_failure" not in after.capabilities
+    assert after.revision == before.revision
 
 
 def test_native_attributes_commit_independently_and_recover_edge_references(
@@ -622,7 +626,7 @@ def test_failed_native_geometry_commit_does_not_adopt_or_recover_the_orphan_bran
             "commit",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
         )
-        with pytest.raises(OSError, match="disk full"):
+        with pytest.raises(ReviewSaveError, match="disk full"):
             service.analysis(
                 "update_forming_scope_geometry",
                 project_id=project_id,

@@ -274,3 +274,59 @@ def test_geometric_report_uses_g_identity_without_region_or_metric_routes(tmp_pa
         return False
 
     assert not contains_key(report, "metric_id")
+
+
+def test_sampling_coverage_does_not_downgrade_report(tmp_path):
+    output = tmp_path / "runs" / "scan-run" / "artifacts"
+    output.mkdir(parents=True)
+    scan = {"feature_inventory_guaranteed": False, "unassigned_face_indices": [7],
+            "fields": [{"field": "wall_thickness", "status": "partial"}]}
+    documents = {
+        "geometric_results": {"results": [{"result_id": "r", "feature_id": "wall",
+            "geometric_id": "G_WALL_THK_MAX", "status": "ok", "value": 2.0,
+            "quality": {"measurement_coverage": {"status": "partial"}}}],
+            "model_scans": {"snapshot": scan}},
+        "evaluations": {"evaluations": []},
+    }
+    artifacts = []
+    for kind, payload in documents.items():
+        path = output / (kind + ".json")
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        artifacts.append(ArtifactRecord(kind, kind, path.relative_to(tmp_path).as_posix(),
+                                        "application/json", "now"))
+    plan = PlanRecord("plan", "step", ["occt_cpp"], "ready", "now")
+    result_assembler.materialize_result_reports(tmp_path, "scan-run", plan, artifacts)
+    report = json.loads((output / "dfm_report.json").read_text(encoding="utf-8"))
+    assert report["model_scans"]["snapshot"] == scan
+    assert report["analysis_coverage"]["status"] == "complete"
+    assert report["analysis_coverage"]["feature_inventory_status"] == "not_proven"
+    assert report["analysis_coverage"]["topology_attribution"]["status"] == "partial"
+    assert report["analysis_coverage"]["topology_attribution"]["unassigned_face_indices"] == [7]
+    assert "measurement_coverage_gaps" not in report["analysis_coverage"]
+    assert report["issues"] == []
+
+
+def test_ready_physical_scan_cannot_hide_pending_forming_assignment(tmp_path):
+    output = tmp_path / "runs" / "scan-run" / "artifacts"
+    output.mkdir(parents=True)
+    pending = {"forming_scope_id": "MAIN", "assignment": {
+        "status": "pending_review", "pending_geometry_refs": [{"kind": "face", "index": 7}]}}
+    documents = {
+        "geometric_results": {"results": [], "model_scans": {"snapshot": {
+            "fields": [{"field": "draft", "status": "ready"}],
+            "forming_assignments": [pending]}}},
+        "evaluations": {"evaluations": []},
+    }
+    artifacts = []
+    for kind, payload in documents.items():
+        path = output / (kind + ".json")
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        artifacts.append(ArtifactRecord(kind, kind, path.relative_to(tmp_path).as_posix(),
+                                        "application/json", "now"))
+    plan = PlanRecord("plan", "step", ["occt_cpp"], "ready", "now")
+    result_assembler.materialize_result_reports(tmp_path, "scan-run", plan, artifacts)
+    report = json.loads((output / "dfm_report.json").read_text(encoding="utf-8"))
+    assert report["analysis_coverage"]["status"] == "partial"
+    assert report["analysis_coverage"]["forming_assignment_gaps"] == [
+        {"snapshot_id": "snapshot", **pending}]
+    assert report["issues"] == []

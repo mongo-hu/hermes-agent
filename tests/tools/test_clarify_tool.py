@@ -399,6 +399,14 @@ class TestClarifyToolChoicesValidation:
                     "viewer_manifest": "dfm_viewer.json",
                 }
 
+            @staticmethod
+            def review_state(project_id):
+                return {
+                    "status": "discovery_confirmed", "next_action": "plan",
+                    "next_call": {"tool": "dfm_analysis", "arguments": {"action": "plan", "project_id": project_id}},
+                    "continuation_required": True, "instruction": "Continue with next_call.",
+                }
+
         monkeypatch.setattr("tools.dfm.service.get_dfm_service", FakeService)
         shown = []
         result = json.loads(clarify_tool(

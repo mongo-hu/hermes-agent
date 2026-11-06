@@ -155,6 +155,14 @@ def load_dfm_config(config: Mapping[str, Any] | None = None) -> DFMConfig:
         raise DFMError(
             "config_invalid", "dfm.geometry.backend must be a non-empty string."
         )
+    geometry_backend = normalize_geometry_backend(geometry_backend)
+    if geometry_backend not in _GEOMETRY_BACKEND_ANALYZERS:
+        raise DFMError(
+            "config_invalid",
+            "dfm.geometry.backend is not supported by this runtime.",
+            {"path": "dfm.geometry.backend", "value": geometry_backend,
+             "supported_values": sorted(_GEOMETRY_BACKEND_ANALYZERS)},
+        )
     if not isinstance(runtime_python, str) or not runtime_python.strip():
         raise DFMError(
             "config_invalid", "dfm.runtime.python must be a non-empty string."

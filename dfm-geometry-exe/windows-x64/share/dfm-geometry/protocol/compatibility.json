@@ -1,0 +1,14 @@
+{
+  "protocol": "dfm.geometry.v1",
+  "sdk_version": "0.3.0",
+  "canonical_encoding": "DFM1",
+  "snapshot_schema": "1",
+  "computation_schema": "1",
+  "source_field_schema": "1",
+  "occt": "7.9.3",
+  "python": ">=3.11,<3.14",
+  "deployment": "single-host",
+  "worker_transport": "private-inherited-jsonl-v2",
+  "service_schema_version": 2,
+  "business_repository_version": 2
+}

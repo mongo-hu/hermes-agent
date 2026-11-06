@@ -191,3 +191,28 @@ def test_dfm_is_a_builtin_cli_subcommand(tmp_path, monkeypatch):
     from hermes_cli.main import _BUILTIN_SUBCOMMANDS
 
     assert "dfm" in _BUILTIN_SUBCOMMANDS
+
+
+def test_doctor_reports_invalid_backend_instead_of_crashing(tmp_path, monkeypatch, capsys):
+    from tools.dfm.config import load_dfm_config
+    monkeypatch.setattr(dfm_module, "load_dfm_config", lambda: load_dfm_config(
+        {"dfm": {"geometry": {"backend": "geometry_service"}}}
+    ))
+    monkeypatch.setattr(dfm_module, "_html_report_diagnostics", lambda: {
+        "python_executable": "test-python", "playwright_installed": False,
+        "chromium_usable": False, "ready": False, "reason": "not needed",
+    })
+    token = set_hermes_home_override(tmp_path / "home")
+    try:
+        code = dfm_command(argparse.Namespace(dfm_action="doctor", json=True))
+        report = json.loads(capsys.readouterr().out)
+    finally:
+        reset_hermes_home_override(token)
+    assert code == 1
+    assert report["ok"] is False
+    assert report["config"]["valid"] is False
+    assert report["config"]["error"]["details"]["value"] == "geometry_service"
+    assert report["geometry_backend"]["backend_id"] == "geometry_service"
+    assert report["geometry_backend"]["status"] == "config_invalid"
+    assert report["geometry_backend"]["connected"] is False
+    assert report["geometry_session"]["ready"] is False

@@ -16,7 +16,7 @@ import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { clearClarifyRequest, readDfmClarificationBatch, setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
-import { showDfmViewer } from '@/store/dfm-viewer'
+import { readDfmViewerTarget, showDfmViewer } from '@/store/dfm-viewer'
 import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
@@ -408,7 +408,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           notifyWorkspaceChanged()
         }
 
-        const dfmViewerTarget = dfmViewerTargetFromToolComplete(payload)
+        const dfmViewerTarget = dfmViewerTargetFromToolComplete(
+          payload,
+          sessionId ? readDfmViewerTarget(sessionId) : null
+        )
 
         if (sessionId && dfmViewerTarget) {
           showDfmViewer(sessionId, dfmViewerTarget, { activate: isActiveEvent })

@@ -35,7 +35,10 @@ function numberField(...values: unknown[]): number | undefined {
   return values.find((value): value is number => typeof value === 'number' && Number.isFinite(value))
 }
 
-export function dfmViewerTargetFromToolComplete(payload?: GatewayEventPayload): DfmViewerTarget | null {
+export function dfmViewerTargetFromToolComplete(
+  payload?: GatewayEventPayload,
+  previous?: DfmViewerTarget | null
+): DfmViewerTarget | null {
   if (payload?.name !== 'dfm_project' && payload?.name !== 'dfm_analysis' && payload?.name !== 'clarify') {
     return null
   }
@@ -44,6 +47,24 @@ export function dfmViewerTargetFromToolComplete(payload?: GatewayEventPayload): 
   const preview = record(result.preview)
   const run = record(result.run)
   const discoveryReview = record(result.dfm_discovery_review)
+  const error = record(result.error)
+  const args = record(payload.args ?? payload.arguments ?? payload.input)
+  const projectId = stringField(payload.project_id, result.project_id, args.project_id)
+  const failed = result.ok === false || stringField(run.status, result.status, payload.status) === 'failed'
+
+  // A failed request has no new manifest. Keep the model visible, with the
+  // failure attached only to the project that issued the request.
+  if (payload.name === 'dfm_analysis' && failed && previous && projectId && projectId === previous.projectId) {
+    return {
+      ...previous,
+      failure: {
+        code: stringField(error.code, record(run.error).code) || 'analysis_failed',
+        message:
+          stringField(error.message, record(run.error).message, run.error, payload.error, payload.message) ||
+          '分析未完成，请查看对话中的错误详情。'
+      }
+    }
+  }
 
   const viewerArtifact = Array.isArray(run.artifacts)
     ? run.artifacts.map(record).find(artifact => artifact.kind === 'dfm_viewer')
@@ -63,8 +84,8 @@ export function dfmViewerTargetFromToolComplete(payload?: GatewayEventPayload): 
 
   const discovery =
     (payload.name === 'dfm_analysis' &&
-      (result.status === 'discovery_review_required' || result.status === 'discovery_confirmed')) ||
-    (payload.name === 'clarify' && discoveryReview.status === 'discovery_confirmed')
+      (result.phase === 'discovery' || result.status === 'discovery_review_required' || result.status === 'discovery_confirmed')) ||
+    (payload.name === 'clarify' && (discoveryReview.phase === 'discovery' || discoveryReview.status === 'discovery_confirmed'))
 
   const completed = payload.name === 'dfm_analysis' && !discovery
 
@@ -96,24 +117,37 @@ export function dfmViewerTargetFromToolComplete(payload?: GatewayEventPayload): 
  * instead of introducing a second, potentially stale persistence mechanism.
  */
 export function dfmViewerTargetFromSessionMessages(messages: SessionMessage[]): DfmViewerTarget | null {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]
+  let target: DfmViewerTarget | null = null
+  const argumentsByCall = new Map<string, unknown>()
+
+  for (const message of messages) {
+    if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
+      for (const entry of message.tool_calls) {
+        const call = record(entry)
+        const id = stringField(call.id)
+
+        if (id) {
+          argumentsByCall.set(id, record(call.function).arguments ?? call.arguments)
+        }
+      }
+    }
 
     if (message.role !== 'tool') {
       continue
     }
 
-    const target = dfmViewerTargetFromToolComplete({
-      name: message.tool_name || message.name,
-      result: message.content ?? message.text ?? message.context
-    })
-
-    if (target) {
-      return target
-    }
+    target =
+      dfmViewerTargetFromToolComplete(
+        {
+          name: message.tool_name || message.name,
+          args: argumentsByCall.get(message.tool_call_id || ''),
+          result: message.content ?? message.text ?? message.context
+        },
+        target
+      ) ?? target
   }
 
-  return null
+  return target
 }
 
 export function dfmHtmlReportPathFromToolComplete(payload?: GatewayEventPayload): string | null {

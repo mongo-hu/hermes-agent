@@ -145,8 +145,10 @@ def collect_diagnostics() -> dict:
     occt_cpp = registry.get("occt_cpp")
     dependencies = dependency_statuses(step.python_executable)
     html_report = _html_report_diagnostics()
-    geometry_analyzer_key = effective_config.geometry_analyzer_key
-    geometry_capability = capabilities[geometry_analyzer_key]
+    # Inventory probes can use defaults; configured readiness must be derived
+    # only from a successfully validated runtime configuration.
+    geometry_analyzer_key = config.geometry_analyzer_key if config_report["valid"] else None
+    geometry_capability = capabilities[geometry_analyzer_key] if geometry_analyzer_key else {"status": "config_invalid"}
     geometry_details = (
         geometry_capability.get("details")
         if isinstance(geometry_capability.get("details"), dict)
@@ -195,13 +197,15 @@ def collect_diagnostics() -> dict:
         "recovery_policy": "reopen_replay_validate",
     }
     geometry_backend = {
-        "backend_id": effective_config.geometry_backend,
+        "backend_id": (config.geometry_backend if config_report["valid"] else
+                       config_report["error"].get("details", {}).get("value")),
         "analyzer_key": geometry_analyzer_key,
         "status": geometry_capability["status"],
         "connected": geometry_capability["status"] == "available",
         "discovery_contract_version": DISCOVERY_SCHEMA_VERSION,
         "objective_contract_version": OBJECTIVE_SCHEMA_VERSION,
         "note": (
+            config_report["error"]["message"] if not config_report["valid"] else
             "The external OCCT C++ CLI is experimental."
             if geometry_analyzer_key == "occt_cpp"
             else "The Agent-owned PythonOCC worker is a reference backend and is not production-certified."
@@ -242,6 +246,9 @@ def dfm_command(args) -> int:
         print(f"DFM workspace: {report['workspace']['path']}")
         print(f"Workspace writable: {report['workspace']['writable']}")
         print(f"Config valid: {report['config']['valid']}")
+        if not report["config"]["valid"]:
+            error = report["config"]["error"]
+            print(f"Config error: {error['message']} {json.dumps(error.get('details', {}), ensure_ascii=False)}")
         print(
             f"Internal PythonOCC worker: {report['runtime']['worker_import_path']} "
             f"({report['runtime']['worker_version']})"

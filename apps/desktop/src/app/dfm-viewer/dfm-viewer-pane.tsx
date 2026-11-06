@@ -40,7 +40,14 @@ import { createFaceNavigationIndex } from './dfm-face-navigation'
 import { DfmFeatureEditor } from './dfm-feature-editor'
 import { DfmFeatureGroups } from './dfm-feature-groups'
 import type { ReviewNavigation } from './dfm-review'
-import { type AnnotationKind, confirmedFeatureIds, type ReviewAnnotation, type ReviewContext, type ReviewGroup, type ReviewScope } from './dfm-review'
+import {
+  type AnnotationKind,
+  confirmedFeatureIds,
+  type ReviewAnnotation,
+  type ReviewContext,
+  type ReviewGroup,
+  type ReviewScope
+} from './dfm-review'
 import { parseDirectionVector, reviewEditTimeout, scopeDisplayGeometry } from './dfm-review'
 import { captureReviewEdit, isReviewConflict, type ReviewEditBase, reviewEditUnchanged } from './dfm-review-edits'
 import { DfmReviewPanel } from './dfm-review-panel'
@@ -328,13 +335,29 @@ function ModelCanvas({
     controls.enableDamping = true
     controls.dampingFactor = 0.08
 
-    const axisController = createDirectionAxis(scene, camera, renderer.domElement, controls, focusIndex,
-      (direction, origin) => directionChangeRef.current(direction, origin))
+    const axisController = createDirectionAxis(
+      scene,
+      camera,
+      renderer.domElement,
+      controls,
+      focusIndex,
+      (direction, origin) => directionChangeRef.current(direction, origin)
+    )
 
     axisController.update(directionRef.current)
-    let focusAnimation: { start: number; fromOffset: Vector3; rotation: Quaternion; fromDistance: number; toDistance: number; fromTarget: Vector3; toTarget: Vector3 } | null = null
+    let focusAnimation: {
+      start: number
+      fromOffset: Vector3
+      rotation: Quaternion
+      fromDistance: number
+      toDistance: number
+      fromTarget: Vector3
+      toTarget: Vector3
+    } | null = null
 
-    const cancelFocus = () => { focusAnimation = null }
+    const cancelFocus = () => {
+      focusAnimation = null
+    }
     controls.addEventListener('start', cancelFocus)
 
     const resize = () => {
@@ -374,13 +397,20 @@ function ModelCanvas({
       focus: faces => {
         const pose = selectionCameraPose(focusIndex, faces, camera.position, camera.fov, camera.aspect)
 
-        if (!pose) {return}
+        if (!pose) {
+          return
+        }
         const fromOffset = camera.position.clone().sub(controls.target)
         const toOffset = pose.position.clone().sub(pose.target)
-        focusAnimation = { start: performance.now(), fromOffset: fromOffset.clone().normalize(),
+        focusAnimation = {
+          start: performance.now(),
+          fromOffset: fromOffset.clone().normalize(),
           rotation: new Quaternion().setFromUnitVectors(fromOffset.clone().normalize(), toOffset.clone().normalize()),
-          fromDistance: fromOffset.length(), toDistance: toOffset.length(),
-          fromTarget: controls.target.clone(), toTarget: pose.target }
+          fromDistance: fromOffset.length(),
+          toDistance: toOffset.length(),
+          fromTarget: controls.target.clone(),
+          toTarget: pose.target
+        }
         controls.minDistance = Math.max(pose.modelRadius * 1e-5, 1e-6)
         camera.near = Math.max(Math.min(pose.modelRadius / 10000, toOffset.length() / 100), 1e-6)
         camera.far = Math.max(pose.modelRadius * 100, pose.position.distanceTo(pose.target) + pose.modelRadius * 4)
@@ -437,11 +467,15 @@ function ModelCanvas({
 
       pointerDown = null
 
-      if (directionRef.current?.editing) {return}
+      if (directionRef.current?.editing) {
+        return
+      }
 
-      if (axisController.hit(event)) { axisSelectedRef.current();
+      if (axisController.hit(event)) {
+        axisSelectedRef.current()
 
- return }
+        return
+      }
 
       const faceIndex = pickFace(event)
 
@@ -468,10 +502,15 @@ function ModelCanvas({
         const blend = t * t * (3 - 2 * t)
         controls.target.lerpVectors(focusAnimation.fromTarget, focusAnimation.toTarget, blend)
         const rotation = new Quaternion().slerp(focusAnimation.rotation, blend)
-        camera.position.copy(focusAnimation.fromOffset).applyQuaternion(rotation)
-          .multiplyScalar(MathUtils.lerp(focusAnimation.fromDistance, focusAnimation.toDistance, blend)).add(controls.target)
+        camera.position
+          .copy(focusAnimation.fromOffset)
+          .applyQuaternion(rotation)
+          .multiplyScalar(MathUtils.lerp(focusAnimation.fromDistance, focusAnimation.toDistance, blend))
+          .add(controls.target)
 
-        if (t === 1) {focusAnimation = null}
+        if (t === 1) {
+          focusAnimation = null
+        }
       }
 
       controls.update()
@@ -558,7 +597,9 @@ function ModelCanvas({
   }, [issuePositions])
 
   useEffect(() => {
-    if (focusRequest.sequence > 0) {resourcesRef.current?.focus(new Set(focusRequest.faceIndices))}
+    if (focusRequest.sequence > 0) {
+      resourcesRef.current?.focus(new Set(focusRequest.faceIndices))
+    }
   }, [focusRequest, document])
 
   useEffect(() => {
@@ -567,7 +608,16 @@ function ModelCanvas({
     }
   }, [fitRequest])
 
-  return <div aria-label="DFM 三维画布" className="h-full min-h-0 w-full" data-direction-origin={directionAxis?.origin ? JSON.stringify(directionAxis.origin) : undefined} data-direction-scope={directionAxis?.scopeId} data-direction-vector={directionAxis?.direction ? JSON.stringify(directionAxis.direction) : undefined} ref={hostRef} />
+  return (
+    <div
+      aria-label="DFM 三维画布"
+      className="h-full min-h-0 w-full"
+      data-direction-origin={directionAxis?.origin ? JSON.stringify(directionAxis.origin) : undefined}
+      data-direction-scope={directionAxis?.scopeId}
+      data-direction-vector={directionAxis?.direction ? JSON.stringify(directionAxis.direction) : undefined}
+      ref={hostRef}
+    />
+  )
 }
 
 const FEATURE_LABELS: Record<string, string> = {
@@ -1124,7 +1174,9 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
   const [reloadRequest, setReloadRequest] = useState(0)
   const [fitRequest, setFitRequest] = useState(0)
   const [focusRequest, setFocusRequest] = useState({ sequence: 0, faceIndices: [] as number[] })
-  const editingGeometry = Boolean(editingFeatureId || editingScopeId || editingAnnotation || directionDraft || preparingReview)
+  const editingGeometry = Boolean(
+    editingFeatureId || editingScopeId || editingAnnotation || directionDraft || preparingReview
+  )
   const loadedTargetSignature = useRef('')
   const workingViewer = useRef<{ externalPath: string; path: string; projectId: string } | null>(null)
   const [reviewPaneTab, setReviewPaneTab] = useState<'features' | 'issues' | 'clarifications'>('features')
@@ -1146,15 +1198,24 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
   }, [projectId, target.manifestPath])
 
   useEffect(() => {
-    if (editingGeometry) {return}
+    if (editingGeometry) {
+      return
+    }
 
-    if (workingViewer.current && (workingViewer.current.externalPath !== target.manifestPath ||
-      (target.projectId && workingViewer.current.projectId !== target.projectId))) {workingViewer.current = null}
+    if (
+      workingViewer.current &&
+      (workingViewer.current.externalPath !== target.manifestPath ||
+        (target.projectId && workingViewer.current.projectId !== target.projectId))
+    ) {
+      workingViewer.current = null
+    }
 
     const manifestPath = workingViewer.current?.path ?? target.manifestPath
     const signature = JSON.stringify([reloadRequest, manifestPath, target.projectId, target.revision, target.status])
 
-    if (loadedTargetSignature.current === signature) {return}
+    if (loadedTargetSignature.current === signature) {
+      return
+    }
     let cancelled = false
 
     async function load() {
@@ -1180,7 +1241,9 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
         setDraftFaceIndices(null)
         setReviewError('')
 
-        if (!workingViewer.current) {setReviewNotice('')}
+        if (!workingViewer.current) {
+          setReviewNotice('')
+        }
         const nextManifest = await readJson<ViewerManifest>(manifestPath)
 
         if (nextManifest.contract_version !== 'hermes.dfm.viewer/v2') {
@@ -1298,16 +1361,30 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
     return summarizeViewerIssueTypes(manifest?.issues ?? [])
   }, [manifest])
 
-  const faceNavigationIndex = useMemo(() => createFaceNavigationIndex(latestReviewContext ?? {
-    features: (manifest?.features ?? []).map(feature => ({
-      feature_id: feature.feature_id, kind: feature.kind, confidence: 0,
-      properties: { ...feature.parameters, geometry_refs: feature.geometry_refs }
-    })), annotations: [], forming_scopes: []
-  }, topologyFaces, topologyEdges), [latestReviewContext, manifest, topologyFaces, topologyEdges])
+  const faceNavigationIndex = useMemo(
+    () =>
+      createFaceNavigationIndex(
+        latestReviewContext ?? {
+          features: (manifest?.features ?? []).map(feature => ({
+            feature_id: feature.feature_id,
+            kind: feature.kind,
+            confidence: 0,
+            properties: { ...feature.parameters, geometry_refs: feature.geometry_refs }
+          })),
+          annotations: [],
+          forming_scopes: []
+        },
+        topologyFaces,
+        topologyEdges
+      ),
+    [latestReviewContext, manifest, topologyFaces, topologyEdges]
+  )
 
   const handleFacePick = useCallback(
     (faceIndex: number) => {
-      if (directionDraft || preparingReview) {return}
+      if (directionDraft || preparingReview) {
+        return
+      }
       setPickedFaceIndex(faceIndex)
 
       if (editingFeatureId || editingScopeId || editingAnnotation) {
@@ -1339,9 +1416,12 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
         setReviewNavigation(previous => ({ ...match, sequence: (previous?.sequence ?? 0) + 1 }))
 
         if (match.category !== 'structure' && latestReviewContext) {
-          const refs = match.category === 'annotation'
-            ? latestReviewContext.annotations.find(item => item.annotation_id === match.objectId)?.geometry_refs
-            : latestReviewContext.forming_scopes.filter(item => item.forming_scope_id === match.objectId).flatMap(scopeDisplayGeometry)
+          const refs =
+            match.category === 'annotation'
+              ? latestReviewContext.annotations.find(item => item.annotation_id === match.objectId)?.geometry_refs
+              : latestReviewContext.forming_scopes
+                  .filter(item => item.forming_scope_id === match.objectId)
+                  .flatMap(scopeDisplayGeometry)
 
           setReviewGeometryRefs(resolveReviewDisplayRefs(refs ?? [], topologyFaces, topologyEdges))
         }
@@ -1357,12 +1437,26 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
         setReviewPaneTab('issues')
       }
     },
-    [directionDraft, preparingReview, editingFeatureId, editingScopeId, editingAnnotation, faceNavigationIndex, issueFacesById, manifest,
-      latestReviewContext, topologyFaces, topologyEdges]
+    [
+      directionDraft,
+      preparingReview,
+      editingFeatureId,
+      editingScopeId,
+      editingAnnotation,
+      faceNavigationIndex,
+      issueFacesById,
+      manifest,
+      latestReviewContext,
+      topologyFaces,
+      topologyEdges
+    ]
   )
 
   const requestFocus = useCallback((refs: GeometryReference[]) => {
-    setFocusRequest(current => ({ sequence: current.sequence + 1, faceIndices: [...resolveGeometryRefFaceIndices(refs)] }))
+    setFocusRequest(current => ({
+      sequence: current.sequence + 1,
+      faceIndices: [...resolveGeometryRefFaceIndices(refs)]
+    }))
   }, [])
 
   const handleIssueSelect = useCallback(
@@ -1413,7 +1507,9 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
       setEditingFeatureId(feature.feature_id)
       setEditingSnapshotId(context?.snapshot_id ?? manifest?.snapshot_id)
 
-      if (context) {setProjectRevision(context.revision)}
+      if (context) {
+        setProjectRevision(context.revision)
+      }
       setEditingScopeId(null)
       setEditingAnnotation(null)
       setDraftFaceIndices(resolveGeometryRefFaceIndices(feature.geometry_refs))
@@ -1433,8 +1529,12 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
   }, [])
 
   const applyReviewContext = useCallback((context: ReviewContext) => {
-    if (currentProjectId.current !== context.project_id) {return}
-    setLatestReviewContext(previous => previous?.project_id === context.project_id && previous.revision > context.revision ? previous : context)
+    if (currentProjectId.current !== context.project_id) {
+      return
+    }
+    setLatestReviewContext(previous =>
+      previous?.project_id === context.project_id && previous.revision > context.revision ? previous : context
+    )
     setProjectRevision(previous => (previous != null && previous > context.revision ? previous : context.revision))
     setReviewGeometryRefs([])
     // Only semantic state changed. Keep the already loaded scene and mesh.
@@ -1479,84 +1579,128 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
     [topologyFaces, topologyEdges, requestFocus]
   )
 
-  const prepareReviewForEdit = useCallback(async (pins: Pick<ReviewContext, 'revision' | 'snapshot_id' | 'edit_timeout_ms'>) => {
-    if (!projectId) {throw new Error('请先打开当前项目。')}
-
-    const context = await window.hermesDesktop.api<ReviewContext & { session_restored?: boolean; review_refreshed?: boolean; viewer_manifest?: string | null }>({
-      path: `/api/dfm/projects/${encodeURIComponent(projectId)}/discovery/review/prepare`, method: 'POST',
-      timeoutMs: reviewEditTimeout(pins),
-      body: { expected_revision: pins.revision, expected_snapshot_id: pins.snapshot_id }
-    })
-
-    if (currentProjectId.current !== projectId) {return null}
-    applyReviewContext(context)
-
-    if (context.session_restored) {
-      if (context.viewer_manifest) {workingViewer.current = { externalPath: target.manifestPath, path: context.viewer_manifest, projectId }}
-      setManifest(current => current ? { ...current, status: 'discovery', issues: [], issue_count: 0, issue_type_counts: [] } : current)
-      setReviewNotice('几何会话已恢复，请按当前识别结果继续编辑和确认。')
-    } else if (context.review_refreshed) {
-      setReviewNotice('审核状态已更新，已使用当前区域打开编辑。')
-    }
-
-    return context
-  }, [projectId, target.manifestPath, applyReviewContext])
-
-  const withCurrentReview = useCallback(async <T,>(send: (pins: { expected_revision: number; expected_snapshot_id?: string }, timeoutMs: number) => Promise<T>): Promise<T> => {
-    const base = editBase.current
-
-    if (!base || !projectId || editConflict) {throw new Error('请重新载入最新区域后编辑。')}
-
-    const refresh = async () => {
-      const current = await window.hermesDesktop.api<ReviewContext>({ path: `/api/dfm/projects/${encodeURIComponent(projectId)}/discovery/review` })
-
-      if (currentProjectId.current !== projectId) {throw new Error('项目已切换。')}
-      applyReviewContext(current)
-
-      if (!reviewEditUnchanged(base, current)) {
-        setEditConflict(true)
-        throw new Error('当前区域已被修改或移除，草稿已保留。请重新载入最新区域后再编辑。')
+  const prepareReviewForEdit = useCallback(
+    async (pins: Pick<ReviewContext, 'revision' | 'snapshot_id' | 'edit_timeout_ms'>) => {
+      if (!projectId) {
+        throw new Error('请先打开当前项目。')
       }
 
-      editBase.current = captureReviewEdit(current, base.kind, base.id)
-      setEditingSnapshotId(current.snapshot_id)
-      setProjectRevision(current.revision)
-      setDirectionDraft(draft => draft ? { ...draft, revision: current.revision, snapshotId: current.snapshot_id } : null)
+      const context = await window.hermesDesktop.api<
+        ReviewContext & { session_restored?: boolean; review_refreshed?: boolean; viewer_manifest?: string | null }
+      >({
+        path: `/api/dfm/projects/${encodeURIComponent(projectId)}/discovery/review/prepare`,
+        method: 'POST',
+        timeoutMs: reviewEditTimeout(pins),
+        body: { expected_revision: pins.revision, expected_snapshot_id: pins.snapshot_id }
+      })
 
-      return { pins: { expected_revision: current.revision, expected_snapshot_id: current.snapshot_id }, timeoutMs: reviewEditTimeout(current) }
-    }
-
-    const current = await refresh()
-
-    try { return await send(current.pins, current.timeoutMs) }
-    catch (cause) {
-      if (!isReviewConflict(cause)) {throw cause}
-      // One retry is safe only after verifying that this target did not change.
-      const next = await refresh()
-
-      try { return await send(next.pins, next.timeoutMs) }
-      catch (last) {
-        if (isReviewConflict(last)) {throw new Error('审核状态仍在更新，草稿已保留，请稍后重试保存。')}
-        throw last
+      if (currentProjectId.current !== projectId) {
+        return null
       }
-    }
-  }, [projectId, applyReviewContext, editConflict])
+      applyReviewContext(context)
+
+      if (context.session_restored) {
+        if (context.viewer_manifest) {
+          workingViewer.current = { externalPath: target.manifestPath, path: context.viewer_manifest, projectId }
+        }
+        setManifest(current =>
+          current ? { ...current, status: 'discovery', issues: [], issue_count: 0, issue_type_counts: [] } : current
+        )
+        setReviewNotice('几何会话已恢复，请按当前识别结果继续编辑和确认。')
+      } else if (context.review_refreshed) {
+        setReviewNotice('审核状态已更新，已使用当前区域打开编辑。')
+      }
+
+      return context
+    },
+    [projectId, target.manifestPath, applyReviewContext]
+  )
+
+  const withCurrentReview = useCallback(
+    async <T,>(
+      send: (pins: { expected_revision: number; expected_snapshot_id?: string }, timeoutMs: number) => Promise<T>
+    ): Promise<T> => {
+      const base = editBase.current
+
+      if (!base || !projectId || editConflict) {
+        throw new Error('请重新载入最新区域后编辑。')
+      }
+
+      const refresh = async () => {
+        const current = await window.hermesDesktop.api<ReviewContext>({
+          path: `/api/dfm/projects/${encodeURIComponent(projectId)}/discovery/review`
+        })
+
+        if (currentProjectId.current !== projectId) {
+          throw new Error('项目已切换。')
+        }
+        applyReviewContext(current)
+
+        if (!reviewEditUnchanged(base, current)) {
+          setEditConflict(true)
+          throw new Error('当前区域已被修改或移除，草稿已保留。请重新载入最新区域后再编辑。')
+        }
+
+        editBase.current = captureReviewEdit(current, base.kind, base.id)
+        setEditingSnapshotId(current.snapshot_id)
+        setProjectRevision(current.revision)
+        setDirectionDraft(draft =>
+          draft ? { ...draft, revision: current.revision, snapshotId: current.snapshot_id } : null
+        )
+
+        return {
+          pins: { expected_revision: current.revision, expected_snapshot_id: current.snapshot_id },
+          timeoutMs: reviewEditTimeout(current)
+        }
+      }
+
+      const current = await refresh()
+
+      try {
+        return await send(current.pins, current.timeoutMs)
+      } catch (cause) {
+        if (!isReviewConflict(cause)) {
+          throw cause
+        }
+        // One retry is safe only after verifying that this target did not change.
+        const next = await refresh()
+
+        try {
+          return await send(next.pins, next.timeoutMs)
+        } catch (last) {
+          if (isReviewConflict(last)) {
+            throw new Error('审核状态仍在更新，草稿已保留，请稍后重试保存。')
+          }
+          throw last
+        }
+      }
+    },
+    [projectId, applyReviewContext, editConflict]
+  )
 
   const reloadEdit = async () => {
     const base = editBase.current
 
-    if (!base || savingFeature || preparingReview) {return}
+    if (!base || savingFeature || preparingReview) {
+      return
+    }
     setPreparingReview(true)
 
     try {
-      const current = await window.hermesDesktop.api<ReviewContext>({ path: `/api/dfm/projects/${encodeURIComponent(base.projectId)}/discovery/review` })
+      const current = await window.hermesDesktop.api<ReviewContext>({
+        path: `/api/dfm/projects/${encodeURIComponent(base.projectId)}/discovery/review`
+      })
       const fresh = await prepareReviewForEdit(current)
 
-      if (!fresh) {return}
+      if (!fresh) {
+        return
+      }
       const latestBase = captureReviewEdit(fresh, base.kind, base.id)
 
-      if (latestBase.model !== base.model || latestBase.content === 'null' && base.content !== 'null') {
-        if (fresh.viewer_manifest && projectId) {workingViewer.current = { externalPath: target.manifestPath, path: fresh.viewer_manifest, projectId }}
+      if (latestBase.model !== base.model || (latestBase.content === 'null' && base.content !== 'null')) {
+        if (fresh.viewer_manifest && projectId) {
+          workingViewer.current = { externalPath: target.manifestPath, path: fresh.viewer_manifest, projectId }
+        }
         cancelFeatureEdit()
         setDirectionDraft(null)
         setReloadRequest(value => value + 1)
@@ -1567,19 +1711,31 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
 
       if (directionDraft) {
         const scope = fresh.forming_scopes.find(item => item.forming_scope_id === base.id)!
-        setDirectionDraft({ ...directionDraft, scope, text: scope.draw_direction ? JSON.stringify(scope.draw_direction) : '',
-          revision: fresh.revision, snapshotId: fresh.snapshot_id, origin: undefined,
-          mechanismKind: scope.mechanism_kind })
+        setDirectionDraft({
+          ...directionDraft,
+          scope,
+          text: scope.draw_direction ? JSON.stringify(scope.draw_direction) : '',
+          revision: fresh.revision,
+          snapshotId: fresh.snapshot_id,
+          origin: undefined,
+          mechanismKind: scope.mechanism_kind
+        })
       } else if (base.kind === 'annotation') {
         const annotation = fresh.annotations.find(item => item.annotation_id === base.id)
 
-        if (annotation) { setEditingAnnotation(annotation); setDraftFaceIndices(resolveGeometryRefFaceIndices(annotation.geometry_refs)) }
+        if (annotation) {
+          setEditingAnnotation(annotation)
+          setDraftFaceIndices(resolveGeometryRefFaceIndices(annotation.geometry_refs))
+        }
       } else {
         const scope = fresh.forming_scopes.find(item => item.forming_scope_id === base.id)
 
-        const refs = base.kind === 'scope'
-          ? (editingScopeRole === 'undercut' ? scope?.undercut_geometry_refs : scope?.geometry_refs)
-          : fresh.features.find(item => item.feature_id === base.id)?.properties.geometry_refs
+        const refs =
+          base.kind === 'scope'
+            ? editingScopeRole === 'undercut'
+              ? scope?.undercut_geometry_refs
+              : scope?.geometry_refs
+            : fresh.features.find(item => item.feature_id === base.id)?.properties.geometry_refs
 
         setDraftFaceIndices(resolveGeometryRefFaceIndices(refs))
       }
@@ -1590,103 +1746,202 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
       setEditConflict(false)
       setReviewError('')
       setDirectionError('')
-    } catch (cause) { if (currentProjectId.current === base.projectId) {setReviewError(cause instanceof Error ? cause.message : String(cause))} }
-    finally { if (currentProjectId.current === base.projectId) {setPreparingReview(false)} }
+    } catch (cause) {
+      if (currentProjectId.current === base.projectId) {
+        setReviewError(cause instanceof Error ? cause.message : String(cause))
+      }
+    } finally {
+      if (currentProjectId.current === base.projectId) {
+        setPreparingReview(false)
+      }
+    }
   }
 
-  const currentEditedScope = latestReviewContext?.forming_scopes.find(scope => scope.forming_scope_id === editingScopeId)
-  const scopeFaces = resolveGeometryRefFaceIndices(editingScopeRole === 'undercut' ? currentEditedScope?.undercut_geometry_refs : currentEditedScope?.geometry_refs)
+  const currentEditedScope = latestReviewContext?.forming_scopes.find(
+    scope => scope.forming_scope_id === editingScopeId
+  )
+  const scopeFaces = resolveGeometryRefFaceIndices(
+    editingScopeRole === 'undercut' ? currentEditedScope?.undercut_geometry_refs : currentEditedScope?.geometry_refs
+  )
 
-  const scopeCanHaveEmptySelection = Boolean(currentEditedScope &&
-    (editingScopeRole === 'undercut' ? currentEditedScope.geometry_refs.length : currentEditedScope.undercut_geometry_refs.length))
+  const scopeCanHaveEmptySelection = Boolean(
+    currentEditedScope &&
+    (editingScopeRole === 'undercut'
+      ? currentEditedScope.geometry_refs.length
+      : currentEditedScope.undercut_geometry_refs.length)
+  )
 
-  const scopeFacesChanged = Boolean(editingScopeId && (scopeFaces.size !== draftFaceIndices?.size || [...scopeFaces].some(face => !draftFaceIndices?.has(face))))
+  const scopeFacesChanged = Boolean(
+    editingScopeId &&
+    (scopeFaces.size !== draftFaceIndices?.size || [...scopeFaces].some(face => !draftFaceIndices?.has(face)))
+  )
 
-  const startDirectionEdit = useCallback(async (scope: ReviewScope, context: ReviewContext) => {
-    if (savingFeature || preparingReview || (editingGeometry && !editingScopeId)) {return}
+  const startDirectionEdit = useCallback(
+    async (scope: ReviewScope, context: ReviewContext) => {
+      if (savingFeature || preparingReview || (editingGeometry && !editingScopeId)) {
+        return
+      }
 
-    if (editingScopeId && scopeFacesChanged) { setReviewError('请先保存范围修改，再输入退出方向。');
+      if (editingScopeId && scopeFacesChanged) {
+        setReviewError('请先保存范围修改，再输入退出方向。')
 
- return }
+        return
+      }
 
-    setPreparingReview(true)
-    setReviewError('')
+      setPreparingReview(true)
+      setReviewError('')
 
-    try {
-      const fresh = await prepareReviewForEdit(context)
+      try {
+        const fresh = await prepareReviewForEdit(context)
 
-      if (!fresh) {return}
-      const current = fresh.forming_scopes.find(item => item.forming_scope_id === scope.forming_scope_id && item.status !== 'stale')
+        if (!fresh) {
+          return
+        }
+        const current = fresh.forming_scopes.find(
+          item => item.forming_scope_id === scope.forming_scope_id && item.status !== 'stale'
+        )
 
-      if (!current) {throw new Error('倒扣范围已重新识别，请从当前列表重新选择。')}
-      editBase.current = captureReviewEdit(fresh, 'scope', current.forming_scope_id)
-      setEditConflict(false)
-      highlightReview(scopeDisplayGeometry(current))
-      setEditingScopeId(null)
-      setDraftFaceIndices(null)
-      setActiveDirectionId(current.forming_scope_id)
-      setDirectionError('')
-      setDirectionDraft({ scope: current, revision: fresh.revision, snapshotId: fresh.snapshot_id,
-        text: current.draw_direction ? JSON.stringify(current.draw_direction) : '', mode: 'rotate', origin: axisOrigins[current.forming_scope_id],
-        mechanismKind: current.mechanism_kind })
-    } catch (cause) {
-      if (currentProjectId.current === projectId) {setReviewError(cause instanceof Error ? cause.message : String(cause))}
-    } finally {
-      if (currentProjectId.current === projectId) {setPreparingReview(false)}
-    }
-  }, [savingFeature, preparingReview, editingGeometry, editingScopeId, scopeFacesChanged, prepareReviewForEdit, highlightReview, axisOrigins, projectId])
+        if (!current) {
+          throw new Error('倒扣范围已重新识别，请从当前列表重新选择。')
+        }
+        editBase.current = captureReviewEdit(fresh, 'scope', current.forming_scope_id)
+        setEditConflict(false)
+        highlightReview(scopeDisplayGeometry(current))
+        setEditingScopeId(null)
+        setDraftFaceIndices(null)
+        setActiveDirectionId(current.forming_scope_id)
+        setDirectionError('')
+        setDirectionDraft({
+          scope: current,
+          revision: fresh.revision,
+          snapshotId: fresh.snapshot_id,
+          text: current.draw_direction ? JSON.stringify(current.draw_direction) : '',
+          mode: 'rotate',
+          origin: axisOrigins[current.forming_scope_id],
+          mechanismKind: current.mechanism_kind
+        })
+      } catch (cause) {
+        if (currentProjectId.current === projectId) {
+          setReviewError(cause instanceof Error ? cause.message : String(cause))
+        }
+      } finally {
+        if (currentProjectId.current === projectId) {
+          setPreparingReview(false)
+        }
+      }
+    },
+    [
+      savingFeature,
+      preparingReview,
+      editingGeometry,
+      editingScopeId,
+      scopeFacesChanged,
+      prepareReviewForEdit,
+      highlightReview,
+      axisOrigins,
+      projectId
+    ]
+  )
 
   const saveDirectionEdit = async () => {
-    if (!directionDraft || !projectId || savingFeature || editConflict) {return}
+    if (!directionDraft || !projectId || savingFeature || editConflict) {
+      return
+    }
     const vector = parseDirectionVector(directionDraft.text)
 
-    if (!vector && !(directionDraft.scope.mode === 'local' && directionDraft.text.trim() === '')) {return}
+    if (!vector && !(directionDraft.scope.mode === 'local' && directionDraft.text.trim() === '')) {
+      return
+    }
     setSavingFeature(true)
     setDirectionError('')
 
     try {
-      const context = await withCurrentReview((pins, timeoutMs) => window.hermesDesktop.api<ReviewContext & { viewer_manifest?: string | null; direction_status?: string }>({
-        path: `/api/dfm/projects/${encodeURIComponent(projectId)}/discovery/review/direction`, method: 'POST',
-        timeoutMs,
-        body: { forming_scope_id: directionDraft.scope.forming_scope_id, draw_direction: vector,
-          mechanism_kind: directionDraft.mechanismKind, geometry_refs: directionDraft.scope.geometry_refs,
-          ...pins }
-      }))
+      const context = await withCurrentReview((pins, timeoutMs) =>
+        window.hermesDesktop.api<ReviewContext & { viewer_manifest?: string | null; direction_status?: string }>({
+          path: `/api/dfm/projects/${encodeURIComponent(projectId)}/discovery/review/direction`,
+          method: 'POST',
+          timeoutMs,
+          body: {
+            forming_scope_id: directionDraft.scope.forming_scope_id,
+            draw_direction: vector,
+            mechanism_kind: directionDraft.mechanismKind,
+            geometry_refs: directionDraft.scope.geometry_refs,
+            ...pins
+          }
+        })
+      )
 
-      if (currentProjectId.current !== projectId) {return}
+      if (currentProjectId.current !== projectId) {
+        return
+      }
 
-      if (context.viewer_manifest) {workingViewer.current = { externalPath: target.manifestPath, path: context.viewer_manifest, projectId }}
+      if (context.viewer_manifest) {
+        workingViewer.current = { externalPath: target.manifestPath, path: context.viewer_manifest, projectId }
+      }
       applyReviewContext(context)
-      setAxisOrigins(previous => directionDraft.origin ? { ...previous, [directionDraft.scope.forming_scope_id]: directionDraft.origin } :
-        Object.fromEntries(Object.entries(previous).filter(([id]) => id !== directionDraft.scope.forming_scope_id)))
+      setAxisOrigins(previous =>
+        directionDraft.origin
+          ? { ...previous, [directionDraft.scope.forming_scope_id]: directionDraft.origin }
+          : Object.fromEntries(Object.entries(previous).filter(([id]) => id !== directionDraft.scope.forming_scope_id))
+      )
 
       if (context.direction_status !== 'forming_direction_unchanged') {
-        setManifest(current => current ? { ...current, status: 'discovery', issues: [], issue_count: 0, issue_type_counts: [] } : current)
+        setManifest(current =>
+          current ? { ...current, status: 'discovery', issues: [], issue_count: 0, issue_type_counts: [] } : current
+        )
       }
 
       setDirectionDraft(null)
       editBase.current = null
       setEditConflict(false)
-      setReviewNotice(context.direction_status === 'forming_direction_unchanged' ? '方案内容未改变，保留原确认和计算结果。' : context.direction_status === 'forming_direction_staged' ? '方案草稿已保存。请核对倒扣面、成型面、机构和方向，再确认完整方案。' : '出模方向已更新。相关计算需重新分析，原报告保留为历史结果。')
+      setReviewNotice(
+        context.direction_status === 'forming_direction_unchanged'
+          ? '方案内容未改变，保留原确认和计算结果。'
+          : context.direction_status === 'forming_direction_staged'
+            ? '方案草稿已保存。请核对倒扣面、成型面、机构和方向，再确认完整方案。'
+            : '出模方向已更新。相关计算需重新分析，原报告保留为历史结果。'
+      )
     } catch (cause) {
-      if (currentProjectId.current === projectId) {setDirectionError(cause instanceof Error ? cause.message : String(cause))}
+      if (currentProjectId.current === projectId) {
+        setDirectionError(cause instanceof Error ? cause.message : String(cause))
+      }
     } finally {
-      if (currentProjectId.current === projectId) {setSavingFeature(false)}
+      if (currentProjectId.current === projectId) {
+        setSavingFeature(false)
+      }
     }
   }
 
-  const activeDirectionScope = latestReviewContext?.forming_scopes.find(scope => scope.forming_scope_id === activeDirectionId && scope.status !== 'stale')
+  const activeDirectionScope = latestReviewContext?.forming_scopes.find(
+    scope => scope.forming_scope_id === activeDirectionId && scope.status !== 'stale'
+  )
 
-  const axisState: DirectionAxisState | null = directionDraft ? {
-    scopeId: directionDraft.scope.forming_scope_id, direction: parseDirectionVector(directionDraft.text),
-    geometryRefs: scopeDisplayGeometry(directionDraft.scope), editing: true, mode: directionDraft.mode, origin: directionDraft.origin
-  } : activeDirectionScope ? { scopeId: activeDirectionScope.forming_scope_id, direction: activeDirectionScope.draw_direction,
-    geometryRefs: scopeDisplayGeometry(activeDirectionScope), editing: false, mode: 'rotate', origin: axisOrigins[activeDirectionScope.forming_scope_id] } : null
+  const axisState: DirectionAxisState | null = directionDraft
+    ? {
+        scopeId: directionDraft.scope.forming_scope_id,
+        direction: parseDirectionVector(directionDraft.text),
+        geometryRefs: scopeDisplayGeometry(directionDraft.scope),
+        editing: true,
+        mode: directionDraft.mode,
+        origin: directionDraft.origin
+      }
+    : activeDirectionScope
+      ? {
+          scopeId: activeDirectionScope.forming_scope_id,
+          direction: activeDirectionScope.draw_direction,
+          geometryRefs: scopeDisplayGeometry(activeDirectionScope),
+          editing: false,
+          mode: 'rotate',
+          origin: axisOrigins[activeDirectionScope.forming_scope_id]
+        }
+      : null
 
   const saveFeatureEdit = useCallback(async () => {
     if (
-      editConflict || (!editingFeatureId && !editingScopeId && !editingAnnotation) ||
-      (!draftFaceIndices || (!draftFaceIndices.size && !scopeCanHaveEmptySelection)) ||
+      editConflict ||
+      (!editingFeatureId && !editingScopeId && !editingAnnotation) ||
+      !draftFaceIndices ||
+      (!draftFaceIndices.size && !scopeCanHaveEmptySelection) ||
       !projectId ||
       projectRevision == null
     ) {
@@ -1704,29 +1959,39 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
       const refsByIndex = new Map(topologyFaces.map(face => [face.geometry_ref.index, face.geometry_ref] as const))
       const geometryRefs = faceIndices.map(index => refsByIndex.get(index))
 
-      if (geometryRefs.some(ref => !ref?.input_sha256 || !ref.topology_snapshot_id || !ref.entity_id))
-        {throw new Error('选择中包含无法验证拓扑身份的面，请刷新后重试。')}
+      if (geometryRefs.some(ref => !ref?.input_sha256 || !ref.topology_snapshot_id || !ref.entity_id)) {
+        throw new Error('选择中包含无法验证拓扑身份的面，请刷新后重试。')
+      }
 
-      const result = await withCurrentReview((pins, timeoutMs) => window.hermesDesktop.api<{ revision: number; geometry_refs?: GeometryReference[]; unchanged?: boolean; viewer_manifest?: string | null }>({
-        path: `/api/dfm/projects/${encodeURIComponent(projectId)}/discovery/${editingAnnotation ? 'annotations' : `${editingScopeId ? 'scopes' : 'features'}/${encodeURIComponent(editingScopeId ?? editingFeatureId!)}`}`,
-        method: 'PATCH',
-        timeoutMs,
-        body: editingAnnotation
-          ? {
-              ...pins,
-              annotations: [
-                {
-                  annotation_id: editingAnnotation.annotation_id,
-                  kind: editingAnnotation.kind,
-                  value: editingAnnotation.value,
-                  geometry_refs: geometryRefs
-                }
-              ]
-            }
-          : { ...pins, geometry_refs: geometryRefs, ...(editingScopeId ? { face_role: editingScopeRole } : {}) }
-      }))
+      const result = await withCurrentReview((pins, timeoutMs) =>
+        window.hermesDesktop.api<{
+          revision: number
+          geometry_refs?: GeometryReference[]
+          unchanged?: boolean
+          viewer_manifest?: string | null
+        }>({
+          path: `/api/dfm/projects/${encodeURIComponent(projectId)}/discovery/${editingAnnotation ? 'annotations' : `${editingScopeId ? 'scopes' : 'features'}/${encodeURIComponent(editingScopeId ?? editingFeatureId!)}`}`,
+          method: 'PATCH',
+          timeoutMs,
+          body: editingAnnotation
+            ? {
+                ...pins,
+                annotations: [
+                  {
+                    annotation_id: editingAnnotation.annotation_id,
+                    kind: editingAnnotation.kind,
+                    value: editingAnnotation.value,
+                    geometry_refs: geometryRefs
+                  }
+                ]
+              }
+            : { ...pins, geometry_refs: geometryRefs, ...(editingScopeId ? { face_role: editingScopeRole } : {}) }
+        })
+      )
 
-      if (currentProjectId.current !== projectId) {return}
+      if (currentProjectId.current !== projectId) {
+        return
+      }
 
       if (result.viewer_manifest && !result.unchanged) {
         workingViewer.current = { externalPath: target.manifestPath, path: result.viewer_manifest, projectId }
@@ -1737,8 +2002,15 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
           ? {
               ...current,
               project_revision: result.revision,
-              ...(result.unchanged ? {} : { status: 'discovery' as const, review_status: 'pending' as const,
-                issues: [], issue_count: 0, issue_type_counts: [] }),
+              ...(result.unchanged
+                ? {}
+                : {
+                    status: 'discovery' as const,
+                    review_status: 'pending' as const,
+                    issues: [],
+                    issue_count: 0,
+                    issue_type_counts: []
+                  }),
               features: current.features?.map(feature =>
                 feature.feature_id === editingFeatureId && result.geometry_refs
                   ? {
@@ -1752,7 +2024,9 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
       )
       setProjectRevision(result.revision)
 
-      if (!result.unchanged) {setReviewNotice('识别结果已更新。请重新确认受影响的条目，再更新分析；原报告保留为历史结果。')}
+      if (!result.unchanged) {
+        setReviewNotice('识别结果已更新。请重新确认受影响的条目，再更新分析；原报告保留为历史结果。')
+      }
       setEditingFeatureId(null)
       setEditingScopeId(null)
       setEditingAnnotation(null)
@@ -1768,12 +2042,16 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
     } catch (cause) {
       if (currentProjectId.current === projectId) {
         const message = cause instanceof Error ? cause.message : String(cause)
-        setReviewError(/geometry_edit_conflict|snapshot_conflict|manifest_conflict/.test(message)
-          ? '审核状态已更新，草稿已保留，请重试。'
-          : message)
+        setReviewError(
+          /geometry_edit_conflict|snapshot_conflict|manifest_conflict/.test(message)
+            ? '审核状态已更新，草稿已保留，请重试。'
+            : message
+        )
       }
     } finally {
-      if (currentProjectId.current === projectId) {setSavingFeature(false)}
+      if (currentProjectId.current === projectId) {
+        setSavingFeature(false)
+      }
     }
   }, [
     applyReviewContext,
@@ -1791,38 +2069,59 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
     target.manifestPath
   ])
 
-  const startScopeEdit = useCallback(async (scope: ReviewScope, reviewed: ReviewContext, faceRole: 'forming' | 'undercut' = 'forming') => {
-    if (preparingReview || editingGeometry || savingFeature) {return}
-    setPreparingReview(true)
-    setReviewError('')
+  const startScopeEdit = useCallback(
+    async (scope: ReviewScope, reviewed: ReviewContext, faceRole: 'forming' | 'undercut' = 'forming') => {
+      if (preparingReview || editingGeometry || savingFeature) {
+        return
+      }
+      setPreparingReview(true)
+      setReviewError('')
 
-    try {
-      const context = await prepareReviewForEdit(reviewed)
+      try {
+        const context = await prepareReviewForEdit(reviewed)
 
-      if (!context) {return}
-      const current = context.forming_scopes.find(item => item.forming_scope_id === scope.forming_scope_id && item.status !== 'stale')
+        if (!context) {
+          return
+        }
+        const current = context.forming_scopes.find(
+          item => item.forming_scope_id === scope.forming_scope_id && item.status !== 'stale'
+        )
 
-      if (!current) {throw new Error('倒扣范围已重新识别，请从当前列表重新选择。')}
-      editBase.current = captureReviewEdit(context, 'scope', current.forming_scope_id)
-      setEditConflict(false)
-      highlightReview(faceRole === 'undercut' ? current.undercut_geometry_refs : current.geometry_refs)
-      setEditingFeatureId(null)
-      setEditingScopeRole(faceRole)
-      setEditingScopeId(current.forming_scope_id)
-      setEditingSnapshotId(context.snapshot_id)
-      setEditingAnnotation(null)
-      setDraftFaceIndices(resolveGeometryRefFaceIndices(faceRole === 'undercut' ? current.undercut_geometry_refs : current.geometry_refs))
-      setProjectRevision(context.revision)
-    } catch (cause) {
-      if (currentProjectId.current === projectId) {setReviewError(cause instanceof Error ? cause.message : String(cause))}
-    } finally {
-      if (currentProjectId.current === projectId) {setPreparingReview(false)}
-    }
-  }, [preparingReview, editingGeometry, savingFeature, prepareReviewForEdit, highlightReview, projectId])
+        if (!current) {
+          throw new Error('倒扣范围已重新识别，请从当前列表重新选择。')
+        }
+        editBase.current = captureReviewEdit(context, 'scope', current.forming_scope_id)
+        setEditConflict(false)
+        highlightReview(faceRole === 'undercut' ? current.undercut_geometry_refs : current.geometry_refs)
+        setEditingFeatureId(null)
+        setEditingScopeRole(faceRole)
+        setEditingScopeId(current.forming_scope_id)
+        setEditingSnapshotId(context.snapshot_id)
+        setEditingAnnotation(null)
+        setDraftFaceIndices(
+          resolveGeometryRefFaceIndices(
+            faceRole === 'undercut' ? current.undercut_geometry_refs : current.geometry_refs
+          )
+        )
+        setProjectRevision(context.revision)
+      } catch (cause) {
+        if (currentProjectId.current === projectId) {
+          setReviewError(cause instanceof Error ? cause.message : String(cause))
+        }
+      } finally {
+        if (currentProjectId.current === projectId) {
+          setPreparingReview(false)
+        }
+      }
+    },
+    [preparingReview, editingGeometry, savingFeature, prepareReviewForEdit, highlightReview, projectId]
+  )
 
   const startAnnotationEdit = useCallback(
     (annotation: ReviewAnnotation, context: ReviewContext, values: string[]) => {
-      if (savingFeature) {return}
+      if (savingFeature) {
+        return
+      }
       editBase.current = captureReviewEdit(context, 'annotation', annotation.annotation_id)
       setEditConflict(false)
       highlightReview(annotation.geometry_refs)
@@ -1842,7 +2141,9 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
     (kind: AnnotationKind, context: ReviewContext) => {
       const values = kind.value_schema.enum ?? []
 
-      if (!values.length) {return}
+      if (!values.length) {
+        return
+      }
       startAnnotationEdit(
         {
           annotation_id: `annotation_${crypto.randomUUID()}`,
@@ -1869,99 +2170,96 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
   const editedFeature = manifest?.features?.find(feature => feature.feature_id === editingFeatureId)
   const originalEditedFaces = resolveGeometryRefFaceIndices(editedFeature?.geometry_refs)
 
-  const featureResults = ((manifest?.features?.length ?? 0) === 0 ? (
-              <div className="rounded-lg border border-amber-400/20 bg-amber-400/10 p-3 text-xs leading-5 text-amber-100">
-                {status === 'preview'
-                  ? '分析完成后，识别到的孔、圆角、倒角等特征会显示在这里。'
-                  : '当前没有可显示的结构化特征。'}
-              </div>
-            ) : (
-              <DfmFeatureGroups
-                activeFeatureElementRef={activeFeatureElementRef}
-                activeFeatureId={activeFeatureId}
-                editingFeatureId={editingFeatureId}
-                features={confirmedFeatures}
-                key={projectId ?? target.manifestPath}
-                labels={FEATURE_LABELS}
-                navigationSequence={reviewNavigation?.category === 'structure' ? reviewNavigation.sequence : undefined}
-                renderFeature={(feature, index) => {
-                  const selected = feature.feature_id === activeFeatureId
-                  const editing = feature.feature_id === editingFeatureId
+  const featureResults =
+    (manifest?.features?.length ?? 0) === 0 ? (
+      <div className="rounded-lg border border-amber-400/20 bg-amber-400/10 p-3 text-xs leading-5 text-amber-100">
+        {status === 'preview'
+          ? '分析完成后，识别到的孔、圆角、倒角等特征会显示在这里。'
+          : '当前没有可显示的结构化特征。'}
+      </div>
+    ) : (
+      <DfmFeatureGroups
+        activeFeatureElementRef={activeFeatureElementRef}
+        activeFeatureId={activeFeatureId}
+        editingFeatureId={editingFeatureId}
+        features={confirmedFeatures}
+        key={projectId ?? target.manifestPath}
+        labels={FEATURE_LABELS}
+        navigationSequence={reviewNavigation?.category === 'structure' ? reviewNavigation.sequence : undefined}
+        renderFeature={(feature, index) => {
+          const selected = feature.feature_id === activeFeatureId
+          const editing = feature.feature_id === editingFeatureId
 
-                  const visibleRefs = editing
-                    ? Array.from(draftFaceIndices ?? []).sort((left, right) => left - right)
-                    : feature.geometry_refs.map(ref => ref.index)
+          const visibleRefs = editing
+            ? Array.from(draftFaceIndices ?? []).sort((left, right) => left - right)
+            : feature.geometry_refs.map(ref => ref.index)
 
-                  const refs = visibleRefs.map(indexValue => 'face #' + indexValue).join('、') || '无拓扑引用'
+          const refs = visibleRefs.map(indexValue => 'face #' + indexValue).join('、') || '无拓扑引用'
 
-                  const confidence =
-                    typeof feature.confidence === 'number' ? Math.round(feature.confidence * 100) + '%' : '—'
+          const confidence = typeof feature.confidence === 'number' ? Math.round(feature.confidence * 100) + '%' : '—'
 
-                  return (
-                    <div
-                      className={
-                        'flex w-full items-start gap-2 rounded-lg border p-2.5 text-left transition ' +
-                        (selected
-                          ? 'border-amber-400/70 bg-amber-500/18 shadow-[0_0_0_1px_rgba(251,191,36,0.12)]'
-                          : 'border-white/10 bg-white/[0.035] hover:border-white/20 hover:bg-white/[0.07]')
-                      }
-                      data-review-object={feature.feature_id}
-                      key={feature.feature_id}
-                      ref={selected ? activeFeatureElementRef : undefined}
-                    >
-                      <button
-                        aria-pressed={selected}
-                        className="flex min-w-0 flex-1 items-start gap-2 text-left"
-                        disabled={editingGeometry || savingFeature}
-                        onClick={() => handleFeatureSelect(feature)}
-                        type="button"
-                      >
-                        <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-amber-500/20 text-[10px] text-amber-100">
-                          {index + 1}
-                        </span>
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <h2 className="text-xs font-medium text-slate-100">
-                              {FEATURE_LABELS[feature.kind] ?? feature.kind}
-                            </h2>
-                            <span className="rounded bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-400">
-                              {FEATURE_SUBTYPE_LABELS[feature.subtype] ?? feature.subtype}
-                            </span>
-                            {Array.isArray(feature.diagnostics.unassigned_geometry_refs) && feature.diagnostics.unassigned_geometry_refs.length > 0 && (
-                              <span className="text-[9px] text-amber-200">新增面待分区</span>
-                            )}
-                          </div>
-                          <p className="mt-1.5 text-[11px] text-slate-300">
-                            {formatFeatureParameters(feature.parameters)}
-                          </p>
-                          <p className="mt-1 text-[10px] text-slate-500">
-                            置信度 {confidence} · {refs}
-                          </p>
-                        </div>
-                      </button>
-                      {canEditDiscovery && (
-                        <div className="flex shrink-0 gap-1">
-                          {editing ? (
-                            <span className="text-[10px] text-amber-100">上方编辑中</span>
-                          ) : (
-                            <button
-                              className="rounded bg-white/5 px-1.5 py-1 text-[10px] text-slate-300 hover:bg-white/10 disabled:opacity-50"
-                              disabled={
-                                Boolean(editingFeatureId || editingScopeId || editingAnnotation) || savingFeature
-                              }
-                              onClick={() => startFeatureEdit(feature)}
-                              type="button"
-                            >
-                              编辑
-                            </button>
-                          )}
-                        </div>
+          return (
+            <div
+              className={
+                'flex w-full items-start gap-2 rounded-lg border p-2.5 text-left transition ' +
+                (selected
+                  ? 'border-amber-400/70 bg-amber-500/18 shadow-[0_0_0_1px_rgba(251,191,36,0.12)]'
+                  : 'border-white/10 bg-white/[0.035] hover:border-white/20 hover:bg-white/[0.07]')
+              }
+              data-review-object={feature.feature_id}
+              key={feature.feature_id}
+              ref={selected ? activeFeatureElementRef : undefined}
+            >
+              <button
+                aria-pressed={selected}
+                className="flex min-w-0 flex-1 items-start gap-2 text-left"
+                disabled={editingGeometry || savingFeature}
+                onClick={() => handleFeatureSelect(feature)}
+                type="button"
+              >
+                <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-amber-500/20 text-[10px] text-amber-100">
+                  {index + 1}
+                </span>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <h2 className="text-xs font-medium text-slate-100">
+                      {FEATURE_LABELS[feature.kind] ?? feature.kind}
+                    </h2>
+                    <span className="rounded bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-400">
+                      {FEATURE_SUBTYPE_LABELS[feature.subtype] ?? feature.subtype}
+                    </span>
+                    {Array.isArray(feature.diagnostics.unassigned_geometry_refs) &&
+                      feature.diagnostics.unassigned_geometry_refs.length > 0 && (
+                        <span className="text-[9px] text-amber-200">新增面待分区</span>
                       )}
-                    </div>
-                  )
-                }}
-              />
-            ))
+                  </div>
+                  <p className="mt-1.5 text-[11px] text-slate-300">{formatFeatureParameters(feature.parameters)}</p>
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    置信度 {confidence} · {refs}
+                  </p>
+                </div>
+              </button>
+              {canEditDiscovery && (
+                <div className="flex shrink-0 gap-1">
+                  {editing ? (
+                    <span className="text-[10px] text-amber-100">上方编辑中</span>
+                  ) : (
+                    <button
+                      className="rounded bg-white/5 px-1.5 py-1 text-[10px] text-slate-300 hover:bg-white/10 disabled:opacity-50"
+                      disabled={Boolean(editingFeatureId || editingScopeId || editingAnnotation) || savingFeature}
+                      onClick={() => startFeatureEdit(feature)}
+                      type="button"
+                    >
+                      编辑
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )
+        }}
+      />
+    )
 
   if (error) {
     return (
@@ -1993,11 +2291,18 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
         <div className="min-w-0">
           <h1 className="truncate text-sm font-semibold">DFM 三维模型</h1>
           <p className="mt-0.5 truncate text-[11px] text-slate-400">
-            {status === 'preview'
-              ? 'STEP 预览 · 等待风险分析'
-              : `${manifest.scope_id} · ${manifest.verification_level}`}{' '}
+            {target.failure
+              ? '分析未完成 · 保留当前模型'
+              : status === 'preview'
+                ? 'STEP 预览 · 等待风险分析'
+                : `${manifest.scope_id} · ${manifest.verification_level}`}{' '}
             · {scene.render_mesh_snapshot.triangle_count.toLocaleString()} 个三角形
           </p>
+          {target.failure && (
+            <p role="alert" className="mt-1 break-words text-xs text-red-300" title={target.failure.code}>
+              {target.failure.message}
+            </p>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <button
@@ -2065,11 +2370,17 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
             fitRequest={fitRequest}
             focusRequest={focusRequest}
             onAxisSelected={() => {
-              if (!activeDirectionScope || !latestReviewContext) {return}
+              if (!activeDirectionScope || !latestReviewContext) {
+                return
+              }
 
               void startDirectionEdit(activeDirectionScope, latestReviewContext)
             }}
-            onDirectionChange={(direction, origin) => setDirectionDraft(current => current ? { ...current, text: JSON.stringify(direction), origin } : current)}
+            onDirectionChange={(direction, origin) =>
+              setDirectionDraft(current =>
+                current ? { ...current, text: JSON.stringify(direction), origin } : current
+              )
+            }
             onFacePick={handleFacePick}
             pickedFaceIndex={pickedFaceIndex}
             selectedFaceIndices={editingFeatureId || editingScopeId || editingAnnotation ? draftFaceIndices : null}
@@ -2236,12 +2547,29 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
             )}
           </section>
           <section className={reviewPaneTab === 'features' ? 'order-1 min-h-0 overflow-y-auto pr-1' : 'hidden'}>
-            {preparingReview && <p className="mb-2 text-[11px] text-cyan-100" role="status">正在准备编辑…</p>}
-            {reviewNotice && <p className="mb-2 rounded border border-cyan-300/20 bg-cyan-500/10 p-2 text-[10px] text-cyan-100">{reviewNotice}</p>}
-            {editConflict && <div className="mb-2 rounded border border-amber-400/40 p-2 text-[11px] text-amber-100" role="alert">
-              <p>当前区域已更新，草稿仍保留。重新载入会以最新内容替换草稿。</p>
-              <button className="mt-1 text-cyan-100" disabled={savingFeature || preparingReview} onClick={() => void reloadEdit()} type="button">重新载入最新区域</button>
-            </div>}
+            {preparingReview && (
+              <p className="mb-2 text-[11px] text-cyan-100" role="status">
+                正在准备编辑…
+              </p>
+            )}
+            {reviewNotice && (
+              <p className="mb-2 rounded border border-cyan-300/20 bg-cyan-500/10 p-2 text-[10px] text-cyan-100">
+                {reviewNotice}
+              </p>
+            )}
+            {editConflict && (
+              <div className="mb-2 rounded border border-amber-400/40 p-2 text-[11px] text-amber-100" role="alert">
+                <p>当前区域已更新，草稿仍保留。重新载入会以最新内容替换草稿。</p>
+                <button
+                  className="mt-1 text-cyan-100"
+                  disabled={savingFeature || preparingReview}
+                  onClick={() => void reloadEdit()}
+                  type="button"
+                >
+                  重新载入最新区域
+                </button>
+              </div>
+            )}
             {editedFeature && (
               <DfmFeatureEditor
                 addedCount={[...(draftFaceIndices ?? [])].filter(index => !originalEditedFaces.has(index)).length}
@@ -2270,13 +2598,28 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
               />
             )}
             {editingScopeId && (
-              <div aria-label={editingScopeRole === 'undercut' ? '编辑倒扣面' : '编辑成型面'} className="mb-2 rounded border border-amber-300/30 p-2 text-[11px] text-amber-100" role="region">
+              <div
+                aria-label={editingScopeRole === 'undercut' ? '编辑倒扣面' : '编辑成型面'}
+                className="mb-2 rounded border border-amber-300/30 p-2 text-[11px] text-amber-100"
+                role="region"
+              >
                 <p>
-                  编辑{editingScopeRole === 'undercut' ? '倒扣面' : '成型面'} {editingScopeId} · 已选 {draftFaceIndices?.size ?? 0} 个面
+                  编辑{editingScopeRole === 'undercut' ? '倒扣面' : '成型面'} {editingScopeId} · 已选{' '}
+                  {draftFaceIndices?.size ?? 0} 个面
                 </p>
                 <p>保存后需重新确认本成型方案；结构在结构组独立审核。</p>
-                <button className="mt-2 mr-3 text-cyan-200 disabled:opacity-40" disabled={savingFeature || preparingReview || scopeFacesChanged}
-                  onClick={() => { if (currentEditedScope && latestReviewContext) {void startDirectionEdit(currentEditedScope, latestReviewContext)} }} type="button">编辑机构与方向</button>
+                <button
+                  className="mt-2 mr-3 text-cyan-200 disabled:opacity-40"
+                  disabled={savingFeature || preparingReview || scopeFacesChanged}
+                  onClick={() => {
+                    if (currentEditedScope && latestReviewContext) {
+                      void startDirectionEdit(currentEditedScope, latestReviewContext)
+                    }
+                  }}
+                  type="button"
+                >
+                  编辑机构与方向
+                </button>
                 {scopeFacesChanged && <p className="mt-1 text-[10px] text-slate-300">请先保存当前选面，再编辑方向。</p>}
                 <button
                   className="mr-3 mt-2"
@@ -2286,7 +2629,11 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
                 >
                   {savingFeature ? '保存中…' : '保存范围'}
                 </button>
-                {savingFeature && <p className="mt-1 text-slate-300" role="status">正在保存范围并更新审核状态，请稍候。</p>}
+                {savingFeature && (
+                  <p className="mt-1 text-slate-300" role="status">
+                    正在保存范围并更新审核状态，请稍候。
+                  </p>
+                )}
                 <button disabled={savingFeature} onClick={cancelFeatureEdit} type="button">
                   取消
                 </button>
@@ -2297,8 +2644,22 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
                 )}
               </div>
             )}
-            {directionDraft && <DfmDirectionEditor busy={savingFeature} draft={directionDraft} error={directionError} onCancel={() => { setDirectionDraft(null); setDirectionError(''); setEditConflict(false); editBase.current = null }}
-              onChange={setDirectionDraft} onSave={() => void saveDirectionEdit()} saveBlocked={editConflict} />}
+            {directionDraft && (
+              <DfmDirectionEditor
+                busy={savingFeature}
+                draft={directionDraft}
+                error={directionError}
+                onCancel={() => {
+                  setDirectionDraft(null)
+                  setDirectionError('')
+                  setEditConflict(false)
+                  editBase.current = null
+                }}
+                onChange={setDirectionDraft}
+                onSave={() => void saveDirectionEdit()}
+                saveBlocked={editConflict}
+              />
+            )}
             {projectId && status !== 'preview' && (
               <DfmReviewPanel
                 confirmedFeaturesContent={featureResults}
@@ -2309,13 +2670,26 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
                 onCreateAnnotation={createAnnotation}
                 onEditAnnotation={startAnnotationEdit}
                 onEditDirection={startDirectionEdit}
-                onEditFeature={canEditDiscovery ? (feature, context) => {
-                  applyReviewContext(context)
-                  startFeatureEdit({ feature_id: feature.feature_id, kind: feature.kind, confidence: feature.confidence,
-                    geometry_refs: feature.properties.geometry_refs ?? [], subtype: String(feature.properties.subtype ?? ''),
-                    parameters: feature.properties, diagnostics: feature.properties.diagnostics ?? {},
-                    method: String(feature.properties.method ?? '') }, context)
-                } : undefined}
+                onEditFeature={
+                  canEditDiscovery
+                    ? (feature, context) => {
+                        applyReviewContext(context)
+                        startFeatureEdit(
+                          {
+                            feature_id: feature.feature_id,
+                            kind: feature.kind,
+                            confidence: feature.confidence,
+                            geometry_refs: feature.properties.geometry_refs ?? [],
+                            subtype: String(feature.properties.subtype ?? ''),
+                            parameters: feature.properties,
+                            diagnostics: feature.properties.diagnostics ?? {},
+                            method: String(feature.properties.method ?? '')
+                          },
+                          context
+                        )
+                      }
+                    : undefined
+                }
                 onEditScope={startScopeEdit}
                 onHighlight={highlightReview}
                 onRefreshed={applyReviewContext}

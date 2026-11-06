@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -27,6 +27,7 @@ from ..contracts import (
     _expression_operand_aliases,
 )
 from ..errors import DFMError
+from .cases import evaluation_cases, geometric_operand_matches, rule_case_key
 from ..runtime.result_documents import read_result_document, write_result_document
 
 
@@ -74,7 +75,7 @@ def _utc_now() -> str:
 class EvaluationEngine:
     """The sole production owner of Measurement → Evaluation comparison."""
 
-    version = "hermes-evaluation-v4"
+    version = "hermes-evaluation-v6"
 
     def materialize(
         self,
@@ -164,10 +165,14 @@ class EvaluationEngine:
         results: list[EvaluationRecord | GeometricEvaluationRecord] = []
         provenance: dict[str, dict[str, Any]] = {}
         if plan.rule_bindings:
-            for binding in self._select_measured_rules(measurements, plan):
-                evaluation, source = self._evaluate_binding(measurements, plan, binding)
-                results.append(evaluation)
-                provenance[evaluation.evaluation_id] = source
+            for case in evaluation_cases(measurements, plan):
+                case_plan = replace(plan, rule_bindings=case.bindings)
+                for binding in self._select_measured_rules(case.measurements, case_plan, instance_id=case.instance_id):
+                    evaluation, source = self._evaluate_binding(case.measurements, case_plan, binding, instance_id=case.instance_id)
+                    if case.instance_id is not None:
+                        source["measurement_instance_id"] = case.instance_id
+                    results.append(evaluation)
+                    provenance[evaluation.evaluation_id] = source
             return results, provenance
 
         for measurement in measurements:
@@ -181,7 +186,7 @@ class EvaluationEngine:
             provenance[evaluation.evaluation_id] = source
         return results, provenance
 
-    def _select_measured_rules(self, measurements, plan):
+    def _select_measured_rules(self, measurements, plan, *, instance_id=None):
         """Choose one candidate per Check instance after objective measurement.
 
         Missing/invalid measurements are errors, never a reason to fall back to
@@ -203,15 +208,7 @@ class EvaluationEngine:
             if binding.rule_selection is None:
                 direct.append(binding)
                 continue
-            key = (
-                binding.check_id,
-                tuple(sorted(binding.feature_refs)),
-                (
-                    ()
-                    if isinstance(binding, GeometricRuleBinding)
-                    else tuple(sorted(binding.region_refs))
-                ),
-            )
+            key = rule_case_key(binding)
             groups.setdefault(key, []).append(binding)
         comparisons = {
             "GT": operator.gt,
@@ -228,7 +225,7 @@ class EvaluationEngine:
                 for condition in conditions:
                     alias = condition["geometric_id"]
                     resolved = self._resolve_operand(
-                        measurements, plan, binding, operands[alias]
+                        measurements, plan, binding, operands[alias], instance_id=instance_id
                     )
                     if resolved.unit != condition["unit"]:
                         raise DFMError(
@@ -295,6 +292,7 @@ class EvaluationEngine:
         measurements: list[MeasurementRecord | GeometricResultRecord],
         plan: PlanRecord,
         binding: RuleBinding | GeometricRuleBinding,
+        *, instance_id: str | None = None,
     ) -> tuple[EvaluationRecord | GeometricEvaluationRecord, dict[str, Any]]:
         binding.validate()
         parameter = plan.rules.get(binding.rule_id)
@@ -331,7 +329,11 @@ class EvaluationEngine:
         for operand in binding.measurement_operands():
             try:
                 resolved[operand.alias] = self._resolve_operand(
-                    measurements, plan, binding, operand
+                    measurements,
+                    plan,
+                    binding,
+                    operand,
+                    instance_id=instance_id,
                 )
             except DFMError as exc:
                 if (
@@ -545,6 +547,7 @@ class EvaluationEngine:
                         "binding_id": binding.binding_id,
                         "measurement_ids": measurement_ids,
                         "rule_hash": rule_hash,
+                        **({"measurement_instance_id": instance_id} if instance_id is not None else {}),
                     },
                     sort_keys=True,
                     separators=(",", ":"),
@@ -560,6 +563,7 @@ class EvaluationEngine:
                 ],
             }
             for alias, item in resolved.items()
+            if alias not in unavailable
         }
         operand_values.update({
             alias: {
@@ -645,44 +649,17 @@ class EvaluationEngine:
         plan: PlanRecord,
         binding: RuleBinding | GeometricRuleBinding,
         operand: RuleOperand | GeometricRuleOperand,
+        *,
+        instance_id: str | None = None,
     ) -> _ResolvedOperand:
         allow_unscoped_whole_model = self._allows_unscoped_whole_model(plan, operand)
         if isinstance(operand, GeometricRuleOperand):
-            fragment_refs = {
-                fragment.fragment_id
-                for fragment in plan.active_plan_fragments(
-                    statuses={"ready", "running", "completed", "needs_attention"}
-                )
-                if (
-                    not fragment.rule_binding_refs
-                    or binding.binding_id in fragment.rule_binding_refs
-                )
-                and any(
-                    (
-                        not operand.feature_refs
-                        or item.feature_id in operand.feature_refs
-                    )
-                    and operand.geometric_id in item.geometric_ids
-                    and item.context == operand.context
-                    for item in fragment.items
-                )
-            }
-            matches = sorted(
-                (
-                    result
-                    for result in measurements
-                    if isinstance(result, GeometricResultRecord)
-                    and result.status == "ok"
-                    and result.geometric_id == operand.geometric_id
-                    and result.context == operand.context
-                    and set(operand.feature_refs).issubset(result.feature_refs)
-                    and (
-                        not fragment_refs
-                        or result.provenance.get("plan_fragment_ref") in fragment_refs
-                    )
-                ),
-                key=lambda item: item.measurement_id,
-            )
+            matches = geometric_operand_matches(measurements, plan, binding, operand)
+            if instance_id is not None and operand.aggregation == "identity":
+                # A truly unscoped singleton is shared. Named quantities must
+                # match this physical instance even when only one is returned.
+                if any(item.measurement_instance_id is not None for item in matches):
+                    matches = [item for item in matches if item.measurement_instance_id == instance_id]
         else:
             matches = sorted(
                 (
@@ -709,38 +686,23 @@ class EvaluationEngine:
                 ),
                 key=lambda item: item.measurement_id,
             )
+        if isinstance(operand, GeometricRuleOperand):
+            unavailable = [item for item in matches if item.status != "ok"]
+            if unavailable:
+                raise DFMError(
+                    "evaluation_operand_unavailable",
+                    "A required Geometric operand has no successful measurement.",
+                    {
+                        "binding_id": binding.binding_id,
+                        "operand_alias": operand.alias,
+                        "geometric_id": operand.geometric_id,
+                        "results": [
+                            {"result_id": item.result_id, "status": item.status, "reason": item.reason}
+                            for item in unavailable
+                        ],
+                    },
+                )
         if not matches:
-            if isinstance(operand, GeometricRuleOperand):
-                unavailable = [
-                    result
-                    for result in measurements
-                    if isinstance(result, GeometricResultRecord)
-                    and result.geometric_id == operand.geometric_id
-                    and result.context == operand.context
-                    and set(operand.feature_refs).issubset(result.feature_refs)
-                    and (
-                        not fragment_refs
-                        or result.provenance.get("plan_fragment_ref") in fragment_refs
-                    )
-                ]
-                if unavailable:
-                    raise DFMError(
-                        "evaluation_operand_unavailable",
-                        "The Worker could not produce a required Geometric operand.",
-                        {
-                            "binding_id": binding.binding_id,
-                            "operand_alias": operand.alias,
-                            "geometric_id": operand.geometric_id,
-                            "results": [
-                                {
-                                    "result_id": item.result_id,
-                                    "status": item.status,
-                                    "reason": item.reason,
-                                }
-                                for item in unavailable
-                            ],
-                        },
-                    )
             raise DFMError(
                 "evaluation_operand_missing",
                 "A required Measurement operand is absent from the objective result.",

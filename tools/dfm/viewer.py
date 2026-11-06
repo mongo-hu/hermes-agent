@@ -482,6 +482,14 @@ def materialize_discovery_viewer_manifest(
 
     output_dir = project_dir / Path(by_kind["render_scene"].relative_path).parent
     output_path = output_dir / "dfm_discovery_viewer.json"
+    topology_attribution = next(
+        (
+            dict(item.get("diagnostics") or {})
+            for item in metadata.get("coverage", [])
+            if isinstance(item, dict) and item.get("feature_kind") == "topology_attribution"
+        ),
+        None,
+    )
     payload = {
         "schema_version": 2,
         "contract_version": "hermes.dfm.viewer/v2",
@@ -493,6 +501,7 @@ def materialize_discovery_viewer_manifest(
         "forming_scopes": list(metadata.get("forming_scopes", [])),
         "annotations": list(metadata.get("annotations", [])),
         "relationships": list(metadata.get("relationships", [])),
+        "topology_attribution": topology_attribution,
         "input_sha256": input_sha256,
         "process": manifest.process,
         "scope_id": "discovery.feature-regions",

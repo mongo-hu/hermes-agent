@@ -1,0 +1,8 @@
+syntax = "proto3";
+package dfm.geometry.v1;
+import "geometry/v1/common.proto";
+
+// Private local transport uses bounded UTF-8 JSON lines on inherited pipes.
+// It is never exposed on a network endpoint. The document schema is owned here.
+message WorkerCommand { string id = 1; string action = 2; Document payload = 3; }
+message WorkerReply { string id = 1; Document result = 2; string error_code = 3; string error_message = 4; }

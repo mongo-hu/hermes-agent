@@ -19,6 +19,7 @@ from tools.dfm.processes.base import FactRequirement
 from tools.dfm.service import DFMService
 from tools.dfm.contracts import (
     ClarificationRecord,
+    DiscoverySnapshotRecord,
     Capability,
     CapabilityStatus,
     EffectiveRule,
@@ -815,6 +816,97 @@ def test_occt_plan_stops_when_no_supported_rule_is_applicable(service, monkeypat
     assert all(item["phase"] == "discovery" for item in manifest["plans"])
 
 
+@pytest.mark.parametrize("published_kind", ["main_wall", "hollow_boss"])
+@pytest.mark.parametrize("capability_kind", ["*", "specialized"])
+@pytest.mark.parametrize("impact_scope", ["整件级", "特征实例级"])
+def test_geometric_scopes_keep_catalog_types_and_analysis_questions(
+    service, published_kind, capability_kind, impact_scope
+):
+    dfm, _temp = service
+    package_path = (
+        Path(__file__).parents[3]
+        / "tools/dfm/scopes/injection/ontology_snapshot_v2.json"
+    )
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    for concept in package["concepts"]:
+        if concept["concept_type"] == "feature_type":
+            concept["properties"]["feature_kind"] = published_kind
+        elif concept["concept_id"] == "factor.material":
+            concept["properties"]["impact_scope"] = impact_scope
+    unhashed = {key: value for key, value in package.items() if key != "content_sha256"}
+    package["content_sha256"] = hashlib.sha256(
+        json.dumps(
+            unhashed, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    dfm.ontology_store.install_package(package)
+    dfm.ontology_store.configure_geometric_bindings({
+        "G_WALL_THK_MIN": {
+            "feature_kind": "*" if capability_kind == "*" else published_kind,
+            "scope_modes": ["feature"],
+            "direction_modes": ["none"],
+            "requires_complete_inventory": [],
+            "requires_relationships": [],
+            "context_schema": {},
+        }
+    })
+    other_kind = "hollow_boss" if published_kind == "main_wall" else "main_wall"
+    features = [
+        FeatureRecord("accepted", published_kind, [], 1.0, status="confirmed"),
+        FeatureRecord("detected", published_kind, [], 1.0),
+        FeatureRecord("rejected", published_kind, [], 1.0, status="rejected"),
+        FeatureRecord("old", published_kind, [], 1.0, status="confirmed"),
+        FeatureRecord("unrelated", other_kind, [], 1.0, status="confirmed"),
+    ]
+    snapshot = DiscoverySnapshotRecord(
+        snapshot_id="discovery-current",
+        created_at="2026-11-06T00:00:00Z",
+        input_hashes={},
+        observation_refs=[],
+        feature_refs=[item.feature_id for item in features if item.feature_id != "old"],
+        region_refs=[],
+        fusion_link_refs=[],
+        provider_versions={},
+        content_sha256="a" * 64,
+    )
+    project_id = dfm.project("create", name="Catalog-scoped G")["project_id"]
+    manifest = dfm._store(project_id).update(
+        lambda current: replace(
+            current, input_mode="step", features=features,
+            discovery_snapshots=[snapshot],
+        )
+    )
+    check_id = "check.main_wall_minimum_thickness"
+
+    scopes = dfm._geometric_analysis_scopes(manifest, snapshot)
+    assert {(item["check_id"], item["feature"].feature_id) for item in scopes} == {
+        (check_id, "accepted"), (check_id, "detected")
+    }
+    assert dfm._applicable_analysis_check_ids(manifest, snapshot) == {check_id}
+    assert dfm.clarification_feature_refs(project_id, "material") == (
+        "accepted", "detected"
+    )
+    expected_questions = (
+        {"clarification_material"}
+        if impact_scope == "整件级"
+        else {"clarification_material#accepted", "clarification_material#detected"}
+    )
+    assert {
+        item.clarification_id
+        for item in dfm._open_clarifications(manifest, phase="analysis")
+    } == expected_questions
+
+    # A generic capability must not invent applicability when only unrelated,
+    # rejected, or out-of-snapshot features remain.
+    snapshot = replace(snapshot, feature_refs=["rejected", "unrelated"])
+    manifest = dfm._store(project_id).update(
+        lambda current: replace(current, discovery_snapshots=[snapshot])
+    )
+    assert dfm._applicable_analysis_check_ids(manifest, snapshot) == set()
+    assert dfm.clarification_feature_refs(project_id, "material") == ()
+    assert dfm._open_clarifications(manifest, phase="analysis") == []
+
+
 def test_geometric_binding_keeps_one_local_scope_waiting_while_another_is_ready(
     service,
 ):
@@ -1178,3 +1270,34 @@ def test_parasolid_capability_is_local_and_does_not_disable_step(service):
     assert status["project"]["inputs"][0]["format_id"] == "parasolid_xt"
     assert status["capabilities"]["parasolid"]["status"] == "dependency_missing"
     assert status["capabilities"]["step"]["status"] == "dependency_missing"
+
+
+def test_invalid_injected_backend_cannot_freeze_an_empty_discovery(service, tmp_path):
+    dfm, _home = service
+    project_id = dfm.project("create", name="invalid backend")["project_id"]
+    source = tmp_path / "model.step"
+    source.write_bytes(STEP_PAYLOAD)
+    dfm.project("add_input", project_id=project_id, path=str(source))
+    confirm_step_facts(dfm, project_id)
+    dfm.config = replace(dfm.config, geometry_backend="geometry_service")
+    with pytest.raises(DFMError) as error:
+        dfm.analysis("discover", project_id=project_id)
+    assert error.value.code == "analyzer_not_found"
+    assert not dfm._store(project_id).load().discovery_snapshots
+
+
+@pytest.mark.parametrize("pending,next_action", [
+    ([{"clarification_id": "material-family", "fact_name": "mat_family", "status": "open"}], "clarify"),
+    ([], "confirm_discovery"),
+])
+def test_waiting_plan_start_points_to_the_actual_missing_input(service, pending, next_action):
+    dfm, _temp = service
+    project_id = dfm.project("create", name="waiting plan")["project_id"]
+    plan = PlanRecord("plan-waiting", "step", ["occt_cpp"], "waiting_input", "now",
+                      process="injection", phase="analysis", pending_inputs=pending)
+    dfm._store(project_id).update(lambda current: replace(current, plans=[plan]))
+    with pytest.raises(DFMError) as error:
+        dfm.analysis("start", project_id=project_id, plan_id=plan.plan_id)
+    assert error.value.code == "plan_not_ready"
+    assert error.value.details["next_action"] == next_action
+    assert error.value.details["pending_inputs"] == pending

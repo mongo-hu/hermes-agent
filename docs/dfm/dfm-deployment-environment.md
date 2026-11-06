@@ -1,6 +1,6 @@
 ---
 
-> 当前合并基线（2026-11-03）：Worker **3.0.0** / `dfm.geometry/v2` / bundle **2.4.0**。采用分组审核、按依赖计算；取消 `reviews.commit` 和 Worker 快照全局 `review` 门槛，保留本地预计算、通用交集拔模及预算。下文 1.13.0 的安装哈希和 Desktop 验收属于历史记录；本次适配及验证见[整合记录](dfm-geometric-session-contract.md#12-本地算法与远端编排整合)。
+> 当前合并基线（2026-11-03）：Worker **3.0.0** / `dfm.geometry/v2` / bundle **2.5.0**。采用分组审核、按依赖计算；取消 `reviews.commit` 和 Worker 快照全局 `review` 门槛，保留本地预计算、通用交集拔模及预算。下文 1.13.0 的安装哈希和 Desktop 验收属于历史记录；本次适配及验证见[整合记录](dfm-geometric-session-contract.md#12-本地算法与远端编排整合)。
 
 title: "DFM 部署环境定义"
 status: implementation-reference
@@ -24,9 +24,9 @@ type: deployment-guide
 
 | 位置 | 实测或源码要求 | 用途 |
 | --- | --- | --- |
-| Hermes `tools/dfm/runtime/process.py` | 要求 bundle 2.4.0 | 开发分支的握手约束 |
-| Worker `out/build/session-v2/dfm-geometry.exe` | 引擎 1.13.0 / bundle 2.4.0 | 本次通过原生及跨端回归的构建 |
-| Hermes `dfm-geometry-exe/windows-x64/dfm-geometry.exe` | 引擎 1.13.0 / bundle 2.4.0 | 已更新为同版完整目录；doctor 的外部引擎、常驻会话及 HTML 环境可用 |
+| Hermes `tools/dfm/runtime/process.py` | 要求 bundle 2.5.0 | 开发分支的握手约束 |
+| Worker `out/build/session-v2/dfm-geometry.exe` | 引擎 1.13.0 / bundle 2.5.0 | 本次通过原生及跨端回归的构建 |
+| Hermes `dfm-geometry-exe/windows-x64/dfm-geometry.exe` | 引擎 1.13.0 / bundle 2.5.0 | 已更新为同版完整目录；doctor 的外部引擎、常驻会话及 HTML 环境可用 |
 
 本次独立安装目录为 Worker 的 out/install/session-1.13.0-20261103，旧 Hermes 运行目录备份在 out/backups/hermes-windows-x64-1.12.0-20261103；58 个配套文件已逐一核对。构建哈希与验证范围见[会话记录第 11.2 节](dfm-geometric-session-contract.md#112-本次实现与验证记录)。
 
@@ -256,7 +256,7 @@ Adapter 可执行，不代表 Django 发布、签名同步、生产认证或模�
 
 ### 6.3 历史 Worker 安装验证
 
-以下是 2026-10-28 的历史记录，不能用于证明 2.4.0 已安装或通过验收。Windows 开发验证目录为 D:/workspace/occt-worker/out/install/session-2.3.0-verification-20261028。该目录的 bin/dfm-geometry.exe、运行库及 share/dfm-geometry/schemas 一起交付；不能只复制 EXE。已从其它工作目录、仅包含 Windows/System32 和 Windows 的 PATH 运行公共会话契约 9 项及 Hermes 解析几何联调 5 项，均通过。具体命令及完整构建脚本见 Worker 会话文档第 8.10 节。
+以下是 2026-10-28 的历史记录，不能用于证明 2.5.0 已安装或通过验收。Windows 开发验证目录为 D:/workspace/occt-worker/out/install/session-2.3.0-verification-20261028。该目录的 bin/dfm-geometry.exe、运行库及 share/dfm-geometry/schemas 一起交付；不能只复制 EXE。已从其它工作目录、仅包含 Windows/System32 和 Windows 的 PATH 运行公共会话契约 9 项及 Hermes 解析几何联调 5 项，均通过。具体命令及完整构建脚本见 Worker 会话文档第 8.10 节。
 
 此目录没有覆盖用户配置或 Hermes 随包 EXE。开发接入应将 geometry.executable 明确指向匹配构建，再用同一 profile 的 doctor 核对实际版本；正式发布需固定可追溯源码和完整运行库，不能把当前含未提交修改的 Desktop build 当作发布包。
 

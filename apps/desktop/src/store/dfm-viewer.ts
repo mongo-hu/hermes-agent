@@ -10,6 +10,7 @@ export interface DfmViewerTarget {
   revision?: number
   runId?: string
   status: 'completed' | 'discovery' | 'preview'
+  failure?: { code: string; message: string }
 }
 
 type DfmViewerTargets = Record<string, DfmViewerTarget>
@@ -59,6 +60,12 @@ export const $recoverableDfmViewerTarget = computed(
 
 function currentSessionId(): string {
   return $selectedStoredSessionId.get() || $activeSessionId.get() || ''
+}
+
+export function readDfmViewerTarget(sessionId: string): DfmViewerTarget | null {
+  const targets = $dfmViewerTargets.get()
+
+  return targets[canonicalSessionId(sessionId)] ?? targets[sessionId] ?? null
 }
 
 export function showDfmViewer(

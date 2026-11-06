@@ -260,7 +260,10 @@ def clarify_tool(
             project = dfm_service.project("status", project_id=dfm_project_id)["project"]
             review = project.get("capabilities", {}).get("discovery_review", {})
             if review.get("status") != "pending":
-                return json.dumps({"error": "This DFM Discovery review is not pending."})
+                state = dfm_service.review_state(dfm_project_id)
+                return json.dumps({"dfm_discovery_review": state, **{
+                    key: state[key] for key in ("next_action", "next_call", "continuation_required", "instruction")
+                }}, ensure_ascii=False)
             question = "请在右侧三维模型中核对识别到的特征区域；如需调整，请先编辑并保存，然后继续。"
             choices = ["确认最终特征区域并继续"]
         except DFMError as exc:
@@ -359,9 +362,10 @@ def clarify_tool(
                 ensure_ascii=False,
             )
         try:
-            discovery_review = dfm_service.analysis(
+            confirmation = dfm_service.analysis(
                 "confirm_discovery", project_id=dfm_project_id
             )
+            discovery_review = dfm_service.review_state(dfm_project_id)
         except DFMError as exc:
             return json.dumps(exc.to_dict(), ensure_ascii=False)
         confirmed = None
@@ -423,6 +427,8 @@ def clarify_tool(
         else None
     )
     continuation = (
+        {key: discovery_review[key] for key in ("next_call", "continuation_required", "instruction")}
+        if dfm_discovery_review else
         _dfm_continuation(dfm_service, dfm_project_id, next_action)
         if dfm_service is not None and dfm_project_id and next_action
         else {}
@@ -445,6 +451,8 @@ def clarify_tool(
             {
                 "dfm_discovery_review": discovery_review,
                 "next_action": discovery_review["next_action"],
+                **({"viewer_manifest": confirmation["viewer_manifest"]}
+                   if confirmation.get("viewer_manifest") else {}),
             }
             if dfm_discovery_review
             else {}

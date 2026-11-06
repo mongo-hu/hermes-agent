@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hermes.local/dfm/geometry/session-v2.schema.json",
-  "title": "OCCT geometry session bundle 2.4.0",
+  "title": "OCCT geometry session bundle 2.5.0",
   "$ref": "#/$defs/capabilities",
   "$defs": {
     "id": {
@@ -138,7 +138,7 @@
           "const": "dfm.geometry/v2"
         },
         "schema_bundle_version": {
-          "const": "2.4.0"
+          "const": "2.5.0"
         },
         "engine_version": {
           "$ref": "#/$defs/id"
@@ -819,7 +819,7 @@
         },
         "items": {
           "type": "array",
-          "minItems": 1,
+          "minItems": 0,
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -846,8 +846,33 @@
               }
             }
           }
+        },
+        "model_scan": {
+          "type": "boolean",
+          "description": "After confirmation, scan whole-model material thickness and confirmed main-direction draft independently of feature recognition."
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "model_scan": {
+                "const": true
+              }
+            },
+            "required": [
+              "model_scan"
+            ]
+          },
+          "else": {
+            "properties": {
+              "items": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
     },
     "geometric_result": {
       "type": "object",

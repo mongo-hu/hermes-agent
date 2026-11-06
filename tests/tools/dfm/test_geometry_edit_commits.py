@@ -4,7 +4,7 @@ from unittest.mock import Mock
 import pytest
 
 from tools.dfm.contracts import FactRecord, InputRecord
-from tools.dfm.errors import DFMError
+from tools.dfm.errors import DFMError, ManifestCommitError
 from tools.dfm.project.geometry_edits import GeometryEdit, geometry_identity
 from tools.dfm.project.manifest import ManifestStore
 from tools.dfm.project.workspace import DFMWorkspace
@@ -164,7 +164,7 @@ def test_failed_commit_does_not_publish_a_new_snapshot(project, monkeypatch):
         "tools.dfm.project.manifest.journal.append",
         Mock(side_effect=OSError("disk full")),
     )
-    with pytest.raises(OSError, match="disk full"):
+    with pytest.raises(ManifestCommitError, match="could not be committed"):
         edit.commit("orphan", lambda current: head(current, "orphan"))
     recovered = project.load()
     assert (

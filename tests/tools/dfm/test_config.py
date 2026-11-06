@@ -142,3 +142,13 @@ def test_dfm_config_rejects_invalid_values(mapping):
         load_dfm_config(mapping)
 
     assert exc_info.value.code == "config_invalid"
+
+
+@pytest.mark.parametrize("backend", ["geometry_service", "occt_cpp_typo"])
+def test_dfm_config_rejects_unregistered_geometry_backends(backend):
+    with pytest.raises(DFMError) as error:
+        load_dfm_config({"dfm": {"geometry": {"backend": backend}}})
+    assert error.value.code == "config_invalid"
+    assert error.value.details["path"] == "dfm.geometry.backend"
+    assert error.value.details["value"] == backend
+    assert GEOMETRY_BACKEND_OCCT_CPP_EXTERNAL in error.value.details["supported_values"]

@@ -812,7 +812,7 @@ def test_waiting_replacement_refreshes_findings_and_viewer_without_more_geometry
         row = GeometricResultRecord(result_id="wall_result", snapshot_id="s1", feature_id="wall",
             geometric_id="G_THICKNESS", context={}, status="ok", value=1.0, unit="mm",
             evidence={"geometry_refs": [{"kind": "face", "index": 7}], "field_refs": []},
-            quality={"fixture": True}, reason=None, provenance={"plan_fragment_ref": "ready"}, input_sha256="a" * 64)
+            quality={"fixture": True, "measurement_coverage": {"status": "complete"}}, reason=None, provenance={"plan_fragment_ref": "ready"}, input_sha256="a" * 64)
         payloads = {
             "geometric_results": {"input_sha256": "a" * 64, "results": [row.to_dict()]},
             "render_scene": {"schema_version": 2, "primitives": []},

@@ -33,7 +33,7 @@ from .events import parse_worker_event
 
 
 SESSION_CONTRACT = "dfm.geometry/v2"
-SESSION_SCHEMA_BUNDLE_VERSION = "2.4.0"
+SESSION_SCHEMA_BUNDLE_VERSION = "2.5.0"
 TERMINAL_JOB_STATES = frozenset({"completed", "failed", "cancelled"})
 _RECOVERABLE_SNAPSHOT_METHODS = frozenset({
     "features.discover",
@@ -169,9 +169,7 @@ class GeometrySession:
         self._pending_lock = threading.Lock()
         self._pending: dict[int, Queue[dict[str, Any]]] = {}
         self._job_event_lock = threading.Lock()
-        self._job_event_callbacks: dict[
-            str, Callable[[dict[str, Any]], None]
-        ] = {}
+        self._job_events: dict[str, dict[str, Any] | None] = {}
         self._stderr_lock = threading.Lock()
         self._stderr_tail: deque[str] = deque(maxlen=200)
         self._next_request_id = 0
@@ -304,15 +302,8 @@ class GeometrySession:
                         and job_id
                     ):
                         with self._job_event_lock:
-                            callback = self._job_event_callbacks.get(job_id)
-                        if callback is not None:
-                            try:
-                                callback(dict(params))
-                            except Exception:
-                                # Polling invokes the same callback on the run
-                                # thread, where failures can be handled without
-                                # killing the shared protocol reader.
-                                pass
+                            if job_id in self._job_events:
+                                self._job_events[job_id] = dict(params)
                         continue
                     self._disconnect("Worker response has an invalid request ID.")
                     return
@@ -451,9 +442,10 @@ class GeometrySession:
         deadline = time.monotonic() + timeout_seconds
         next_renewal = time.monotonic() + max(1.0, renew_interval_seconds)
         cancel_sent = False
-        if on_progress is not None:
-            with self._job_event_lock:
-                self._job_event_callbacks[job_id] = on_progress
+        with self._job_event_lock:
+            self._job_events[job_id] = None
+        last_progress = None
+        last_delivery = float("-inf")
         try:
             while True:
                 if (
@@ -467,10 +459,24 @@ class GeometrySession:
                 if renew is not None and now >= next_renewal:
                     renew()
                     next_renewal = now + max(1.0, renew_interval_seconds)
-                status = self.call("jobs.status", {"job_id": job_id})
-                if on_progress is not None:
-                    on_progress(status)
+                with self._job_event_lock:
+                    status = self._job_events[job_id]
+                    self._job_events[job_id] = None
+                if status is None:
+                    status = self.call("jobs.status", {"job_id": job_id})
                 state = status.get("status")
+                progress = (state, status.get("progress"))
+                now = time.monotonic()
+                # Progress is a replaceable state, not a durable business event.
+                # Deliver at most twice a second, with a heartbeat while static;
+                # terminal state is always delivered before the result/error.
+                if on_progress is not None and (
+                    state in TERMINAL_JOB_STATES
+                    or (progress != last_progress and now - last_delivery >= 0.5)
+                    or now - last_delivery >= 5.0
+                ):
+                    on_progress(status)
+                    last_progress, last_delivery = progress, time.monotonic()
                 if state in TERMINAL_JOB_STATES:
                     if state == "completed" and isinstance(status.get("result"), dict):
                         return status["result"]
@@ -500,7 +506,7 @@ class GeometrySession:
                 time.sleep(poll_interval_seconds)
         finally:
             with self._job_event_lock:
-                self._job_event_callbacks.pop(job_id, None)
+                self._job_events.pop(job_id, None)
 
     def close(self) -> None:
         if self._closed.is_set() and self._process.poll() is not None:

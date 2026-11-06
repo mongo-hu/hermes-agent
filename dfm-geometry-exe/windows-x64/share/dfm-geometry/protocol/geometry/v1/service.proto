@@ -1,0 +1,48 @@
+syntax = "proto3";
+package dfm.geometry.v1;
+import "geometry/v1/common.proto";
+
+message StatBlobRequest { BlobRef blob = 1; }
+message StatBlobReply { bool exists = 1; BlobRef blob = 2; }
+message UploadChunk { BlobRef blob = 1; bytes data = 2; }
+message EnsureModelRequest { BlobRef blob = 1; Document import_profile = 2; string idempotency_key = 3; }
+message EnsureModelReply { oneof result { ModelRef model = 1; JobRef job = 2; } }
+message GetModelRequest { string model_version_id = 1; }
+message ExecutionPolicy { double deadline_unix = 1; int32 priority = 2; }
+message SubmitJobRequest {
+  string idempotency_key = 1;
+  string model_version_id = 2;
+  repeated Region regions = 3;
+  repeated Target targets = 4;
+  ExecutionPolicy execution_policy = 5;
+  Document client_context = 6;
+  string required_runtime_fingerprint = 7;
+}
+message WatchJobRequest { string job_id = 1; uint64 after_seq = 2; }
+message ArtifactRequest { string artifact_id = 1; }
+message ReadArtifactRequest { string artifact_id = 1; uint64 offset = 2; optional uint64 length = 3; }
+message ArtifactChunk { bytes data = 1; uint64 offset = 2; }
+message RetainRequest { string retention_id = 1; string owner = 2; repeated string artifact_ids = 3; }
+message ReleaseRequest { string retention_id = 1; }
+message RetainReply { string retention_id = 1; repeated string flushed = 2; double flush_ms = 3; }
+message ReadArtifactsInlineRequest { repeated string artifact_ids = 1; uint64 max_total_bytes = 2; }
+
+service GeometryService {
+  rpc GetHealth(Empty) returns (Document);
+  rpc Drain(Empty) returns (Document);
+  rpc Shutdown(Empty) returns (Empty);
+  rpc GetCapabilities(Empty) returns (Document);
+  rpc StatBlob(StatBlobRequest) returns (StatBlobReply);
+  rpc UploadBlob(stream UploadChunk) returns (BlobRef);
+  rpc EnsureModel(EnsureModelRequest) returns (EnsureModelReply);
+  rpc GetModel(GetModelRequest) returns (Document);
+  rpc SubmitJob(SubmitJobRequest) returns (JobRef);
+  rpc GetJob(JobRef) returns (JobSnapshot);
+  rpc WatchJob(WatchJobRequest) returns (stream JobEvent);
+  rpc CancelJob(JobRef) returns (JobSnapshot);
+  rpc GetArtifact(ArtifactRequest) returns (ArtifactRef);
+  rpc ReadArtifact(ReadArtifactRequest) returns (stream ArtifactChunk);
+  rpc ReadArtifactsInline(ReadArtifactsInlineRequest) returns (Document);
+  rpc RetainArtifacts(RetainRequest) returns (RetainReply);
+  rpc ReleaseRetention(ReleaseRequest) returns (Empty);
+}

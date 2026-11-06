@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dfm.geometry.v1/model_snapshot",
+  "type": "object",
+  "required": ["schema_version", "model_version_id", "model_build_key", "topology_snapshot_id", "snapshot", "brep", "input_blob", "import_profile", "runtime_fingerprint", "units", "frame"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "model_version_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "topology_snapshot_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "units": {"const": "mm"},
+    "frame": {"const": "source"},
+    "snapshot": {"type": "object", "required": ["schema_version", "brep_format", "brep_sha256", "registry", "bbox", "normalization_parameters", "normalization_stages", "source_length_units", "transferred_root_count", "import_diagnostics"], "properties": {"brep_format": {"const": 4}}}
+  }
+}

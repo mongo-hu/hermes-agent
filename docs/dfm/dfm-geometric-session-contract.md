@@ -1,10 +1,10 @@
 # Hermes：Geometric 契约接入与模型会话管理
 
-> 当前合并基线（2026-11-03）：Worker **3.0.0** / `dfm.geometry/v2` / bundle **2.4.0**。采用分组审核、按依赖计算；取消 `reviews.commit` 和 Worker 快照全局 `review` 门槛，保留本地预计算、通用交集拔模及预算。下文 1.13.0 的安装哈希和 Desktop 验收属于历史记录；本次适配及验证见[整合记录](dfm-geometric-session-contract.md#12-本地算法与远端编排整合)。
+> 当前合并基线（2026-11-03）：Worker **3.0.0** / `dfm.geometry/v2` / bundle **2.5.0**。采用分组审核、按依赖计算；取消 `reviews.commit` 和 Worker 快照全局 `review` 门槛，保留本地预计算、通用交集拔模及预算。下文 1.13.0 的安装哈希和 Desktop 验收属于历史记录；本次适配及验证见[整合记录](dfm-geometric-session-contract.md#12-本地算法与远端编排整合)。
 
 更新：2026-11-03。目标方案为“一轮识别、统一快照、面归属索引、按组确认后计算”。总体流程见[DFM 主流程](dfm-main-workflow-explained.md)，本篇负责 Hermes 的调用、缓存、确认和计划实现。
 
-引擎 1.12.0、dfm.geometry/v2 / bundle 2.3.0 及规则 V1.0.11 的旧联调记录保留在第 10 节。本次源码、独立安装及 Hermes 实际运行目录均为 1.13.0 / bundle 2.4.0；私有面索引、单轮接入与 Desktop 全链路的验证记录见第 11 节。其他机器须完整安装同版 EXE、DLL 和 Schema，不能混用 2.3.0 旧包。
+引擎 1.12.0、dfm.geometry/v2 / bundle 2.3.0 及规则 V1.0.11 的旧联调记录保留在第 10 节。本次源码、独立安装及 Hermes 实际运行目录均为 1.13.0 / bundle 2.5.0；私有面索引、单轮接入与 Desktop 全链路的验证记录见第 11 节。其他机器须完整安装同版 EXE、DLL 和 Schema，不能混用 2.3.0 旧包。
 
 [开发导航](README.md)
 
@@ -37,7 +37,7 @@ Hermes 负责决定“检查什么、需要算什么、结果是否符合要求�
 | 可执行契约和联调样例 | Worker 仓库 `schemas/` 及契约测试样例统一维护并随版本发布 | 固定所接入的契约制品版本，运行消费端契约测试 |
 | 客户端、计划、规则、Viewer 和报告接入 | 当前 Hermes 文档 | 由 Hermes 实现和验证 |
 
-主契约为 `dfm.geometry/v2`。Worker 仓库发布的 `schemas/session-v2.schema.json` 是会话可执行契约的唯一来源，Hermes 当前开发分支固定并校验 `2.4.0` Schema bundle；双方确认公共接口变更后更新同一套定义和样例，不在 Hermes 手工维护另一套近似协议。
+主契约为 `dfm.geometry/v2`。Worker 仓库发布的 `schemas/session-v2.schema.json` 是会话可执行契约的唯一来源，Hermes 当前开发分支固定并校验 `2.5.0` Schema bundle；双方确认公共接口变更后更新同一套定义和样例，不在 Hermes 手工维护另一套近似协议。
 
 契约版本用于校验通信格式；引擎构建及依赖指纹用于追溯与缓存。不能只检查 EXE 版本号，也不能以两篇说明文档的内容哈希相同作为兼容证明。
 
@@ -742,7 +742,7 @@ PATCH discovery/scopes/{forming_scope_id} 返回最新审核状态，并保留�
 | 5 计算与报告 | G 从已有快照取部位、关联和方向，不重新导入模型 | 按依赖生成片段、去重 G、即时问题／高亮、后台 HTML |
 | 6 发布 | 真实 EXE、Schema、构建身份和实现范围一致 | 配套安装与真实 Desktop 全链路验证，不只替换文档或版本号 |
 
-本次公开成型方案扩展使用 bundle 2.4.0，契约名仍为 dfm.geometry/v2，引擎开发版本为 1.13.0。版本来源分别为 Worker 的 schemas/protocol-versions.json、vcpkg.json 和 Hermes 的 runtime/process.py；旧 2.3.0 EXE 不接入本次源码。私有索引不因内部实现变更而增加公共字段。机制候选与面索引不新增本体规则表，规则的 Feature／Check／G 语义保持现有职责。
+本次公开成型方案扩展使用 bundle 2.5.0，契约名仍为 dfm.geometry/v2，引擎开发版本为 1.13.0。版本来源分别为 Worker 的 schemas/protocol-versions.json、vcpkg.json 和 Hermes 的 runtime/process.py；旧 2.3.0 EXE 不接入本次源码。私有索引不因内部实现变更而增加公共字段。机制候选与面索引不新增本体规则表，规则的 Feature／Check／G 语义保持现有职责。
 
 ### 11.2 本次实现与验证记录
 
@@ -758,7 +758,7 @@ PATCH discovery/scopes/{forming_scope_id} 返回最新审核状态，并保留�
 | 超过缓存容量 | Worker 与 Hermes 各以 300 个有效 G 需求验证；结果及 Check 汇总完整、证据可读、STEP 导入一次 | 256 只限制 Worker 加速缓存，不截断已返回结果；未改成 LRU |
 | Job 与结果发布 | 原生队列测试覆盖两个模型、容量 busy、续租/取消、终态资源释放；Windows 结果发布短暂锁重试测试通过 | 一个几何任务线程；持续文件权限错误仍失败并保留旧版本 |
 | Hermes 回归 | 实际安装 EXE 上 62 个文件，586 项通过、0 失败；另以相同哈希的构建 EXE 补跑 6 项参考壁场景通过 | 安装目录缺少测试专用样件导出器，6 项在那里跳过；另 2 项旧可选环境用例未执行，均不计通过 |
-| 配套安装 | 独立安装与 Hermes 运行目录均为 1.13.0 / bundle 2.4.0；58 个文件逐一核对，doctor 的会话与 HTML 环境可用 | 当前为本地验证包；自然语言聊天全场景、正式发布流程及工程精度认证另行验收 |
+| 配套安装 | 独立安装与 Hermes 运行目录均为 1.13.0 / bundle 2.5.0；58 个文件逐一核对，doctor 的会话与 HTML 环境可用 | 当前为本地验证包；自然语言聊天全场景、正式发布流程及工程精度认证另行验收 |
 
 运行目录仍为 dfm-geometry-exe/windows-x64，不需要修改现有 executable 配置。独立安装位于 Worker 的 out/install/session-1.13.0-20261103，旧运行目录备份位于 out/backups/hermes-windows-x64-1.12.0-20261103。EXE SHA-256 为 91ddeeab870f5cfd68271e72da34a1cb35706970f319c0eb8ca7744a12e486a8，dependency_fingerprint 为 c46079439281c7699b5fd286afb34ded533251fcd1f2ca133c560198d1cb0087。重构建后重新记录，不据版本号假定二进制相同。
 
@@ -806,10 +806,10 @@ PATCH discovery/scopes/{forming_scope_id} 返回最新审核状态，并保留�
 
 ## 12. 本地算法与远端编排整合
 
-采用 Worker 3.0.0 / bundle 2.4.0。Schema bundle 版本按集成约定保持 2.4.0，配套运行目录仍为 `dfm-geometry-exe/windows-x64`，必须整体同步本次构建的 EXE、运行库、Schema 和许可证。
+采用 Worker 3.0.0 / bundle 2.5.0。Schema bundle 版本按集成约定保持 2.5.0，配套运行目录统一为相邻 Worker 仓库的 `out/install/hermes-subprocess`，必须整体同步本次构建的 EXE、运行库、Schema 和许可证。
 
 - Worker 提供不可变语义快照、拓扑面索引、成型候选和客观 G 计算；Hermes 维护审核组、依赖计划及规则求值。取消全局 `reviews.commit`；每次 `features.revise`、`annotations.revise`、`forming_scopes.revise` 单独原子发布。
-- 保留本地 STEP 兼容、射线预算、缓存和 `fields.prepare`。识别结束后预热基础场；正式通用拔模计算前预热实际请求的方向。预热失败可回退到普通计算，取消请求仍正常终止。
+- 保留本地 STEP 兼容、射线预算、缓存和 `fields.prepare` 接口。Hermes 识别结束后和正式测量前均不再自动预热；正式测量由 OCCT 按需计算并缓存，后续请求继续复用有效缓存。
 - 基础场是可重建缓存，不加入语义快照恢复日志。恢复哈希排除主壁算法两项计时统计，仍验证几何、参考关系、覆盖率、预算及诊断状态。
 - `G_SCOPE_DRAFT_MIN` 支持通配 Feature 类型；Hermes 仍按发布 Check 的 Feature 范围筛选，并传入 `feature_role=body`。现有规则发布格式和专用 G 保持原有语义；部位专用请求由显式 context 指定，未擅自重写本体规则。
 - 无方向厚度只等待自身及所需参考特征组。通用主方向交集拔模还依赖相交局部范围的面归属确认；未确定局部机构和方向不会阻塞无关指标。
@@ -818,4 +818,46 @@ PATCH discovery/scopes/{forming_scope_id} 返回最新审核状态，并保留�
 
 验证入口：Worker 的 CTest、`web/npm run check`、`web/review-ui-smoke.py`；Hermes 使用 `scripts/run_tests.sh tests/tools/dfm tests/hermes_cli/test_dfm_review_routes.py tests/dfm/test_service_normalization.py -j 4`，设置 `DFM_GEOMETRY_E2E_EXECUTABLE` 指向配套安装、`DFM_GEOMETRY_SCHEMA_ROOT` 指向同包 Schema。真实模型及报告测试使用隔离的 HERMES_HOME。本次不替代历史的人工 Electron 聊天全场景验收。
 
-本次自动回归结果：Worker CTest 184/184；Hermes 实际运行包回归 567 项通过，另使用同哈希构建 EXE 补跑需要样件生成器的 14 项，合计 581 项通过。4 项条件测试跳过（2 项 Electron 桌面验收、2 项 pythonocc 旧后端 E2E）；Web 12 组单元检查、真实 API、真实浏览器及 7 种窗口布局通过。Hermes 安装的 58 个配套文件已逐项校验，EXE SHA-256 为 `f21abd2f4bb77c898709e4969ab70f1449e771f3ad51a5d5c5644619783b3c7a`，能力依赖指纹为 `231ae0f3b87294f3a1e3eaeb5050708b833b016059e1926605c8dab92a7454b8`。
+历史 2.4 基线回归结果（非本次 2.5 验收）：Worker CTest 184/184；Hermes 实际运行包回归 567 项通过，另使用同哈希构建 EXE 补跑需要样件生成器的 14 项，合计 581 项通过。4 项条件测试跳过（2 项 Electron 桌面验收、2 项 pythonocc 旧后端 E2E）；Web 12 组单元检查、真实 API、真实浏览器及 7 种窗口布局通过。Hermes 安装的 58 个配套文件已逐项校验，EXE SHA-256 为 `f21abd2f4bb77c898709e4969ab70f1449e771f3ad51a5d5c5644619783b3c7a`，能力依赖指纹为 `231ae0f3b87294f3a1e3eaeb5050708b833b016059e1926605c8dab92a7454b8`。
+
+
+## 2.5 版：一次确认后的计算与覆盖
+
+- 审核前不自动预热整模型测量场；原始模型、拓扑和显示资源先准备。
+- 一次确认保存失败时停止后续保存、计算、判定和报告。成功前缀作为草稿保留；修正同一编辑并成功保存后解除阻断。不允许依赖失败主体壁的 BOSS 偷用旧主体壁继续计算。
+- 同快照的全部就绪 G 请求先合并，再交 Worker 规划同计算器的共享计算。传输层不再默认每 8 项拆分。
+- `geometrics.compute` 的 `model_scan: true` 请求确认后的整模材料厚度和主方向拔模扫描，结果放在 `diagnostics.model_scan`。该扫描与特征是否识别完整无关；局部方向只计算实际请求面。Hermes 将扫描摘要保存在 Geometric 结果的 `model_scans` 中。
+- 不再以采样覆盖率或 `quality.measurement_coverage` 筛选操作数。`status=ok` 的有效数值直接进入规则选择、单实例和多实例评估，旧产物的覆盖字段也不改变结果。保留真实失败、缺失值、非有限数值、单位及几何身份校验；采样诊断不降级报告，也不阻断已有问题发布。
+- 识别器 `coverage=complete`、人工审核状态、测量覆盖各自独立。报告中的完整性范围是已计划检查，不代表证明没有漏识别，也不代表数学上的连续几何极值证明。
+- Worker 保留现有厚度定义和采样精度，本次不新增根部材料厚度指标。安装与测试使用 `F:/Github_pull/occt-worker-migration/out/install/hermes-subprocess/bin/dfm-geometry.exe`，连接按 bundle 2.5.0 校验。
+
+失败确认后允许修正草稿，但这不会解除计算阻断；需对原失败区域重试确认成功。重试身份使用稳定的区域标识，不使用随编辑变化的审核组版本。Hermes 支持 `DFM_GEOMETRY_EXE` 环境变量；显式 executable 配置优先于环境变量；均未指定时默认查找 Hermes 自带的 `dfm-geometry-exe/windows-x64`，最后回退系统 PATH。
+
+## 13. 成型归属防误判与筋根部证据（2026-11-04）
+
+本节补充此前“主方向交集拔模依赖局部归属”的约束：所有需要成型范围的拔模 G 都必须遵循确认归属。Hermes 规划时纳入相交局部范围及其未选定备选面的审核依赖；Worker 在读取 G 缓存前再次校验，防止直接调用绕过。
+
+- 主方向交集拔模排除已确认的局部成型面；未知归属、局部机构或方向未确定时返回 `missing_context`、空值和 `quality.forming_assignment.status=pending_review`，并保留待确认面、范围及原因。
+- 专用拔模保持原有定义，无法完整适用确认范围时返回 `unsupported`，不自动改成交集指标。
+- 整模主方向场是基础数据。`diagnostics.model_scan.forming_assignments` 单独记录归属，报告保留 `analysis_coverage.forming_assignment_gaps`；物理场 ready 不能消除待确认项。无方向厚度仍可独立计算。
+- 筋的 `parts.root_fillet` 属于本体，`parts.reference_support` 是参考面。`diagnostics.root_connections` 和 `root_contact_edge_refs` 提供真实接触边及稳定拓扑引用；只有匹配到实际主体壁才派生 `supported_by`。现有 Feature 适配器原样保存这些部位、诊断与关系。
+- 人工改选使旧根部证据和派生支撑关系失效，标记 `requires_geometry_validation`。`validated_paths` 仅证明已记录路径，不保证复杂根部完整覆盖。本次不新增根部材料厚度指标。
+
+运行验证继续使用 `F:/Github_pull/occt-worker-migration/out/install/hermes-subprocess/bin/dfm-geometry.exe`。
+
+
+## 14. 测量实例与异步进度的职责边界（2026-11-04）
+
+请求身份 `(feature_id, geometric_id, canonical context)` 表示需要计算什么，不能用作唯一测量结果身份。Worker 对局部圆角、壁厚过渡等请求可以返回多个物理位置；这些结果通过 `quality.measurement_instance_id` 区分。Hermes 保留每个实例的数值、依据和来源，禁止覆盖为最后一条、取极值替代全部结果，或仅删除重复校验。
+
+- 一个请求返回一条未命名结果，或者返回全部具有不同实例 ID 的结果。混合命名与未命名结果、重复实例、未请求的 G、遗漏请求仍是协议错误。`geometry/result_identity.py` 统一实例校验，结果索引与持久化 ID 均包含实例身份。
+- `evaluation/cases.py` 在规则选择之前建立物理实例用例。`identity` 操作数按相同实例 ID 配对；未命名的单值可共享；缺少对应实例时保留不可判定，禁止跨位置配对。明确指定 minimum/maximum 等聚合的操作数仍读取完整序列。评估来源记录实例 ID。
+- 特征覆盖的身份是 `(feature_kind, forming_scope_id, context)`。不同成型域不能被当成重复覆盖，域 ID 必须从 Worker 保留到发现快照。
+- RPC 读取线程仅解析、分发应答，并为每个正在等待的 job 保存一个最新状态槽；不调用业务回调、不写项目清单。等待 job 的业务线程消费状态，进度最多每 0.5 秒交付一次，静止时每 5 秒保活，终态始终交付。取消、错误、产物和完成结果不作为可丢弃进度处理。
+- 非法后端配置在加载边界拒绝。doctor 的能力盘点与“配置的后端是否就绪”分开；默认配置的探测结果不能证明非法配置可用。桌面保留失败项目的模型并显示失败原因，重新打开会话仍从工具记录恢复此状态。
+
+8-8.stp 隔离实测使用原附件和当前安装 Worker：发现 485 个特征、9 个成型域，保留 8 条独立成型覆盖；已就绪的 4 个分片返回 88 条测量结果，88 个结果 ID 唯一。几何请求约 15.4 秒返回，业务进度日志 16 条；修复前同一模型产生 1254 条进度日志并约 9 分钟后在结果身份校验处失败。
+
+本轮使用明确标注的模拟材料/结构确认，仅用于软件验收，不是实际工程批准。44 个实例评估中 40 项通过、4 项因壁厚过渡采样覆盖不完整而不可判定；另 9 个成型相关分片继续等待审核。没有把部分结果当作完整 DFM 合格报告。
+
+本轮验证：DFM 回归 64 个文件、605 项通过；桌面相关 72 项测试通过，TypeScript 检查及生产构建通过；另启用真实 Electron + Worker 验收，验证预览、发现模型和问题高亮。实际 profile 的 doctor 显示 occt_cpp_external / dfm.geometry/v2 / bundle 2.5.0 可用，重启后 Gateway ready。规则服务连接超时仍需修复部署环境，本轮使用本地规则包 RS_INJECTION_MOLDING_BASE@V1.0.9。

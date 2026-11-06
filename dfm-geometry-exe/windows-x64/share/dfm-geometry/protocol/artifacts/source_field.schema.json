@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dfm.geometry.v1/source_field",
+  "type": "object",
+  "required": ["schema_version", "artifact", "sample_count", "encoding", "precision", "metadata"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "sample_count": {"type": "integer", "minimum": 0},
+    "encoding": {"const": "arrow-ipc"},
+    "precision": {"const": "float64"},
+    "metadata": {"type": "object", "required": ["method", "unit", "quality"]},
+    "artifact": {"type": "object", "required": ["artifact_id", "sha256", "size", "type", "schema_version"]}
+  }
+}

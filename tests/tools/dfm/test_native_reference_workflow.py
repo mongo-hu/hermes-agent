@@ -178,6 +178,15 @@ def test_reference_wall_review_unlocks_only_its_g_and_resumes_the_same_native_ru
     monkeypatch.setattr(
         "tools.dfm.service.compile_occt_injection_plan", lambda *_args, **_kwargs: rules
     )
+    if mode in {"fail_later", "cancel_later", "missing_result", "tampered_shared"}:
+        # Force a transport boundary only to exercise mid-run failures; ordinary
+        # production confirmation now submits every ready G in one snapshot batch.
+        from tools.dfm.analyzers import occt as occt_module
+        native_batch = occt_module.next_geometric_batch
+        from tools.dfm.runtime import jobs as jobs_module
+        bounded_batch = lambda *args, **kwargs: native_batch(*args, **kwargs, max_requests=2)
+        monkeypatch.setattr(occt_module, "next_geometric_batch", bounded_batch)
+        monkeypatch.setattr(jobs_module, "next_geometric_batch", bounded_batch)
     service = DFMService(
         config=DFMConfig(
             geometry_backend="occt_cpp_external",
@@ -439,8 +448,8 @@ def test_reference_wall_review_unlocks_only_its_g_and_resumes_the_same_native_ru
                 finished.completed_fragment_refs
             )
         else:
-            assert first_batch_proof
-            assert len(submitted_batches) == 2
+            assert not first_batch_proof
+            assert len(submitted_batches) == 1
             assert any(
                 {"G_HOLLOW_BOSS_WALL_THK_MAX", "G_HOLLOW_BOSS_WALL_REF_THK"}
                 <= set(item["geometric_ids"])

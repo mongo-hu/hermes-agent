@@ -21,6 +21,7 @@ from ..contracts import (
 )
 from ..errors import DFMError
 from ..geometry.artifact_metadata import inspect_geometry_file
+from ..geometry.result_identity import ResultCoverage, measurement_instance_id
 from ..runtime.process import (
     GeometrySession,
     SESSION_CONTRACT,
@@ -70,10 +71,11 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _result_binding_key(record: GeometricResultRecord) -> tuple[str, str, str, str]:
+def _result_binding_key(record: GeometricResultRecord) -> tuple[str, str, str, str, str | None]:
     return (
         record.provenance["plan_fragment_ref"],
         *request_key(record.feature_id, record.geometric_id, record.context),
+        record.measurement_instance_id,
     )
 
 
@@ -91,6 +93,8 @@ def _geometric_record(
                 "geometric_id": raw.get("geometric_id"),
                 "context": raw.get("context") or {},
                 "dependency_fingerprint": provenance.get("dependency_fingerprint"),
+                **({"measurement_instance_id": measurement_instance_id(raw.get("quality"))}
+                   if measurement_instance_id(raw.get("quality")) is not None else {}),
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -201,9 +205,10 @@ def _validate_scalar_field(
 
 
 def discover_geometry_executable(configured: str = "") -> str | None:
-    """Resolve explicit config, standard repo installs, then PATH."""
+    """Resolve explicit config/env, the bundled Worker, then PATH."""
 
     root = Path(__file__).resolve().parents[3]
+    configured = configured or os.environ.get("DFM_GEOMETRY_EXE", "")
     if configured:
         candidate = Path(configured).expanduser()
         candidates = (
@@ -217,8 +222,6 @@ def discover_geometry_executable(configured: str = "") -> str | None:
     names = ("dfm-geometry.exe", "dfm-geometry")
     directories = (
         root / "dfm-geometry-exe" / "windows-x64",
-        root / "dfm-geometry" / "out" / "install" / "windows-vcpkg-vs2026-sln" / "bin",
-        root / "dfm-geometry" / "out" / "build" / "windows-vcpkg-release" / "Release",
     )
     for directory in directories:
         for name in names:
@@ -441,6 +444,7 @@ class OcctAnalyzer:
             )
         path = output_dir / "geometric_results.json"
         results: list[GeometricResultRecord] = []
+        model_scans: dict[str, Any] = {}
         if path.is_file():
             try:
                 existing_payload = read_result_document(path, "geometric_results")
@@ -452,6 +456,7 @@ class OcctAnalyzer:
                     or not isinstance(existing_payload.get("results"), list)
                 ):
                     raise ValueError("result identity mismatch")
+                model_scans = dict(existing_payload.get("model_scans", {}))
                 results = [
                     GeometricResultRecord.from_dict(item)
                     for item in existing_payload["results"]
@@ -467,7 +472,6 @@ class OcctAnalyzer:
         results_by_binding = {_result_binding_key(record): record for record in results}
         processed = set(context.completed_plan_fragment_refs)
 
-        prepared_directions: set[str] = set()
         while batch := next_geometric_batch(
             context.plan, processed, selected=context.selected_plan_fragment_refs
         ):
@@ -477,35 +481,6 @@ class OcctAnalyzer:
             cancellation.raise_if_cancelled()
             items = batch.items()
             owners = batch.owners()
-            # Final local directions may differ from discovery. Prepare only demanded new variants.
-            directions = {json.dumps(item["context"]["draw_direction"]): item["context"]["draw_direction"]
-                          for item in items if "G_SCOPE_DRAFT_MIN" in item["geometric_ids"]
-                          and "draw_direction" in item["context"]}
-            directions = {key: value for key, value in directions.items() if key not in prepared_directions}
-            if directions and live_capability.get("methods", {}).get("fields.prepare") == "available":
-                try:
-                    warmup = self.session_pool.call(context.project_id, "fields.prepare", {
-                        "snapshot_id": live_snapshot_id, "fields": ["draft"],
-                        "draw_directions": list(directions.values()),
-                    })
-                    warmup_id = str(warmup["job_id"])
-
-                    def preparation_progress(status):
-                        if context.event_sink is not None:
-                            progress = status.get("progress") or {}
-                            context.event_sink(WorkerEvent(
-                                schema_version=1, type="progress", stage="fields.prepare",
-                                percent=int(progress.get("percent") or 0), external_job_id=warmup_id,
-                            ))
-
-                    self.session_pool.wait_job(context.project_id, warmup_id, cancellation=cancellation,
-                                               on_progress=preparation_progress)
-                except DFMError as error:
-                    if error.code == "run_cancelled":
-                        raise
-                    # A failed cache warmup must leave the ordinary calculator available.
-                    cancellation.raise_if_cancelled()
-                prepared_directions.update(directions)
             batch_results: list[GeometricResultRecord] = []
             submitted_keys = {
                 request_key(str(item["feature_id"]), str(geometric_id), item["context"])
@@ -515,7 +490,7 @@ class OcctAnalyzer:
             submitted = self.session_pool.call(
                 context.project_id,
                 "geometrics.compute",
-                {"snapshot_id": live_snapshot_id, "items": items},
+                {"snapshot_id": live_snapshot_id, "items": items, "model_scan": True},
             )
             external_job_id = str(submitted["job_id"])
             if context.event_sink is not None:
@@ -557,6 +532,9 @@ class OcctAnalyzer:
                     "The Worker result does not belong to the fragment snapshot.",
                     {"fragment_ids": sorted(batch.fragment_refs)},
                 )
+            model_scan = completed.get("diagnostics", {}).get("model_scan")
+            if model_scan is not None:
+                model_scans[live_snapshot_id] = model_scan
             unknown_completed = set(completed) - {
                 "contract_version",
                 "snapshot_id",
@@ -579,7 +557,7 @@ class OcctAnalyzer:
                     "The Worker returned an invalid Geometric batch envelope.",
                     {"fields": sorted(unknown_completed)},
                 )
-            returned_keys: set[tuple[str, str, str]] = set()
+            result_coverage = ResultCoverage(submitted_keys)
             for raw in raw_results:
                 if not isinstance(raw, Mapping):
                     raise DFMError(
@@ -614,28 +592,14 @@ class OcctAnalyzer:
                     str(raw.get("geometric_id") or ""),
                     dict(raw["context"]),
                 )
-                if result_key not in submitted_keys or result_key in returned_keys:
-                    raise DFMError(
-                        "geometry_protocol_invalid",
-                        "A Worker Geometric result is unrequested or duplicated.",
-                        {
-                            "feature_id": result_key[0],
-                            "geometric_id": result_key[1],
-                        },
-                    )
-                returned_keys.add(result_key)
+                result_coverage.accept(result_key, raw.get("quality"))
                 for owner in owners[result_key]:
                     record = _geometric_record(
                         raw, owner, live_snapshot_id, input_record.sha256
                     )
                     results_by_binding[_result_binding_key(record)] = record
                     batch_results.append(record)
-            if returned_keys != submitted_keys:
-                raise DFMError(
-                    "geometry_protocol_invalid",
-                    "The Worker omitted one or more submitted Geometric results.",
-                    {"missing_count": len(submitted_keys - returned_keys)},
-                )
+            result_coverage.require_complete()
             for raw in raw_artifacts:
                 if (
                     not isinstance(raw, Mapping)
@@ -707,6 +671,7 @@ class OcctAnalyzer:
                     "run_id": context.run_id,
                     "input_sha256": input_record.sha256,
                     "fragment_refs": sorted(batch.fragment_refs),
+                    "model_scan": completed.get("diagnostics", {}).get("model_scan"),
                     "results": [item.to_dict() for item in batch_results],
                 },
             )
@@ -747,6 +712,7 @@ class OcctAnalyzer:
                 "run_id": context.run_id,
                 "input_sha256": input_record.sha256,
                 "results": [item.to_dict() for item in results],
+                "model_scans": model_scans,
             },
         )
         return [

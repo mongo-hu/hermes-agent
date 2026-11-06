@@ -28,3 +28,18 @@ class DFMError(Exception):
                 "details": self.details,
             },
         }
+
+
+class ReviewSaveError(DFMError):
+    """An accepted review intent failed before its durable commit."""
+
+    @classmethod
+    def from_error(cls, error: Exception, edit_id: str) -> "ReviewSaveError":
+        return cls(
+            getattr(error, "code", "review_save_failed"), str(error),
+            {**getattr(error, "details", {}), "failure_category": "save_failed", "edit_id": edit_id},
+        )
+
+
+class ManifestCommitError(DFMError):
+    """Validation succeeded, but writing the durable event failed."""

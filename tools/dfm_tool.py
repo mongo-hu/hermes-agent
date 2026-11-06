@@ -248,7 +248,7 @@ def _plan_tool_summary(result: dict) -> dict:
     check_ids = sorted({item["check_id"] for item in bindings})
     rule_ids = sorted({item["rule_id"] for item in bindings})
     capability = result["capability"]
-    return {
+    summary = {
         "ok": True,
         "project_id": result["project_id"],
         "plan": {
@@ -260,7 +260,8 @@ def _plan_tool_summary(result: dict) -> dict:
             )
             if key in plan
         } | {
-            "operation_count": len(plan["operations"]),
+            "operation_count": len(plan.get("operations", [])),
+            "plan_fragment_count": len(plan.get("plan_fragments", [])),
             "rule_binding_count": len(bindings),
             "check_ids": check_ids[:_TOOL_PREVIEW_LIMIT],
             "check_ids_omitted": max(0, len(check_ids) - _TOOL_PREVIEW_LIMIT),
@@ -278,6 +279,26 @@ def _plan_tool_summary(result: dict) -> dict:
             else "stop"
         ),
     }
+    # Retain service control state independently of the compact plan data.
+    # waiting_input is resumable, not a terminal "stop" result.
+    pending = plan.get("pending_inputs", [])
+    if plan["status"] == "waiting_input":
+        summary.update({
+            "status": result.get("status", "clarification_required" if pending else "discovery_review_required"),
+            "phase": "analysis", "requires_user_response": True,
+            "open_clarification_count": len(pending),
+            "next_action": "clarify" if pending else "review_forming_scopes",
+            "next_call": ({"tool": "clarify", "arguments": {
+                "dfm_project_id": result["project_id"],
+                "dfm_fact_name": pending[0]["clarification_id"].removeprefix("clarification_"),
+            }} if pending else None),
+            "continuation_required": bool(pending),
+        })
+    elif summary["next_action"] == "start":
+        summary.update({"next_call": {"tool": "dfm_analysis", "arguments": {
+            "action": "start", "project_id": result["project_id"], "plan_id": plan["plan_id"],
+        }}, "continuation_required": True})
+    return summary
 
 
 def _run_tool_summary(result: dict, action: str) -> dict:
@@ -430,11 +451,17 @@ def _call(kind: str, args: dict, **context) -> str:
         if kind == "analysis" and args.get("action") in {"start", "render_html"}:
             params["_tool_progress_callback"] = context.get("tool_progress_callback")
             params["_tool_call_id"] = context.get("tool_call_id")
-        result = (
-            service.project(args.get("action", ""), **params)
-            if kind == "project"
-            else service.analysis(args.get("action", ""), **params)
-        )
+        if kind == "analysis" and args.get("action") == "review_context":
+            result = service.review_state(
+                params.get("project_id", ""), cursor=params.get("review_cursor"),
+                status=params.get("review_status", "pending_review"), group_ids=params.get("review_group_ids"),
+            )
+        else:
+            result = (
+                service.project(args.get("action", ""), **params)
+                if kind == "project"
+                else service.analysis(args.get("action", ""), **params)
+            )
         project_id = (
             result.get("project_id") or args.get("project_id")
             if isinstance(result, dict) and result.get("ok") is True else None
@@ -444,9 +471,20 @@ def _call(kind: str, args: dict, **context) -> str:
         if kind == "project" and args.get("action") == "status" and isinstance(result, dict) and "project" in result:
             result = _project_status_summary(result)
         if kind == "analysis" and isinstance(result, dict):
+            from tools.dfm.project.review_barrier import EDIT_ACTIONS
+
             action = args.get("action")
-            if action == "discover" and "snapshot" in result:
+            if action in EDIT_ACTIONS or action == "prepare_review":
+                result = {
+                    **service.review_state(project_id),
+                    "operation": {"action": action, "status": "succeeded", "unchanged": bool(result.get("unchanged"))},
+                    **({"viewer_manifest": result["viewer_manifest"]} if result.get("viewer_manifest") else {}),
+                }
+            elif action == "discover" and "snapshot" in result:
                 result = _discovery_tool_summary(result)
+            elif action == "report_context":
+                from tools.dfm.reporting.html.editor_context import report_editor_context
+                result = report_editor_context(result, cursor=args.get("report_cursor"))
             elif action == "plan" and "plan" in result:
                 result = _plan_tool_summary(result)
             elif action in {"start", "status", "result"} and "run" in result:
@@ -487,7 +525,7 @@ DFM_PROJECT_SCHEMA = {
 
 DFM_ANALYSIS_SCHEMA = {
     "name": "dfm_analysis",
-    "description": "Run the DFM workflow. The OCCT path uses persistent dfm.geometry/v2 sessions: calculation uses snapshot_id + feature_id + geometric_ids + context, never Region, face_indices, private operation/calculator/metric/quantity routing or per-G task IDs. Confirm the main draw direction before discover; discovery orchestrates supported structures and main-direction scopes together. Use review_context and confirm_discovery for independent groups. Discovery is one business phase; local structures keep their existing Feature IDs. Save incomplete local proposals with stage_forming_direction, then confirm each complete proposal as one forming_scope group with confirm_discovery or revise_forming_scopes; confirmation never requires another discovery round. Unknown mechanism or direction remains pending and must not block unrelated ready calculations. Editing geometry requires the current revision; use update_feature_geometry, update_forming_scope_geometry or restructure_forming_scopes. Follow next_action and exact feature_counts. Already-started runs resume automatically when their review/input dependencies change; do not recreate projects or restart analysis while waiting. Use analyze_forming_scope only for an explicit additional direction analysis, not as a mandatory repeat after discover. report_context may remain ready=false until analysis finishes. render_html validates issue IDs and runs asynchronously. Drawing OCR is deterministic; use drawing_context/submit_observations then fusion_context/submit_fusion_links. Unavailable or incomplete results are never passing.",
+    "description": "Run the DFM workflow. The OCCT path uses persistent dfm.geometry/v2 sessions: calculation uses snapshot_id + feature_id + geometric_ids + context, never Region, face_indices, private operation/calculator/metric/quantity routing or per-G task IDs. Confirm the main draw direction before discover; discovery orchestrates supported structures and main-direction scopes together. Use review_context as the authoritative committed state: it returns exact counts, confirmed MAIN status, pageable group rows and next_call. Never read project_manifest.json directly; it is an internal checkpoint that omits newer journal commits. Follow next_call after a user confirmation; do not reconfirm groups already confirmed. Use explicit review_group_ids for local groups; confirmation without IDs confirms ordinary structures only. Discovery is one business phase; local structures keep their existing Feature IDs. Save incomplete local proposals with stage_forming_direction, then confirm each complete proposal as one forming_scope group with confirm_discovery or revise_forming_scopes; confirmation never requires another discovery round. Unknown mechanism or direction remains pending and must not block unrelated ready calculations. Editing geometry requires the current revision; use update_feature_geometry, update_forming_scope_geometry or restructure_forming_scopes. Follow next_action and exact feature_counts. Already-started runs resume automatically when their review/input dependencies change; do not recreate projects or restart analysis while waiting. Use analyze_forming_scope only for an explicit additional direction analysis, not as a mandatory repeat after discover. report_context may remain ready=false until analysis finishes. render_html validates issue IDs and runs asynchronously. Drawing OCR is deterministic; use drawing_context/submit_observations then fusion_context/submit_fusion_links. Unavailable or incomplete results are never passing.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -530,7 +568,11 @@ DFM_ANALYSIS_SCHEMA = {
                 "type": "number",
                 "minimum": 0,
                 "maximum": 180,
-                "description": "For action=report_context, wait up to this many seconds for deterministic analysis to reach report editing. The complete Runtime and exact required_issue_ids are inline; never use terminal/read-file to obtain them.",
+                "description": "For action=report_context, wait up to this many seconds for deterministic analysis to reach report editing. Editorial Runtime records and exact required_issue_ids are inline in bounded context_records pages. Follow next_call until context_complete; never use terminal/read-file to obtain them.",
+            },
+            "report_cursor": {
+                "type": "string",
+                "description": "For report_context only: use the exact report_page.next_cursor through next_call. Read all context_records pages and combine required_issue_ids before render_html. Never read files to bypass pagination.",
             },
             "input_id": {
                 "type": "string",
@@ -550,6 +592,14 @@ DFM_ANALYSIS_SCHEMA = {
                 "type": "string",
                 "minLength": 1,
                 "description": "Hermes snapshot_id from review_context. Supply with revision for review confirmation or geometry edits so unrelated run progress does not block the write; changed geometry is still rejected.",
+            },
+            "review_cursor": {
+                "type": "string",
+                "description": "For review_context only: next_cursor from review_page. A changed revision requires restarting without a cursor.",
+            },
+            "review_status": {
+                "type": "string", "enum": ["pending_review", "confirmed", "all"],
+                "description": "For review_context only; defaults to pending_review. Exact counts cover all groups; rows are paged. review_group_ids selects up to eight current groups regardless of status.",
             },
             "review_group_ids": {
                 "type": "array",

@@ -225,9 +225,33 @@ def materialize_result_reports(
     incomplete_results = result_manifest_payload.get("incomplete_results", [])
     incomplete_fragments = result_manifest_payload.get("incomplete_fragments", [])
     pending_inputs = result_manifest_payload.get("pending_inputs", plan.pending_inputs)
-    coverage_complete = not any(
-        (coverage_gaps, incomplete_results, incomplete_fragments, pending_inputs, indeterminate_checks)
+    model_scans = measurements_payload.get("model_scans", {})
+    scan_incomplete = any(
+        field.get("status") not in {"ready", "partial"}
+        for scan in model_scans.values()
+        for field in scan.get("fields", [])
     )
+    forming_assignment_gaps = [
+        {"snapshot_id": snapshot_id, **row}
+        for snapshot_id, scan in model_scans.items()
+        for row in scan.get("forming_assignments", [])
+        if row.get("assignment", {}).get("status") != "confirmed"
+    ]
+    unassigned_face_indices = sorted({
+        face_index
+        for scan in model_scans.values()
+        for face_index in scan.get("unassigned_face_indices", [])
+        if isinstance(face_index, int)
+    })
+    coverage_complete = not any((
+        coverage_gaps,
+        incomplete_results,
+        incomplete_fragments,
+        pending_inputs,
+        indeterminate_checks,
+        scan_incomplete,
+        forming_assignment_gaps,
+    ))
     result = {
         "schema_version": 1,
         "run_id": run_id,
@@ -254,12 +278,62 @@ def materialize_result_reports(
             "indeterminate_count": len(indeterminate_checks),
         },
         "evidence_coverage": evidence_coverage,
+        "model_scans": model_scans,
         "analysis_coverage": {
+            "scope": "planned_checks",
+            "feature_inventory_status": "not_proven",
+            "forming_assignment_gaps": forming_assignment_gaps,
             "status": "complete" if coverage_complete else "partial",
             "coverage_gaps": coverage_gaps,
             "incomplete_results": incomplete_results,
             "incomplete_fragments": incomplete_fragments,
             "pending_inputs": pending_inputs,
+            "review_coverage": {
+                "status": (
+                    "complete"
+                    if not (
+                        pending_inputs
+                        or incomplete_fragments
+                        or forming_assignment_gaps
+                    )
+                    else "partial"
+                ),
+                "pending_inputs": pending_inputs,
+                "incomplete_fragments": incomplete_fragments,
+                "forming_assignment_gaps": forming_assignment_gaps,
+            },
+            "topology_attribution": {
+                "status": (
+                    "complete"
+                    if model_scans and not unassigned_face_indices
+                    else "partial"
+                    if unassigned_face_indices
+                    else "not_proven"
+                ),
+                "unassigned_face_count": len(unassigned_face_indices),
+                "unassigned_face_indices": unassigned_face_indices,
+            },
+            "measurement_coverage_summary": {
+                "status": (
+                    "complete"
+                    if not (
+                        scan_incomplete
+                        or incomplete_results
+                    )
+                    else "partial"
+                ),
+                "scan_incomplete": scan_incomplete,
+                "incomplete_results": incomplete_results,
+            },
+            "evaluation_coverage": {
+                "status": (
+                    "complete"
+                    if not (coverage_gaps or indeterminate_checks)
+                    else "partial"
+                ),
+                "coverage_gaps": coverage_gaps,
+                "indeterminate_count": len(indeterminate_checks),
+            },
             "message": (
                 "全部已计划范围均已取得可判定结果。"
                 if coverage_complete
@@ -349,8 +423,16 @@ def materialize_result_reports(
 def _read(project_dir: Path, artifact: ArtifactRecord) -> dict[str, Any]:
     try:
         path = project_dir / artifact.relative_path
-        payload = (read_result_document(path, artifact.kind, sha256=artifact.sha256, size_bytes=artifact.size_bytes)
-                   if artifact.kind in SMALL_RESULT_KINDS else json.loads(path.read_text(encoding="utf-8")))
+        payload = (
+            read_result_document(
+                path,
+                artifact.kind,
+                sha256=artifact.sha256,
+                size_bytes=artifact.size_bytes,
+            )
+            if artifact.kind in SMALL_RESULT_KINDS
+            else json.loads(path.read_text(encoding="utf-8"))
+        )
     except (OSError, ValueError) as exc:
         raise DFMError(
             "report_input_invalid", f"The {artifact.kind} artifact cannot be read."

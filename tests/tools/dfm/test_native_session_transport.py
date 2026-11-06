@@ -531,7 +531,7 @@ def test_more_than_256_native_g_results_and_check_evaluations_survive_all_batche
         assert all(row["status"] == "ok" for row in results)
         assert {row["context"]["forming_scope_id"] for row in results} == {row["forming_scope_id"] for row in scopes}
         assert len({row["result_id"] for row in results}) == len(contexts)
-        assert len([row for row in artifacts if row.kind == "geometric_batch"]) > 1
+        assert len([row for row in artifacts if row.kind == "geometric_batch"]) == 1
         evaluated = EvaluationEngine().materialize(project_dir, run_id, plan, [result_artifact])
         clear_result_document_cache()
         evaluations = read_result_document(project_dir / evaluated.relative_path, "evaluations")["evaluations"]

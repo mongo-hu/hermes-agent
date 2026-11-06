@@ -10,7 +10,7 @@ from dataclasses import replace
 import pytest
 
 from tools.dfm.contracts import ProjectManifest
-from tools.dfm.errors import DFMError
+from tools.dfm.errors import DFMError, ManifestCommitError
 from tools.dfm.project import journal
 from tools.dfm.project import manifest as module
 from tools.dfm.project.manifest import ManifestStore
@@ -105,7 +105,7 @@ def test_failed_append_rolls_back_without_publishing_memory(tmp_path, monkeypatc
             raise OSError("simulated write failure")
         original(fd)
     monkeypatch.setattr(journal.os, "fsync", fail_once)
-    with pytest.raises(OSError):
+    with pytest.raises(ManifestCommitError):
         store.update(lambda current: replace(current, name="not committed"))
     assert cold(store).revision == 0
     assert store.load().name == "part"

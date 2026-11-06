@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dfm.geometry.v1/computation_manifest",
+  "type": "object",
+  "required": ["schema_version", "model_version_id", "topology_snapshot_id", "operation_id", "compute_key", "implementation", "quality", "measurements", "features", "source_fields", "upstream_artifacts"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "compute_key": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "upstream_artifacts": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "measurements": {"type": "array"},
+    "features": {"type": "array"},
+    "source_fields": {"type": "array", "items": {"$ref": "source_field.schema.json"}},
+    "run_id": false,
+    "timestamp": false
+  }
+}

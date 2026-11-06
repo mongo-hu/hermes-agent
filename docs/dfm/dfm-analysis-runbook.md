@@ -1,6 +1,6 @@
 ---
 
-> 当前合并基线（2026-11-03）：Worker **3.0.0** / `dfm.geometry/v2` / bundle **2.4.0**。采用分组审核、按依赖计算；取消 `reviews.commit` 和 Worker 快照全局 `review` 门槛，保留本地预计算、通用交集拔模及预算。下文 1.13.0 的安装哈希和 Desktop 验收属于历史记录；本次适配及验证见[整合记录](dfm-geometric-session-contract.md#12-本地算法与远端编排整合)。
+> 当前合并基线（2026-11-03）：Worker **3.0.0** / `dfm.geometry/v2` / bundle **2.5.0**。采用分组审核、按依赖计算；取消 `reviews.commit` 和 Worker 快照全局 `review` 门槛，保留本地预计算、通用交集拔模及预算。下文 1.13.0 的安装哈希和 Desktop 验收属于历史记录；本次适配及验证见[整合记录](dfm-geometric-session-contract.md#12-本地算法与远端编排整合)。
 
 title: "DFM 运行数据与故障排查"
 status: implementation-reference
@@ -14,7 +14,7 @@ type: runbook
 
 本文说明现有实现的数据入口和排查方法，不定义新的分析流程。总体流程见[主流程](dfm-main-workflow-explained.md)，常驻会话与增量编排按[会话接入设计](dfm-geometric-session-contract.md)实施。
 
-当前本地验证版本为引擎 1.13.0 / dfm.geometry/v2 / bundle 2.4.0，Hermes 实际运行目录已完整更新；单轮识别、三类分组、两类面编辑、整组确认、报告前高亮及异步 HTML 已通过真实 Electron 联调。验证身份、测试入口和缺口见会话文档第 11 节；第 10 节仅作旧版本追溯。自然语言聊天全场景和正式发布包另行验收。排查时仍须记录实际 Hermes 源码、Worker 构建、规则发布身份和样本，不能假定用户安装目录已经更新。
+当前本地验证版本为引擎 1.13.0 / dfm.geometry/v2 / bundle 2.5.0，Hermes 实际运行目录已完整更新；单轮识别、三类分组、两类面编辑、整组确认、报告前高亮及异步 HTML 已通过真实 Electron 联调。验证身份、测试入口和缺口见会话文档第 11 节；第 10 节仅作旧版本追溯。自然语言聊天全场景和正式发布包另行验收。排查时仍须记录实际 Hermes 源码、Worker 构建、规则发布身份和样本，不能假定用户安装目录已经更新。
 
 遇到 `geometry_schema_bundle_invalid`，先比较实际配置的 EXE `capabilities` 与 `tools/dfm/runtime/process.py` 的版本要求，再核对配套 Schema。应安装同版完整运行目录，不通过降低版本校验、改写能力输出或 fallback 绕过。
 
@@ -109,7 +109,7 @@ Viewer 的 issues[].triangle_refs 可缺失：只有面级 geometry_refs 时应�
 
 ## 5. HTML 为什么还没出来
 
-`runtime/jobs.py` 准备确定性结果与 HTML Runtime；Agent 通过 `report_context` 取得完整输入和 `required_issue_ids`，提交内容后，`service._render_html` 校验问题 ID 并将渲染交给 JobManager。
+`runtime/jobs.py` 准备确定性结果与 HTML Runtime；Agent 通过 `report_context` 的 `context_records` 分页取得完整编辑输入和 `required_issue_ids`（每页不超过 6500 字符，按精确 `next_call` 读至 `context_complete`）。编辑投影保留数值、判定、覆盖缺口、问题身份及全部图纸注释；逐面显示证据转换为数量与归属分类，完整 Runtime 仍由 HTML 渲染器读取。游标绑定项目、run 和原始 Runtime 内容，报告变化后必须重新读取。提交内容后，`service._render_html` 校验问题 ID 并将渲染交给 JobManager。
 
 ```text
 确定性结果就绪 → reporting → report_context → Agent 整理内容

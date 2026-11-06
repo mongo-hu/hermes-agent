@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from tools.dfm.contracts import ProjectManifest
-from tools.dfm.errors import DFMError
+from tools.dfm.errors import DFMError, ManifestCommitError
 from tools.dfm.project import manifest as module
 from tools.dfm.project.manifest import ManifestStore
 
@@ -84,7 +84,7 @@ def test_failed_disk_commit_does_not_publish_new_memory(tmp_path, monkeypatch):
         raise OSError("disk full")
 
     monkeypatch.setattr(module.journal, "append", fail)
-    with pytest.raises(OSError, match="disk full"):
+    with pytest.raises(ManifestCommitError, match="could not be committed"):
         store.update(lambda current: replace(current, name="not committed"))
     assert store.load().name == "part"
     assert store.load().revision == 0

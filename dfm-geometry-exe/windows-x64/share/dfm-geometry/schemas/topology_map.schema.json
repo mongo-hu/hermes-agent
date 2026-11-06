@@ -24,13 +24,14 @@
     },
     "faces": {
       "type": "array",
+      "description": "Complete source B-Rep face inventory, including faces without display triangulation.",
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": ["geometry_ref", "triangle_refs"],
         "properties": {
           "geometry_ref": {"$ref": "https://hermes.local/dfm/geometry/common.schema.json#/$defs/faceGeometryRef"},
-          "triangle_refs": {"type": "array", "items": {"$ref": "https://hermes.local/dfm/geometry/common.schema.json#/$defs/triangleRef"}}
+          "triangle_refs": {"type": "array", "description": "Optional display mapping. An empty array does not invalidate the source face identity.", "items": {"$ref": "https://hermes.local/dfm/geometry/common.schema.json#/$defs/triangleRef"}}
         }
       }
     }

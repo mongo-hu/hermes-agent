@@ -588,3 +588,24 @@ def _write_pipeline_inputs(tmp_path: Path) -> list[ArtifactRecord]:
         )
     )
     return artifacts
+
+
+def test_unrendered_patches_do_not_discard_existing_findings(tmp_path, monkeypatch):
+    from tools.dfm.evidence import field_engine
+    from tools.dfm.reporting.result_assembler import materialize_result_reports
+
+    artifacts = _write_pipeline_inputs(tmp_path)
+    # A view planner may not find a usable view; the measured failure still exists.
+    monkeypatch.setattr(field_engine, "plan_evidence_views", lambda *args, **kwargs: [])
+    generated = FieldEvidenceEngine().materialize(tmp_path, "run_1", artifacts)
+    records_artifact = next(a for a in generated if a.kind == "evidence_records")
+    records = json.loads((tmp_path / records_artifact.relative_path).read_text(encoding="utf-8"))
+    assert records["coverage"]["uncovered_patch_ids"]
+    assert records["records"] == []
+    all_artifacts = [*artifacts, *generated]
+    assert len(materialize_evaluated_findings(tmp_path, all_artifacts)) == 1
+    plan = PlanRecord("plan", "step", ["occt_cpp"], "ready", "now")
+    materialize_result_reports(tmp_path, "run_1", plan, all_artifacts)
+    report = json.loads((tmp_path / "runs/run_1/artifacts/dfm_report.json").read_text(encoding="utf-8"))
+    assert len(report["issues"]) == 1
+    assert report["evidence_coverage"]["uncovered_patch_ids"]

@@ -411,7 +411,7 @@ def test_idle_reclamation_waits_for_chat_reference_then_closes_snapshot():
 def _session_with_recorded_job_calls(statuses):
     session = object.__new__(GeometrySession)
     session._job_event_lock = threading.Lock()
-    session._job_event_callbacks = {}
+    session._job_events = {}
     calls = []
 
     def call(method, params, **_kwargs):

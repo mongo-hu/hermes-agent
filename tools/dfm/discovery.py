@@ -40,7 +40,7 @@ def discovery_context_identity(manifest: ProjectManifest) -> str:
 
 
 def _normalize_coverage(raw: Any) -> list[dict[str, Any]]:
-    """Validate the public discovery-coverage rows used by planning gates."""
+    """Validate coverage using the same scoped identity as the native snapshot."""
 
     if not isinstance(raw, list):
         raise DFMError(
@@ -48,7 +48,7 @@ def _normalize_coverage(raw: Any) -> list[dict[str, Any]]:
             "Feature discovery coverage must be an array.",
         )
     rows: list[dict[str, Any]] = []
-    identities: set[tuple[str, str]] = set()
+    identities: set[tuple[str, str | None, str]] = set()
     for item in raw:
         if not isinstance(item, dict):
             raise DFMError(
@@ -57,36 +57,46 @@ def _normalize_coverage(raw: Any) -> list[dict[str, Any]]:
             )
         feature_kind = str(item.get("feature_kind") or "")
         context = item.get("context", {})
+        forming_scope_id = item.get("forming_scope_id")
         status = str(item.get("status") or "")
-        if not feature_kind or not isinstance(context, dict) or status not in {
-            "complete",
-            "partial",
-            "failed",
-        }:
+        if (
+            not feature_kind
+            or not isinstance(context, dict)
+            or (forming_scope_id is not None and (
+                not isinstance(forming_scope_id, str) or not forming_scope_id
+            ))
+            or status not in {"complete", "partial", "failed"}
+        ):
             raise DFMError(
                 "geometry_protocol_invalid",
                 "Feature discovery returned an invalid coverage row.",
-                {"feature_kind": feature_kind, "status": status},
+                {"feature_kind": feature_kind, "forming_scope_id": forming_scope_id,
+                 "status": status},
             )
         identity = (
             feature_kind,
+            forming_scope_id,
             json.dumps(context, sort_keys=True, separators=(",", ":")),
         )
         if identity in identities:
             raise DFMError(
                 "geometry_protocol_invalid",
                 "Feature discovery returned duplicate coverage identities.",
-                {"feature_kind": feature_kind, "context": context},
+                {"feature_kind": feature_kind, "forming_scope_id": forming_scope_id,
+                 "context": context},
             )
         identities.add(identity)
-        rows.append({
+        row = {
             "feature_kind": feature_kind,
             "context": dict(context),
             "status": status,
             "covered_geometry_ref": item.get("covered_geometry_ref"),
             "unresolved_geometry_ref": item.get("unresolved_geometry_ref"),
             "diagnostics": dict(item.get("diagnostics") or {}),
-        })
+        }
+        if "forming_scope_id" in item:
+            row["forming_scope_id"] = forming_scope_id
+        rows.append(row)
     return rows
 
 
@@ -255,6 +265,14 @@ class DiscoveryEngine:
             "status": provider_capability.get("status"),
             "inputs": by_input,
         })
+        if provider_capability.get("contract_version") == "dfm.geometry/v2":
+            # Questions after a restart must use the same capability evidence
+            # as recognition, without relying on a warm Worker or process cache.
+            discovery_state["geometry_capability"] = {
+                key: provider_capability[key]
+                for key in ("contract_version", "engine_version", "schema_bundle_version", "geometrics")
+                if key in provider_capability
+            }
         capabilities["geometry_discovery"] = discovery_state
         return replace(
             manifest,
@@ -269,6 +287,18 @@ class DiscoveryEngine:
         self, manifest: ProjectManifest
     ) -> tuple[ProjectManifest, DiscoverySnapshotRecord]:
         refreshed = self.refresh_candidates(manifest)
+        return self._freeze_snapshot(refreshed, self.provider_versions())
+
+    def current_snapshot(self, manifest: ProjectManifest) -> DiscoverySnapshotRecord | None:
+        """Validate committed identity without discovery or a Worker handshake."""
+        latest = next((item for item in reversed(manifest.discovery_snapshots) if item.status == "frozen"), None)
+        if latest is None:
+            return None
+        _, projected = self._freeze_snapshot(manifest, latest.provider_versions)
+        return next((item for item in reversed(manifest.discovery_snapshots)
+                     if item.status == "frozen" and item.content_sha256 == projected.content_sha256), None)
+
+    def _freeze_snapshot(self, refreshed: ProjectManifest, provider_versions: dict[str, str]):
         active = self.active_inputs(refreshed)
         input_hashes = {item.input_id: item.sha256 for item in active}
         active_input_ids = set(input_hashes)
@@ -309,7 +339,7 @@ class DiscoveryEngine:
             "feature_refs": [item.feature_id for item in features],
             "region_refs": [item.region_id for item in regions],
             "fusion_link_refs": [item.fusion_link_id for item in fusion_links],
-            "provider_versions": self.provider_versions(),
+            "provider_versions": provider_versions,
         }
         if any(
             item.properties.get("region_review") == "user_confirmed"

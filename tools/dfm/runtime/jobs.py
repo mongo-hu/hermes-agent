@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..project.review_barrier import require_saved_review
+
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -555,6 +557,7 @@ class JobManager:
             while True:
                 token.raise_if_cancelled()
                 manifest = self._store(project_id).load()
+                require_saved_review(manifest)
                 persisted_run = self._find_run(manifest, run_id)
                 plan = (
                     PlanRecord.from_dict(persisted_run.plan_snapshot)
@@ -813,10 +816,12 @@ class JobManager:
 
     def _publish_batch(self, project_id, run_id, artifacts, completed_refs, retired_finding_ids=frozenset()) -> None:
         """Commit partial results and findings before waiting or final reporting."""
+        require_saved_review(self._store(project_id).load())
         findings = materialize_evaluated_findings(self.workspace.project_dir(project_id), artifacts)
         finding_ids = {item.finding_id for item in findings}
 
         def update(current):
+            require_saved_review(current)
             selected_run = self._find_run(current, run_id)
             if selected_run.status is RunStatus.CANCELLED:
                 raise DFMError("run_cancelled", "A cancelled Run cannot publish another batch.")
@@ -1115,6 +1120,7 @@ class JobManager:
                 raise DFMError("run_not_found", "DFM run was not found.", {"run_id": run_id})
             combined_artifacts = {item.relative_path: item for item in current.artifacts}
             combined_artifacts.update({item.relative_path: item for item in artifacts})
+            require_saved_review(current)
             findings = materialize_evaluated_findings(
                 self.workspace.project_dir(project_id), artifacts
             )
@@ -1180,6 +1186,7 @@ class JobManager:
         if artifact is not None and artifact.kind == "geometric_results":
             run = self._find_run(self._store(project_id).load(), run_id)
             if run.plan_snapshot:
+                require_saved_review(self._store(project_id).load())
                 plan = PlanRecord.from_dict(run.plan_snapshot)
                 incremental = self._validate_artifact(project_dir, artifact)
                 evaluation = self._validate_artifact(
@@ -1191,12 +1198,14 @@ class JobManager:
                         [incremental],
                     ),
                 )
+                require_saved_review(self._store(project_id).load())
                 findings = materialize_evaluated_findings(
                     project_dir, [incremental, evaluation]
                 )
                 finding_ids = {item.finding_id for item in findings}
 
                 def publish(current: ProjectManifest) -> ProjectManifest:
+                    require_saved_review(current)
                     runs = [
                         replace(
                             item,

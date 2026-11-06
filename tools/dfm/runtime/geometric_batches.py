@@ -79,14 +79,14 @@ def next_geometric_batch(
     completed: Collection[str],
     *,
     selected: Collection[str] | None = None,
-    max_requests: int = MAX_BATCH_REQUESTS,
+    max_requests: int | None = None,
 ) -> GeometricBatch | None:
-    """Favor a checkable first conclusion; later batches amortize IPC overhead.
+    """Merge all ready requests for one snapshot and capability version.
 
-    The budget counts distinct Feature/G/context requests, not consumer bindings.
-    Oversized individual fragments run alone rather than being partially marked done.
+    An explicit budget is available for bounded consumers and failure-injection tests;
+    production leaves it unset so Worker can plan shared calculations before solving.
     """
-    if max_requests < 1:
+    if max_requests is not None and max_requests < 1:
         raise ValueError("A Geometric batch requires a positive request budget")
     active = plan.active_plan_fragments()
     ready = [
@@ -98,6 +98,13 @@ def next_geometric_batch(
     ]
     if not ready:
         return None
+    if max_requests is None:
+        seed = ready[0]
+        return GeometricBatch(seed.snapshot_id, tuple(
+            fragment for fragment in ready
+            if fragment.snapshot_id == seed.snapshot_id
+            and fragment.capability_version == seed.capability_version
+        ))
     blocked_bindings = {
         identity
         for fragment in active

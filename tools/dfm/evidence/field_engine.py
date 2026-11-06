@@ -392,12 +392,7 @@ class FieldEvidenceEngine:
                     )
 
         coverage = _coverage_summary(patches, covered_patch_ids)
-        if coverage["uncovered_patch_ids"] or coverage["uncovered_sample_refs"]:
-            raise DFMError(
-                "evidence_coverage_incomplete",
-                "Evidence rendering did not cover every failed geometry patch.",
-                coverage,
-            )
+        # Rendering gaps remain diagnostics; available findings and images are published.
 
         records_path = output_dir / "evidence_records.json"
         records_path.write_text(

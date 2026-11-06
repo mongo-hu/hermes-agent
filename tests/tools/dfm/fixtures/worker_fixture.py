@@ -63,7 +63,8 @@ def serve_v2():
 
     def upsert_coverage(state, rows):
         def key(row):
-            return row["feature_kind"], json.dumps(row.get("context", {}), sort_keys=True)
+            return (row["feature_kind"], row.get("forming_scope_id"),
+                    json.dumps(row.get("context", {}), sort_keys=True))
         indexed = {key(row): row for row in state["coverage"]}
         indexed.update({key(row): row for row in rows})
         state["coverage"] = list(indexed.values())
@@ -263,7 +264,7 @@ def serve_v2():
                 request_id,
                 {
                     "contract_version": contract,
-                    "schema_bundle_version": "2.4.0",
+                    "schema_bundle_version": "2.5.0",
                     "engine_version": "contract-fixture-1",
                     "dependency_fingerprint": dependency_fingerprint,
                     "backend": "analysis_situs+occt",
@@ -577,7 +578,7 @@ def serve_v2():
                                 "geometry_refs": [ref],
                                 "field_refs": [],
                             },
-                            "quality": {
+                            "quality": {"measurement_coverage": {"status": "complete"},
                                 "fixture": True,
                                 "certified": False,
                                 "algorithm_certified": False,

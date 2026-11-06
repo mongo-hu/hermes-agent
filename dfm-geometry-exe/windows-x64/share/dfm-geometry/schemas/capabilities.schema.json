@@ -27,7 +27,7 @@
       "const": "dfm.geometry/v2"
     },
     "schema_bundle_version": {
-      "const": "2.4.0"
+      "const": "2.5.0"
     },
     "engine_version": {
       "type": "string",

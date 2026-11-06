@@ -1,0 +1,31 @@
+syntax = "proto3";
+package dfm.geometry.v1;
+
+message Empty {}
+// UTF-8 JSON with integers preserved. Hashing uses DFM1, never these bytes.
+message Document { bytes json = 1; }
+message BlobRef { string sha256 = 1; uint64 size = 2; string format = 3; }
+message ArtifactRef { string artifact_id = 1; string sha256 = 2; uint64 size = 3; string type = 4; string schema_version = 5; string durability = 6; string state = 7; }
+message ModelRef { string model_version_id = 1; string topology_snapshot_id = 2; ArtifactRef manifest = 3; }
+message EntityRef { string model_version_id = 1; string topology_snapshot_id = 2; string entity_kind = 3; uint32 entity_id = 4; }
+message EntitySet { repeated EntityRef members = 1; }
+message RegionDefinition { repeated EntityRef members = 1; map<string, EntitySet> roles = 2; bool complement = 3; }
+message Region { string key = 1; oneof definition { RegionDefinition inline_definition = 2; string definition_ref = 3; } }
+message Target {
+  string target_id = 1;
+  string operation_id = 2;
+  string quantity = 3;
+  string method = 4;
+  string region_key = 5;
+  Document parameters = 6;
+  Document arguments = 7;
+  string quality_profile = 8;
+  string source_target_id = 9; // display.field consumes this numerical target
+  // Bind a registered dependency to an explicit target with its own parameters.
+  // Feature measurements may consume bind_feature_measurements for that kind.
+  map<string, string> dependency_targets = 10;
+}
+enum JobState { JOB_STATE_UNSPECIFIED = 0; QUEUED = 1; RUNNING = 2; SUCCEEDED = 3; PARTIAL = 4; FAILED = 5; CANCELLED = 6; CANCELLING = 7; BLOCKED = 8; }
+message JobRef { string job_id = 1; }
+message JobSnapshot { string job_id = 1; JobState state = 2; uint64 last_seq = 3; Document details = 4; }
+message JobEvent { string job_id = 1; uint64 seq = 2; string event_type = 3; double timestamp = 4; Document details = 5; bool resync_required = 6; }

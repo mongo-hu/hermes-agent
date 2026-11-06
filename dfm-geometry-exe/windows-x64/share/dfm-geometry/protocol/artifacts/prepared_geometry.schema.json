@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Prepared geometry descriptor",
+  "type": "object",
+  "required": ["kind", "type", "schema_version", "parameters", "artifact"],
+  "properties": {
+    "kind": {"enum": ["analysis.mesh", "sampling.surface"]},
+    "type": {"enum": ["analysis_mesh_brep", "surface_samples_f64"]},
+    "schema_version": {"const": "1"},
+    "parameters": {"type": "object"},
+    "sampling_key": {"type": "string"},
+    "artifact": {"type": "object"}
+  },
+  "description": "Model and topology identity come from the containing computation manifest. Mesh archives preserve triangulations and ordered face references in BinTools v4. Samples use DFMPS001: little-endian u32 face count, then each u32 face id and u64 row count followed by rows of 8 float64 values (xyz, normal xyz, uv) and u32 has_uv. Unknown UV is explicitly absent. No C++ object memory or BVH is serialized."
+}

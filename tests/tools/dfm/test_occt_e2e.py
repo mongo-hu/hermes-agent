@@ -116,7 +116,7 @@ def test_screw_boss_wall_ratio_uses_two_public_g_results_for_one_finding(tmp_pat
             unit="mm",
             context={},
             evidence={"geometry_refs": [], "field_refs": []},
-            quality={"fixture": True, "algorithm_certified": False},
+            quality={"fixture": True, "algorithm_certified": False, "measurement_coverage": {"status": "complete"}},
             reason=None,
             provenance={
                 "source_snapshot_id": "snapshot-screw-boss",
@@ -221,7 +221,7 @@ def test_evaluation_consumes_geometric_identity_without_legacy_routing(tmp_path)
                     "unit": "mm",
                     "context": {},
                     "evidence": {"geometry_refs": [], "field_refs": []},
-                    "quality": {},
+                    "quality": {"measurement_coverage": {"status": "complete"}},
                     "reason": None,
                     "provenance": {
                         "source_snapshot_id": "snapshot_v2",
@@ -396,7 +396,7 @@ def test_evaluation_keeps_identical_g_requests_separate_by_plan_fragment():
             unit="mm",
             context={},
             evidence={"geometry_refs": [], "field_refs": []},
-            quality={},
+            quality={"measurement_coverage": {"status": "complete"}},
             reason=None,
             provenance={
                 "source_snapshot_id": f"snapshot_{suffix}",
@@ -665,6 +665,17 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
         max_sessions=2,
         memory_budget_mb=4096,
     )
+    calls = []
+    methods = []
+    native_call = pool.call
+
+    def observe(project_id, method, params):
+        methods.append(method)
+        if method == "geometrics.compute":
+            calls.append(params)
+        return native_call(project_id, method, params)
+
+    pool.call = observe
     try:
         discovery = OCCTCppFeatureRecognitionProvider(
             EXECUTABLE, session_pool=pool
@@ -742,6 +753,29 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
             "coordinate_system": "model",
             "direction_source": "user_confirmed",
         }
+        # A confirmed main direction must not hide unresolved local ownership.
+        pending_job = native_call("project-v2", "geometrics.compute", {
+            "snapshot_id": confirmed_scope["snapshot_id"],
+            "items": [{"feature_id": wall.feature_id,
+                       "geometric_ids": ["G_SCOPE_DRAFT_MIN"], "context": forming_context}],
+            "model_scan": True,
+        })
+        pending_result = pool.wait_job("project-v2", str(pending_job["job_id"]))
+        pending_draft = pending_result["results"][0]
+        assert pending_draft["status"] == "missing_context"
+        assert pending_draft["value"] is None
+        assert pending_draft["quality"]["forming_assignment"]["pending_geometry_refs"]
+        assert pending_result["diagnostics"]["model_scan"]["forming_assignments"][0]["assignment"]["status"] == "pending_review"
+        local_scopes = [{
+            "forming_scope_id": row["forming_scope_id"], "kind": row["kind"], "mode": "local",
+            "geometry_refs": row["geometry_refs"], "undercut_geometry_refs": row["undercut_geometry_refs"],
+            "mechanism_kind": "slider", "draw_direction": [0, 0, 1],
+            "coordinate_system": "model", "direction_source": "user_confirmed", "status": "confirmed",
+        } for row in confirmed_scope["forming_scopes"] if row["mode"] == "local" and row["status"] != "stale"]
+        confirmed_scope = pool.call("project-v2", "forming_scopes.revise", {
+            "snapshot_id": confirmed_scope["snapshot_id"], "scopes": local_scopes})
+        opened = pool.acquire("project-v2").snapshots_by_input_sha256[input_sha256]
+        confirmed_scope = pool.update_snapshot("project-v2", input_sha256, opened, confirmed_scope)
         request = GeometricRequest(wall.feature_id, ["G_WALL_THK_MIN"], {})
         direction_request = GeometricRequest(
             wall.feature_id, ["G_SCOPE_DRAFT_MIN"], forming_context
@@ -789,15 +823,6 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
                 ),
             ],
         )
-        calls = []
-        native_call = pool.call
-
-        def observe(project_id, method, params):
-            if method == "geometrics.compute":
-                calls.append(params)
-            return native_call(project_id, method, params)
-
-        pool.call = observe
         artifacts = OcctAnalyzer(EXECUTABLE, session_pool=pool).run(
             AnalyzerContext(
                 "project-v2",
@@ -860,9 +885,9 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
             for item in payload["results"]
             if item["geometric_id"] == "G_SCOPE_DRAFT_MIN"
         )
-        # Generic draft uses the selected body faces and prepares the final direction.
+        # Discovery and final-direction measurement work without explicit field preparation.
         assert direction_result["status"] == "ok", json.dumps(direction_result)
-        assert discovery.diagnostics["field_preparation"]["fields"]
+        assert "fields.prepare" not in methods
         assert direction_result["context"] == forming_context
         evaluations_artifact = EvaluationEngine().materialize(
             project_dir,
@@ -940,6 +965,7 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
             "snapshots.merge",
             "forming_scopes.analyze",
             "forming_scopes.revise",
+            "forming_scopes.revise",  # The confirmed local plan is replayed too.
         ]
         assert all(
             len(item["result_state_sha256"]) == 64
@@ -1444,6 +1470,7 @@ def _assert_complete_service_flow(
                     "fixture": True,
                     "certified": False,
                     "algorithm_certified": False,
+                    "measurement_coverage": {"status": "complete"},
                 }
                 for item in geometric_payload["results"]
             )

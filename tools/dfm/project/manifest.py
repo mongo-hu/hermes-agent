@@ -16,7 +16,7 @@ from typing import Callable, Iterator
 from uuid import uuid4
 
 from ..contracts import MANIFEST_SCHEMA_VERSION, ProjectManifest
-from ..errors import DFMError
+from ..errors import DFMError, ManifestCommitError
 from . import journal
 
 
@@ -240,7 +240,13 @@ class ManifestStore:
                     )
                 updated = replace(updated, revision=current.revision + 1)
                 event = journal.encode(previous, updated.to_dict())
-                journal_end = journal.append(self.journal_path, event, state.journal_end)
+                try:
+                    journal_end = journal.append(self.journal_path, event, state.journal_end)
+                except OSError as exc:
+                    raise ManifestCommitError(
+                        "manifest_commit_failed", "The project update could not be committed.",
+                        {"failure_category": "save_failed", "revision": updated.revision},
+                    ) from exc
                 committed = _CommittedState(updated, journal_end, state.checkpoint_revision)
                 if (updated.revision - state.checkpoint_revision >= _CHECKPOINT_COMMITS
                     or journal_end >= _MAX_JOURNAL_BYTES):
