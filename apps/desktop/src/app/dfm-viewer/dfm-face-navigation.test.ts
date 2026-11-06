@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { createFaceNavigationIndex } from './dfm-face-navigation'
+import { createFaceCandidateIndex, createFaceNavigationIndex } from './dfm-face-navigation'
 import type { ReviewContext, ReviewFeature } from './dfm-review'
 import type { GeometryReference } from './dfm-viewer-geometry'
 
@@ -56,6 +56,41 @@ function fixture() {
 }
 
 describe('3D face navigation', () => {
+  it('keeps all overlapping owners for an explicit context-menu choice without changing left-click priority', () => {
+    const { context, faces } = fixture()
+    context.features.push(feature('WALL', [1, 2, 3]))
+    const candidates = createFaceCandidateIndex(context, faces, [])
+    expect(candidates.get(1)).toEqual([
+      { category: 'structure', objectId: 'BOSS' },
+      { category: 'structure', objectId: 'WALL' },
+      { category: 'annotation', objectId: 'APPEARANCE' },
+      { category: 'forming', objectId: 'SIDE' },
+      { category: 'forming', objectId: 'MAIN' }
+    ])
+    const navigation = createFaceNavigationIndex(context, faces, [])
+
+    for (const [faceId, matches] of candidates) {
+      expect(navigation.get(faceId)).toEqual(matches[0])
+    }
+
+    expect(candidates.get(4)).toEqual([{ category: 'forming', objectId: 'MAIN' }])
+  })
+
+  it('does not assign reference-only, stale, or unmapped geometry to a context-menu object', () => {
+    const { context, faces } = fixture()
+    context.features = [feature('BOSS', [1, 2], {
+      outer_wall: [face(1)], adjacent_main_wall: [face(2)]
+    })]
+    context.annotations[0].status = 'stale'
+    context.forming_scopes = []
+    const candidates = createFaceCandidateIndex(context, faces, [])
+    expect(candidates.get(1)).toEqual([{ category: 'structure', objectId: 'BOSS' }])
+    expect(candidates.has(2)).toBe(false)
+    expect(candidates.has(5)).toBe(false)
+    // A missing object mapping does not mean that the raycast missed this model face.
+    expect(faces.some(item => item.geometry_ref.index === 5)).toBe(true)
+  })
+
   it('prefers structures, then annotations, then local and global forming settings', () => {
     const { context, faces } = fixture()
     const index = createFaceNavigationIndex(context, faces, [])

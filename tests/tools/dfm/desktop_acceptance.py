@@ -17,6 +17,42 @@ import pytest
 def review_http_server(service, monkeypatch):
     import uvicorn
     import hermes_cli.web_server as web_server
+    from hermes_cli.banner import VERSION
+    from hermes_cli.config import ensure_hermes_home
+
+    # Prepare only the conftest-created temporary HERMES_HOME before requests.
+    ensure_hermes_home()
+    # The full Desktop also opens its normal gateway WebSocket. Import the
+    # real handler before serving requests so cold imports cannot block the
+    # single event loop while DFM requests are already subject to IPC timeouts.
+    import tui_gateway.ws  # noqa: F401
+
+    # Keep the unrelated startup update checker offline in this temporary
+    # profile; an unknown cached result avoids both git fetch and PyPI calls.
+    (Path(os.environ["HERMES_HOME"]) / ".update_check").write_text(
+        json.dumps({"ts": time.time(), "behind": None,
+                    "rev": os.environ.get("HERMES_REVISION") or None, "ver": VERSION}),
+        encoding="utf-8",
+    )
+    # models.dev has a separate mtime-based one-hour cache from model_catalog.
+    # A fresh, valid minimal registry keeps the unrelated unauthenticated model
+    # picker offline; these Desktop tests never select or call an LLM.
+    (Path(os.environ["HERMES_HOME"]) / "models_dev_cache.json").write_text(
+        json.dumps({"openai": {"id": "openai", "name": "OpenAI", "models": {}}}),
+        encoding="utf-8",
+    )
+    # The real main window requests model options while async /api/config
+    # acquires the same synchronous profile lock. Prepare that cold path in
+    # this credential-free temporary profile before DFM IPC timeout budgets
+    # start; keep the actual HTTP handlers and their subsequent calls intact.
+    web_server.get_model_options()
+    # /api/status also resolves deferred platform adapters synchronously.
+    # Load their real config/registrations before the HTTP loop starts so a
+    # fresh test process does not spend DFM request budgets on cold imports.
+    # Loading config does not instantiate or connect the registered adapters.
+    from gateway.config import load_gateway_config
+
+    load_gateway_config()
 
     monkeypatch.setattr("tools.dfm.service.get_dfm_service", lambda: service)
     with socket.socket() as listener:
@@ -31,6 +67,10 @@ def review_http_server(service, monkeypatch):
                 log_level="error",
                 lifespan="off",
                 timeout_graceful_shutdown=1,
+                # Match the actual Desktop loopback server: protocol pings
+                # must not disconnect local clients during a busy event loop.
+                ws_ping_interval=None,
+                ws_ping_timeout=None,
             )
         )
         thread = Thread(target=server.run, kwargs={"sockets": [listener]}, daemon=True)
@@ -48,12 +88,14 @@ def review_http_server(service, monkeypatch):
             }
         finally:
             server.should_exit = True
-            thread.join(timeout=5)
+            # Uvicorn also closes Desktop WebSockets and HTTP keep-alive sockets.
+            # Their transport shutdown can exceed the ASGI task grace period.
+            thread.join(timeout=15)
             assert not thread.is_alive(), "acceptance HTTP server did not stop"
 
 
 @contextmanager
-def electron_runtime(tmp_path, *, backend=None):
+def electron_runtime(tmp_path, *, backend=None, software_rendering=False):
     from playwright.sync_api import sync_playwright
 
     repo = Path(__file__).resolve().parents[3]
@@ -65,6 +107,7 @@ def electron_runtime(tmp_path, *, backend=None):
     wrapper = tmp_path / "electron-acceptance.cjs"
     wrapper.write_text(
         "const { app, BrowserWindow } = require('electron');\n"
+        "app.setAsDefaultProtocolClient = () => true;\n"
         f"app.setAppPath({json.dumps(str(desktop))});\n"
         "BrowserWindow.prototype.show = function () {};\n"
         "BrowserWindow.prototype.showInactive = function () {};\n"
@@ -95,6 +138,9 @@ def electron_runtime(tmp_path, *, backend=None):
            if os.environ.get("DFM_DESKTOP_E2E_RENDERER_URL") else {}),
     })
     log_path = tmp_path / "electron-acceptance.log"
+    # Exercise the Desktop's normal GPU selection by default. Software WebGL
+    # remains explicit for diagnostics instead of changing every acceptance run.
+    renderer_args = ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] if software_rendering else []
     process = None
     with log_path.open("wb") as log:
         try:
@@ -102,8 +148,7 @@ def electron_runtime(tmp_path, *, backend=None):
                 [
                     str(electron),
                     f"--remote-debugging-port={port}",
-                    "--use-angle=swiftshader",
-                    "--enable-unsafe-swiftshader",
+                    *renderer_args,
                     str(wrapper),
                 ],
                 cwd=desktop,
@@ -168,6 +213,25 @@ def viewer_window(main, context, manifest_path):
         page.locator("canvas").wait_for()
         yield page
         assert not page_errors, page_errors
+    except BaseException:
+        # These artifacts stay beside this test's isolated viewer manifest.
+        # pytest.fail raises an OutcomeException outside Exception; preserve
+        # the same failure evidence before re-raising that assertion too.
+        # Capture both pending UI and visible errors without hiding the failure.
+        artifacts = Path(manifest_path).parent
+        try:
+            page.screenshot(path=str(artifacts / "desktop-failure.png"))
+        except Exception:
+            pass
+        try:
+            body = page.locator("body").inner_text(timeout=2000)
+            (artifacts / "desktop-failure.txt").write_text(
+                body + "\n\nPage errors:\n" + "\n".join(page_errors),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+        raise
     finally:
         if not page.is_closed():
             page.close()

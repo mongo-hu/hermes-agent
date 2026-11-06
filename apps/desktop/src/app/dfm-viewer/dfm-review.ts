@@ -67,6 +67,7 @@ export interface ReviewContext {
   review_groups: ReviewGroup[]
   annotations: ReviewAnnotation[]
   annotation_kinds?: AnnotationKind[]
+  viewer_manifest?: string | null
 }
 
 /** Worker execution budget plus time for committing state and generating the Viewer. */
@@ -96,6 +97,30 @@ export function reviewCategory(group: ReviewGroup): ReviewCategory {
     : group.kind === 'surface_attribute'
       ? 'annotation'
       : 'forming'
+}
+
+/** Capture this batch only; incomplete forming plans still require user input. */
+export function confirmableReviewGroupIds(context: ReviewContext): string[] {
+  return context.review_groups.filter(group => {
+    if (group.status !== 'pending_review') {return false}
+
+    if (group.kind === 'product_forming' || group.kind === 'forming_scope') {
+      return formingPlanReady(context.forming_scopes.find(scope => group.target_refs.includes(scope.forming_scope_id)))
+    }
+
+    return group.kind === 'ordinary_structure' || group.kind === 'surface_attribute'
+  }).map(group => group.review_group_id)
+}
+
+export function removableReviewGroup(context: ReviewContext, group: ReviewGroup): boolean {
+  if (group.status !== 'pending_review') {return false}
+
+  if (group.kind === 'forming_scope') {
+    return context.forming_scopes.some(scope => group.target_refs.includes(scope.forming_scope_id) &&
+      scope.mode === 'local' && scope.status !== 'stale')
+  }
+
+  return group.kind === 'ordinary_structure' || group.kind === 'surface_attribute'
 }
 
 const LABELS: Record<string, string> = {
@@ -246,9 +271,29 @@ export function reviewGeometry(context: ReviewContext, group: ReviewGroup): Geom
 }
 
 export function formingPlanReady(scope: ReviewScope | undefined): boolean {
-  return Boolean(scope && scope.status !== 'stale' && scope.geometry_refs.length &&
-    parseDirectionVector(JSON.stringify(scope.draw_direction)) &&
-    (scope.mode === 'main' ? scope.mechanism_kind === 'none' : ['slider', 'lifter'].includes(scope.mechanism_kind)))
+  return Boolean(scope && scope.status !== 'stale' && formingPlanMissing(scope).length === 0)
+}
+
+/** Report actual contract requirements; an empty undercut set is not a new confirmation gate. */
+export function formingPlanMissing(scope: ReviewScope): string[] {
+  const missing: string[] = []
+
+  if (!scope.geometry_refs.length) {missing.push('成型面')}
+  if (scope.mode === 'main' ? scope.mechanism_kind !== 'none' : !['slider', 'lifter'].includes(scope.mechanism_kind)) {
+    missing.push('成型机构')
+  }
+  if (!parseDirectionVector(JSON.stringify(scope.draw_direction))) {missing.push('退出方向')}
+
+  return missing
+}
+
+export function formingDirectionLabel(scope: ReviewScope): string {
+  const direction = parseDirectionVector(JSON.stringify(scope.draw_direction))
+  if (!direction) {return '方向待补充'}
+  const axis = direction.findIndex(value => Math.abs(value) > 1 - 1e-8)
+
+  return axis >= 0 ? `${direction[axis] > 0 ? '+' : '−'}${'XYZ'[axis]}`
+    : `[${direction.map(value => Number(value.toFixed(3))).join(', ')}]`
 }
 
 export function scopeDisplayGeometry(scope: ReviewScope): GeometryReference[] {

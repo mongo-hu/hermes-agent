@@ -46,12 +46,13 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["feature_kind", "context", "status", "covered_geometry_ref", "unresolved_geometry_ref", "diagnostics"],
+        "required": ["feature_kind", "context", "status", "diagnostics"],
         "properties": {
           "feature_kind": {"type": "string", "minLength": 1},
+          "forming_scope_id": {"type": ["string", "null"], "minLength": 1},
           "context": {"type": "object"},
           "status": {"enum": ["complete", "partial", "failed"]},
-          "covered_geometry_ref": {"type": "object"},
+          "covered_geometry_ref": {"type": ["object", "null"]},
           "unresolved_geometry_ref": {"type": ["object", "null"]},
           "diagnostics": {"type": "object"}
         }

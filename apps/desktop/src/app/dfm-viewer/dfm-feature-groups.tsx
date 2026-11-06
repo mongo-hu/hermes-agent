@@ -1,5 +1,7 @@
 import { Fragment, type ReactNode, type RefObject, useEffect, useMemo, useState } from 'react'
 
+import type { DfmHighlightSelection } from './dfm-viewer-selection'
+
 interface FeatureIdentity {
   feature_id: string
   kind: string
@@ -13,6 +15,9 @@ interface DfmFeatureGroupsProps<T extends FeatureIdentity> {
   activeFeatureElementRef: RefObject<HTMLDivElement | null>
   renderFeature: (feature: T, index: number) => ReactNode
   navigationSequence?: number
+  highlightSelection?: DfmHighlightSelection | null
+  onToggleKind?: (kind: string, featureIds: string[]) => void
+  selectionDisabled?: boolean
 }
 
 export function DfmFeatureGroups<T extends FeatureIdentity>({
@@ -22,7 +27,10 @@ export function DfmFeatureGroups<T extends FeatureIdentity>({
   editingFeatureId,
   activeFeatureElementRef,
   renderFeature,
-  navigationSequence
+  navigationSequence,
+  highlightSelection,
+  onToggleKind,
+  selectionDisabled = false
 }: DfmFeatureGroupsProps<T>) {
   const [openKinds, setOpenKinds] = useState<Set<string>>(new Set())
 
@@ -39,7 +47,14 @@ export function DfmFeatureGroups<T extends FeatureIdentity>({
 
   const activeKind = features.find(feature => feature.feature_id === activeFeatureId)?.kind
   const editingKind = features.find(feature => feature.feature_id === editingFeatureId)?.kind
-  const activeKindOpen = activeKind !== undefined && openKinds.has(activeKind)
+
+  const selectedKind = highlightSelection?.bucketId.startsWith('confirmed:')
+    ? highlightSelection.bucketId.slice('confirmed:'.length) : undefined
+
+  const visibleKinds = highlightSelection === undefined ? openKinds : new Set(
+    [selectedKind, editingKind].filter((kind): kind is string => kind !== undefined))
+
+  const activeKindOpen = activeKind !== undefined && visibleKinds.has(activeKind)
 
   useEffect(() => {
     setOpenKinds(previous => {
@@ -70,6 +85,7 @@ export function DfmFeatureGroups<T extends FeatureIdentity>({
           className="overflow-hidden rounded-lg border border-white/10 bg-white/[0.025]"
           key={kind}
           onToggle={event => {
+            if (highlightSelection !== undefined) {return}
             const open = event.currentTarget.open
             setOpenKinds(previous => {
               if (previous.has(kind) === open) {
@@ -87,12 +103,21 @@ export function DfmFeatureGroups<T extends FeatureIdentity>({
               return next
             })
           }}
-          open={openKinds.has(kind)}
+          open={visibleKinds.has(kind)}
         >
-          <summary className="cursor-pointer px-2.5 py-2 text-[11px] font-medium text-slate-100">
+          <summary
+            aria-disabled={selectionDisabled || undefined}
+            className="cursor-pointer px-2.5 py-2 text-[11px] font-medium text-slate-100"
+            onClick={event => {
+              if (!onToggleKind) {return}
+              event.preventDefault()
+
+              if (!selectionDisabled) {onToggleKind(kind, entries.map(({ feature }) => feature.feature_id))}
+            }}
+          >
             {labels[kind] ?? kind} · {entries.length} 个实例
           </summary>
-          {openKinds.has(kind) && (
+          {visibleKinds.has(kind) && (
             <div className="grid gap-2 border-t border-white/10 p-2">
               {entries.map(({ feature, index }) => (
                 <Fragment key={feature.feature_id}>{renderFeature(feature, index)}</Fragment>

@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  confirmableReviewGroupIds,
   confirmedFeatureIds,
   directionUnlocked,
+  formingDirectionLabel,
+  formingPlanMissing,
   parseReviewDirection,
+  removableReviewGroup,
   reviewBuckets,
   type ReviewContext,
   reviewEditTimeout,
@@ -160,5 +164,77 @@ describe('DFM review state', () => {
     }
 
     expect(parseReviewDirection(['1', '2', '-3'])).toEqual([1, 2, -3].map(value => value / Math.hypot(1, 2, -3)))
+  })
+
+  it('accepts only the current pending groups whose forming plans are complete', () => {
+    const state = context()
+    state.forming_scopes.push({ forming_scope_id: 'MAIN', kind: 'main_forming', mode: 'main',
+      mechanism_kind: 'none', undercut_geometry_refs: [], candidate_solutions: [], coordinate_system: 'model',
+      direction_source: 'user_confirmed', draw_direction: [0, 0, 1], geometry_refs: [{ kind: 'face', index: 3 }] })
+    state.review_groups.push(
+      { review_group_id: 'plan', kind: 'forming_scope', target_refs: ['SIDE'], status: 'pending_review' },
+      { review_group_id: 'main', kind: 'product_forming', target_refs: ['MAIN'], status: 'pending_review' },
+      { review_group_id: 'unknown', kind: 'future_kind', target_refs: [], status: 'pending_review' }
+    )
+    expect(confirmableReviewGroupIds(state)).toEqual(['b1', 'w', 'main'])
+
+    for (const direction of [null, [], [0, 0, 0], [0, 1, NaN], [0, 0, Infinity]]) {
+      state.forming_scopes[1].draw_direction = direction
+      expect(confirmableReviewGroupIds(state)).toEqual(['b1', 'w'])
+    }
+
+    state.forming_scopes[1].draw_direction = [0, 0, 1]
+
+    const ready = { ...state.forming_scopes[0], mechanism_kind: 'slider' as const,
+      draw_direction: [1, 0, 0], status: 'candidate' as const }
+
+    state.forming_scopes[0] = ready
+    expect(confirmableReviewGroupIds(state)).toEqual(['b1', 'w', 'plan', 'main'])
+
+    for (const incomplete of [
+      { ...ready, mechanism_kind: 'undetermined' as const },
+      { ...ready, draw_direction: null },
+      { ...ready, geometry_refs: [] },
+      { ...ready, status: 'stale' as const }
+    ]) {
+      state.forming_scopes[0] = incomplete
+      expect(confirmableReviewGroupIds(state)).toEqual(['b1', 'w', 'main'])
+    }
+
+    state.forming_scopes[0] = ready
+    state.review_groups.find(group => group.review_group_id === 'plan')!.status = 'confirmed'
+    expect(confirmableReviewGroupIds(state)).toEqual(['b1', 'w', 'main'])
+  })
+
+  it('offers removal only for pending recognition objects and local ranges', () => {
+    const state = context()
+    expect(removableReviewGroup(state, state.review_groups[0])).toBe(true)
+    expect(removableReviewGroup(state, state.review_groups[1])).toBe(false)
+
+    const range: ReviewGroup = { review_group_id: 'plan', kind: 'forming_scope',
+      target_refs: ['SIDE'], status: 'pending_review' }
+
+    expect(removableReviewGroup(state, range)).toBe(true)
+    state.forming_scopes[0].status = 'stale'
+    expect(removableReviewGroup(state, range)).toBe(false)
+    state.forming_scopes[0].status = 'candidate'
+    state.forming_scopes[0].mode = 'main'
+    expect(removableReviewGroup(state, range)).toBe(false)
+
+    for (const kind of ['product_forming', 'future_kind']) {
+      expect(removableReviewGroup(state, { ...range, kind })).toBe(false)
+    }
+  })
+
+  it('reports only actual missing local-plan fields and does not require an undercut face', () => {
+    const scope = { ...context().forming_scopes[0], geometry_refs: [], undercut_geometry_refs: [],
+      mechanism_kind: 'undetermined' as const, draw_direction: null }
+    expect(formingPlanMissing(scope)).toEqual(['成型面', '成型机构', '退出方向'])
+    expect(formingDirectionLabel(scope)).toBe('方向待补充')
+    const ready = { ...scope, geometry_refs: [{ kind: 'face' as const, index: 1 }],
+      mechanism_kind: 'slider' as const, draw_direction: [0, -3, 0] }
+    expect(formingPlanMissing(ready)).toEqual([])
+    expect(formingDirectionLabel(ready)).toBe('−Y')
+    expect(formingDirectionLabel({ ...ready, draw_direction: [1, 1, 0] })).toBe('[0.707, 0.707, 0]')
   })
 })

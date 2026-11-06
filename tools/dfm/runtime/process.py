@@ -22,6 +22,7 @@ import subprocess
 import threading
 import time
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
+from uuid import uuid4
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 
@@ -697,12 +698,18 @@ class GeometrySessionPool:
     @staticmethod
     def _write_recovery(state: SnapshotRecoveryState) -> None:
         state.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = state.path.with_suffix(".json.tmp")
-        temporary.write_text(
-            json.dumps(state.to_dict(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        temporary.replace(state.path)
+        temporary = state.path.with_name(f".{state.path.name}.{uuid4().hex}.tmp")
+        created = False
+        try:
+            with temporary.open("x", encoding="utf-8") as handle:
+                created = True
+                handle.write(json.dumps(state.to_dict(), ensure_ascii=False, indent=2))
+                handle.flush()
+                os.fsync(handle.fileno())
+            temporary.replace(state.path)
+        finally:
+            if created:
+                temporary.unlink(missing_ok=True)
 
     def _load_recovery(
         self,
@@ -942,6 +949,7 @@ class GeometrySessionPool:
         owned.snapshot_last_renewed[live_opened_id] = time.monotonic()
         owned.input_by_snapshot_id[live_opened_id] = state.input_sha256
         current_document = dict(opened)
+        replay_params = []
         for step in state.steps:
             method = str(step.get("method") or "")
             if method not in _RECOVERABLE_SNAPSHOT_METHODS:
@@ -950,10 +958,15 @@ class GeometrySessionPool:
                     "The geometry recovery log contains an unsupported method.",
                     {"method": method},
                 )
-            params = self._translated_params(step.get("params") or {}, aliases)
-            params = self._validated_recovery_geometry_refs(
-                params, opened, state.input_sha256
-            )
+            # Validate every persisted face/edge before expensive recognition.
+            # A late revision must not fail only after replaying earlier jobs.
+            replay_params.append(self._validated_recovery_geometry_refs(
+                json.loads(json.dumps(step.get("params") or {})),
+                opened, state.input_sha256,
+            ))
+        for step, validated_params in zip(state.steps, replay_params):
+            method = str(step["method"])
+            params = self._translated_params(validated_params, aliases)
             response = owned.session.call(method, params)
             if method in _ASYNC_SNAPSHOT_METHODS:
                 response = owned.session.wait_job(

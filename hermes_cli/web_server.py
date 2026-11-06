@@ -44,7 +44,7 @@ import zipfile
 from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import yaml
 
@@ -10079,6 +10079,12 @@ class DFMReviewConfirmationRequest(BaseModel):
     expected_snapshot_id: Optional[str] = None
 
 
+class DFMReviewRemovalRequest(BaseModel):
+    review_group_id: str = Field(min_length=1)
+    expected_revision: int = Field(strict=True)
+    expected_snapshot_id: str = Field(min_length=1)
+
+
 class DFMAnnotationRevisionRequest(BaseModel):
     annotations: List[Dict[str, Any]]
     expected_revision: int
@@ -10089,8 +10095,10 @@ class DFMAnnotationRevisionRequest(BaseModel):
 class DFMReviewDirectionRequest(BaseModel):
     forming_scope_id: str
     draw_direction: Optional[List[float]]
+    action: Literal["stage", "confirm"] = "stage"
     mechanism_kind: Optional[str] = None
     geometry_refs: Optional[List[Dict[str, Any]]] = None
+    undercut_geometry_refs: Optional[List[Dict[str, Any]]] = None
     expected_revision: int
     expected_snapshot_id: Optional[str] = None
 
@@ -10179,6 +10187,17 @@ def confirm_dfm_discovery_groups(project_id: str, request: DFMReviewConfirmation
         _raise_dfm_http_error(exc)
 
 
+@app.post("/api/dfm/projects/{project_id}/discovery/review/remove")
+def remove_dfm_discovery_group(project_id: str, request: DFMReviewRemovalRequest):
+    from tools.dfm.service import get_dfm_service
+    try:
+        return get_dfm_service().analysis("remove_review_group", project_id=project_id,
+            review_group_id=request.review_group_id, expected_revision=request.expected_revision,
+            expected_snapshot_id=request.expected_snapshot_id)
+    except Exception as exc:
+        _raise_dfm_http_error(exc)
+
+
 @app.post("/api/dfm/projects/{project_id}/discovery/review/direction")
 def confirm_dfm_scope_direction(project_id: str, request: DFMReviewDirectionRequest):
     from tools.dfm.errors import DFMError
@@ -10196,10 +10215,12 @@ def confirm_dfm_scope_direction(project_id: str, request: DFMReviewDirectionRequ
             payload["mechanism_kind"] = request.mechanism_kind
         if request.geometry_refs is not None:
             payload["geometry_refs"] = request.geometry_refs
+        if request.undercut_geometry_refs is not None:
+            payload["undercut_geometry_refs"] = request.undercut_geometry_refs
         payload.update({"draw_direction": request.draw_direction,
                         "coordinate_system": "model", "direction_source": "user_confirmed"})
-        # Local edits remain drafts until the whole forming proposal is confirmed.
-        ready = scope["mode"] == "main"
+        # Local drafts and whole-proposal confirmation are explicit, separate actions.
+        ready = scope["mode"] == "main" or request.action == "confirm"
         result = service.analysis("revise_forming_scopes" if ready else "stage_forming_direction", project_id=project_id,
             **({"forming_scopes": [payload]} if ready else {"forming_scope": payload}), expected_revision=request.expected_revision,
             **({"expected_snapshot_id": request.expected_snapshot_id} if request.expected_snapshot_id is not None else {}))

@@ -1,17 +1,19 @@
 import type { ReviewContext, ReviewNavigation } from './dfm-review'
 import type { GeometryReference, TopologyEdge, TopologyFace } from './dfm-viewer-geometry'
 
-interface Candidate extends Omit<ReviewNavigation, 'sequence'> {
+export type FaceCandidate = Omit<ReviewNavigation, 'sequence'>
+
+interface Candidate extends FaceCandidate {
   refs: GeometryReference[]
   fallback?: boolean
 }
 
-/** Build once per snapshot. Picking a face is then a map lookup, including on large models. */
-export function createFaceNavigationIndex(
+/** All owning objects, in the same priority order used by left-click navigation. */
+export function createFaceCandidateIndex(
   context: Pick<ReviewContext, 'features' | 'annotations' | 'forming_scopes'>,
   faces: TopologyFace[],
   edges: TopologyEdge[]
-): Map<number, Omit<ReviewNavigation, 'sequence'>> {
+): Map<number, FaceCandidate[]> {
   const faceById = new Map(faces.map(face => [face.geometry_ref.index, face.geometry_ref]))
   const edgeById = new Map(edges.map(edge => [edge.geometry_ref.index, edge]))
 
@@ -92,13 +94,24 @@ export function createFaceNavigationIndex(
         a.objectId.localeCompare(b.objectId)
     )
 
-  const index = new Map<number, Omit<ReviewNavigation, 'sequence'>>()
+  const index = new Map<number, FaceCandidate[]>()
 
   for (const candidate of ranked) {
     for (const face of candidate.faces) {
-      if (!index.has(face)) {index.set(face, { category: candidate.category, objectId: candidate.objectId })}
+      const matches = index.get(face) ?? []
+      matches.push({ category: candidate.category, objectId: candidate.objectId })
+      index.set(face, matches)
     }
   }
 
   return index
+}
+
+/** Build once per snapshot. Preserve the established left-click priority. */
+export function createFaceNavigationIndex(
+  context: Pick<ReviewContext, 'features' | 'annotations' | 'forming_scopes'>,
+  faces: TopologyFace[],
+  edges: TopologyEdge[]
+): Map<number, FaceCandidate> {
+  return new Map([...createFaceCandidateIndex(context, faces, edges)].map(([face, candidates]) => [face, candidates[0]]))
 }

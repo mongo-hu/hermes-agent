@@ -9,7 +9,7 @@ from ..errors import DFMError, ManifestCommitError, ReviewSaveError
 EDIT_ACTIONS = frozenset({
     "revise_annotations", "update_forming_scope_geometry", "restructure_forming_scopes",
     "analyze_forming_scope", "revise_forming_scopes", "stage_forming_direction",
-    "update_feature_geometry", "confirm_discovery",
+    "update_feature_geometry", "confirm_discovery", "remove_review_group",
 })
 
 
@@ -57,7 +57,10 @@ def save_identity(action, params, manifest=None):
     for collection, key in (("forming_scopes", "forming_scope_id"), ("annotations", "annotation_id")):
         targets.extend(str(row.get(key, "")) for row in (params.get(collection) or []) if isinstance(row, dict))
     groups = {row.review_group_id: row for row in manifest.review_groups} if manifest else {}
-    for value in params.get("review_group_ids", []) or []:
+    review_ids = list(params.get("review_group_ids") or [])
+    if params.get("review_group_id"):
+        review_ids.append(params["review_group_id"])
+    for value in review_ids:
         group = groups.get(value)
         if group:
             targets.extend(f"{group.kind}:{ref}" for ref in group.target_refs)

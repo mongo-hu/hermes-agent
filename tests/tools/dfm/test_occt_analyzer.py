@@ -25,6 +25,7 @@ from tools.dfm.runtime.process import (
     GeometrySession,
     GeometrySessionPool,
     ProjectGeometrySession,
+    SnapshotRecoveryState,
     SESSION_CONTRACT,
     SESSION_SCHEMA_BUNDLE_VERSION,
     geometry_capability_identity,
@@ -278,6 +279,117 @@ def test_snapshot_merge_conflict_preserves_the_current_branch():
 
     assert exc_info.value.code == "snapshot_conflict"
     assert owned.snapshots_by_input_sha256[input_sha256] is cached
+
+
+@pytest.fixture
+def recovery_patch(tmp_path):
+    build = dict(CAPABILITIES)
+    ref = {"kind": "face", "index": 198, "input_sha256": "a" * 64,
+           "topology_snapshot_id": "topology-original", "entity_id": "face-198"}
+    topology_path = tmp_path / "topology.json"
+    topology_path.write_text(json.dumps({"faces": [
+        {"geometry_ref": ref, "triangle_refs": []},
+    ]}), encoding="utf-8")
+    discovered = {"snapshot_id": "live-discovered", "features": [
+        {"feature_id": "f", "algorithm_version": "1.13.0", "geometry_refs": [ref]},
+    ], "forming_scopes": []}
+    revised = {**discovered, "snapshot_id": "live-revised", "forming_scopes": [
+        {"forming_scope_id": "SIDE_01", "geometry_refs": [ref], "direction": [1, 0, 0]},
+    ]}
+    state = SnapshotRecoveryState(
+        input_path=str(tmp_path / "model.step"), input_sha256="a" * 64,
+        artifact_dir=str(tmp_path), lease_seconds=900,
+        opened_snapshot_id="old-opened", current_snapshot_id="old-revised",
+        schema_bundle_version=build["schema_bundle_version"],
+        engine_version=build["engine_version"], dependency_fingerprint=build["dependency_fingerprint"],
+        steps=[
+            {"method": "features.discover", "params": {"snapshot_id": "old-opened"},
+             "result_snapshot_id": "old-discovered",
+             "result_state_sha256": process_module._snapshot_state_sha256(discovered)},
+            {"method": "forming_scopes.revise", "params": {"snapshot_id": "old-discovered",
+             "scopes": [{"forming_scope_id": "SIDE_01", "geometry_refs": [dict(ref)]}]},
+             "result_snapshot_id": "old-revised",
+             "result_state_sha256": process_module._snapshot_state_sha256(revised)},
+        ],
+    )
+    calls = []
+
+    class FakeSession:
+        capability = build
+
+        def call(self, method, params):
+            calls.append((method, params))
+            if method == "snapshots.open":
+                return {"snapshot_id": "live-opened", "artifacts": {"topology_map": str(topology_path)}}
+            if method == "features.discover":
+                return {"job_id": "job-discover"}
+            assert params["snapshot_id"] == "live-discovered"
+            return revised
+
+        def wait_job(self, _job_id, **_kwargs):
+            return discovered
+
+    pool = object.__new__(GeometrySessionPool)
+    pool.job_timeout_seconds = 30
+    pool.poll_interval_seconds = 0.01
+    pool._lock = threading.RLock()
+    pool._write_recovery(state)
+    owned = ProjectGeometrySession("dfm-1", FakeSession())
+    return pool, owned, state, calls
+
+
+def test_same_build_recovers_unmeshed_face_without_rewriting_review_log(recovery_patch):
+    pool, owned, state, calls = recovery_patch
+    original = state.path.read_bytes()
+    result = pool._recover_model(owned, state)
+    assert result["snapshot_id"] == "live-revised"
+    assert [method for method, _ in calls] == ["snapshots.open", "features.discover", "forming_scopes.revise"]
+    assert state.path.read_bytes() == original
+    saved = SnapshotRecoveryState.from_dict(json.loads(original))
+    assert state.to_dict() == saved.to_dict()
+    pool._recover_model(owned, saved)
+    assert state.path.read_bytes() == original
+
+
+@pytest.mark.parametrize("failure", ["unknown_build", "wrong_sha", "missing_face", "wrong_topology", "unknown_head"])
+def test_failed_same_build_recovery_preserves_review_log(recovery_patch, failure):
+    pool, owned, state, calls = recovery_patch
+    if failure == "unknown_build":
+        owned.session.capability = {**owned.session.capability, "dependency_fingerprint": "d" * 64}
+    elif failure == "wrong_sha":
+        state.steps[1]["result_state_sha256"] = "0" * 64
+    elif failure in {"missing_face", "wrong_topology"}:
+        ref = state.steps[1]["params"]["scopes"][0]["geometry_refs"][0]
+        ref["index" if failure == "missing_face" else "topology_snapshot_id"] = 999 if failure == "missing_face" else "other"
+    elif failure == "unknown_head":
+        state.current_snapshot_id = "not-replayed"
+    pool._write_recovery(state)
+    original = state.path.read_bytes()
+    with pytest.raises(DFMError):
+        pool._recover_model(owned, state)
+    assert state.path.read_bytes() == original
+    assert not owned.snapshot_aliases
+    assert not owned.snapshots_by_input_sha256
+    if failure in {"missing_face", "wrong_topology"}:
+        assert [method for method, _ in calls] == ["snapshots.open"]
+    if failure == "unknown_build":
+        assert calls == []
+
+
+def test_failed_recovery_log_replace_keeps_original_and_cleans_its_temporary(recovery_patch, monkeypatch):
+    pool, _owned, state, _calls = recovery_patch
+    original = state.path.read_bytes()
+    other_writer = state.path.with_name(".session-recovery.json.other-writer.tmp")
+    other_writer.write_bytes(b"another writer")
+    state.engine_version = "new-build"
+    def failed_replace(_path, _target):
+        raise OSError("fixture replace failure")
+    monkeypatch.setattr(Path, "replace", failed_replace)
+    with pytest.raises(OSError):
+        pool._write_recovery(state)
+    assert state.path.read_bytes() == original
+    assert list(state.path.parent.glob(".session-recovery.json.*.tmp")) == [other_writer]
+    assert other_writer.read_bytes() == b"another writer"
 
 
 def test_active_snapshot_is_renewed_without_replacing_its_session():

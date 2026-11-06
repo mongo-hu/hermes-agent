@@ -1008,6 +1008,7 @@ def test_geometric_binding_keeps_one_local_scope_waiting_while_another_is_ready(
             features=[feature],
             forming_scopes=scopes,
             review_groups=review_groups,
+            capabilities={},
         ),
         SimpleNamespace(
             worker_snapshot_id="snapshot_model_4",
@@ -1031,7 +1032,7 @@ def test_geometric_binding_keeps_one_local_scope_waiting_while_another_is_ready(
     }
 
 
-def test_local_direction_change_stales_only_findings_from_that_scope():
+def test_local_direction_change_stales_direct_and_main_ownership_dependents():
     side_01 = PlanFragmentRecord(
         "fragment-side-01",
         "snapshot-model-1",
@@ -1068,14 +1069,24 @@ def test_local_direction_change_stales_only_findings_from_that_scope():
         dependency_fingerprint="c" * 64,
         items=[GeometricRequest("feature-wall", ["G_WALL_THK_MIN"], {})],
     )
+    main = replace(
+        side_01,
+        fragment_id="fragment-main",
+        items=[GeometricRequest("feature-wall", ["G_SCOPE_DRAFT_MIN"], {"forming_scope_id": "MAIN"})],
+        review_group_refs=["review-side-01-old"],
+    )
     plan = PlanRecord(
         "plan-scoped-findings",
         "step",
         ["occt_cpp"],
         "ready",
         "2026-10-21T00:00:00Z",
-        plan_fragments=[ordinary, side_01, side_02],
+        plan_fragments=[ordinary, side_01, side_02, main],
     )
+    # Scope edits replace the review identity; old dependent fragments still
+    # point at the historical group and must be invalidated through it.
+    groups = [ReviewGroupRecord("review-side-01-old", "forming_scope", ["SIDE_01"],
+                                "d" * 64, "user", "stale", "2026-11-06T00:00:00Z")]
 
     def finding(finding_id, geometric_id, forming_scope_id=None):
         return GeometricFindingRecord(
@@ -1101,10 +1112,13 @@ def test_local_direction_change_stales_only_findings_from_that_scope():
     updated = DFMService._invalidate_findings_for_semantics(
         SimpleNamespace(
             plans=[plan],
+            review_groups=groups,
             findings=[
                 finding("side-01", "G_WALL_IN_DRAFT", "SIDE_01"),
                 finding("side-02", "G_WALL_IN_DRAFT", "SIDE_02"),
                 finding("ordinary", "G_WALL_THK_MIN"),
+                replace(finding("main", "G_SCOPE_DRAFT_MIN", "MAIN"),
+                        plan_fragment_refs=[main.fragment_id]),
             ],
         ),
         "forming_scope:SIDE_01",
@@ -1115,6 +1129,16 @@ def test_local_direction_change_stales_only_findings_from_that_scope():
     assert by_id["side-01"].stale_reason == "forming_scope:SIDE_01"
     assert by_id["side-02"].validity_status == "current"
     assert by_id["ordinary"].validity_status == "current"
+    assert by_id["main"].validity_status == "stale"
+    plans = DFMService._invalidate_plans_for_semantics(
+        SimpleNamespace(review_groups=groups, plans=[
+            replace(plan, plan_id="main-only", phase="analysis", plan_fragments=[main]),
+            replace(plan, plan_id="unrelated", phase="analysis", plan_fragments=[ordinary, side_02]),
+        ]),
+        "forming_scope:SIDE_01",
+    )
+    assert plans[0].status == "invalidated"
+    assert plans[1].status == "ready"
 
 
 def test_input_or_confirmed_fact_invalidates_prior_plan(service):

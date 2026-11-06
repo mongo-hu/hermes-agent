@@ -169,6 +169,7 @@ def test_failed_save_blocks_other_groups_plan_and_start_until_same_edit_succeeds
         ("start", {}),
         ("render_html", {}),
         ("confirm_discovery", {"review_group_ids": ["boss"]}),
+        ("remove_review_group", {"review_group_id": "boss"}),
     ]:
         with pytest.raises(DFMError, match="Review saving failed"):
             service.analysis(action, **{**args, **extra})

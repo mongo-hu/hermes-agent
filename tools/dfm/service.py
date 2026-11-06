@@ -52,6 +52,10 @@ from .discovery import DiscoveryEngine, discovery_context_identity
 from .errors import DFMError, ReviewSaveError
 from .feature_recognition.occt_cpp import build_occt_feature_recognition_provider
 from .feature_recognition.base import reconcile_worker_features
+from .feature_exclusions import (
+    active_features, apply_feature_exclusions, excluded_feature_ids,
+    fragment_uses_excluded_feature, retire_excluded_fragments,
+)
 from .ontology import BackgroundOntologySync, LocalOntologyStore, OntologySynchronizer
 from .project.inputs import InputRegistrar
 from .project.manifest import ManifestStore
@@ -1068,6 +1072,19 @@ class DFMService:
         return observations, fragment_artifact
 
     @staticmethod
+    def _fragment_uses_forming_scopes(fragment, scope_ids, review_groups):
+        if any(item.context.get("forming_scope_id") in scope_ids for item in fragment.items):
+            return True
+        # A MAIN request also depends on overlapping local ownership reviews.
+        # Keep historical groups: a changed or retired scope can replace its ID.
+        return any(
+            group.review_group_id in fragment.review_group_refs
+            and group.kind in {"product_forming", "forming_scope"}
+            and scope_ids.intersection(group.target_refs)
+            for group in review_groups
+        )
+
+    @staticmethod
     def _invalidate_plans_for_semantics(current: ProjectManifest, reason: str):
         scope_ids = (
             set(reason.removeprefix("forming_scope:").split(","))
@@ -1086,10 +1103,7 @@ class DFMService:
                 continue
             if scope_ids:
                 affected = any(
-                    any(
-                        request.context.get("forming_scope_id") in scope_ids
-                        for request in item.items
-                    )
+                    DFMService._fragment_uses_forming_scopes(item, scope_ids, current.review_groups)
                     for item in plan.active_plan_fragments()
                 )
                 if not affected:
@@ -1133,14 +1147,17 @@ class DFMService:
             if reason.startswith("feature:")
             else set()
         )
+        affected_scope_fragments = {
+            fragment.fragment_id
+            for plan in current.plans
+            for fragment in plan.plan_fragments
+            if scope_ids and DFMService._fragment_uses_forming_scopes(fragment, scope_ids, current.review_groups)
+        }
         affected_requests = {
             (request.feature_id, geometric_id)
             for plan in current.plans
             for fragment in plan.plan_fragments
-            if any(
-                request.context.get("forming_scope_id") in scope_ids
-                for request in fragment.items
-            )
+            if fragment.fragment_id in affected_scope_fragments
             for request in fragment.items
             for geometric_id in request.geometric_ids
         }
@@ -1158,6 +1175,8 @@ class DFMService:
 
         def affected(item: GeometricFindingRecord) -> bool:
             if not scope_ids and not feature_ids:
+                return True
+            if affected_scope_fragments.intersection(item.plan_fragment_refs):
                 return True
             if feature_ids.intersection(item.feature_refs):
                 return True
@@ -1456,7 +1475,7 @@ class DFMService:
         confirmed_scope_ids: set[str] | None = None,
     ) -> list[ReviewGroupRecord]:
         groups = structure_review_groups(
-            [feature for feature in manifest.features if feature.feature_id in snapshot.feature_refs],
+            active_features(manifest, snapshot.feature_refs),
             manifest.review_groups, snapshot_id=snapshot.snapshot_id, created_at=_utc_now(),
         )
         groups = annotation_review_groups(snapshot.annotations, groups,
@@ -1572,7 +1591,7 @@ class DFMService:
         manifest = store.load()
         review_identity = self._review_edit_identity(manifest, expected_snapshot_id)
         feature = next(
-            (item for item in manifest.features if item.feature_id == feature_id), None
+            (item for item in active_features(manifest) if item.feature_id == feature_id), None
         )
         if feature is None:
             raise DFMError(
@@ -1627,7 +1646,8 @@ class DFMService:
             "viewer_manifest": str(viewer_path) if viewer_path else None,
         }
 
-    def _revise_annotations(self, project_id, annotations, retire_ids, expected_revision, expected_snapshot_id=None):
+    def _revise_annotations(self, project_id, annotations, retire_ids, expected_revision, expected_snapshot_id=None,
+                           pending_removal_group=None):
         manifest = self._store(project_id).load()
         review_identity = self._review_edit_identity(manifest, expected_snapshot_id)
         snapshot = self._latest_discovery_snapshot(manifest)
@@ -1648,7 +1668,7 @@ class DFMService:
             expected_identity=review_identity[1] if review_identity else None)
         try:
             self._persist_forming_snapshot(project_id, input_record.sha256, result,
-                reviewed_scope_ids=set(), confirmed=False, edit=edit)
+                reviewed_scope_ids=set(), confirmed=False, edit=edit, pending_removal_group=pending_removal_group)
         except Exception as exc:
             self._fail_geometry_edit(project_id, edit, exc)
             raise ReviewSaveError.from_error(exc, edit.edit_id) from exc
@@ -1722,6 +1742,7 @@ class DFMService:
         feature_edit_ids: set[str] | None = None,
         main_direction: list[float] | None = None,
         staged_direction_ids: set[str] | None = None,
+        pending_removal_group: ReviewGroupRecord | None = None,
     ) -> tuple[ProjectManifest, Any]:
         snapshot_id = str(result.get("snapshot_id") or "")
         raw_scopes = result.get("forming_scopes")
@@ -1766,7 +1787,7 @@ class DFMService:
                 input_record = next(item for item in current.inputs if item.sha256 == input_sha256)
                 projection = self.discovery.geometry_provider.project_snapshot(input_record, result)
                 features = reconcile_worker_features(features, projection.features, input_sha256)
-            changed = replace(current, facts=facts, features=features, forming_scopes=history,
+            changed = replace(current, facts=facts, features=apply_feature_exclusions(features, capabilities), forming_scopes=history,
                               capabilities=capabilities, updated_at=_utc_now())
             if invalidate_scopes:
                 reason = f"forming_scope:{','.join(sorted(reviewed_scope_ids))}"
@@ -1784,6 +1805,8 @@ class DFMService:
             return changed
 
         def prepare(current: ProjectManifest) -> ProjectManifest:
+            if pending_removal_group is not None:
+                self._require_pending_removal_group(current, pending_removal_group)
             frozen, discovery_snapshot = self.discovery.freeze(apply(current))
             groups = self._structure_review_groups(
                 frozen, discovery_snapshot,
@@ -1959,7 +1982,8 @@ class DFMService:
             ),
         }
 
-    def _revise_scope_candidates(self, project_id, raw_scopes, retire_scope_ids, expected_revision, expected_snapshot_id=None):
+    def _revise_scope_candidates(self, project_id, raw_scopes, retire_scope_ids, expected_revision, expected_snapshot_id=None,
+                                 pending_removal_group=None):
         manifest = self._store(project_id).load()
         review_identity = self._review_edit_identity(manifest, expected_snapshot_id)
         if isinstance(expected_revision, bool) or not isinstance(expected_revision, int):
@@ -2042,7 +2066,8 @@ class DFMService:
         affected = {scope["forming_scope_id"] for scope in scopes} | set(retire_scope_ids)
         try:
             persisted, frozen = self._persist_forming_snapshot(project_id, input_record.sha256, result,
-                reviewed_scope_ids=affected, confirmed=False, edit=edit, edited_scope_ids=affected)
+                reviewed_scope_ids=affected, confirmed=False, edit=edit, edited_scope_ids=affected,
+                pending_removal_group=pending_removal_group)
         except Exception as exc:
             self._fail_geometry_edit(project_id, edit, exc)
             raise ReviewSaveError.from_error(exc, edit.edit_id) from exc
@@ -2092,7 +2117,7 @@ class DFMService:
             "forming_scope_id", "kind", "mode", "geometry_refs", "undercut_geometry_refs",
             "mechanism_kind", "candidate_solutions"
         )}
-        for key in ("geometry_refs", "mechanism_kind"):
+        for key in ("geometry_refs", "undercut_geometry_refs", "mechanism_kind"):
             if key in scope:
                 payload[key] = scope[key]
         if direction is not None:
@@ -2196,6 +2221,19 @@ class DFMService:
                 "geometry_snapshot_missing",
                 "Forming-scope revision requires a live Discovery snapshot.",
             )
+        # Reconfirming an unchanged approved local plan must not invalidate its results.
+        # A candidate still needs a real confirmation, even when all fields are unchanged.
+        if len(scopes) == 1 and scopes[0]["mode"] == "local":
+            scope = scopes[0]
+            previous = previous_scopes[scope["forming_scope_id"]]
+            if (previous.get("status") == "confirmed"
+                and any(item.kind == "forming_scope" and item.status == "confirmed"
+                        and scope["forming_scope_id"] in item.target_refs
+                        and item.snapshot_id == discovery_snapshot.snapshot_id for item in manifest.review_groups)
+                and self._forming_scope_review_payload(self._forming_scope_record(scope, discovery_snapshot.snapshot_id))
+                    == self._forming_scope_review_payload(self._forming_scope_record(previous, discovery_snapshot.snapshot_id))):
+                return {"ok": True, "project_id": project_id, "status": "forming_direction_unchanged",
+                        "revision": manifest.revision, "snapshot": discovery_snapshot.to_dict(), "unchanged": True}
         current_snapshot = self._latest_discovery_snapshot(manifest)
         previous = {item["forming_scope_id"]: item for item in current_snapshot.forming_scopes} if current_snapshot else {}
         changed_main = [scope for scope in scopes if scope["mode"] == "main"
@@ -2496,6 +2534,73 @@ class DFMService:
             cursor=cursor, status=status, group_ids=group_ids,
         )
 
+    def _require_pending_removal_group(self, manifest, expected):
+        snapshot = self._latest_discovery_snapshot(manifest)
+        groups = self._structure_review_groups(manifest, snapshot) if snapshot is not None else []
+        current = next((group for group in groups
+                        if group.review_group_id == expected.review_group_id), None)
+        if current is None or current.status != "pending_review" or current.content_sha256 != expected.content_sha256:
+            raise DFMError("review_group_stale", "The item changed or is no longer awaiting review; refresh the viewer.")
+
+    def _remove_review_group(self, project_id, review_group_id, expected_revision, expected_snapshot_id):
+        if not isinstance(review_group_id, str) or not review_group_id.strip():
+            raise DFMError("review_group_invalid", "Select one current review group to remove.")
+        if isinstance(expected_revision, bool) or not isinstance(expected_revision, int):
+            raise DFMError("manifest_revision_required", "Removal requires the current project revision.")
+        if not isinstance(expected_snapshot_id, str) or not expected_snapshot_id:
+            raise DFMError("geometry_edit_conflict", "Removal requires the reviewed snapshot; refresh the viewer.")
+        store = self._store(project_id)
+        manifest = store.load()
+        if manifest.revision != expected_revision:
+            raise DFMError("manifest_conflict", "The project changed; refresh before removing an item.",
+                           {"expected": expected_revision, "actual": manifest.revision})
+        self._review_edit_identity(manifest, expected_snapshot_id)
+        snapshot = self._latest_discovery_snapshot(manifest)
+        group = next((row for row in self._structure_review_groups(manifest, snapshot)
+                      if row.review_group_id == review_group_id), None)
+        if group is None or group.status != "pending_review":
+            raise DFMError("review_group_stale", "The item is missing or no longer awaiting review.")
+        if group.kind not in {"ordinary_structure", "surface_attribute", "forming_scope"} or len(group.target_refs) != 1:
+            raise DFMError("review_group_invalid", "Only pending structures, attributes and local forming plans can be removed.")
+        target_id = group.target_refs[0]
+        if group.kind == "surface_attribute":
+            self._revise_annotations(project_id, [], [target_id], expected_revision, expected_snapshot_id,
+                                     pending_removal_group=group)
+        elif group.kind == "forming_scope":
+            self._revise_scope_candidates(project_id, [], [target_id], expected_revision, expected_snapshot_id,
+                                          pending_removal_group=group)
+        else:
+            feature = next((row for row in active_features(manifest, snapshot.feature_refs)
+                            if row.feature_id == target_id), None)
+            if feature is None:
+                raise DFMError("review_group_stale", "The reviewed feature is no longer current.")
+
+            def exclude(current):
+                self._require_pending_removal_group(current, group)
+                exclusions = dict(current.capabilities.get("feature_exclusions", {}))
+                by_input = dict(exclusions.get(feature.input_sha256, {}))
+                if target_id in by_input:
+                    raise DFMError("review_group_stale", "The feature was already removed.")
+                by_input[target_id] = {"review_group_id": group.review_group_id,
+                    "snapshot_id": expected_snapshot_id, "removed_at": _utc_now(), "feature": feature.to_dict()}
+                exclusions[feature.input_sha256] = by_input
+                capabilities = {**current.capabilities, "feature_exclusions": exclusions}
+                updated = replace(current, capabilities=capabilities,
+                    features=apply_feature_exclusions(current.features, capabilities),
+                    plans=self._invalidate_plans_for_semantics(current, "feature:" + target_id),
+                    findings=self._invalidate_findings_for_semantics(current, "feature:" + target_id))
+                frozen, new_snapshot = self.discovery.freeze(updated)
+                groups = self._structure_review_groups(frozen, new_snapshot)
+                review = dict(frozen.capabilities.get("discovery_review", {}))
+                review.update(snapshot_id=new_snapshot.snapshot_id,
+                    status="pending" if any(row.kind == "ordinary_structure" and row.status == "pending_review"
+                                            for row in groups) else "confirmed")
+                return replace(frozen, review_groups=groups,
+                    capabilities={**frozen.capabilities, "discovery_review": review}, updated_at=_utc_now())
+
+            store.update(exclude, expected_revision=expected_revision)
+        return self._review_context(project_id)
+
     def _review_context(self, project_id: str, *, manifest: ProjectManifest | None = None) -> dict[str, Any]:
         """Read current reviewable state without starting algorithms or changing it."""
         manifest = manifest if manifest is not None else self._store(project_id).load()
@@ -2507,7 +2612,7 @@ class DFMService:
             "ok": True, "project_id": project_id, "revision": manifest.revision,
             "edit_timeout_ms": (self.config.geometry_timeout_seconds + 60) * 1000,
             "snapshot_id": snapshot.snapshot_id, "worker_snapshot_id": snapshot.worker_snapshot_id,
-            "features": [item.to_dict() for item in manifest.features if item.feature_id in active],
+            "features": [item.to_dict() for item in active_features(manifest, active)],
             "annotations": snapshot.annotations, "relationships": snapshot.relationships,
             "annotation_kinds": manifest.capabilities.get("geometry_discovery", {}).get("annotation_kinds", []),
             "forming_scopes": snapshot.forming_scopes,
@@ -3368,12 +3473,7 @@ class DFMService:
         specs = (ontology or self._analysis_ontology(manifest)).geometric_scope_specs(
             manifest.process or self.config.default_process
         )
-        features = [
-            item
-            for item in manifest.features
-            if item.feature_id in snapshot.feature_refs
-            and item.status != "rejected"
-        ]
+        features = active_features(manifest, snapshot.feature_refs)
         return [
             {**spec, "feature": feature}
             for spec in specs
@@ -3417,12 +3517,7 @@ class DFMService:
                     "The confirmed Discovery snapshot is not bound to a live Worker snapshot.",
                     {"discovery_snapshot_id": snapshot.snapshot_id},
                 )
-            available = [
-                item
-                for item in manifest.features
-                if item.feature_id in snapshot.feature_refs
-                and item.status != "rejected"
-            ]
+            available = active_features(manifest, snapshot.feature_refs)
             geometric_capabilities = geometry_binding_index(
                 self.occt_geometry_capability or {}
             )
@@ -4468,7 +4563,9 @@ class DFMService:
         retry = barrier and barrier.get("identity") == identity
         # Draft corrections must remain possible after a failed confirmation.
         # Only retrying the failed save clears the barrier; other edits cannot resume work.
-        if barrier and not retry and (action not in EDIT_ACTIONS or action == "confirm_discovery"):
+        if barrier and not retry and (
+            action not in EDIT_ACTIONS or action in {"confirm_discovery", "remove_review_group"}
+        ):
             require_saved_review(manifest)
         if action not in EDIT_ACTIONS:
             require_saved_review(manifest)
@@ -4493,7 +4590,7 @@ class DFMService:
                 return replace(current, capabilities=capabilities, updated_at=_utc_now())
             saved = store.update(cleared)
             response = {**response, "revision": saved.revision}
-            if action == "confirm_discovery":
+            if action in {"confirm_discovery", "remove_review_group"}:
                 response = self._after_workflow_update(project_id, response)
         return response
 
@@ -4508,6 +4605,13 @@ class DFMService:
         project_id = params.get("project_id") or ""
         if action == "review_context":
             return self._review_context(project_id)
+        if action == "remove_review_group":
+            result = self._after_workflow_update(project_id, self._remove_review_group(
+                project_id, params.get("review_group_id"), params.get("expected_revision"), params.get("expected_snapshot_id")))
+            current = self._store(project_id).load()
+            viewer = materialize_discovery_viewer_manifest(self.workspace.project_dir(project_id), current,
+                review_status="pending" if any(row.status == "pending_review" for row in current.review_groups) else "confirmed")
+            return {**result, **self._review_context(project_id, manifest=current), "viewer_manifest": str(viewer) if viewer else None}
         if action == "revise_annotations":
             return self._revise_annotations(project_id, params.get("annotations", []),
                 params.get("retire_annotation_ids", []), params.get("expected_revision"), params.get("expected_snapshot_id"))
@@ -4752,7 +4856,8 @@ class DFMService:
                     review_groups=review_groups,
                     plans=plans,
                     updated_at=_utc_now(),
-                )
+                ),
+                expected_revision=discovered.revision,
             )
             review = manifest.capabilities.get("discovery_review", {})
             review_confirmed = (
@@ -5043,11 +5148,17 @@ class DFMService:
                         ),
                         rules=rules,
                     )
+                excluded_ids = set().union(*(excluded_feature_ids(manifest, digest)
+                    for digest in discovery_snapshot.input_hashes.values()))
+                exclusion_replan = any(fragment_uses_excluded_feature(fragment, excluded_ids)
+                    for previous in manifest.plans if previous.plan_id == params.get("base_plan_id")
+                    for fragment in previous.active_plan_fragments())
                 if (
                     str(analyzer_key) == "occt_cpp"
                     and process == "injection"
                     and not process_plan.rule_bindings
                     and not open_clarifications
+                    and not exclusion_replan
                 ):
                     supported_geometric_ids = sorted(
                         geometry_binding_index(self.occt_geometry_capability or {})
@@ -5147,7 +5258,7 @@ class DFMService:
                     tuple[str, str, str, str, str], list[dict[str, Any]]
                 ] = {}
                 coverage_gaps: list[dict[str, Any]] = []
-                features_by_id = {item.feature_id: item for item in manifest.features}
+                features_by_id = {item.feature_id: item for item in active_features(manifest, discovery_snapshot.feature_refs)}
                 active_groups = [
                     item
                     for item in self._structure_review_groups(manifest, discovery_snapshot)
@@ -5424,16 +5535,14 @@ class DFMService:
                             for geometric_id in item.geometric_ids
                         }
 
-                    def fragment_was_affected(fragment):
+                    def fragment_was_affected(fragment, replacement):
                         reason = str(parent_plan.invalidated_by or "")
                         if reason.startswith("forming_scope:"):
                             scope_ids = set(
                                 reason.removeprefix("forming_scope:").split(",")
                             )
-                            return any(
-                                item.context.get("forming_scope_id") in scope_ids
-                                for item in fragment.items
-                            )
+                            return any(self._fragment_uses_forming_scopes(item, scope_ids, manifest.review_groups)
+                                       for item in (fragment, replacement))
                         if reason.startswith("feature:"):
                             feature_ids = set(reason.removeprefix("feature:").split(","))
                             return any(
@@ -5465,7 +5574,7 @@ class DFMService:
                         if superseded is not None and (
                             superseded.dependency_fingerprint
                             == fragment.dependency_fingerprint
-                            or not fragment_was_affected(superseded)
+                            or not fragment_was_affected(superseded, fragment)
                         ):
                             continue
                         supersedes = (
@@ -5502,6 +5611,10 @@ class DFMService:
                             appended_fragments.append(replace(fragment, fragment_id="fragment_" + digest[:16],
                                 dependency_fingerprint=digest, status="stale", supersedes=fragment.fragment_id,
                                 blocking_reasons=[{"code": "forming_scope_retired"}]))
+                    excluded_ids = set().union(*(excluded_feature_ids(manifest, digest)
+                        for digest in discovery_snapshot.input_hashes.values()))
+                    appended_fragments.extend(retire_excluded_fragments(
+                        active_parent_fragments, appended_fragments, excluded_ids, discovery_snapshot.snapshot_id))
                     plan_fragments = [
                         *parent_plan.plan_fragments,
                         *appended_fragments,

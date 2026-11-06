@@ -944,3 +944,91 @@ def test_partial_plan_draft_preserves_omitted_direction_and_source(model):
     assert scope["direction_source"] == "user_confirmed"
     assert scope["mechanism_kind"] == "slider"
     assert scope["status"] == "candidate"
+
+
+@pytest.mark.parametrize("kind", ["ordinary_structure", "surface_attribute", "forming_scope"])
+def test_native_pending_item_removal_survives_worker_recovery(model, kind):
+    service, project_id, wall, refs = model
+    context = service.analysis("review_context", project_id=project_id)
+    target = wall["feature_id"] if kind == "ordinary_structure" else "SIDE_TEST"
+    if kind == "surface_attribute":
+        target = "removable-appearance"
+        service.analysis("revise_annotations", project_id=project_id, expected_revision=context["revision"],
+            expected_snapshot_id=context["snapshot_id"], annotations=[{
+                "annotation_id": target, "kind": "appearance", "value": "appearance", "geometry_refs": refs[:1]}])
+        context = service.analysis("review_context", project_id=project_id)
+    group = next(row for row in context["review_groups"]
+        if row["kind"] == kind and row["target_refs"] == [target] and row["status"] == "pending_review")
+    before = service._store(project_id).load()
+    response = service.analysis("remove_review_group", project_id=project_id, review_group_id=group["review_group_id"],
+        expected_revision=context["revision"], expected_snapshot_id=context["snapshot_id"])
+    after = service._store(project_id).load()
+    assert all(row["review_group_id"] != group["review_group_id"] for row in response["review_groups"])
+    assert not any(row["kind"] in {"undercut_scope", "local_structure", "local_direction"}
+                   for row in response["review_groups"])
+    if kind == "ordinary_structure":
+        assert target not in {row["feature_id"] for row in response["features"]}
+        assert after.geometry_edits == before.geometry_edits
+    elif kind == "surface_attribute":
+        assert next(row for row in response["annotations"] if row["annotation_id"] == target)["status"] == "stale"
+        assert after.geometry_edits[-1]["method"] == "annotations.revise"
+    else:
+        assert next(row for row in response["forming_scopes"] if row["forming_scope_id"] == target)["status"] == "stale"
+        assert {row.feature_id for row in after.features} == {row.feature_id for row in before.features}
+    assert next(row for row in response["review_groups"] if row["kind"] == "product_forming")["status"] == "confirmed"
+    viewer = json.loads(Path(response["viewer_manifest"]).read_text(encoding="utf-8"))
+    assert viewer["project_revision"] == response["revision"]
+    service.geometry_sessions.close_project(project_id)
+    service.analysis("prepare_review", project_id=project_id, expected_revision=response["revision"],
+        expected_snapshot_id=response["snapshot_id"])
+    service.analysis("discover", project_id=project_id)
+    recovered = service.analysis("review_context", project_id=project_id)
+    assert all(row["review_group_id"] != group["review_group_id"] for row in recovered["review_groups"])
+    if kind == "ordinary_structure":
+        assert target not in {row["feature_id"] for row in recovered["features"]}
+    with pytest.raises(DFMError) as conflict:
+        service.analysis("remove_review_group", project_id=project_id, review_group_id=group["review_group_id"],
+            expected_revision=recovered["revision"], expected_snapshot_id=recovered["snapshot_id"])
+    assert conflict.value.code == "review_group_stale"
+
+
+def test_native_feature_removal_supersedes_tasks_in_an_existing_plan(model):
+    from tools.dfm.contracts import PlanRecord
+
+    service, project_id, wall, _refs = model
+    before = service.analysis("plan", project_id=project_id)["plan"]
+    old_plan = PlanRecord.from_dict(before)
+    affected = {fragment.fragment_id for fragment in old_plan.active_plan_fragments()
+                if any(item.feature_id == wall["feature_id"] for item in fragment.items)}
+    assert affected, "The fixture must schedule real wall tasks before removal"
+    context = service.analysis("review_context", project_id=project_id)
+    group = next(row for row in context["review_groups"]
+                 if row["kind"] == "ordinary_structure" and row["target_refs"] == [wall["feature_id"]])
+    service.analysis("remove_review_group", project_id=project_id, review_group_id=group["review_group_id"],
+        expected_revision=context["revision"], expected_snapshot_id=context["snapshot_id"])
+    result = service.analysis("plan", project_id=project_id, base_plan_id=before["plan_id"])
+    assert "plan" in result, result
+    new_plan = PlanRecord.from_dict(result["plan"])
+    assert all(item.feature_id != wall["feature_id"] for fragment in new_plan.active_plan_fragments() for item in fragment.items)
+    assert affected <= {fragment.supersedes for fragment in new_plan.plan_fragments if fragment.status == "stale"}
+    assert new_plan.plan_fragments[:len(old_plan.plan_fragments)] == old_plan.plan_fragments
+
+
+def test_native_removal_uses_the_same_current_groups_as_the_review_projection(model):
+    service, project_id, _wall, _refs = model
+    store = service._store(project_id)
+    store.update(lambda current: replace(current, review_groups=[
+        group for group in current.review_groups if group.kind != "forming_scope"
+    ]))
+    context = service.analysis("review_context", project_id=project_id)
+    group = next(row for row in context["review_groups"]
+                 if row["kind"] == "forming_scope" and row["target_refs"] == ["SIDE_TEST"])
+    assert group["status"] == "pending_review"
+    assert all(row.review_group_id != group["review_group_id"] for row in store.load().review_groups)
+    removed = service.analysis("remove_review_group", project_id=project_id,
+        review_group_id=group["review_group_id"], expected_revision=context["revision"],
+        expected_snapshot_id=context["snapshot_id"])
+    assert next(row for row in removed["forming_scopes"]
+                if row["forming_scope_id"] == "SIDE_TEST")["status"] == "stale"
+    assert all(row["review_group_id"] != group["review_group_id"] for row in removed["review_groups"])
+    assert next(row for row in removed["review_groups"] if row["kind"] == "product_forming")["status"] == "confirmed"

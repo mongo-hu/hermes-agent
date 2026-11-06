@@ -17,6 +17,7 @@ from .contracts import (
     ResolvedArgument,
 )
 from .errors import DFMError
+from .feature_exclusions import apply_feature_exclusions, excluded_feature_ids, without_excluded_relationships
 from .feature_recognition import (
     OCCTCppFeatureRecognitionProvider,
 )
@@ -73,6 +74,7 @@ def _normalize_coverage(raw: Any) -> list[dict[str, Any]]:
                 {"feature_kind": feature_kind, "forming_scope_id": forming_scope_id,
                  "status": status},
             )
+        # Match Worker coverage identity; omitted scope and explicit null are equivalent.
         identity = (
             feature_kind,
             forming_scope_id,
@@ -276,7 +278,7 @@ class DiscoveryEngine:
         capabilities["geometry_discovery"] = discovery_state
         return replace(
             manifest,
-            features=features,
+            features=apply_feature_exclusions(features, capabilities),
             regions=regions,
             artifacts=artifacts,
             capabilities=capabilities,
@@ -308,7 +310,7 @@ class DiscoveryEngine:
         ]
         observation_ids = {item.observation_id for item in observations}
         features = [
-            item for item in refreshed.features if item.input_sha256 in active_hashes
+            item for item in refreshed.features if item.input_sha256 in active_hashes and item.status != "rejected"
         ]
         feature_ids = {item.feature_id for item in features}
         regions = [
@@ -364,7 +366,11 @@ class DiscoveryEngine:
         }
         identity["coverage"] = list(geometry_metadata.get("coverage", []))
         identity["annotations"] = list(geometry_metadata.get("annotations", []))
-        identity["relationships"] = list(geometry_metadata.get("relationships", []))
+        excluded_ids = set().union(*(excluded_feature_ids(refreshed, digest) for digest in active_hashes))
+        excluded_ids.update(item.feature_id for item in refreshed.features
+                            if item.input_sha256 in active_hashes and item.status == "rejected")
+        identity["relationships"] = without_excluded_relationships(
+            list(geometry_metadata.get("relationships", [])), excluded_ids)
         identity["forming_scopes"] = list(geometry_metadata.get("forming_scopes", []))
         identity["feature_parts"] = {
             item.feature_id: item.properties.get("parts", {}) for item in features
@@ -401,7 +407,7 @@ class DiscoveryEngine:
             worker_snapshot_id=geometry_metadata.get("worker_snapshot_id", ""),
             coverage=list(geometry_metadata.get("coverage", [])),
             annotations=list(geometry_metadata.get("annotations", [])),
-            relationships=list(geometry_metadata.get("relationships", [])),
+            relationships=identity["relationships"],
             forming_scopes=list(geometry_metadata.get("forming_scopes", [])),
         )
         return (
