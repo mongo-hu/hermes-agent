@@ -368,3 +368,27 @@ def test_viewer_manifest_uses_failed_patches_instead_of_representative_measureme
     assert payload["render_mesh_snapshot_id"] == "mesh-current"
     assert payload["topology_snapshot_id"] == "topology-current"
     assert payload["result_manifest_path"] == "result_manifest.json"
+
+
+def test_viewer_manifest_keeps_unresolved_walls_visible_without_failed_rules(tmp_path):
+    artifacts = [
+        _artifact(tmp_path, "features", "features.json", {"features": [{"feature_id": "wall", "kind": "main_wall", "geometry_refs": [{"kind": "face", "index": 3}]}]}),
+        _artifact(tmp_path, "render_scene", "scene.json", {"schema_version": 2, "primitives": []}),
+        _artifact(tmp_path, "topology_map", "topology.json", {"schema_version": 2, "faces": []}),
+        _artifact(tmp_path, "geometric_results", "results.json", {"results": [
+            {"result_id": "review", "feature_id": "wall", "geometric_id": "G_WALL_TRANS_LEN",
+             "status": "unsupported", "value": None, "unit": None,
+             "quality": {"evaluability": {"state": "indeterminate", "reason_codes": ["REASON_INCOMPLETE_COVERAGE"]}},
+             "evidence": {"geometry_refs": [{"kind": "face", "index": 3}]}},
+            {"result_id": "skip", "feature_id": "wall", "geometric_id": "G_OTHER", "status": "unsupported", "quality": {}},
+        ]}),
+        _artifact(tmp_path, "evaluations", "evaluations.json", {"evaluations": []}),
+    ]
+    result = materialize_viewer_manifest(tmp_path, "run_1", PlanRecord("p", "step", ["occt_cpp"], "ready", "now"), artifacts)
+    payload = json.loads((tmp_path / result.relative_path).read_text(encoding="utf-8"))
+    assert payload["status"] == "partial"
+    assert payload["analysis_coverage"]["status"] == "partial"
+    assert payload["issue_count"] == 0
+    assert payload["manual_review_count"] == 1
+    assert payload["manual_review_results"][0]["result_id"] == "review"
+    assert payload["manual_review_results"][0]["geometry_refs"] == [{"kind": "face", "index": 3}]

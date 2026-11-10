@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..measurement_evaluability import manual_review_results
+
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -98,6 +100,7 @@ def materialize_result_reports(
             patch
         )
 
+    review_results = manual_review_results(objective_rows)
     issues: list[dict[str, Any]] = []
     indeterminate_checks = [
         {
@@ -244,6 +247,7 @@ def materialize_result_reports(
         if isinstance(face_index, int)
     })
     coverage_complete = not any((
+        review_results,
         coverage_gaps,
         incomplete_results,
         incomplete_fragments,
@@ -276,6 +280,7 @@ def materialize_result_reports(
             "failed_count": len(issues),
             "issue_type_counts": summarize_issue_types(issues),
             "indeterminate_count": len(indeterminate_checks),
+            "manual_review_measurement_count": len(review_results),
         },
         "evidence_coverage": evidence_coverage,
         "model_scans": model_scans,
@@ -365,6 +370,7 @@ def materialize_result_reports(
             else None
         ),
         "issues": issues,
+        "manual_review_results": review_results,
         "indeterminate_checks": indeterminate_checks,
     }
     json_path = output_dir / "dfm_report.json"

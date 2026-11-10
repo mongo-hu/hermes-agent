@@ -16,6 +16,7 @@ from .contracts import (
     validate_result_manifest_mesh_binding,
 )
 from .errors import DFMError
+from .measurement_evaluability import manual_review_results
 from .feature_exclusions import active_features, excluded_feature_ids, without_excluded_relationships
 from .geometry.artifact_metadata import inspect_geometry_file
 from .issue_types import classify_issue_type, summarize_issue_types
@@ -174,6 +175,7 @@ def materialize_viewer_manifest(
         if isinstance(item, dict) and item.get("measurement_id")
     }
 
+    review_results = manual_review_results(objective_rows)
     issues: list[dict[str, Any]] = []
     for evaluation in evaluations_payload.get("evaluations", []):
         if not isinstance(evaluation, dict) or evaluation.get("outcome") != "fail":
@@ -308,7 +310,7 @@ def materialize_viewer_manifest(
         for item in plan.active_plan_fragments() if item.status != "ready" or (
             completed_fragment_refs is not None and item.fragment_id not in completed_fragment_refs)
     ])
-    awaiting_dependencies = bool(pending_inputs or incomplete_fragments)
+    awaiting_dependencies = bool(pending_inputs or incomplete_fragments or review_results)
     payload = {
         "schema_version": 2,
         "contract_version": "hermes.dfm.viewer/v2",
@@ -334,7 +336,7 @@ def materialize_viewer_manifest(
         "analysis_coverage": {
             "status": (
                 "partial"
-                if any((coverage_gaps, pending_inputs, incomplete_fragments,
+                if any((review_results, coverage_gaps, pending_inputs, incomplete_fragments,
                         result_manifest_payload.get("incomplete_results")))
                 else "complete"
             ),
@@ -350,6 +352,8 @@ def materialize_viewer_manifest(
             if geometric_run
             else {"measurements_path": _asset_path(project_dir, objective_artifact, output_dir)}
         ),
+        "manual_review_count": len(review_results),
+        "manual_review_results": review_results,
         "issue_count": len(issues),
         "issue_type_counts": summarize_issue_types(issues),
         "issues": issues,

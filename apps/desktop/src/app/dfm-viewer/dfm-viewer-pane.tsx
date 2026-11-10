@@ -14,6 +14,7 @@ import { createFaceCandidateIndex, type FaceCandidate } from './dfm-face-navigat
 import { DfmFeatureEditor } from './dfm-feature-editor'
 import { DfmFeatureGroups } from './dfm-feature-groups'
 import { ModelCanvas } from './dfm-model-canvas'
+import { DfmManualReviewNotice, type ManualReviewResult } from './dfm-manual-review-notice'
 import { DfmObjectMenu, type ObjectMenuItem } from './dfm-object-menu'
 import type { ReviewNavigation } from './dfm-review'
 import { type AnnotationKind, confirmedFeatureIds, type ReviewAnnotation, type ReviewContext, type ReviewGroup, type ReviewScope } from './dfm-review'
@@ -67,6 +68,8 @@ interface ViewerManifest {
   snapshot_id?: string
   feature_count?: number
   features?: ViewerFeature[]
+  manual_review_count?: number
+  manual_review_results?: ManualReviewResult[]
   issue_count: number
   issue_type_counts?: ViewerIssueTypeCount[]
   issues: ViewerIssue[]
@@ -1129,7 +1132,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
         : current
           ? {
               ...current,
-              ...(context.viewer_manifest ? { status: 'discovery' as const, issues: [], issue_count: 0, issue_type_counts: [] } : {}),
+              ...(context.viewer_manifest ? { status: 'discovery' as const, issues: [], issue_count: 0, issue_type_counts: [], manual_review_results: [], manual_review_count: 0 } : {}),
               project_revision: context.revision,
               snapshot_id: context.snapshot_id,
               review_groups: context.review_groups,
@@ -1229,7 +1232,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
 
     if (context.session_restored) {
       if (context.viewer_manifest) {workingViewer.current = { externalPath: target.manifestPath, path: context.viewer_manifest, projectId }}
-      setManifest(current => current ? { ...current, status: 'discovery', issues: [], issue_count: 0, issue_type_counts: [] } : current)
+      setManifest(current => current ? { ...current, status: 'discovery', issues: [], issue_count: 0, issue_type_counts: [], manual_review_results: [], manual_review_count: 0 } : current)
       setReviewNotice('几何会话已恢复，请按当前识别结果继续编辑和确认。')
     } else if (context.review_refreshed) {
       setReviewNotice('审核状态已更新，已使用当前区域打开编辑。')
@@ -1394,7 +1397,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
         Object.fromEntries(Object.entries(previous).filter(([id]) => id !== directionDraft.scope.forming_scope_id)))
 
       if (context.direction_status !== 'forming_direction_unchanged') {
-        setManifest(current => current ? { ...current, status: 'discovery', issues: [], issue_count: 0, issue_type_counts: [] } : current)
+        setManifest(current => current ? { ...current, status: 'discovery', issues: [], issue_count: 0, issue_type_counts: [], manual_review_results: [], manual_review_count: 0 } : current)
       }
 
       setDirectionDraft(null)
@@ -1488,7 +1491,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
               ...current,
               project_revision: result.revision,
               ...(result.unchanged ? {} : { status: 'discovery' as const, review_status: 'pending' as const,
-                issues: [], issue_count: 0, issue_type_counts: [] }),
+                issues: [], issue_count: 0, issue_type_counts: [], manual_review_results: [], manual_review_count: 0 }),
               features: current.features?.map(feature =>
                 feature.feature_id === editingFeatureId && result.geometry_refs
                   ? {
@@ -1917,6 +1920,8 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
                     {manifest.issue_count}
                   </span>
                 </div>
+                <DfmManualReviewNotice results={manifest.manual_review_results ?? []}
+                  onSelectFeature={featureId => handleFeaturesHighlight([featureId])} />
                 {issueTypeCounts.length > 0 && (
                   <div className="mb-2 flex flex-wrap gap-1.5">
                     {issueTypeCounts.map(item => (
@@ -1933,7 +1938,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
                   <div className="rounded-lg border border-sky-400/20 bg-sky-400/10 p-3 text-xs leading-5 text-sky-100">
                     {status === 'preview'
                       ? '模型已加载。DFM 分析完成后，风险项会自动更新到这里。'
-                      : '当前规则未发现需要高亮的问题。'}
+                      : (manifest.manual_review_count ?? 0) > 0 ? '存在待复核测量，请先处理橙色提示。' : '当前规则未发现需要高亮的问题。'}
                   </div>
                 ) : (
                   <div className="grid gap-2">

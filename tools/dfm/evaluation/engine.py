@@ -27,6 +27,7 @@ from ..contracts import (
     _expression_operand_aliases,
 )
 from ..errors import DFMError
+from ..measurement_evaluability import requires_manual_review
 from .cases import evaluation_cases, geometric_operand_matches, rule_case_key
 from ..runtime.result_documents import read_result_document, write_result_document
 
@@ -687,7 +688,7 @@ class EvaluationEngine:
                 key=lambda item: item.measurement_id,
             )
         if isinstance(operand, GeometricRuleOperand):
-            unavailable = [item for item in matches if item.status != "ok"]
+            unavailable = [item for item in matches if item.status != "ok" or requires_manual_review(item.quality)]
             if unavailable:
                 raise DFMError(
                     "evaluation_operand_unavailable",
@@ -697,7 +698,9 @@ class EvaluationEngine:
                         "operand_alias": operand.alias,
                         "geometric_id": operand.geometric_id,
                         "results": [
-                            {"result_id": item.result_id, "status": item.status, "reason": item.reason}
+                            {"result_id": item.result_id, "status": item.status, "reason": item.reason,
+                             "requires_manual_review": requires_manual_review(item.quality),
+                             "evaluability": (item.quality or {}).get("evaluability")}
                             for item in unavailable
                         ],
                     },
