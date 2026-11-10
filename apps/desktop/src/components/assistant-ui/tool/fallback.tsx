@@ -34,6 +34,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
+import { sanitizeDfmDisplayText } from '@/lib/product-mode'
 import { normalize } from '@/lib/text'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
@@ -119,7 +120,7 @@ function rawTechnicalTrace(args: unknown, result: unknown): string {
     })
     .filter(Boolean)
 
-  return clampForDisplay(parts.join('\n'))
+  return sanitizeDfmDisplayText(clampForDisplay(parts.join('\n')))
 }
 
 function statusGlyph(status: ToolStatus, copy: ToolStatusCopy): ReactNode {
@@ -214,7 +215,7 @@ function SearchResultsList({ hits }: { hits: SearchResultRow[] }) {
 }
 
 function LinkifiedText({ className, text }: { className?: string; text: string }) {
-  return <SharedLinkifiedText className={className} pretty text={cleanVisibleText(text)} />
+  return <SharedLinkifiedText className={className} pretty text={sanitizeDfmDisplayText(cleanVisibleText(text))} />
 }
 
 function ToolTitle({
@@ -239,12 +240,12 @@ function ToolTitle({
     >
       {isPending && titleAction ? (
         <>
-          {titleAction.prefix}
-          <span className="shimmer">{titleAction.text}</span>
-          {titleAction.suffix}
+          {sanitizeDfmDisplayText(titleAction.prefix)}
+          <span className="shimmer">{sanitizeDfmDisplayText(titleAction.text)}</span>
+          {sanitizeDfmDisplayText(titleAction.suffix)}
         </>
       ) : (
-        title
+        sanitizeDfmDisplayText(title)
       )}
     </FadeText>
   )
@@ -524,7 +525,7 @@ function ToolEntry({ part }: ToolEntryProps) {
                         detailSections.summary && 'mt-1.5'
                       )}
                     >
-                      {clampForDisplay(detailSections.body)}
+                      {sanitizeDfmDisplayText(clampForDisplay(detailSections.body))}
                     </pre>
                   )}
                 </div>
@@ -540,9 +541,9 @@ function ToolEntry({ part }: ToolEntryProps) {
                     {view.stderr && <p className={TOOL_SECTION_LABEL_CLASS}>stdout</p>}
                     <pre className={cn(TOOL_SECTION_PRE_CLASS, 'whitespace-pre-wrap wrap-anywhere')}>
                       {view.rendersAnsi ? (
-                        <AnsiText text={clampForDisplay(view.stdout)} />
+                        <AnsiText text={sanitizeDfmDisplayText(clampForDisplay(view.stdout))} />
                       ) : (
-                        clampForDisplay(view.stdout)
+                        sanitizeDfmDisplayText(clampForDisplay(view.stdout))
                       )}
                     </pre>
                   </div>
@@ -557,9 +558,9 @@ function ToolEntry({ part }: ToolEntryProps) {
                       )}
                     >
                       {view.rendersAnsi ? (
-                        <AnsiText text={clampForDisplay(view.stderr)} />
+                        <AnsiText text={sanitizeDfmDisplayText(clampForDisplay(view.stderr))} />
                       ) : (
-                        clampForDisplay(view.stderr)
+                        sanitizeDfmDisplayText(clampForDisplay(view.stderr))
                       )}
                     </pre>
                   </div>
@@ -570,12 +571,16 @@ function ToolEntry({ part }: ToolEntryProps) {
                 {view.detailLabel && <p className={TOOL_SECTION_LABEL_CLASS}>{view.detailLabel}</p>}
                 {renderDetailAsCode ? (
                   <pre className={cn(TOOL_SECTION_PRE_CLASS, 'whitespace-pre-wrap wrap-anywhere')}>
-                    {view.rendersAnsi ? <AnsiText text={clampForDisplay(view.detail)} /> : clampForDisplay(view.detail)}
+                    {view.rendersAnsi ? (
+                      <AnsiText text={sanitizeDfmDisplayText(clampForDisplay(view.detail))} />
+                    ) : (
+                      sanitizeDfmDisplayText(clampForDisplay(view.detail))
+                    )}
                   </pre>
                 ) : (
                   <CompactMarkdown
                     className={cn(TOOL_SECTION_SURFACE_CLASS, 'wrap-anywhere')}
-                    text={clampForDisplay(view.detail)}
+                    text={sanitizeDfmDisplayText(clampForDisplay(view.detail))}
                   />
                 )}
               </div>
@@ -584,7 +589,7 @@ function ToolEntry({ part }: ToolEntryProps) {
             <details className="max-w-full">
               <summary className={cn(TOOL_SECTION_LABEL_CLASS, 'mb-0')}>{copy.rawResponse}</summary>
               <pre className={cn(TOOL_SECTION_PRE_CLASS, 'mt-1 whitespace-pre-wrap wrap-anywhere')}>
-                {view.rawResult}
+                {sanitizeDfmDisplayText(view.rawResult)}
               </pre>
             </details>
           )}

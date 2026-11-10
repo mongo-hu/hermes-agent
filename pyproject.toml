@@ -147,7 +147,11 @@ dfm = [
   "python-pptx==1.0.2",
   "rapidocr-onnxruntime>=1.4.0",
   "pymupdf>=1.20.0",
-  "playwright>=1.62.0,<2"
+  "playwright>=1.62.0,<2",
+  # DFM ontology catalogs validate rule packages at import/startup time.
+  # Keep this in the runtime extra (not only `dev`) so a production DFM
+  # installation can start without ModuleNotFoundError.
+  "jsonschema==4.26.0"
 ]
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).

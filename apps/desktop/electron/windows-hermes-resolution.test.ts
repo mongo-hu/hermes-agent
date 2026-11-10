@@ -46,6 +46,35 @@ test('findOnPath tries PATHEXT extensions before the bare (empty) name on Window
   )
 })
 
+test('packaged DFM client pins its analysis home before generic HERMES_HOME resolution', () => {
+  const source = readMain()
+  const resolverStart = source.indexOf('function resolveHermesHome()')
+  const resolverEnd = source.indexOf('\nfunction ', resolverStart + 1)
+  const body = source.slice(resolverStart, resolverEnd === -1 ? undefined : resolverEnd)
+  const dfmHome = body.indexOf('IS_PACKAGED && IS_DFM_PRODUCT')
+  const genericHome = body.indexOf('if (process.env.HERMES_HOME)')
+
+  assert.notEqual(dfmHome, -1, 'dedicated DFM home guard must exist')
+  assert.notEqual(genericHome, -1, 'generic HERMES_HOME fallback must remain available')
+  assert.ok(dfmHome < genericHome, 'DFM home guard must run before a machine-wide HERMES_HOME can redirect the client')
+  assert.match(body, /return path\.join\(process\.env\.LOCALAPPDATA, 'hermes'\)/)
+})
+
+test('packaged DFM client prefers its stamped local source and rejects external runtimes', () => {
+  const source = readMain()
+  const resolverStart = source.indexOf('function resolveHermesBackend(backendArgs)')
+  const resolverEnd = source.indexOf('\nasync function ensureRuntime(', resolverStart + 1)
+  const body = source.slice(resolverStart, resolverEnd === -1 ? undefined : resolverEnd)
+  const stampedSource = body.indexOf('const stampedLocalRoot =')
+  const pathLookup = body.indexOf("findOnPath('hermes')")
+
+  assert.notEqual(stampedSource, -1, 'local DFM build must resolve its stamped source checkout')
+  assert.notEqual(pathLookup, -1, 'generic products must retain external CLI compatibility')
+  assert.ok(stampedSource < pathLookup, 'stamped DFM source must win before any external CLI lookup')
+  assert.match(body, /!\(IS_PACKAGED && IS_DFM_PRODUCT\).*HERMES_DESKTOP_IGNORE_EXISTING/)
+  assert.match(body, /const python = IS_PACKAGED && IS_DFM_PRODUCT \? null : findSystemPython\(\)/)
+})
+
 test('Windows bootstrap recovery chooses --update when any real-install signal is present', () => {
   const source = readMain()
   assert.match(source, /const haveRealInstall =/, 'recovery must compute haveRealInstall')

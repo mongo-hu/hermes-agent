@@ -10,6 +10,7 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { getElevenLabsVoices, getHermesConfigSchema, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { DFM_PRODUCT_MODE } from '@/lib/product-mode'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
@@ -443,7 +444,7 @@ export function ConfigSettings({
           <ModelSettings onMainModelChanged={onMainModelChanged} />
         </div>
       )}
-      {visibleFields.length === 0 ? (
+      {DFM_PRODUCT_MODE && activeSectionId === 'model' ? null : visibleFields.length === 0 ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
       ) : (
         <div className="grid gap-1">

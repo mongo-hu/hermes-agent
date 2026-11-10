@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ReviewContext } from './dfm-review'
 import { DfmViewerPane } from './dfm-viewer-pane'
+import { DfmWorkbench } from './dfm-workbench'
 
 const rendered = vi.hoisted(() => ({ scene: null as ThreeTypes.Scene | null }))
 
@@ -68,7 +69,7 @@ function expand(label: string) {
   return details
 }
 
-async function mountObjectMenuWorkflow() {
+async function mountObjectMenuWorkflow(inWorkbench = false) {
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
   vi.stubGlobal('requestAnimationFrame', () => 0)
   vi.stubGlobal('cancelAnimationFrame', () => {})
@@ -107,7 +108,10 @@ async function mountObjectMenuWorkflow() {
   const api = vi.fn(async (_request: { path: string; method?: string; body?: unknown }) => structuredClone(state))
   const readJsonFile = vi.fn(async (path: string) => path.endsWith('scene.json') ? scene : path.endsWith('topology.json') ? topology : manifest)
   Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api, readJsonFile } })
-  render(<DfmViewerPane target={{ projectId: project, manifestPath: '/project/viewer.json', status: 'discovery' }} />)
+  const target = { projectId: project, manifestPath: '/project/viewer.json', status: 'discovery' as const }
+  render(inWorkbench
+    ? <DfmWorkbench analysisView={<div>Analysis conversation</div>} target={target} />
+    : <DfmViewerPane target={target} />)
   await screen.findByText('带孔 Boss 柱 · 1 组待确认')
   const canvas = document.querySelector('canvas')!
   canvas.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, width: 400, height: 400, right: 400, bottom: 400, toJSON() {} })
@@ -127,8 +131,8 @@ async function mountObjectMenuWorkflow() {
   return { api, canvas, clickCanvas, readJsonFile, getState: () => state, setState: (next: ReviewContext) => { state = next } }
 }
 
-async function mountFormingWorkflow() {
-  const workflow = await mountObjectMenuWorkflow()
+async function mountFormingWorkflow(inWorkbench = false) {
+  const workflow = await mountObjectMenuWorkflow(inWorkbench)
   const refs = [1, 2, 3, 4, 5].map(index => ({ kind: 'face' as const, index, entity_id: `face-${index}`,
     input_sha256: 'a'.repeat(64), topology_snapshot_id: 'topology-A' }))
   workflow.setState({ ...workflow.getState(),
@@ -197,8 +201,8 @@ function directionArrowVisible() {
 }
 
 describe('candidate confirmation and feature editing', () => {
-  it('shows preparation and elapsed time at the current plan while the prepare request is pending', async () => {
-    const { api, getState } = await mountFormingWorkflow()
+  it.each([false, true])('shows preparation and elapsed time at the current plan while pending (workbench=%s)', async inWorkbench => {
+    const { api, getState } = await mountFormingWorkflow(inWorkbench)
     let finish!: (context: ReviewContext) => void
     const pending = new Promise<ReviewContext>(resolve => { finish = resolve })
     api.mockImplementation(async request => request.path.endsWith('/prepare') ? pending : structuredClone(getState()))
@@ -220,10 +224,15 @@ describe('candidate confirmation and feature editing', () => {
     expect(within(row).queryByRole('status')).toBeNull()
     expect(within(row).getByRole('region', { name: '编辑局部成型方案' })).toBeTruthy()
     expect(api.mock.calls.filter(([request]) => request.path.endsWith('/direction'))).toHaveLength(0)
+    if (inWorkbench) {
+      expect(screen.getByRole('region', { name: '分析过程' }).textContent).toContain('Analysis conversation')
+      expect(screen.getByRole('region', { name: '三维模型与问题' }).contains(row)).toBe(true)
+      expect(screen.queryByRole('button', { name: '弹出' })).toBeNull()
+    }
   })
 
-  it('shows a failed prepare beside the affected plan and allows retry without changing its review state', async () => {
-    const { api, getState } = await mountFormingWorkflow()
+  it.each([false, true])('shows a failed prepare and allows retry without changing review state (workbench=%s)', async inWorkbench => {
+    const { api, getState } = await mountFormingWorkflow(inWorkbench)
     const original = structuredClone(getState())
     let fail!: (error: Error) => void
     const pending = new Promise<ReviewContext>((_resolve, reject) => { fail = reject })
@@ -246,10 +255,13 @@ describe('candidate confirmation and feature editing', () => {
     expect(within(row).queryByRole('alert')).toBeNull()
     expect(api.mock.calls.filter(([request]) => request.path.endsWith('/prepare'))).toHaveLength(2)
     expect(getState()).toEqual(original)
+    if (inWorkbench) {
+      expect(screen.getByRole('region', { name: '分析过程' }).textContent).toContain('Analysis conversation')
+    }
   })
 
-  it('shows both face roles and confirms all local proposal edits in one request', async () => {
-    const { api, clickCanvas, refs, getState } = await mountFormingWorkflow()
+  it.each([false, true])('shows both face roles and confirms local proposal edits in one request (workbench=%s)', async inWorkbench => {
+    const { api, clickCanvas, refs, getState } = await mountFormingWorkflow(inWorkbench)
     const row = document.querySelector('[data-review-object="COMPLETE"]') as HTMLElement
     fireEvent.click(within(row).getByRole('button', { name: /^COMPLETE/ }))
     const model = screen.getByLabelText('DFM 三维画布')
@@ -286,6 +298,9 @@ describe('candidate confirmation and feature editing', () => {
         undercut_geometry_refs: [refs[2]], mechanism_kind: 'lifter', draw_direction: [0, 1, 0],
         expected_revision: 7, expected_snapshot_id: 'discovery-A' } })
     await waitFor(() => expect(screen.queryByRole('region', { name: '编辑局部成型方案' })).toBeNull())
+    if (inWorkbench) {
+      expect(screen.getByRole('region', { name: '分析过程' }).textContent).toContain('Analysis conversation')
+    }
   })
 
   it('clears the previous arrow for unknown candidates, cancels edits, and stages missing fields without confirmation', async () => {

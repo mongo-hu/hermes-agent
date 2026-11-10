@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { $connection } from '@/store/session'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
-import { artifactImageSrc, collectArtifactsForSession } from './artifact-utils'
+import { artifactImageSrc, collectArtifactsForSession, isDfmDeliverableArtifact } from './artifact-utils'
 
 function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -141,5 +141,38 @@ describe('collectArtifactsForSession', () => {
     expect(api).toHaveBeenCalledWith({
       path: '/api/fs/read-data-url?path=%2FUsers%2Fme%2F.hermes%2Fskills%2Fwork-esab%2Freferences%2Fimages%2Fmanual-step03.jpeg'
     })
+  })
+
+  it('resolves local image thumbnails through the desktop fs bridge', async () => {
+    const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,bG9jYWw=')
+
+    vi.stubGlobal('window', { hermesDesktop: { readFileDataUrl } })
+
+    await expect(artifactImageSrc('C:\\dfm-results\\part\\report.png')).resolves.toBe(
+      'data:image/png;base64,bG9jYWw='
+    )
+    expect(readFileDataUrl).toHaveBeenCalledWith('C:\\dfm-results\\part\\report.png')
+  })
+
+  it('keeps generated DFM outputs and rejects source or QA files', () => {
+    expect(
+      isDfmDeliverableArtifact({
+        value: 'C:\\Users\\lenovo\\.hermes\\workspace\\dfm\\projects\\dfm_1\\artifacts\\dfm_report.pdf'
+      })
+    ).toBe(true)
+    expect(isDfmDeliverableArtifact({ value: '\\\\analysis-server\\dfm-results\\mold\\report.json' })).toBe(true)
+    expect(
+      isDfmDeliverableArtifact({
+        value:
+          'C:\\Users\\96155\\AppData\\Local\\hermes\\workspace\\dfm\\projects\\dfm_1\\runs\\run_1\\artifacts\\report.html'
+      })
+    ).toBe(true)
+    expect(isDfmDeliverableArtifact({ value: 'C:\\Users\\96155\\Desktop\\DFM分析报告_产品分析文件.html' })).toBe(true)
+    expect(
+      isDfmDeliverableArtifact({ value: 'D:\\work\\DFM-agent\\hermes-agent\\apps\\desktop\\src\\app.tsx' })
+    ).toBe(false)
+    expect(
+      isDfmDeliverableArtifact({ value: 'D:\\work\\DFM-agent\\hermes-agent\\output\\playwright\\dfm-home.png' })
+    ).toBe(false)
   })
 })

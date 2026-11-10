@@ -25,6 +25,7 @@ import type {
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
+import { DFM_PRODUCT_MODE } from '@/lib/product-mode'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import { startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
@@ -56,7 +57,7 @@ export function ModelSettingsSkeleton() {
         </div>
       </section>
 
-      <section>
+      <section className={DFM_PRODUCT_MODE ? 'hidden' : undefined}>
         <div className="mb-2.5 flex items-center gap-2 pt-2">
           <Skeleton className="size-4" />
           <Skeleton className="h-4 w-36" />
@@ -598,7 +599,9 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   return (
     <div className="grid gap-6">
       <section>
-        <p className="mb-3 text-xs text-muted-foreground">{m.appliesDesc}</p>
+        <p className="mb-3 text-xs text-muted-foreground">
+          {DFM_PRODUCT_MODE ? 'Used for all new DFM analysis tasks.' : m.appliesDesc}
+        </p>
         <div className="flex flex-wrap items-center gap-2">
           <Select onValueChange={setSelectedProvider} value={selectedProvider}>
             <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
@@ -671,7 +674,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
           <p className="mt-2 text-xs text-muted-foreground">
             {selectedProviderRow?.auth_type === 'api_key'
               ? `${selectedProviderRow?.name} needs an API key — set it up to choose a model.`
-              : `${selectedProviderRow?.name} signs in through your browser — Hermes runs the flow for you.`}
+              : `${selectedProviderRow?.name} signs in through your browser — DFM runs the flow for you.`}
           </p>
         )}
         {config && mainModel && (reasoningSupported || fastSupported) && (
@@ -710,7 +713,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
           </div>
         )}
         {error && <div className="mt-2 text-xs text-destructive">{error}</div>}
-        {switchStaleAux.length > 0 && (
+        {!DFM_PRODUCT_MODE && switchStaleAux.length > 0 && (
           <div className="mt-2">
             <StaleAuxWarning
               applying={applying}
@@ -722,7 +725,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         )}
       </section>
 
-      <section>
+      <section className={DFM_PRODUCT_MODE ? 'hidden' : undefined}>
         <div className="mb-2.5 flex items-center justify-between">
           <SectionHeading icon={Cpu} title={m.auxiliaryTitle} />
           <Button
@@ -839,7 +842,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
           })}
         </div>
       </section>
-      {moa && currentMoaPreset && (
+      {!DFM_PRODUCT_MODE && moa && currentMoaPreset && (
         <section>
           <div className="mb-2.5 flex items-center justify-between">
             <SectionHeading icon={Cpu} title="Mixture of Agents" />

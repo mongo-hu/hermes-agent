@@ -2,6 +2,7 @@ import type { FC } from 'react'
 import { Fragment, useMemo } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
+import { sanitizeDfmDisplayText } from '@/lib/product-mode'
 import { cn } from '@/lib/utils'
 
 // User messages should render the bare-minimum of markdown: backtick `code`
@@ -108,14 +109,14 @@ export const UserMessageText: FC<UserMessageTextProps> = ({ className, text }) =
               data-slot="aui_user-fence"
               key={`fence-${segmentIndex}`}
             >
-              <code className="block whitespace-pre">{segment.code}</code>
+              <code className="block whitespace-pre">{sanitizeDfmDisplayText(segment.code)}</code>
             </pre>
           )
         }
 
         return (
           <Fragment key={`inline-${segmentIndex}`}>
-            <InlineSegmentView text={segment.text} />
+            <InlineSegmentView text={sanitizeDfmDisplayText(segment.text)} />
           </Fragment>
         )
       })}

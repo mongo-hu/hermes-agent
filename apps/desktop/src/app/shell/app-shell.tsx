@@ -7,6 +7,7 @@ import { PaneShell } from '@/components/pane-shell'
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { useMediaQuery } from '@/hooks/use-media-query'
+import { DFM_PRODUCT_MODE } from '@/lib/product-mode'
 import {
   $fileBrowserOpen,
   $panesFlipped,
@@ -132,14 +133,12 @@ export function AppShell({
   // Width math has to include each control's actual width plus the `gap-x-1`
   // (0.25rem) between buttons. The final extra gap is breathing room between
   // the pane-tool and system clusters.
-  const SYSTEM_TOOL_COUNT = 4
+  const SYSTEM_TOOL_COUNT = DFM_PRODUCT_MODE ? 1 : 4
 
   const visiblePaneTools = titlebarTools?.filter(tool => !tool.hidden) ?? []
   const paneToolCount = visiblePaneTools.length
 
-  const paneToolsWidth = visiblePaneTools
-    .map(tool => tool.controlWidth || 'var(--titlebar-control-size)')
-    .join(' + ')
+  const paneToolsWidth = visiblePaneTools.map(tool => tool.controlWidth || 'var(--titlebar-control-size)').join(' + ')
 
   const systemToolsWidth = `calc(${SYSTEM_TOOL_COUNT} * (var(--titlebar-control-size) + 0.25rem))`
 
@@ -159,9 +158,7 @@ export function AppShell({
   // paneCount * (size + gap-x-1)`). Otherwise the static cluster's footprint
   // is enough.
   const titlebarToolsWidth =
-    paneToolCount > 0
-      ? `calc(${previewToolbarGap} + ${paneToolsWidth} + ${paneToolCount} * 0.25rem)`
-      : systemToolsWidth
+    paneToolCount > 0 ? `calc(${previewToolbarGap} + ${paneToolsWidth} + ${paneToolCount} * 0.25rem)` : systemToolsWidth
 
   return (
     <SidebarProvider
@@ -228,7 +225,7 @@ export function AppShell({
       {overlays}
 
       {/* Keybind map dialog (titlebar ⌨ button / ⌘/). */}
-      <KeybindPanel />
+      {!DFM_PRODUCT_MODE && <KeybindPanel />}
 
       {/* Mounted at the shell root (after overlays) so success/error toasts
           surface above every route and overlay — not just the chat view. */}
@@ -236,7 +233,7 @@ export function AppShell({
 
       {/* Petdex floating mascot — in-window, always-on-top, reactive to agent
           activity. Renders nothing unless a pet is installed + enabled. */}
-      <FloatingPet />
+      {!DFM_PRODUCT_MODE && <FloatingPet />}
     </SidebarProvider>
   )
 }

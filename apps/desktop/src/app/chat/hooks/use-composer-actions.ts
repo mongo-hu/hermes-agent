@@ -14,6 +14,7 @@ import {
   setComposerTerminalSelection
 } from '@/store/composer'
 import { notify, notifyError } from '@/store/notifications'
+import { DFM_PRODUCT_MODE, isDfmStpModelPath } from '@/lib/product-mode'
 
 import type { ImageDetachResponse } from '../../types'
 
@@ -305,11 +306,12 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
   }, [])
 
   const pickContextPaths = useCallback(
-    async (kind: 'file' | 'folder') => {
+    async (kind: 'file' | 'folder', pickerOptions?: Parameters<typeof selectDesktopPaths>[0]) => {
       const paths = await selectDesktopPaths({
         title: kind === 'file' ? 'Add files as context' : 'Add folders as context',
         defaultPath: currentCwd || undefined,
-        directories: kind === 'folder'
+        directories: kind === 'folder',
+        ...pickerOptions
       })
 
       if (!paths?.length) {
@@ -317,6 +319,12 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
       }
 
       for (const path of paths) {
+        if (DFM_PRODUCT_MODE && (kind !== 'file' || !isDfmStpModelPath(path))) {
+          notify({ kind: 'warning', title: '仅支持 STP 模型', message: '请选择扩展名为 .stp 的三维模型文件。' })
+
+          continue
+        }
+
         const rel = contextPath(path, currentCwd)
 
         attachToMain({
@@ -523,6 +531,13 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
 
       for (const candidate of candidates) {
         const { file, isDirectory, path: knownPath } = candidate
+        const candidateName = knownPath || file?.name || ''
+
+        if (DFM_PRODUCT_MODE && (isDirectory || !isDfmStpModelPath(candidateName))) {
+          lastFailure = 'DFM 分析仅支持扩展名为 .stp 的三维模型文件。'
+
+          continue
+        }
 
         // Path-only entry (in-app drag from the file browser tree, etc.).
         if (!file) {

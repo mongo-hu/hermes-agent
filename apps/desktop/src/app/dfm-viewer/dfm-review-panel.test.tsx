@@ -577,8 +577,10 @@ describe('DFM grouped review interaction', () => {
       forming_scope_id: `SIDE_${index}`, draw_direction: index === 120 ? null : [1, 0, 0] }))
     initial.review_groups = initial.forming_scopes.map((scope, index) => ({ review_group_id: `plan-${index}`,
       kind: 'forming_scope', target_refs: [scope.forming_scope_id], status: 'pending_review' }))
+
     const next: ReviewContext = { ...initial, revision: 8, review_groups: initial.review_groups.map((group, index) =>
       index < 120 ? { ...group, status: 'confirmed' } : group) }
+
     const { api } = mount(initial, next)
     fireEvent.click(await screen.findByRole('button', { name: '局部成型方案（121 组待确认）' }))
     expect(screen.getAllByRole('checkbox')).toHaveLength(50)
@@ -597,12 +599,15 @@ describe('DFM grouped review interaction', () => {
     initial.review_groups.push({ review_group_id: 'plan-2', kind: 'forming_scope', target_refs: ['SIDE_2'], status: 'pending_review' })
     const api = vi.fn(async () => initial)
     Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api } })
+
     function Harness() {
       const [selection, setSelection] = useState<DfmHighlightSelection | null>(null)
+
       return <DfmReviewPanel highlightSelection={selection} onChanged={vi.fn()} onEditDirection={vi.fn()}
         onHighlight={(_refs, target, force) => setSelection(previous => !force && previous?.objectId === target?.objectId ? null : target ?? null)}
         projectId={initial.project_id} revision={initial.revision} />
     }
+
     render(<Harness />)
     fireEvent.click(await screen.findByRole('button', { name: '局部成型方案（2 组待确认）' }))
     expect(screen.getByRole('button', { name: '确认方案' })).toBeTruthy()
@@ -618,8 +623,10 @@ describe('DFM grouped review interaction', () => {
     const initial = context()
     initial.forming_scopes.push({ ...initial.forming_scopes[0], forming_scope_id: 'SIDE_2' })
     initial.review_groups.push({ review_group_id: 'plan-2', kind: 'forming_scope', target_refs: ['SIDE_2'], status: 'pending_review' })
+
     const { api } = mount(initial, initial, { editing: true, editingScopeId: 'SIDE',
-      scopeEditor: <div role="region" aria-label="统一方案草稿">draft contents</div> })
+      scopeEditor: <div aria-label="统一方案草稿" role="region">draft contents</div> })
+
     const editor = await screen.findByRole('region', { name: '统一方案草稿' })
     expect(editor.closest('[data-review-object]')?.getAttribute('data-review-object')).toBe('SIDE')
     expect(screen.queryByRole('button', { name: '修改' })).toBeNull()
@@ -631,14 +638,19 @@ describe('DFM grouped review interaction', () => {
   it('keeps a removed scheme draft visible with its cancel action after a remote refresh', async () => {
     const initial = context()
     const cancel = vi.fn()
-    const scopeEditor = <div role="region" aria-label="保留的方案草稿"><input aria-label="草稿方向" defaultValue="[1,2,0]" />
+
+    const scopeEditor = <div aria-label="保留的方案草稿" role="region"><input aria-label="草稿方向" defaultValue="[1,2,0]" />
       <button onClick={cancel} type="button">取消修改</button></div>
+
     const { api, rerender, onChanged, onHighlight } = mount(initial, initial,
       { editing: true, editingScopeId: 'SIDE', scopeEditor })
+
     const editor = await screen.findByRole('region', { name: '保留的方案草稿' })
     expect(editor.closest('[data-review-object]')?.getAttribute('data-review-object')).toBe('SIDE')
+
     const removed: ReviewContext = { ...initial, revision: 9, forming_scopes: [],
       review_groups: initial.review_groups.filter(group => group.kind !== 'forming_scope') }
+
     rerender(<DfmReviewPanel editing editingScopeId="SIDE" latestContext={removed} onChanged={onChanged}
       onHighlight={onHighlight} projectId={initial.project_id} revision={initial.revision} scopeEditor={scopeEditor} />)
     expect(screen.getAllByRole('region', { name: '保留的方案草稿' })).toHaveLength(1)

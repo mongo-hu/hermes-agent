@@ -17,6 +17,7 @@ import { useSkinCommand } from '@/themes/use-skin-command'
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getSessionMessages, type SessionMessage, triggerCronJob } from '../hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
+import { DFM_PRODUCT_MODE, dfmStpPickerOptions, isDfmSessionSummary } from '../lib/product-mode'
 import { storedSessionIdForNotification } from '../lib/session-ids'
 import { isMessagingSource } from '../lib/session-source'
 import { latestSessionTodos } from '../lib/todos'
@@ -89,6 +90,7 @@ import {
 } from './chat/right-rail'
 import { ChatSidebar } from './chat/sidebar'
 import { CommandPalette } from './command-palette'
+import { DfmWorkbench } from './dfm-viewer/dfm-workbench'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
 import { useKeybinds } from './hooks/use-keybinds'
@@ -197,6 +199,7 @@ export function DesktopController() {
   const previewTarget = useStore($previewTarget)
   const dfmViewerTarget = useStore($dfmViewerTarget)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
+  const sessions = useStore($sessions)
   const messagingSessions = useStore($messagingSessions)
   const terminalTakeover = useStore($terminalTakeover)
   const reviewOpen = useStore($reviewOpen)
@@ -280,6 +283,27 @@ export function DesktopController() {
       setRememberedSessionId(routedSessionId)
     }
   }, [routedSessionId])
+
+  // A dedicated DFM install can reuse the historical session database from
+  // the general client. Never reopen one of those unrelated conversations in
+  // the DFM shell, even if it was the last route persisted by an older build.
+  useEffect(() => {
+    if (!DFM_PRODUCT_MODE || !routedSessionId) {
+      return
+    }
+
+    const routedSession = sessions.find(session => sessionMatchesStoredId(session, routedSessionId))
+
+    if (!routedSession || isDfmSessionSummary(routedSession)) {
+      return
+    }
+
+    if (getRememberedSessionId() === routedSessionId) {
+      setRememberedSessionId(null)
+    }
+
+    navigate(NEW_CHAT_ROUTE, { replace: true })
+  }, [navigate, routedSessionId, sessions])
 
   // Restore that chat once, on cold start only (we're at the new-chat route and
   // haven't navigated yet). A dead/deleted id self-clears via the exhausted latch
@@ -1045,7 +1069,9 @@ export function DesktopController() {
   // layer) so pane resize handles still paint above it. Terminals own their state
   // (incl. a snapshotted cwd) independent of the session, so switching sessions
   // never rebuilds or closes them; toggling the pane never rebuilds the shells.
-  const mainOverlays = <PersistentTerminal onAddSelectionToChat={composer.addTerminalSelectionAttachment} />
+  const mainOverlays = DFM_PRODUCT_MODE ? null : (
+    <PersistentTerminal onAddSelectionToChat={composer.addTerminalSelectionAttachment} />
+  )
 
   const overlays = (
     <>
@@ -1062,15 +1088,17 @@ export function DesktopController() {
           requestGateway={requestGateway}
         />
       )}
-      <ModelPickerOverlay gateway={gatewayRef.current || undefined} onSelect={selectModel} />
-      <SessionPickerOverlay onResume={resumeSession} />
-      <ModelVisibilityOverlay gateway={gatewayRef.current || undefined} onOpenProviders={openProviderSettings} />
+      {!DFM_PRODUCT_MODE && <ModelPickerOverlay gateway={gatewayRef.current || undefined} onSelect={selectModel} />}
+      {!DFM_PRODUCT_MODE && <SessionPickerOverlay onResume={resumeSession} />}
+      {!DFM_PRODUCT_MODE && (
+        <ModelVisibilityOverlay gateway={gatewayRef.current || undefined} onOpenProviders={openProviderSettings} />
+      )}
       <UpdatesOverlay />
       <GatewayConnectingOverlay />
       <BootFailureOverlay />
-      <CommandPalette />
-      <PetGenerateOverlay />
-      <SessionSwitcher />
+      {!DFM_PRODUCT_MODE && <CommandPalette />}
+      {!DFM_PRODUCT_MODE && <PetGenerateOverlay />}
+      {!DFM_PRODUCT_MODE && <SessionSwitcher />}
       <FileActionDialogs />
       <RemoteFolderPicker />
 
@@ -1095,7 +1123,7 @@ export function DesktopController() {
         </Suspense>
       )}
 
-      {commandCenterOpen && (
+      {!DFM_PRODUCT_MODE && commandCenterOpen && (
         <Suspense fallback={null}>
           <CommandCenterView
             initialSection={commandCenterInitialSection}
@@ -1107,13 +1135,13 @@ export function DesktopController() {
         </Suspense>
       )}
 
-      {agentsOpen && (
+      {!DFM_PRODUCT_MODE && agentsOpen && (
         <Suspense fallback={null}>
           <AgentsView onClose={closeOverlayToPreviousRoute} />
         </Suspense>
       )}
 
-      {cronOpen && (
+      {!DFM_PRODUCT_MODE && cronOpen && (
         <Suspense fallback={null}>
           <CronView
             onClose={closeOverlayToPreviousRoute}
@@ -1122,13 +1150,13 @@ export function DesktopController() {
         </Suspense>
       )}
 
-      {profilesOpen && (
+      {!DFM_PRODUCT_MODE && profilesOpen && (
         <Suspense fallback={null}>
           <ProfilesView onClose={closeOverlayToPreviousRoute} />
         </Suspense>
       )}
 
-      {starmapOpen && (
+      {!DFM_PRODUCT_MODE && starmapOpen && (
         <Suspense fallback={null}>
           <StarmapView onClose={closeOverlayToPreviousRoute} />
         </Suspense>
@@ -1155,7 +1183,7 @@ export function DesktopController() {
       onDismissError={dismissError}
       onEdit={editMessage}
       onPasteClipboardImage={opts => composer.pasteClipboardImage(opts)}
-      onPickFiles={() => void composer.pickContextPaths('file')}
+      onPickFiles={() => void composer.pickContextPaths('file', DFM_PRODUCT_MODE ? dfmStpPickerOptions() : undefined)}
       onPickFolders={() => void composer.pickContextPaths('folder')}
       onPickImages={() => void composer.pickImages()}
       onReload={reloadFromMessage}
@@ -1170,6 +1198,9 @@ export function DesktopController() {
     />
   )
 
+  const primaryChatView =
+    DFM_PRODUCT_MODE && dfmViewerTarget ? <DfmWorkbench analysisView={chatView} target={dfmViewerTarget} /> : chatView
+
   // Flipped layout mirrors the default: sessions sidebar → right, file
   // browser + preview rail → left. Same panes, swapped sides.
   const sidebarSide = panesFlipped ? 'right' : 'left'
@@ -1178,15 +1209,16 @@ export function DesktopController() {
   // Other sidebars docked as real columns on the terminal's rail. Force-collapsed
   // hover-reveal overlays (narrow window) don't take a column, so they don't count.
   const railColumnOpen =
-    (chatOpen && Boolean(dfmViewerTarget || previewTarget || filePreviewTarget) && previewPaneOpen) ||
-    (chatOpen && !narrowViewport && fileBrowserOpen) ||
-    (chatOpen && Boolean(currentCwd.trim()) && !narrowViewport && reviewOpen)
+    !DFM_PRODUCT_MODE &&
+    ((chatOpen && Boolean(dfmViewerTarget || previewTarget || filePreviewTarget) && previewPaneOpen) ||
+      (chatOpen && !narrowViewport && fileBrowserOpen) ||
+      (chatOpen && Boolean(currentCwd.trim()) && !narrowViewport && reviewOpen))
 
   // Once the terminal would share its rail with another sidebar, drop it to a
   // full-width row beneath them rather than cramming in one more skinny column.
   const terminalAsRow = terminalSidebarOpen && railColumnOpen
 
-  const previewPane = (
+  const previewPane = DFM_PRODUCT_MODE ? null : (
     <Pane
       disabled={!chatOpen || (!dfmViewerTarget && !previewTarget && !filePreviewTarget)}
       id={PREVIEW_PANE_ID}
@@ -1206,7 +1238,7 @@ export function DesktopController() {
   const fileBrowserPane = (
     <Pane
       defaultOpen={false}
-      disabled={!chatOpen}
+      disabled={DFM_PRODUCT_MODE || !chatOpen}
       forceCollapsed={narrowViewport}
       hoverReveal
       hoverRevealOnPointer={false}
@@ -1238,7 +1270,7 @@ export function DesktopController() {
       // gate so the pane stays mounted as a collapsed overlay — `toggleReview`
       // then slides it in/out via the forced-reveal pin, exactly like ⌘B for the
       // sidebar. Still requires a repo (no diffs to show otherwise).
-      disabled={!chatOpen || !currentCwd.trim() || (!narrowViewport && !reviewOpen)}
+      disabled={DFM_PRODUCT_MODE || !chatOpen || !currentCwd.trim() || (!narrowViewport && !reviewOpen)}
       forceCollapsed={narrowViewport}
       hoverReveal
       id={REVIEW_PANE_ID}
@@ -1259,7 +1291,7 @@ export function DesktopController() {
     <Pane
       bottomRow={terminalAsRow}
       defaultOpen
-      disabled={!terminalSidebarOpen}
+      disabled={DFM_PRODUCT_MODE || !terminalSidebarOpen}
       divider
       height="38vh"
       id="terminal-sidebar"
@@ -1294,7 +1326,7 @@ export function DesktopController() {
       mainOverlays={mainOverlays}
       onOpenSettings={openSettings}
       overlays={overlays}
-      previewPaneOpen={chatOpen && Boolean(dfmViewerTarget || previewTarget || filePreviewTarget)}
+      previewPaneOpen={!DFM_PRODUCT_MODE && chatOpen && Boolean(dfmViewerTarget || previewTarget || filePreviewTarget)}
       statusbarItems={statusbarItems}
       terminalPaneOpen={terminalSidebarOpen}
       titlebarTools={titlebarToolGroups.flat.right}
@@ -1316,21 +1348,29 @@ export function DesktopController() {
       )}
       <PaneMain>
         <Routes>
-          <Route element={chatView} index />
-          <Route element={chatView} path=":sessionId" />
+          <Route element={primaryChatView} index />
+          <Route element={primaryChatView} path=":sessionId" />
           <Route
             element={
-              <Suspense fallback={null}>
-                <SkillsView setStatusbarItemGroup={setStatusbarItemGroup} />
-              </Suspense>
+              DFM_PRODUCT_MODE ? (
+                <Navigate replace to={NEW_CHAT_ROUTE} />
+              ) : (
+                <Suspense fallback={null}>
+                  <SkillsView setStatusbarItemGroup={setStatusbarItemGroup} />
+                </Suspense>
+              )
             }
             path="skills"
           />
           <Route
             element={
-              <Suspense fallback={null}>
-                <MessagingView setStatusbarItemGroup={setStatusbarItemGroup} />
-              </Suspense>
+              DFM_PRODUCT_MODE ? (
+                <Navigate replace to={NEW_CHAT_ROUTE} />
+              ) : (
+                <Suspense fallback={null}>
+                  <MessagingView setStatusbarItemGroup={setStatusbarItemGroup} />
+                </Suspense>
+              )
             }
             path="messaging"
           />
@@ -1342,11 +1382,11 @@ export function DesktopController() {
             }
             path="artifacts"
           />
-          <Route element={null} path="cron" />
-          <Route element={null} path="profiles" />
+          <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="cron" />
+          <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="profiles" />
           <Route element={null} path="settings" />
-          <Route element={null} path="command-center" />
-          <Route element={null} path="agents" />
+          <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="command-center" />
+          <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="agents" />
           <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="new" />
           <Route element={<LegacySessionRedirect />} path="sessions/:sessionId" />
           <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="*" />

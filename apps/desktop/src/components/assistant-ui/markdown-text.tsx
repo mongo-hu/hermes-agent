@@ -10,7 +10,9 @@ import {
 import { useStore } from '@nanostores/react'
 import { code } from '@streamdown/code'
 import {
+  cloneElement,
   type ComponentProps,
+  isValidElement,
   memo,
   type ReactNode,
   useDeferredValue,
@@ -39,6 +41,7 @@ import {
   mediaStreamUrl
 } from '@/lib/media'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
+import { sanitizeDfmDisplayText } from '@/lib/product-mode'
 import { tailBoundedRemend } from '@/lib/remend-tail'
 import { cn } from '@/lib/utils'
 import { $connection } from '@/store/session'
@@ -58,6 +61,22 @@ import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } fro
 // `singleDollarTextMath: true` enables `$x^2$` for inline math (de-facto
 // LLM convention). The default false-setting only accepts `$$...$$`.
 const mathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
+
+function sanitizeMarkdownChildren(node: ReactNode): ReactNode {
+  if (typeof node === 'string') {
+    return sanitizeDfmDisplayText(node)
+  }
+
+  if (Array.isArray(node)) {
+    return node.map(sanitizeMarkdownChildren)
+  }
+
+  if (isValidElement<{ children?: ReactNode }>(node) && node.props.children !== undefined) {
+    return cloneElement(node, undefined, sanitizeMarkdownChildren(node.props.children))
+  }
+
+  return node
+}
 
 // Replaces Streamdown's `parseIncompleteMarkdown` (full-text remend per
 // flush) with a tail-bounded repair — see lib/remend-tail.ts. Must stay
@@ -578,23 +597,33 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
   const components = useMemo(
     () =>
       ({
-        h1: ({ className, ...props }: ComponentProps<'h1'>) => (
-          <h1 className={cn('my-1 font-semibold', HEADING_SIZES.h1, className)} {...props} />
+        h1: ({ children, className, ...props }: ComponentProps<'h1'>) => (
+          <h1 className={cn('my-1 font-semibold', HEADING_SIZES.h1, className)} {...props}>
+            {sanitizeMarkdownChildren(children)}
+          </h1>
         ),
-        h2: ({ className, ...props }: ComponentProps<'h2'>) => (
-          <h2 className={cn('my-1 font-semibold', HEADING_SIZES.h2, className)} {...props} />
+        h2: ({ children, className, ...props }: ComponentProps<'h2'>) => (
+          <h2 className={cn('my-1 font-semibold', HEADING_SIZES.h2, className)} {...props}>
+            {sanitizeMarkdownChildren(children)}
+          </h2>
         ),
-        h3: ({ className, ...props }: ComponentProps<'h3'>) => (
-          <h3 className={cn('my-1 font-semibold', HEADING_SIZES.h3, className)} {...props} />
+        h3: ({ children, className, ...props }: ComponentProps<'h3'>) => (
+          <h3 className={cn('my-1 font-semibold', HEADING_SIZES.h3, className)} {...props}>
+            {sanitizeMarkdownChildren(children)}
+          </h3>
         ),
-        h4: ({ className, ...props }: ComponentProps<'h4'>) => (
-          <h4 className={cn('my-1 font-semibold', HEADING_SIZES.h4, className)} {...props} />
+        h4: ({ children, className, ...props }: ComponentProps<'h4'>) => (
+          <h4 className={cn('my-1 font-semibold', HEADING_SIZES.h4, className)} {...props}>
+            {sanitizeMarkdownChildren(children)}
+          </h4>
         ),
-        p: ({ className, ...props }: ComponentProps<'p'>) => (
+        p: ({ children, className, ...props }: ComponentProps<'p'>) => (
           // Vertical rhythm is owned by styles.css (`--paragraph-gap`), which
           // must out-specify Tailwind Typography's `prose` margins — so no
           // `my-*` here on purpose.
-          <p className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props} />
+          <p className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props}>
+            {sanitizeMarkdownChildren(children)}
+          </p>
         ),
         a: MarkdownLink,
         // Inline code must not vote when an ancestor resolves `dir="auto"`
@@ -602,8 +631,10 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
         // mirroring the CSS isolate that already keeps it out of the
         // plaintext scan. Fenced code never reaches this override; it goes
         // through the code plugin's CodeCard path.
-        inlineCode: ({ className, ...props }: ComponentProps<'code'>) => (
-          <code className={className} dir="ltr" {...props} />
+        inlineCode: ({ children, className, ...props }: ComponentProps<'code'>) => (
+          <code className={className} dir="ltr" {...props}>
+            {sanitizeMarkdownChildren(children)}
+          </code>
         ),
         // `---` as quiet spacing, not a heavy full-width rule.
         hr: (_props: ComponentProps<'hr'>) => <div aria-hidden className="my-3" />,
@@ -619,7 +650,8 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
         // A `> [!NOTE]`/`[!WARNING]`/... blockquote renders as a GFM alert
         // callout; everything else stays a plain quote.
         blockquote: ({ children, className, ...props }: ComponentProps<'blockquote'>) => {
-          const alert = extractAlert(children)
+          const displayChildren = sanitizeMarkdownChildren(children)
+          const alert = extractAlert(displayChildren)
 
           if (alert) {
             return <MarkdownAlert type={alert.type}>{alert.body}</MarkdownAlert>
@@ -631,7 +663,7 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
               dir="auto"
               {...props}
             >
-              {children}
+              {displayChildren}
             </blockquote>
           )
         },
@@ -641,8 +673,10 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
         ol: ({ className, ...props }: ComponentProps<'ol'>) => (
           <ol className={cn('my-1 gap-0', className)} dir="auto" {...props} />
         ),
-        li: ({ className, ...props }: ComponentProps<'li'>) => (
-          <li className={cn('leading-(--dt-line-height)', className)} {...props} />
+        li: ({ children, className, ...props }: ComponentProps<'li'>) => (
+          <li className={cn('leading-(--dt-line-height)', className)} {...props}>
+            {sanitizeMarkdownChildren(children)}
+          </li>
         ),
         table: ({ className, ...props }: ComponentProps<'table'>) => (
           <div className="aui-md-table my-2 max-w-full overflow-x-auto rounded-[0.375rem] border border-border">
@@ -658,24 +692,28 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
         thead: ({ className, ...props }: ComponentProps<'thead'>) => (
           <thead className={cn('m-0 bg-muted/35 text-muted-foreground', className)} {...props} />
         ),
-        th: ({ className, ...props }: ComponentProps<'th'>) => (
+        th: ({ children, className, ...props }: ComponentProps<'th'>) => (
           <th
             className={cn(
               'whitespace-nowrap px-2.5 py-1.5 text-left align-middle text-[0.75rem] font-medium text-muted-foreground',
               className
             )}
             {...props}
-          />
+          >
+            {sanitizeMarkdownChildren(children)}
+          </th>
         ),
-        td: ({ className, ...props }: ComponentProps<'td'>) => (
-          <td className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug', className)} {...props} />
+        td: ({ children, className, ...props }: ComponentProps<'td'>) => (
+          <td className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug', className)} {...props}>
+            {sanitizeMarkdownChildren(children)}
+          </td>
         ),
         img: MarkdownImage,
         // ```mermaid / ```svg fences route to their lazy renderers; every other
         // language falls back to the Shiki-highlighted code block.
         SyntaxHighlighter: (props: SyntaxHighlighterProps) => (
           <RichCodeBlock
-            code={props.code}
+            code={sanitizeDfmDisplayText(props.code)}
             fallback={<SyntaxHighlighter {...props} defer={isStreaming} />}
             language={props.language}
             streaming={isStreaming}

@@ -473,7 +473,7 @@ export function useMessageStream({
         const streamId = state.streamId ?? `assistant-error-${Date.now()}`
         const groupId = state.pendingBranchGroup ?? undefined
         const prev = state.messages
-        const error = errorMessage.trim() || 'Hermes reported an error'
+        const error = errorMessage.trim() || 'DFM reported an analysis error'
 
         const nextMessages = prev.some(m => m.id === streamId)
           ? prev.map(message =>

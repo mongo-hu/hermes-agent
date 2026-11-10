@@ -1606,6 +1606,7 @@ dev = [
     { name = "ty" },
 ]
 dfm = [
+    { name = "jsonschema" },
     { name = "playwright" },
     { name = "pymupdf" },
     { name = "python-pptx" },
@@ -1808,6 +1809,7 @@ requires-dist = [
     { name = "httpx", extras = ["socks"], specifier = "==0.28.1" },
     { name = "jinja2", specifier = "==3.1.6" },
     { name = "jsonschema", marker = "extra == 'dev'", specifier = "==4.26.0" },
+    { name = "jsonschema", marker = "extra == 'dfm'", specifier = "==4.26.0" },
     { name = "lark-oapi", marker = "extra == 'feishu'", specifier = "==1.6.8" },
     { name = "markdown", specifier = "==3.10.2" },
     { name = "mautrix", extras = ["encryption"], marker = "extra == 'matrix'", specifier = "==0.21.0" },

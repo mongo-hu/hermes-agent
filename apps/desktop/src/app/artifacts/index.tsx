@@ -22,6 +22,7 @@ import { type Translations, useI18n } from '@/i18n'
 import { ExternalLink, ExternalLinkIcon, hostPathLabel, urlSlugTitleLabel, useLinkTitle } from '@/lib/external-link'
 import { FileImage, FileText, FolderOpen, Link2, Loader2, RefreshCw } from '@/lib/icons'
 import { downloadGatewayMediaFile, isRemoteGateway } from '@/lib/media'
+import { DFM_PRODUCT_MODE, isDfmSessionSummary } from '@/lib/product-mode'
 import { normalize } from '@/lib/text'
 import { fmtDayTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
@@ -38,7 +39,8 @@ import {
   type ArtifactFilter,
   artifactImageSrc,
   type ArtifactRecord,
-  collectArtifactsForSession
+  collectArtifactsForSession,
+  isDfmDeliverableArtifact
 } from './artifact-utils'
 
 function formatArtifactTime(timestamp: number): string {
@@ -121,7 +123,8 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setRefreshing(true)
 
     try {
-      const sessions = (await listAllProfileSessions(30, 1)).sessions
+      const listedSessions = (await listAllProfileSessions(30, 1)).sessions
+      const sessions = DFM_PRODUCT_MODE ? listedSessions.filter(isDfmSessionSummary) : listedSessions
       const results = await Promise.allSettled(sessions.map(session => getSessionMessages(session.id, session.profile)))
       const nextArtifacts: ArtifactRecord[] = []
 
@@ -131,7 +134,10 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         }
 
         const session = sessions[index]
-        nextArtifacts.push(...collectArtifactsForSession(session, result.value.messages))
+        const sessionArtifacts = collectArtifactsForSession(session, result.value.messages)
+        nextArtifacts.push(
+          ...(DFM_PRODUCT_MODE ? sessionArtifacts.filter(isDfmDeliverableArtifact) : sessionArtifacts)
+        )
       })
 
       setArtifacts(nextArtifacts.sort((left, right) => right.timestamp - left.timestamp))
@@ -303,7 +309,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         { id: 'all', label: a.tabAll, meta: artifacts ? counts.all : null },
         { id: 'image', label: a.tabImages, meta: artifacts ? counts.image : null },
         { id: 'file', label: a.tabFiles, meta: artifacts ? counts.file : null },
-        { id: 'link', label: a.tabLinks, meta: artifacts ? counts.link : null }
+        ...(DFM_PRODUCT_MODE ? [] : [{ id: 'link', label: a.tabLinks, meta: artifacts ? counts.link : null }])
       ]}
     >
       {!artifacts ? (
@@ -311,8 +317,10 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       ) : visibleArtifacts.length === 0 ? (
         <div className="grid h-full place-items-center px-6 text-center">
           <div>
-            <div className="text-sm font-medium">{a.noArtifactsTitle}</div>
-            <div className="mt-1 text-xs text-muted-foreground">{a.noArtifactsDesc}</div>
+            <div className="text-sm font-medium">{DFM_PRODUCT_MODE ? '暂无 DFM 交付物' : a.noArtifactsTitle}</div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {DFM_PRODUCT_MODE ? '完成模型分析并生成报告后，文件会显示在这里。' : a.noArtifactsDesc}
+            </div>
           </div>
         </div>
       ) : (

@@ -1,183 +1,65 @@
-import { type CSSProperties, useState } from 'react'
+import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 
-import { capitalize, normalize } from '@/lib/text'
-
-import introCopyJsonl from './intro-copy.jsonl?raw'
-
-type IntroCopy = {
-  headline: string
-  body: string
-}
-
-type IntroCopyRecord = IntroCopy & {
-  personality: string
-}
-
-export type IntroProps = {
+export interface IntroProps {
+  onStartAnalysis?: () => void
+  /** Kept in the public shape because the session store still supplies it. */
   personality?: string
+  /** Kept in the public shape because the session store still supplies it. */
   seed?: number
 }
 
-const NEUTRAL_PERSONALITIES = new Set(['', 'default', 'none', 'neutral'])
+const STEPS = [
+  { icon: 'file-binary', label: '导入 3D 模型', detail: '仅支持 STP 三维模型文件' },
+  { icon: 'settings', label: '补充工艺参数', detail: '确认材料、工艺与关键约束' },
+  { icon: 'checklist', label: '审阅并交付', detail: '定位问题、确认建议、导出报告' }
+] as const
 
-const FALLBACK_COPY: IntroCopy[] = [
-  {
-    headline: 'What are we moving today?',
-    body: "Send a bug, branch, plan, or rough idea. I'll inspect the repo and turn it into the next concrete step."
-  },
-  {
-    headline: "What's on your mind?",
-    body: "Bring the code, question, or stuck part. I'll read the room before making changes."
-  },
-  {
-    headline: 'What should Hermes look at?',
-    body: "Send the task, failing path, or half-formed plan. I'll help turn it into action."
-  },
-  {
-    headline: 'Where should we start?',
-    body: "Bring the problem, goal, or file. I'll inspect first and keep the next step concrete."
-  },
-  {
-    headline: 'What needs attention?',
-    body: "Send the context you have. I'll help sort it into a plan or a fix."
-  }
-]
-
-function normalizeKey(value?: string): string {
-  return normalize(value)
-}
-
-function titleize(value: string): string {
-  return value
-    .split(/[-_\s]+/)
-    .filter(Boolean)
-    .map(capitalize)
-    .join(' ')
-}
-
-function isIntroCopyRecord(value: unknown): value is IntroCopyRecord {
-  if (!value || typeof value !== 'object') {
-    return false
-  }
-
-  const record = value as Record<string, unknown>
-
-  return (
-    typeof record.personality === 'string' &&
-    typeof record.headline === 'string' &&
-    typeof record.body === 'string' &&
-    Boolean(record.personality.trim()) &&
-    Boolean(record.headline.trim()) &&
-    Boolean(record.body.trim())
-  )
-}
-
-function parseIntroCopy(raw: string): Record<string, IntroCopy[]> {
-  const byPersonality: Record<string, IntroCopy[]> = {}
-
-  for (const line of raw.split(/\r?\n/)) {
-    const trimmed = line.trim()
-
-    if (!trimmed) {
-      continue
-    }
-
-    try {
-      const parsed: unknown = JSON.parse(trimmed)
-
-      if (!isIntroCopyRecord(parsed)) {
-        continue
-      }
-
-      const key = normalizeKey(parsed.personality)
-      byPersonality[key] ??= []
-      byPersonality[key].push({
-        headline: parsed.headline.trim(),
-        body: parsed.body.trim()
-      })
-    } catch {
-      // Bad generated copy should not break the whole desktop app.
-    }
-  }
-
-  return byPersonality
-}
-
-const INTRO_COPY_BY_PERSONALITY = parseIntroCopy(introCopyJsonl)
-
-function neutralCopy(): IntroCopy[] {
-  return INTRO_COPY_BY_PERSONALITY.none || INTRO_COPY_BY_PERSONALITY.default || FALLBACK_COPY
-}
-
-function fallbackCopyForPersonality(personalityKey: string): IntroCopy[] {
-  if (NEUTRAL_PERSONALITIES.has(personalityKey)) {
-    return neutralCopy()
-  }
-
-  const label = titleize(personalityKey)
-
-  return [
-    {
-      headline: `${label} mode is on. What should we work on?`,
-      body: "Send the task, file, or rough idea. I'll use your configured voice and keep the work grounded in this repo."
-    },
-    {
-      headline: `What does ${label} Hermes need to see?`,
-      body: "Bring the context or the stuck part. I'll adapt to your configured personality."
-    },
-    {
-      headline: `${label} mode is ready.`,
-      body: "Send the problem, file, or idea. I'll follow the personality you've configured."
-    },
-    {
-      headline: `What should ${label} Hermes tackle?`,
-      body: "Drop the task here. I'll keep the work grounded in the repo."
-    },
-    {
-      headline: 'Where should we begin?',
-      body: `Give me the context and I'll answer in ${label} mode.`
-    }
-  ]
-}
-
-function pickCopy(copies: IntroCopy[], seed = 0): IntroCopy {
-  return copies[Math.abs(seed) % copies.length] || FALLBACK_COPY[0]
-}
-
-const WORDMARK = 'HERMES AGENT'
-
-function resolveCopy(personality?: string, seed?: number): IntroCopy {
-  const personalityKey = normalizeKey(personality)
-
-  const copies = NEUTRAL_PERSONALITIES.has(personalityKey)
-    ? INTRO_COPY_BY_PERSONALITY[personalityKey] || neutralCopy()
-    : INTRO_COPY_BY_PERSONALITY[personalityKey] || fallbackCopyForPersonality(personalityKey)
-
-  return pickCopy(copies, seed)
-}
-
-export function Intro({ personality, seed }: IntroProps) {
-  const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
-  const copy = resolveCopy(personality, mountSeed + (seed ?? 0))
-
+export function Intro({ onStartAnalysis }: IntroProps) {
   return (
     <div
-      className="pointer-events-none flex w-full min-w-0 flex-col items-center justify-center px-0.5 py-6 text-center text-muted-foreground sm:px-6 lg:px-8"
+      className="flex w-full min-w-0 flex-col items-center justify-center px-5 py-8 text-center sm:px-8"
       data-slot="aui_intro"
     >
-      <div className="w-full min-w-0">
-        <p
-          aria-label={WORDMARK}
-          className="fit-text mx-auto mb-1 w-[calc(100%-1rem)] font-['Collapse'] font-bold uppercase leading-[0.9] tracking-[0.08em] text-midground mix-blend-plus-lighter dark:text-foreground/90"
-          style={{ '--fit-min': '2.75rem' } as CSSProperties}
-        >
-          <span>
-            <span>{WORDMARK}</span>
-          </span>
-          <span aria-hidden="true">{WORDMARK}</span>
-        </p>
+      <div className="w-full max-w-3xl rounded-2xl border border-(--ui-stroke-secondary) bg-(--ui-sidebar-surface-background)/72 px-6 py-7 text-left shadow-sm backdrop-blur-sm sm:px-8">
+        <div className="mb-6 flex items-start gap-4">
+          <div className="grid size-11 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm">
+            <Codicon name="symbol-structure" size="1.35rem" />
+          </div>
+          <div className="min-w-0">
+            <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-primary">DFM</p>
+            <h1 className="text-2xl font-semibold tracking-tight text-foreground">新建 DFM 分析</h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-(--ui-text-secondary)">
+              导入零件三维模型，自动完成可制造性分析，并在同一工作台中审阅特征、澄清项和风险问题。
+            </p>
+          </div>
+        </div>
 
-        <p className="m-0 text-center leading-normal tracking-tight">{copy.body}</p>
+        <div className="mb-7 grid gap-3 sm:grid-cols-3">
+          {STEPS.map((step, index) => (
+            <div
+              className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-editor-surface-background)/70 p-4"
+              key={step.label}
+            >
+              <div className="mb-3 flex items-center gap-2 text-sm font-medium text-foreground">
+                <span className="grid size-6 place-items-center rounded-full bg-primary/10 text-[0.6875rem] font-semibold text-primary">
+                  {index + 1}
+                </span>
+                <Codicon className="text-primary" name={step.icon} size="0.95rem" />
+                <span>{step.label}</span>
+              </div>
+              <p className="text-xs leading-5 text-(--ui-text-tertiary)">{step.detail}</p>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-(--ui-stroke-tertiary) pt-5">
+          <p className="text-xs text-(--ui-text-tertiary)">也可以将 .stp 模型直接拖入窗口，或在下方输入补充说明。</p>
+          <Button className="gap-2" onClick={onStartAnalysis} type="button">
+            <Codicon name="folder-opened" size="0.95rem" />
+            选择 STP 模型并开始
+          </Button>
+        </div>
       </div>
     </div>
   )
