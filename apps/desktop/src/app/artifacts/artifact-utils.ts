@@ -1,5 +1,5 @@
 import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
-import { filePathFromMediaPath, isRemoteGateway, mediaExternalUrl } from '@/lib/media'
+import { filePathFromMediaPath, mediaExternalUrl } from '@/lib/media'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
 export type ArtifactKind = 'image' | 'file' | 'link'
@@ -16,6 +16,18 @@ export interface ArtifactRecord {
   sessionTitle: string
   timestamp: number
 }
+
+const DFM_DELIVERABLE_EXT_RE =
+  /\.(?:png|jpe?g|gif|webp|svg|bmp|pdf|pptx?|docx?|xlsx?|csv|json|html?|zip|glb|gltf|stp|step|igs|iges|x_t|x_b)(?:\?.*)?$/i
+
+const DFM_RUNTIME_PATH_RE =
+  /\/(?:\.hermes\/(?:workspace\/)?|hermes\/(?:workspace\/)?|workspace\/)dfm\/(?:projects?|runs?)(?:\/|$)|\/dfm-results(?:\/|$)/i
+const DFM_OUTPUT_PATH_RE = /\/(?:artifacts?|reports?|results?|exports?|deliverables?)(?:\/|$)/i
+const DFM_NAMED_OUTPUT_RE =
+  /(?:dfm[-_ ]?(?:analysis|report)|(?:analysis|report)[-_ ]?dfm|dfm[^/\\]*(?:分析|报告)|(?:分析|报告)[^/\\]*dfm)/i
+
+const DFM_INTERNAL_PATH_RE =
+  /\/(?:apps\/desktop|node_modules|output\/playwright|docs\/dfm\/(?:archive|ui)|skills)(?:\/|$)/i
 
 const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g
@@ -97,11 +109,27 @@ export async function artifactImageSrc(value: string, href = artifactHref(value)
     return href
   }
 
-  if (typeof window !== 'undefined' && window.hermesDesktop && isRemoteGateway()) {
+  if (typeof window !== 'undefined' && window.hermesDesktop) {
     return readDesktopFileDataUrl(filePathFromMediaPath(value))
   }
 
   return href
+}
+
+/** Keep the dedicated client focused on generated manufacturing outputs. */
+export function isDfmDeliverableArtifact(artifact: Pick<ArtifactRecord, 'value'>): boolean {
+  const normalized = artifact.value.replaceAll('\\', '/').toLowerCase()
+
+  if (DFM_INTERNAL_PATH_RE.test(normalized)) {
+    return false
+  }
+
+  const inDfmRuntime = DFM_RUNTIME_PATH_RE.test(normalized)
+  const inOutputDirectory = DFM_OUTPUT_PATH_RE.test(normalized) || normalized.includes('/dfm-results/')
+  const namedDfmOutput = DFM_NAMED_OUTPUT_RE.test(normalized)
+  const supportedOutput = DFM_DELIVERABLE_EXT_RE.test(normalized) || /^https?:/i.test(normalized)
+
+  return supportedOutput && ((inDfmRuntime && inOutputDirectory) || namedDfmOutput)
 }
 
 function artifactLabel(value: string): string {

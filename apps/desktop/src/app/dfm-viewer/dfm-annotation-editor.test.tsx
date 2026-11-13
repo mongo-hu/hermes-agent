@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
+
 import { DfmAnnotationEditor } from './dfm-annotation-editor'
 import { resolveReviewDisplayRefs } from './dfm-viewer-geometry'
 

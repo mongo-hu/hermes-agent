@@ -6,6 +6,7 @@ import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { dfmViewerTargetFromSessionMessages } from '@/lib/dfm-viewer-events'
+import { optimisticSessionPreviewForProduct } from '@/lib/product-mode'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { clearQueuedPrompts } from '@/store/composer-queue'
 import { restoreDfmViewer, showDfmViewer } from '@/store/dfm-viewer'
@@ -207,7 +208,7 @@ export function useSessionActions({
           // reads meaningfully while the turn is in flight, instead of flashing
           // "Untitled session" until the turn persists and auto-title runs. The
           // server later returns its own preview/title and supersedes this.
-          upsertOptimisticSession(created, stored, null, preview?.trim() || null)
+          upsertOptimisticSession(created, stored, null, optimisticSessionPreviewForProduct(preview?.trim() || null))
           navigate(sessionRoute(stored), { replace: true })
           // Other windows (e.g. the main window when this is the pop-out) can't
           // see this session until they re-pull the shared list.

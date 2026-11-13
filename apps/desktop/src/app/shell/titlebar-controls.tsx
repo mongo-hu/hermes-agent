@@ -9,6 +9,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { DFM_PRODUCT_MODE } from '@/lib/product-mode'
 import { cn } from '@/lib/utils'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
 import { toggleKeybindPanel } from '@/store/keybinds'
@@ -90,7 +91,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const leftEdge = panesFlipped ? fileBrowserEdge : sessionsEdge
   const rightEdge = panesFlipped ? sessionsEdge : fileBrowserEdge
 
-  const leftToolbarTools: TitlebarTool[] = [
+  const generalLeftToolbarTools: TitlebarTool[] = [
     {
       icon: <Codicon name="layout-sidebar-left" />,
       id: 'sidebar',
@@ -113,6 +114,8 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     ...leftTools
   ]
 
+  const leftToolbarTools = DFM_PRODUCT_MODE ? [generalLeftToolbarTools[0], ...leftTools] : generalLeftToolbarTools
+
   const rightSidebarTool: TitlebarTool = {
     icon: <Codicon name="layout-sidebar-right" />,
     id: 'right-sidebar',
@@ -124,7 +127,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   }
 
   // Static system tools — always pinned to the screen's right edge.
-  const systemTools: TitlebarTool[] = [
+  const generalSystemTools: TitlebarTool[] = [
     {
       active: hapticsMuted,
       icon: <Codicon name={hapticsMuted ? 'mute' : 'unmute'} />,
@@ -151,6 +154,8 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       }
     }
   ]
+
+  const systemTools = DFM_PRODUCT_MODE ? [generalSystemTools[2]] : generalSystemTools
 
   // While a full-screen overlay (settings, command center, …) is open it should
   // visually own the window. These control clusters are `fixed` at a higher
@@ -205,7 +210,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
         ))}
         {settingsTool && <TitlebarToolButton navigate={navigate} tool={settingsTool} />}
-        <TitlebarToolButton navigate={navigate} tool={rightSidebarTool} />
+        {!DFM_PRODUCT_MODE && <TitlebarToolButton navigate={navigate} tool={rightSidebarTool} />}
       </div>
     </>
   )

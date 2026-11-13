@@ -22,6 +22,7 @@ import {
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
+import { DFM_PRODUCT_MODE, isDfmSessionSummary } from '@/lib/product-mode'
 import { profileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
@@ -130,7 +131,7 @@ const NON_SESSION_LOAD_STEP = 10
 
 const NEW_SESSION_KBD = comboTokens('mod+n')
 
-const SIDEBAR_NAV: SidebarNavItem[] = [
+const GENERAL_SIDEBAR_NAV: SidebarNavItem[] = [
   {
     id: 'new-session',
     label: '',
@@ -146,6 +147,9 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
   { id: 'messaging', label: '', icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
   { id: 'artifacts', label: '', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
 ]
+
+const DFM_SIDEBAR_NAV: SidebarNavItem[] = [GENERAL_SIDEBAR_NAV[0], GENERAL_SIDEBAR_NAV[3]]
+const SIDEBAR_NAV = DFM_PRODUCT_MODE ? DFM_SIDEBAR_NAV : GENERAL_SIDEBAR_NAV
 
 // Two modes via the `compact` height variant (styles.css):
 //   tall    → each section is shrink-0, capped, its own scroller; Sessions is flex-1.
@@ -254,7 +258,7 @@ export function ChatSidebar({
   const profileScope = useStore($profileScope)
   // Only surface the profile switcher when more than one profile exists, so
   // single-profile users see the unchanged sidebar.
-  const multiProfile = profiles.length > 1
+  const multiProfile = !DFM_PRODUCT_MODE && profiles.length > 1
   // Gate ALL-profiles grouping on multiProfile too: if a user drops back to one
   // profile while scope is still ALL (persisted), the rail is hidden and they'd
   // otherwise be stuck in the grouped view with no way out.
@@ -326,10 +330,13 @@ export function ChatSidebar({
   // that profile's sessions (clean rows, no per-row tags); ALL fans every
   // profile in, grouped by profile below. Single-profile users land here with
   // scope === their only profile, so nothing is filtered out.
-  const visibleSessions = useMemo(
-    () => (showAllProfiles ? sessions : sessions.filter(s => normalizeProfileKey(s.profile) === profileScope)),
-    [sessions, showAllProfiles, profileScope]
-  )
+  const visibleSessions = useMemo(() => {
+    const profileSessions = showAllProfiles
+      ? sessions
+      : sessions.filter(session => normalizeProfileKey(session.profile) === profileScope)
+
+    return DFM_PRODUCT_MODE ? profileSessions.filter(isDfmSessionSummary) : profileSessions
+  }, [sessions, showAllProfiles, profileScope])
 
   // Agent session order is pinned to creation time (started_at), NOT activity —
   // a new message must never float a session to the top. Position only changes
@@ -433,7 +440,11 @@ export function ChatSidebar({
       }
 
       const loaded = sessionByAnyId.get(match.session_id)
-      out.set(match.session_id, loaded ?? searchResultToSession(match))
+      const session = loaded ?? searchResultToSession(match)
+
+      if (!DFM_PRODUCT_MODE || isDfmSessionSummary(session)) {
+        out.set(match.session_id, session)
+      }
     }
 
     return [...out.values()]
@@ -478,7 +489,7 @@ export function ChatSidebar({
   // Workspace grouping is a `project -> repo -> lane -> sessions` tree computed
   // authoritatively on the backend (projects.tree). Parents reorder via
   // workspaceParentOrderIds; worktrees within a parent via workspaceOrderIds.
-  const worktreeGroupingActive = agentsGrouped && !showAllProfiles
+  const worktreeGroupingActive = !DFM_PRODUCT_MODE && agentsGrouped && !showAllProfiles
   const gatewayReady = gatewayState === 'open'
 
   // The backend project tree is a structural snapshot, NOT a per-message feed.
@@ -906,10 +917,9 @@ export function ChatSidebar({
   const loadedSessionCount = showAllProfiles ? sessions.length : visibleSessions.length
   const scopedProfileTotal = showAllProfiles ? undefined : sessionProfileTotals[profileScope]
 
-  const knownSessionTotal = Math.max(
-    showAllProfiles ? sessionsTotal : (scopedProfileTotal ?? loadedSessionCount),
-    loadedSessionCount
-  )
+  const knownSessionTotal = DFM_PRODUCT_MODE
+    ? visibleSessions.length
+    : Math.max(showAllProfiles ? sessionsTotal : (scopedProfileTotal ?? loadedSessionCount), loadedSessionCount)
 
   const hasMoreSessions = knownSessionTotal > loadedSessionCount
 
@@ -1153,7 +1163,7 @@ export function ChatSidebar({
               />
             )}
 
-            {!trimmedQuery && (
+            {!DFM_PRODUCT_MODE && !trimmedQuery && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
                 contentClassName={cn('flex max-h-44 flex-col gap-px rounded-lg pb-2 pt-1', GROUP_BODY)}
@@ -1331,7 +1341,8 @@ export function ChatSidebar({
               />
             )}
 
-            {!trimmedQuery &&
+            {!DFM_PRODUCT_MODE &&
+              !trimmedQuery &&
               !worktreeGroupingActive &&
               messagingGroups.map(group => {
                 const visible = messagingVisible[group.sourceId] ?? NON_SESSION_INITIAL_ROWS
@@ -1378,7 +1389,7 @@ export function ChatSidebar({
                 )
               })}
 
-            {!trimmedQuery && !worktreeGroupingActive && cronJobs.length > 0 && (
+            {!DFM_PRODUCT_MODE && !trimmedQuery && !worktreeGroupingActive && cronJobs.length > 0 && (
               <SidebarCronJobsSection
                 jobs={cronJobs}
                 label={s.cronJobs}
@@ -1392,9 +1403,17 @@ export function ChatSidebar({
           </div>
         )}
 
-        {contentVisible && !showSessionSections && <SidebarBlankState onNewProject={openProjectCreate} />}
+        {contentVisible &&
+          !showSessionSections &&
+          (DFM_PRODUCT_MODE ? (
+            <div className="grid min-h-36 place-items-center px-5 text-center text-xs leading-5 text-(--ui-text-tertiary)">
+              完成首个模型分析后，DFM 分析记录会显示在这里。
+            </div>
+          ) : (
+            <SidebarBlankState onNewProject={openProjectCreate} />
+          ))}
 
-        {contentVisible && (
+        {contentVisible && !DFM_PRODUCT_MODE && (
           <div className="shrink-0 px-0.5 pb-1 pt-0.5">
             <ProfileRail />
           </div>

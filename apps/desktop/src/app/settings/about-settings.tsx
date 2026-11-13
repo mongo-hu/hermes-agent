@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { type Translations, useI18n } from '@/i18n'
 import { CheckCircle2, ExternalLink, Loader2, RefreshCw } from '@/lib/icons'
+import { DFM_PRODUCT_MODE } from '@/lib/product-mode'
 import { cn } from '@/lib/utils'
 import {
   $desktopVersion,
@@ -98,7 +99,7 @@ export function AboutSettings() {
       <div className="flex flex-col items-center gap-3 pt-6 pb-2 text-center">
         <BrandMark className="size-16" />
         <div>
-          <h2 className="text-lg font-semibold tracking-tight">{a.heading}</h2>
+          <h2 className="text-lg font-semibold tracking-tight">{DFM_PRODUCT_MODE ? 'DFM' : a.heading}</h2>
           <p className="mt-1 text-xs text-muted-foreground">
             {version?.appVersion ? a.version(version.appVersion) : a.versionUnavailable}
           </p>
@@ -176,7 +177,7 @@ export function AboutSettings() {
           title={a.automaticUpdates}
         />
 
-        <UninstallSection />
+        {!DFM_PRODUCT_MODE && <UninstallSection />}
       </div>
     </SettingsContent>
   )

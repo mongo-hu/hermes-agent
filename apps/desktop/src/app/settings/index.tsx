@@ -7,6 +7,7 @@ import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, Bell, Download, Globe, Info, KeyRound, RefreshCw, Settings2, Upload, Wrench, Zap } from '@/lib/icons'
+import { DFM_PRODUCT_MODE } from '@/lib/product-mode'
 import { notifyError } from '@/store/notifications'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -36,6 +37,8 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'about'
 ]
 
+const DFM_SETTINGS_VIEWS: readonly SettingsViewId[] = ['config:model', 'providers', 'about']
+
 export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
@@ -55,7 +58,12 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     }
   }, [navigate, search])
 
-  const [activeView, setActiveView] = useRouteEnumParam('tab', SETTINGS_VIEWS, 'config:model' as SettingsViewId)
+  const [activeView, setActiveView] = useRouteEnumParam(
+    'tab',
+    DFM_PRODUCT_MODE ? DFM_SETTINGS_VIEWS : SETTINGS_VIEWS,
+    'config:model' as SettingsViewId
+  )
+
   // Providers subnav (Accounts vs API keys) lives in its own param so each
   // sub-view is deep-linkable and survives a refresh.
   const [providerView, setProviderView] = useRouteEnumParam<ProviderView>('pview', PROVIDER_VIEWS, 'accounts')
@@ -113,7 +121,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     }
   }
 
-  const navGroups: OverlayNavGroup[] = [
+  const generalNavGroups: OverlayNavGroup[] = [
     ...SECTIONS.map(s => {
       const view = `config:${s.id}` as SettingsViewId
 
@@ -202,6 +210,10 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       onSelect: () => setActiveView('about')
     }
   ]
+
+  const navGroups = DFM_PRODUCT_MODE
+    ? generalNavGroups.filter(group => ['config:model', 'providers', 'about'].includes(group.id))
+    : generalNavGroups
 
   const navFooter = (
     <>

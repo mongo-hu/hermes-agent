@@ -17,6 +17,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { Clipboard, FileText, FolderOpen, type IconComponent, ImageIcon, Link, MessageSquareText } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { DFM_PRODUCT_MODE } from '@/lib/product-mode'
 
 import { GHOST_ICON_BTN } from './controls'
 import type { ChatBarState } from './types'
@@ -39,6 +40,24 @@ export function ContextMenu({
   // window (composer "+" anchor), so we promoted it to a real Dialog —
   // easier to grow with search / descriptions, and no positioning math.
   const [snippetsOpen, setSnippetsOpen] = useState(false)
+
+  if (DFM_PRODUCT_MODE) {
+    return (
+      <Tip label="添加 STP 模型" side="top">
+        <Button
+          aria-label="添加 STP 模型"
+          className={GHOST_ICON_BTN}
+          disabled={!state.tools.enabled || !onPickFiles}
+          onClick={onPickFiles}
+          size="icon"
+          type="button"
+          variant="ghost"
+        >
+          <Codicon name="add" size="0.875rem" />
+        </Button>
+      </Tip>
+    )
+  }
 
   return (
     <>

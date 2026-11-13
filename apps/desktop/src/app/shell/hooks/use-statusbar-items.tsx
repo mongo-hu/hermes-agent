@@ -9,6 +9,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
 import { Activity, AlertCircle, Clock, Command, Hash, Loader2, Terminal, Zap, ZapFilled } from '@/lib/icons'
+import { DFM_PRODUCT_MODE } from '@/lib/product-mode'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
@@ -193,7 +194,7 @@ export function useStatusbarItems({
     const tooltip = [
       applying ? updateApply.message || copy.updateInProgress : null,
       !applying && behind > 0 && copy.commitsBehind(behind, updateStatus?.branch ?? '...'),
-      appVersion && copy.desktopVersion(appVersion),
+      appVersion && (DFM_PRODUCT_MODE ? `DFM v${appVersion}` : copy.desktopVersion(appVersion)),
       sha && copy.commit(sha),
       updateStatus?.branch && copy.branch(updateStatus.branch)
     ]
@@ -427,14 +428,41 @@ export function useStatusbarItems({
     ]
   )
 
+  const dfmLeftStatusbarItems = useMemo<readonly StatusbarItem[]>(
+    () => [
+      {
+        className: inferenceReady ? 'text-emerald-600' : gatewayDegraded ? 'text-amber-600' : 'text-destructive',
+        detail: gatewayOpen ? (inferenceReady ? '运行正常' : '模型检查中') : gatewayConnecting ? '正在连接' : '离线',
+        icon: inferenceReady ? <Activity className="size-3" /> : <AlertCircle className="size-3" />,
+        id: 'dfm-engine',
+        label: 'DFM 引擎',
+        title: inferenceStatus?.reason || 'DFM 分析服务状态',
+        variant: 'text'
+      },
+      {
+        detail: inferenceReady ? '已就绪' : '等待服务',
+        icon: <Codicon name="symbol-structure" size="0.75rem" />,
+        id: 'dfm-model',
+        label: '分析模型',
+        variant: 'text'
+      }
+    ],
+    [gatewayConnecting, gatewayDegraded, gatewayOpen, inferenceReady, inferenceStatus?.reason]
+  )
+
+  const dfmRightStatusbarItems = useMemo(
+    () => coreRightStatusbarItems.filter(item => ['running-timer', 'version-client'].includes(item.id)),
+    [coreRightStatusbarItems]
+  )
+
   const leftStatusbarItems = useMemo(
-    () => [...coreLeftStatusbarItems, ...extraLeftItems],
-    [coreLeftStatusbarItems, extraLeftItems]
+    () => [...(DFM_PRODUCT_MODE ? dfmLeftStatusbarItems : coreLeftStatusbarItems), ...extraLeftItems],
+    [coreLeftStatusbarItems, dfmLeftStatusbarItems, extraLeftItems]
   )
 
   const statusbarItems = useMemo(
-    () => [...extraRightItems, ...coreRightStatusbarItems],
-    [coreRightStatusbarItems, extraRightItems]
+    () => [...extraRightItems, ...(DFM_PRODUCT_MODE ? dfmRightStatusbarItems : coreRightStatusbarItems)],
+    [coreRightStatusbarItems, dfmRightStatusbarItems, extraRightItems]
   )
 
   return { leftStatusbarItems, statusbarItems }

@@ -143,6 +143,7 @@ export function DfmReviewPanel({
 
   const undercutCount = (pendingUndercuts.length ? pendingUndercuts : undercutBuckets)
     .reduce((count, bucket) => count + bucket.groups.length, 0)
+
   const editingScopeHasCard = buckets.some(bucket => bucket.groups.some(group => group.kind === 'forming_scope' &&
     group.target_refs.includes(editingScopeId ?? ''))) && context?.forming_scopes.some(scope => scope.forming_scope_id === editingScopeId)
 
@@ -214,8 +215,10 @@ export function DfmReviewPanel({
 
   useEffect(() => {
     const previous = previousHighlightBucket.current
+
     const selectedBucket = highlightSelection?.objectId ? buckets.find(bucket => bucket.category === highlightSelection.category &&
       bucket.groups.some(group => group.target_refs.includes(highlightSelection.objectId!))) : undefined
+
     const current = selectedBucket?.id ?? highlightSelection?.bucketId ?? null
     previousHighlightBucket.current = current
     setOpenBuckets(open => {
@@ -235,8 +238,10 @@ export function DfmReviewPanel({
 
   useEffect(() => {
     if (!editingScopeId) {return}
+
     const bucket = buckets.find(item => item.category === 'forming' &&
       item.groups.some(group => group.target_refs.includes(editingScopeId)))
+
     if (!bucket) {return}
     setOpenCategories(previous => new Set([...previous, 'forming']))
     setOpenBuckets(previous => new Set([...previous, bucket.id]))
@@ -311,8 +316,10 @@ export function DfmReviewPanel({
         group => group.review_group_id === id && group.status === 'pending_review'
       )))
       onChanged(next)
+
       const remaining = next.review_groups.filter(group => group.status === 'pending_review' &&
         (!localBatch || group.kind === 'forming_scope')).length
+
       if (localBatch) {
         const ids = new Set(body.review_group_ids as string[])
         const accepted = next.review_groups.filter(group => ids.has(group.review_group_id) && group.status === 'confirmed').length
@@ -346,8 +353,10 @@ export function DfmReviewPanel({
 
   const pendingCount = context?.review_groups.filter(group => group.status === 'pending_review').length ?? 0
   const confirmableIds = context ? confirmableReviewGroupIds(context) : []
+
   const localConfirmableIds = context?.review_groups.filter(group => group.kind === 'forming_scope' &&
     confirmableIds.includes(group.review_group_id)).map(group => group.review_group_id) ?? []
+
   const otherPending = context?.review_groups.some(group => group.status === 'pending_review' && group.kind !== 'forming_scope')
 
   const selectForming = (group: ReviewGroup, bucketId: string, force = false) => {
@@ -363,6 +372,7 @@ export function DfmReviewPanel({
       const current = highlightSelection === undefined ? activeScopeId : highlightSelection?.objectId
       setActiveScopeId(!force && current === group.target_refs[0] ? null : group.target_refs[0])
     }
+
     onHighlight(reviewGeometry(context, group), selection, force)
 
     if (group.kind === 'product_forming' &&
@@ -378,19 +388,22 @@ export function DfmReviewPanel({
   const localScopeCard = (group: ReviewGroup, bucketId: string) => {
     if (!context) {return null}
     const scope = context.forming_scopes.find(item => item.forming_scope_id === group.target_refs[0])
-    if (!scope) {return <p key={group.review_group_id} className="text-amber-200">成型方案已变化，请刷新当前审核状态。</p>}
+
+    if (!scope) {return <p className="text-amber-200" key={group.review_group_id}>成型方案已变化，请刷新当前审核状态。</p>}
     const id = scope.forming_scope_id
     const preparation = scopePreparation?.scopeId === id ? scopePreparation : null
     const preparing = Boolean(preparation && !preparation.error)
+
     const active = editingScopeId === id || (highlightSelection === undefined ? activeScopeId === id :
       highlightSelection?.category === 'forming' && highlightSelection.objectId === id)
+
     const missing = formingPlanMissing(scope)
     const ready = directionUnlocked(context, group)
     const mechanism = { none: '主方向', slider: '滑块', lifter: '斜顶', undetermined: '机构待确定' }[scope.mechanism_kind]
     const label = group.status === 'confirmed' ? '已确认' : ready ? '可确认' : '待补充'
 
     return <div className={`mt-2 rounded border p-2 ${active ? 'border-cyan-300/50 bg-cyan-500/10' : 'border-white/10 bg-black/10'}`}
-      data-review-object={id} data-forming-status={label} key={group.review_group_id}>
+      data-forming-status={label} data-review-object={id} key={group.review_group_id}>
       <div className="flex items-start gap-2">
         {group.status === 'pending_review' && <input aria-label={`选择 ${id}`} checked={selected.includes(group.review_group_id)}
           className="mt-1" disabled={busy || editing || !ready} onChange={event => setSelected(previous => event.target.checked
@@ -589,7 +602,10 @@ export function DfmReviewPanel({
                     >
                       <summary className="cursor-pointer text-slate-200"
                         onClick={event => {
-                          if (editing) {event.preventDefault(); return}
+                          if (editing) {event.preventDefault();
+
+ return}
+
                           if (bucket.category !== 'structure') {return}
                           event.preventDefault()
 

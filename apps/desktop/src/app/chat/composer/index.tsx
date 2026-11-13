@@ -8,6 +8,7 @@ import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
+import { DFM_PRODUCT_MODE } from '@/lib/product-mode'
 import { cn } from '@/lib/utils'
 import { $composerAttachments } from '@/store/composer'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
@@ -918,14 +919,16 @@ export function ChatBar({
                   composerSurfaceGlass
                 )}
               />
-              <CodingStatusRow
-                onBranchOff={handleBranchOff}
-                onConvertBranch={handleConvertBranch}
-                onListBranches={handleListBranches}
-                onOpen={toggleReview}
-                onOpenWorktree={openInWorktree}
-                onSwitchBranch={handleSwitchBranch}
-              />
+              {!DFM_PRODUCT_MODE && (
+                <CodingStatusRow
+                  onBranchOff={handleBranchOff}
+                  onConvertBranch={handleConvertBranch}
+                  onListBranches={handleListBranches}
+                  onOpen={toggleReview}
+                  onOpenWorktree={openInWorktree}
+                  onSwitchBranch={handleSwitchBranch}
+                />
+              )}
               <div
                 className={cn(
                   'relative z-1 flex min-h-0 w-full flex-col gap-(--composer-row-gap) overflow-hidden rounded-[inherit] px-(--composer-surface-pad-x) py-(--composer-surface-pad-y) transition-opacity duration-200 ease-out',
@@ -935,8 +938,8 @@ export function ChatBar({
                 )}
                 data-slot="composer-fade"
               >
-                <VoiceActivity state={voiceActivityState} />
-                <VoicePlaybackActivity />
+                {state.voice.enabled && <VoiceActivity state={voiceActivityState} />}
+                {state.voice.enabled && <VoicePlaybackActivity />}
                 {queueEdit && editingQueuedPrompt && (
                   <div className="flex items-center justify-between gap-2 rounded-lg border border-[color-mix(in_srgb,var(--dt-composer-ring)_32%,transparent)] bg-accent/18 px-2 py-1">
                     <div className="min-w-0 text-[0.7rem] text-muted-foreground/88">

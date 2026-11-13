@@ -121,7 +121,7 @@ function ChatHeader({
   const activeStoredSession =
     sessions.find(session => session.id === selectedSessionId || session._lineage_root_id === selectedSessionId) || null
 
-  const title = activeStoredSession ? sessionTitle(activeStoredSession) : 'New session'
+  const title = activeStoredSession ? sessionTitle(activeStoredSession) : '新建 DFM 分析'
 
   // Pins live on the durable lineage-root id, but selectedSessionId is the live
   // (tip) id — resolve through the loaded row so the menu reflects the pin
@@ -362,7 +362,7 @@ export function ChatView({
       }
 
       if (!gateway) {
-        throw new Error('Hermes gateway unavailable')
+        throw new Error('DFM analysis service unavailable')
       }
 
       return gateway.request<ModelOptionsResponse>('model.options', {
@@ -383,7 +383,7 @@ export function ChatView({
       model: {
         model: currentModel,
         provider: currentProvider,
-        canSwitch: gatewayOpen,
+        canSwitch: false,
         loading: !gatewayOpen || (!currentModel && !currentProvider),
         modelMenuContent,
         quickModels
@@ -394,7 +394,7 @@ export function ChatView({
         suggestions: contextSuggestions
       },
       voice: {
-        enabled: true,
+        enabled: false,
         active: false
       }
     }),
@@ -466,7 +466,9 @@ export function ChatView({
             clampToComposer={showChatBar}
             cwd={currentCwd}
             gateway={gateway}
-            intro={showIntro ? { personality: introPersonality, seed: introSeed } : undefined}
+            intro={
+              showIntro ? { onStartAnalysis: onPickFiles, personality: introPersonality, seed: introSeed } : undefined
+            }
             loading={threadLoading}
             onBranchInNewChat={onBranchInNewChat}
             onCancel={onCancel}

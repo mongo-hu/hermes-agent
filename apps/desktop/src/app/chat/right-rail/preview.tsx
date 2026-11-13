@@ -14,6 +14,7 @@ import {
 import { Tip } from '@/components/ui/tooltip'
 import { translateNow, useI18n } from '@/i18n'
 import { formatCombo } from '@/lib/keybinds/combo'
+import { DFM_PRODUCT_MODE } from '@/lib/product-mode'
 import { cn } from '@/lib/utils'
 import {
   $dfmViewerTarget,
@@ -43,10 +44,13 @@ import { $dirtyPreviewUrls } from '@/store/preview-edit'
 
 import { PreviewPane } from './preview-pane'
 
-export const PREVIEW_RAIL_MIN_WIDTH = '18rem'
-export const PREVIEW_RAIL_MAX_WIDTH = '38rem'
+export const PREVIEW_RAIL_MIN_WIDTH = DFM_PRODUCT_MODE ? '28rem' : '18rem'
+export const PREVIEW_RAIL_MAX_WIDTH = DFM_PRODUCT_MODE ? '72rem' : '38rem'
 
-const INTRINSIC = `clamp(${PREVIEW_RAIL_MIN_WIDTH}, 36vw, 32rem)`
+const INTRINSIC = DFM_PRODUCT_MODE
+  ? `clamp(${PREVIEW_RAIL_MIN_WIDTH}, 58vw, 72rem)`
+  : `clamp(${PREVIEW_RAIL_MIN_WIDTH}, 36vw, 32rem)`
+
 const DFM_RESTORE_TITLEBAR_GROUP_ID = 'dfm-viewer-restore'
 
 // Track for <Pane id="preview">. Folds the intrinsic clamp with a min-floor
@@ -118,15 +122,17 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
 
   const tabs = useMemo<readonly RailTab[]>(
     () => [
-      ...(previewTarget
+      ...(!DFM_PRODUCT_MODE && previewTarget
         ? [{ id: RIGHT_RAIL_PREVIEW_TAB_ID, kind: 'preview', label: t.preview.tab, target: previewTarget } as RailTab]
         : []),
       ...(dfmViewerTarget
         ? [{ dfmTarget: dfmViewerTarget, id: RIGHT_RAIL_DFM_TAB_ID, kind: 'dfm', label: 'DFM 模型' } as RailTab]
         : []),
-      ...filePreviewTabs.map(
-        ({ id, target }) => ({ id, kind: 'preview', label: tabLabelFor(target), target }) as RailTab
-      )
+      ...(DFM_PRODUCT_MODE
+        ? []
+        : filePreviewTabs.map(
+            ({ id, target }) => ({ id, kind: 'preview', label: tabLabelFor(target), target }) as RailTab
+          ))
     ],
     [dfmViewerTarget, filePreviewTabs, previewTarget, t.preview.tab]
   )

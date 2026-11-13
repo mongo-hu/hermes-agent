@@ -43,16 +43,23 @@ export function resolveReviewDisplayRefs(
         ? [face]
         : []
     }
-    if (ref.kind !== 'edge') return []
+    if (ref.kind !== 'edge') {
+      return []
+    }
+
     const edge = edgeByIndex.get(ref.index)
+
     if (
       !edge ||
       edge.geometry_ref.input_sha256 !== ref.input_sha256 ||
       edge.geometry_ref.topology_snapshot_id !== ref.topology_snapshot_id
-    )
+    ) {
       return []
+    }
+
     return edge.adjacent_face_indices.flatMap(index => (faceByIndex.get(index) ? [faceByIndex.get(index)!] : []))
   })
+
   return Array.from(new Map(result.map(ref => [JSON.stringify(ref), ref])).values())
 }
 

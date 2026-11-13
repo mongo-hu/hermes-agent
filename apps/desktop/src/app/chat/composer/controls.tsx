@@ -85,11 +85,12 @@ export function ComposerControls({
     return <ConversationPill {...conversation} disabled={disabled} />
   }
 
-  const showVoicePrimary = !busy && !hasComposerPayload
+  const voiceEnabled = state.voice.enabled
+  const showVoicePrimary = voiceEnabled && !busy && !hasComposerPayload
 
   return (
     <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
-      <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
+      {state.model.canSwitch && <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />}
       {/* While the agent runs and the user is typing, steer takes over the mic's
           slot rather than crowding the row with an extra button. */}
       {canSteer ? (
@@ -106,10 +107,10 @@ export function ComposerControls({
             <SteeringWheel className={iconSize.sm} />
           </Button>
         </Tip>
-      ) : (
+      ) : voiceEnabled ? (
         <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
-      )}
-      <AutoSpeakButton active={autoSpeak} disabled={disabled} onToggle={onToggleAutoSpeak} />
+      ) : null}
+      {voiceEnabled && <AutoSpeakButton active={autoSpeak} disabled={disabled} onToggle={onToggleAutoSpeak} />}
       {showVoicePrimary ? (
         <Tip label={c.startVoice}>
           <Button

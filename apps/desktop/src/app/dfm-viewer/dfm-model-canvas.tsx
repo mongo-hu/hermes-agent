@@ -447,10 +447,13 @@ export function ModelCanvas({
       renderer.domElement.removeEventListener('pointercancel', handlePointerCancel)
       renderer.domElement.removeEventListener('pointerleave', handlePointerCancel)
       axisController.dispose()
+
       if (resourcesRef.current?.formingOutline) {
         const material = resourcesRef.current.formingOutline.material
+
         if (!Array.isArray(material)) {material.dispose()}
       }
+
       controls.dispose()
       controls.removeEventListener('start', cancelFocus)
       modelGroup.traverse(child => {
@@ -494,27 +497,35 @@ export function ModelCanvas({
 
   useEffect(() => {
     const resources = resourcesRef.current
+
     if (!resources) {return}
+
     if (resources.formingOutline) {
       resources.modelGroup.remove(resources.formingOutline)
       resources.formingOutline.geometry.dispose()
       const material = resources.formingOutline.material
+
       if (!Array.isArray(material)) {material.dispose()}
       resources.formingOutline = null
     }
+
     if (!formingFaces.size) {return}
     const positions = resources.geometry.getAttribute('position')
     const indices = resources.geometry.getIndex()!
     const points: number[] = []
+
     for (const face of formingFaces) {
       const groupIndex = resources.faceGroups.get(face)
+
       if (groupIndex === undefined) {continue}
       const group = resources.geometry.groups[groupIndex]
+
       for (let i = group.start; i < group.start + group.count; i++) {
         const vertex = indices.getX(i)
         points.push(positions.getX(vertex), positions.getY(vertex), positions.getZ(vertex))
       }
     }
+
     const surface = new BufferGeometry()
     surface.setAttribute('position', new Float32BufferAttribute(points, 3))
     const outline = new LineSegments(new EdgesGeometry(surface, 24), new LineBasicMaterial({ color: 0x47e4f0 }))
@@ -563,7 +574,7 @@ export function ModelCanvas({
   }, [fitRequest])
 
   return <div className="relative h-full min-h-0 w-full">
-    <div aria-label="DFM 三维画布" className="h-full min-h-0 w-full" data-forming-faces={formingScope ? JSON.stringify([...formingFaces]) : undefined} data-undercut-faces={formingScope ? JSON.stringify([...undercutFaces]) : undefined} data-direction-origin={directionAxis?.origin ? JSON.stringify(directionAxis.origin) : undefined} data-direction-scope={directionAxis?.scopeId} data-direction-vector={directionAxis?.direction ? JSON.stringify(directionAxis.direction) : undefined} ref={hostRef} />
+    <div aria-label="DFM 三维画布" className="h-full min-h-0 w-full" data-direction-origin={directionAxis?.origin ? JSON.stringify(directionAxis.origin) : undefined} data-direction-scope={directionAxis?.scopeId} data-direction-vector={directionAxis?.direction ? JSON.stringify(directionAxis.direction) : undefined} data-forming-faces={formingScope ? JSON.stringify([...formingFaces]) : undefined} data-undercut-faces={formingScope ? JSON.stringify([...undercutFaces]) : undefined} ref={hostRef} />
     <DfmViewCompass className="absolute bottom-12 left-4" ref={compassRef} />
     {viewMenu && <DfmViewMenu {...viewMenu} onCancel={() => resourcesRef.current?.cancelMenu()} onCommand={action => resourcesRef.current?.command(action)} />}
   </div>

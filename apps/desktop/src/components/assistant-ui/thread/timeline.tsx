@@ -56,6 +56,14 @@ function userPromptText(content: unknown): string {
   return out
 }
 
+function escapeCssAttributeValue(value: string): string {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+    return CSS.escape(value)
+  }
+
+  return value.replace(/["\\]/g, '\\$&')
+}
+
 /** Index-keyed ref-array setter — `ref={listRef(refs, i)}`. */
 const listRef =
   <T,>(refs: React.RefObject<(T | null)[]>, index: number) =>
@@ -103,7 +111,7 @@ function jumpScroll(viewport: HTMLElement, top: number, duration = 170): void {
 
 function scrollToPrompt(id: string) {
   const viewport = document.querySelector<HTMLElement>(VIEWPORT)
-  const node = viewport?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
+  const node = viewport?.querySelector<HTMLElement>(`[data-message-id="${escapeCssAttributeValue(id)}"]`)
 
   if (!viewport || !node) {
     return
@@ -190,7 +198,9 @@ export const ThreadTimeline: FC = () => {
       const top = viewport.getBoundingClientRect().top
 
       const offsets = entries.map(entry => {
-        const node = viewport.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(entry.id)}"]`)
+        const node = viewport.querySelector<HTMLElement>(
+          `[data-message-id="${escapeCssAttributeValue(entry.id)}"]`
+        )
 
         return node ? node.getBoundingClientRect().top - top : null
       })

@@ -13,7 +13,8 @@
  *     "branch":        "<branch name>",
  *     "builtAt":       "<ISO 8601 UTC timestamp>",
  *     "dirty":         true|false,
- *     "source":        "ci" | "local"
+ *     "source":        "ci" | "local",
+ *     "sourceRoot":    "<absolute local checkout path>" | null
  *   }
  *
  * Source preference order:
@@ -108,7 +109,12 @@ function main() {
     branch: stamp.branch,
     builtAt: new Date().toISOString(),
     dirty: stamp.dirty,
-    source: stamp.source
+    source: stamp.source,
+    // A locally-built DFM installer is commonly installed on the same
+    // workstation as its checkout. Recording that checkout lets the packaged
+    // client keep using the exact (possibly dirty) backend it was built and
+    // tested with. CI artifacts remain portable and never embed a build path.
+    sourceRoot: stamp.source === "local" ? REPO_ROOT : null
   }
 
   mkdirSync(OUT_DIR, { recursive: true })

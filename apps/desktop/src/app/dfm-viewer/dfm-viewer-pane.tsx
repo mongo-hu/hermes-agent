@@ -894,19 +894,25 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
 
       if (directionDraft && editingScopeId) {
         const face = topologyFaces.find(item => item.geometry_ref.index === faceIndex)?.geometry_ref
+
         if (!face?.input_sha256 || !face.topology_snapshot_id || !face.entity_id) {
           setDirectionError('该面缺少可验证的拓扑身份，请刷新后重试。')
+
           return
         }
+
         const key = editingScopeRole === 'undercut' ? 'undercut_geometry_refs' : 'geometry_refs'
         setDirectionDraft(current => {
           if (!current) {return current}
           const refs = current.scope[key]
+
           const next = refs.some(ref => ref.kind === 'face' && ref.index === faceIndex)
             ? refs.filter(ref => ref.kind !== 'face' || ref.index !== faceIndex) : [...refs, face]
+
           return { ...current, scope: { ...current.scope, [key]: next } }
         })
         setDirectionError('')
+
         return
       }
 
@@ -1372,10 +1378,13 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
     const vector = parseDirectionVector(directionDraft.text)
 
     if (!vector && !(action === 'stage' && directionDraft.scope.mode === 'local' && directionDraft.text.trim() === '')) {return}
+
     if (directionDraft.scope.mode === 'local' && !directionDraft.scope.geometry_refs.length && !directionDraft.scope.undercut_geometry_refs.length) {
       setDirectionError('至少保留一类面的选面；删除整个方案请取消修改后使用删除入口。')
+
       return
     }
+
     setSavingFeature(true)
     setDirectionError('')
 
@@ -1431,9 +1440,9 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
       setDirectionError(''); setEditConflict(false); editBase.current = null
     }}
     onChange={setDirectionDraft}
+    onConfirm={() => void saveDirectionEdit('confirm')}
     onEditFaces={role => { setEditingScopeId(directionDraft.scope.forming_scope_id); setEditingScopeRole(role); setDirectionError('') }}
     onFinishFaces={() => setEditingScopeId(null)}
-    onConfirm={() => void saveDirectionEdit('confirm')}
     onSave={() => void saveDirectionEdit('stage')} saveBlocked={editConflict} />
 
   const saveFeatureEdit = useCallback(async () => {
@@ -1793,12 +1802,12 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
                 : activeFeatures
             }
             activeIssue={activeIssue}
-            directionAxis={axisState}
             axisSelectable={!editingGeometry}
-            formingScope={displayFormingScope}
+            directionAxis={axisState}
             document={scene}
             fitRequest={fitRequest}
             focusRequest={focusRequest}
+            formingScope={displayFormingScope}
             onAxisSelected={() => {
               if (editingGeometry || !activeDirectionScope || !latestReviewContext) {return}
 
@@ -2027,11 +2036,9 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
                 actionsRef={reviewActions}
                 confirmedFeaturesContent={featureResults}
                 editing={Boolean(editingGeometry || savingFeature)}
+                editingScopeId={directionDraft?.scope.mode === 'local' ? directionDraft.scope.forming_scope_id : null}
                 highlightSelection={highlightSelection}
                 latestContext={latestReviewContext}
-                editingScopeId={directionDraft?.scope.mode === 'local' ? directionDraft.scope.forming_scope_id : null}
-                scopeEditor={directionDraft?.scope.mode === 'local' ? directionEditor : null}
-                scopePreparation={scopePreparation}
                 navigation={reviewNavigation}
                 onBusyChange={setReviewBusy}
                 onChanged={applyReviewContext}
@@ -2050,6 +2057,8 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
                 onSelectDirection={scope => setActiveDirectionId(scope.forming_scope_id)}
                 projectId={projectId}
                 revision={projectRevision}
+                scopeEditor={directionDraft?.scope.mode === 'local' ? directionEditor : null}
+                scopePreparation={scopePreparation}
               />
             )}
             {reviewError && (
