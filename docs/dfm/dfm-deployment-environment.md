@@ -63,7 +63,7 @@ Hermes 不链接或 vendoring C++ 内部库，只发现已构建的可执行程�
 | 几何通信 | EXE 能力、runtime/process.py 和 Worker schemas/session-v2.schema.json | contract_version=dfm.geometry/v2、schema_bundle_version、engine_version、dependency_fingerprint；与实际安装文件匹配 |
 | 显示与测量制品 | 实际 Artifact Schema、Manifest 和内容哈希 | 几何／网格身份、采样精度和制品版本，不混用三角形编号 |
 
-Agent 当前接受规则包 Schema 2/3/4/5；Schema 5 要求每条规则包含可空的 `evaluation_gate_json`，旧包不接受该字段。规则包版本不等于几何通信 v2。当前外部链路接受会话 bundle 2.5.0/2.6.0；逐面外观规则还要求 G 能力声明 `requires_annotations: ["appearance"]`，仅版本匹配不足以证明可执行。EXE、DLL 和 Schema 必须来自匹配的安装产物，不能只改版本号混用；新开发包不自动替换已有日常入口或历史规则包。
+Agent 当前接受规则包 Schema 2/3/4/5；Schema 5 要求每条规则包含可空的 `evaluation_gate_json`，旧包不接受该字段。规则包版本不等于几何通信 v2。当前外部链路接受会话 bundle 2.5.0/2.6.0；逐面外观规则还要求 G 能力声明 `requires_annotations: ["appearance"]`，仅版本匹配不足以证明可执行。EXE、DLL 和 Schema 必须来自匹配的安装产物，不能只改版本号混用；新交付包不自动替换已有日常入口或历史规则包。正式规则身份及 `ontology_version` 的命名边界见[规则契约第 8、9 节](dfm-rule-catalog-database-design.md#8-发布物同步与运行绑定)。
 
 ## 2. 当前 Python 依赖
 
@@ -158,10 +158,10 @@ npm run dev --workspace apps/desktop
 2. 核对启动器、IDE、`HERMES_DESKTOP_HERMES_ROOT` 或桌面的远程后端地址是否仍指旧 checkout/服务；同一 `HERMES_HOME` 下核对 `dfm.geometry.executable` 和 `dfm.ontology.endpoint`。显式旧 EXE 路径会优先于新随包程序。
 3. 停止该环境的旧桌面和 Hermes 后台后，在仓库根目录执行 `npm run build --workspace apps/desktop`，再按原入口重启后台与桌面。开发模式用上面的命令；源码桌面可用 `npm run start --workspace apps/desktop`（会再次构建）。单独关闭桌面不会替换仍在运行的独立后台；已安装桌面应用也不会因另一目录 `git pull` 自动更新。
 4. 使用后台的同一 Python、同一 profile 执行 `python .\hermes dfm doctor --json`，核对实际 EXE、3.1.0/2.6.0、所需 G 和 `html_report.ready`。仅缺少已有依赖时按第 2 节补齐，不要清空已有环境。
-5. 规则管理员发布 Schema 5 后，通过正常 `dfm_project` 工具的 `sync_ontology` 操作同步，再用 `ontology_status` 核对管理员给出的 `snapshot_id`、规则集版本和 `content_sha256`。这两个是工具操作，不是 `hermes dfm` CLI 子命令。配置 endpoint 的 DFMService 启动时同步，并按 `sync_interval_seconds`（默认 300 秒）轮询；`pinned_snapshot_id` 非空时继续固定该版本，升级前先确认是否应解除旧固定。
+5. 确认目标为管理员已发布的版本，通过正常 `dfm_project` 工具的 `sync_ontology` 操作同步，再用 `ontology_status` 核对管理员给出的 `snapshot_id`、规则集版本和 `content_sha256`。这两个是工具操作，不是 `hermes dfm` CLI 子命令。配置 endpoint 后，DFMService 在本地无有效归档时同步下载，随后后台立即检查并按 `sync_interval_seconds`（默认 300 秒）轮询；启动不等于已取得最新包，应以状态为准。`pinned_snapshot_id` 非空时继续固定该版本，升级前先确认是否应解除旧固定。空安装库的首次实际安装返回 `changed=true`，同包重复同步返回 `changed=false`；服务可能已在启动时完成下载，因此第一次主动同步返回 `false` 也正常。
 6. 用新项目/新 Run 做一次 STEP 上传、分组确认、分析及 HTML 报告验收。已有 Run 固定原规则快照；跨 Worker 构建恢复旧会话会明确报 `geometry_recovery_dependency_changed`，不能承诺旧任务原地续跑。保留旧 profile/程序用于查阅，勿删除历史数据。
 
-先升级并验收消费者代码及 Worker，再切换规则发布。Git 拉取只交付代码和随包程序，不等于数据库规则发布或本机已同步；自然语言聊天、客户模型工程判断与已安装桌面升级仍须在各自运行环境验证。
+先升级并验收消费者代码及 Worker，再采用新规则发布。Git 拉取只交付代码和随包程序，不等于数据库规则发布或本机已同步。旧日常 profile 固定 V1.0.11 的保留状态不因本次交付改变；其他同事是否升级须逐环境核对。自然语言聊天、客户模型工程判断与已安装桌面升级仍须在各自运行环境验证。
 
 ## 4. DFM 配置
 
