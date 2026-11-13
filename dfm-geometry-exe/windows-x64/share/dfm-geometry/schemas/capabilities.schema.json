@@ -27,7 +27,7 @@
       "const": "dfm.geometry/v2"
     },
     "schema_bundle_version": {
-      "const": "2.5.0"
+      "const": "2.6.0"
     },
     "engine_version": {
       "type": "string",
@@ -257,6 +257,9 @@
             "type": "string",
             "minLength": 1
           }
+        },
+        "requires_annotations": {
+          "$ref": "https://hermes.local/dfm/geometry/session-v2.schema.json#/$defs/geometric/properties/requires_annotations"
         },
         "requires_relationships": {
           "$ref": "https://hermes.local/dfm/geometry/session-v2.schema.json#/$defs/geometric/properties/requires_relationships"

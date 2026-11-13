@@ -17,7 +17,7 @@
     "rules"
   ],
   "properties": {
-    "schema_version": {"enum": [2, 3, 4]},
+    "schema_version": {"enum": [2, 3, 4, 5]},
     "snapshot_id": {"type": "string", "minLength": 1},
     "ontology_version": {"type": "string", "minLength": 1},
     "published_at": {"type": "string", "format": "date-time"},
@@ -54,6 +54,15 @@
         "relations": {"items": {"$ref": "#/$defs/relation3"}},
         "factor_options": {"items": {"$ref": "#/$defs/factorOption3"}},
         "rules": {"items": {"$ref": "#/$defs/ruleVersion4"}}
+      }}
+    },
+    {
+      "if": {"properties": {"schema_version": {"const": 5}}},
+      "then": {"properties": {
+        "concepts": {"items": {"$ref": "#/$defs/concept5"}},
+        "relations": {"items": {"$ref": "#/$defs/relation5"}},
+        "factor_options": {"items": {"$ref": "#/$defs/factorOption3"}},
+        "rules": {"items": {"$ref": "#/$defs/ruleVersion5"}}
       }}
     }
   ],
@@ -326,6 +335,7 @@
       "additionalProperties": false,
       "required": ["rule_version_id", "rule_id", "version", "check_id", "name", "conditions_json", "acceptance_criteria_json", "severity", "severity_rationale", "priority", "is_default", "status", "citation_refs"],
       "properties": {
+        "comparison_operand_alias": {"type": "null"},
         "rule_version_id": {"type": "string", "minLength": 1},
         "rule_id": {"type": "string", "minLength": 1},
         "version": {"type": "string", "minLength": 1},
@@ -373,6 +383,108 @@
         "is_default": {"type": "boolean"},
         "status": {"const": "released"},
         "citation_refs": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      }
+    },
+    "concept5": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["concept_id", "concept_type", "name_zh", "definition", "properties_json", "status"],
+      "properties": {
+        "concept_id": {"type": "string", "minLength": 1},
+        "concept_type": {"enum": ["process", "feature_type", "geometric", "check", "factor", "risk_category"]},
+        "name_zh": {"type": "string", "minLength": 1},
+        "name_en": {"type": "string"},
+        "definition": {"type": "string", "minLength": 1},
+        "aliases_json": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "data_schema_json": {"type": ["object", "null"]},
+        "properties_json": {"type": "object"},
+        "status": {"enum": ["draft", "active", "retired"]}
+      },
+      "allOf": [
+        {
+          "if": {"required": ["concept_type"], "properties": {"concept_type": {"const": "factor"}}},
+          "then": {
+            "properties": {
+              "properties_json": {
+                "required": ["source_policy"],
+                "properties": {"impact_scope": {"$ref": "#/$defs/factorImpactScope"}, "source_policy": {"$ref": "#/$defs/sourcePolicy"}}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "relation5": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relation_id", "subject_id", "predicate", "object_id", "qualifiers_json"],
+      "properties": {
+        "relation_id": {"type": "string", "minLength": 1},
+        "subject_id": {"type": "string", "minLength": 1},
+        "predicate": {"enum": ["HAS_CHECK", "APPLIES_TO_FEATURE", "USES_OPERAND", "REQUIRES_FACTOR", "AFFECTS", "RELATED_TO", "HAS_RISK_CATEGORY"]},
+        "object_id": {"type": "string", "minLength": 1},
+        "qualifiers_json": {"type": "object"},
+        "sort_order": {"type": "integer"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"predicate": {"const": "USES_OPERAND"}}},
+          "then": {
+            "properties": {
+              "qualifiers_json": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["alias", "aggregation", "required", "operand_text"],
+                "properties": {
+                  "alias": {"type": "string", "minLength": 1},
+                  "aggregation": {"type": "string", "minLength": 1},
+                  "required": {"type": "boolean"},
+                  "operand_text": {"type": "string", "minLength": 1}
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "evaluationGate": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["expression", "comparator", "threshold", "result_unit"],
+          "properties": {
+            "expression": {"type": "object"},
+            "comparator": {"enum": ["GT", "GTE", "LT", "LTE", "EQ", "NE", "BETWEEN"]},
+            "threshold": {},
+            "result_unit": {"type": "string"}
+          }
+        }
+      ]
+    },
+    "ruleVersion5": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule_version_id", "rule_id", "version", "check_id", "name", "conditions_json", "acceptance_criteria_json", "severity", "severity_rationale", "priority", "is_default", "status", "citation_refs", "evaluation_gate_json"],
+      "properties": {
+        "comparison_operand_alias": {"type": ["string", "null"], "minLength": 1},
+        "rule_version_id": {"type": "string", "minLength": 1},
+        "rule_id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "check_id": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "minLength": 1},
+        "conditions_json": {"type": "array", "items": {"$ref": "#/$defs/factorCondition"}},
+        "acceptance_criteria_json": {"type": "array", "minItems": 1, "items": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/acceptanceCriterion"}}},
+        "severity": {"enum": ["critical", "high", "medium", "low"]},
+        "severity_rationale": {"type": "string", "minLength": 1},
+        "recommendation_template": {"type": ["string", "null"]},
+        "explanation_text": {"type": ["string", "null"]},
+        "priority": {"type": "integer"},
+        "is_default": {"type": "boolean"},
+        "status": {"const": "released"},
+        "citation_refs": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "evaluation_gate_json": {"$ref": "#/$defs/evaluationGate"}
       }
     }
   }

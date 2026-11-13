@@ -1085,7 +1085,27 @@ class DFMService:
         )
 
     @staticmethod
+    def _annotation_geometric_ids(current: ProjectManifest, kinds: set[str]) -> set[str]:
+        if not kinds:
+            return set()
+        capability = current.capabilities.get("geometry_discovery", {}).get("geometry_capability") or {}
+        return {row["geometric_id"] for row in capability.get("geometrics", [])
+                if row.get("support_status") == "supported"
+                and kinds.intersection(row.get("requires_annotations", []))}
+
+    @staticmethod
+    def _fragment_uses_annotations(fragment, current: ProjectManifest, kinds: set[str]) -> bool:
+        geometric_ids = DFMService._annotation_geometric_ids(current, kinds)
+        return any(geometric_ids.intersection(item.geometric_ids) for item in fragment.items)
+
+    @staticmethod
+    def _has_annotation_consumers(current: ProjectManifest, kinds: set[str]) -> bool:
+        return any(DFMService._fragment_uses_annotations(fragment, current, kinds)
+                   for plan in current.plans if plan.phase == "analysis" for fragment in plan.active_plan_fragments())
+
+    @staticmethod
     def _invalidate_plans_for_semantics(current: ProjectManifest, reason: str):
+        annotation_kinds = set(reason.removeprefix("annotation:").split(",")) if reason.startswith("annotation:") else set()
         scope_ids = (
             set(reason.removeprefix("forming_scope:").split(","))
             if reason.startswith("forming_scope:")
@@ -1101,7 +1121,12 @@ class DFMService:
             if plan.phase != "analysis" or plan.status == "invalidated":
                 plans.append(plan)
                 continue
-            if scope_ids:
+            if annotation_kinds:
+                if not any(DFMService._fragment_uses_annotations(item, current, annotation_kinds)
+                           for item in plan.active_plan_fragments()):
+                    plans.append(plan)
+                    continue
+            elif scope_ids:
                 affected = any(
                     DFMService._fragment_uses_forming_scopes(item, scope_ids, current.review_groups)
                     for item in plan.active_plan_fragments()
@@ -1137,6 +1162,8 @@ class DFMService:
     def _invalidate_findings_for_semantics(
         current: ProjectManifest, reason: str
     ):
+        annotation_kinds = set(reason.removeprefix("annotation:").split(",")) if reason.startswith("annotation:") else set()
+        annotation_geometrics = DFMService._annotation_geometric_ids(current, annotation_kinds)
         scope_ids = (
             set(reason.removeprefix("forming_scope:").split(","))
             if reason.startswith("forming_scope:")
@@ -1174,6 +1201,8 @@ class DFMService:
         }
 
         def affected(item: GeometricFindingRecord) -> bool:
+            if annotation_kinds:
+                return bool(annotation_geometrics.intersection(item.geometric_ids))
             if not scope_ids and not feature_ids:
                 return True
             if affected_scope_fragments.intersection(item.plan_fragment_refs):
@@ -1666,15 +1695,22 @@ class DFMService:
             "annotations.revise", {"snapshot_id": snapshot.worker_snapshot_id,
                                    "annotations": annotations, "retire_annotation_ids": retire_ids},
             expected_identity=review_identity[1] if review_identity else None)
+        changed_ids = set(retire_ids) | {row.get("annotation_id") for row in annotations}
+        changed_kinds = {row["kind"] for row in [*snapshot.annotations, *result.get("annotations", [])]
+                         if row.get("annotation_id") in changed_ids}
+        changed_kinds.update(row["kind"] for row in annotations if row.get("kind"))
         try:
             self._persist_forming_snapshot(project_id, input_record.sha256, result,
-                reviewed_scope_ids=set(), confirmed=False, edit=edit, pending_removal_group=pending_removal_group)
+                reviewed_scope_ids=set(), confirmed=False, edit=edit, pending_removal_group=pending_removal_group,
+                annotation_kinds=changed_kinds)
         except Exception as exc:
             self._fail_geometry_edit(project_id, edit, exc)
             raise ReviewSaveError.from_error(exc, edit.edit_id) from exc
         self._adopt_committed_geometry(project_id, input_record.sha256)
-        # No current G reads these attributes. Do not replan unrelated geometry.
-        return self._review_context(project_id)
+        response = self._review_context(project_id)
+        if self._has_annotation_consumers(self._store(project_id).load(), changed_kinds):
+            return self._after_workflow_update(project_id, response)
+        return response
 
     @staticmethod
     def _scope_content_sha256(scope: dict[str, Any]) -> str:
@@ -1740,6 +1776,7 @@ class DFMService:
         edit: GeometryEdit | None = None,
         edited_scope_ids: set[str] | None = None,
         feature_edit_ids: set[str] | None = None,
+        annotation_kinds: set[str] | None = None,
         main_direction: list[float] | None = None,
         staged_direction_ids: set[str] | None = None,
         pending_removal_group: ReviewGroupRecord | None = None,
@@ -1800,6 +1837,11 @@ class DFMService:
                 capabilities["discovery_review"] = review
                 reason = "feature:" + ",".join(sorted(feature_edit_ids))
                 changed = replace(changed, capabilities=capabilities,
+                    plans=self._invalidate_plans_for_semantics(changed, reason),
+                    findings=self._invalidate_findings_for_semantics(changed, reason))
+            if annotation_kinds:
+                reason = "annotation:" + ",".join(sorted(annotation_kinds))
+                changed = replace(changed,
                     plans=self._invalidate_plans_for_semantics(changed, reason),
                     findings=self._invalidate_findings_for_semantics(changed, reason))
             return changed
@@ -4648,15 +4690,19 @@ class DFMService:
         if action == "confirm_discovery":
             raw_ids = params.get("review_group_ids")
             selected = set(raw_ids) if isinstance(raw_ids, list) and all(isinstance(value, str) for value in raw_ids) else set()
-            groups = {row.review_group_id: row for row in self._store(project_id).load().review_groups}
+            before = self._store(project_id).load()
+            groups = {row.review_group_id: row for row in before.review_groups}
             attributes_only = bool(selected) and all(identity in groups and groups[identity].kind == "surface_attribute" for identity in selected)
+            snapshot = self._latest_discovery_snapshot(before)
+            annotation_ids = {ref for identity in selected if identity in groups for ref in groups[identity].target_refs}
+            annotation_kinds = {row["kind"] for row in snapshot.annotations if row.get("annotation_id") in annotation_ids} if snapshot else set()
             result = self._confirm_discovery(
                 project_id,
                 params.get("expected_revision"),
                 params.get("review_group_ids"),
                 params.get("expected_snapshot_id"),
             )
-            return result if attributes_only else self._after_workflow_update(project_id, result)
+            return result if attributes_only and not self._has_annotation_consumers(before, annotation_kinds) else self._after_workflow_update(project_id, result)
         if action == "drawing_context":
             return self._drawing_context(
                 project_id,
@@ -5293,6 +5339,14 @@ class DFMService:
                         scope_key = scope_id or "ordinary"
                         required_groups = [item for item in active_groups
                                            if item.kind == "ordinary_structure" and feature.feature_id in item.target_refs]
+                        annotation_kinds = set(declaration.get("requires_annotations", []))
+                        own_faces = {(ref.get("kind"), ref.get("index")) for ref in feature.properties.get("geometry_refs", [])}
+                        annotation_ids = {row["annotation_id"] for row in discovery_snapshot.annotations
+                                          if row.get("status", "active") != "stale" and row.get("kind") in annotation_kinds
+                                          and (not own_faces or any((ref.get("kind"), ref.get("index")) in own_faces
+                                               for ref in row.get("geometry_refs", [])))}
+                        required_groups.extend(item for item in active_groups
+                                               if item.kind == "surface_attribute" and annotation_ids.intersection(item.target_refs))
                         required_kinds = ({"forming_scope"}
                                           if scope_id and any(raw.get("forming_scope_id") == scope_id and raw.get("mode") == "local"
                                                               for raw in discovery_snapshot.forming_scopes)
@@ -5537,6 +5591,9 @@ class DFMService:
 
                     def fragment_was_affected(fragment, replacement):
                         reason = str(parent_plan.invalidated_by or "")
+                        if reason.startswith("annotation:"):
+                            kinds = set(reason.removeprefix("annotation:").split(","))
+                            return any(self._fragment_uses_annotations(item, manifest, kinds) for item in (fragment, replacement))
                         if reason.startswith("forming_scope:"):
                             scope_ids = set(
                                 reason.removeprefix("forming_scope:").split(",")
