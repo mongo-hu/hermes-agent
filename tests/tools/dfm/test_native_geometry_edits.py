@@ -10,6 +10,7 @@ from threading import Event
 import pytest
 
 from tools.dfm.config import DFMConfig
+from tools.dfm.contracts import GeometricRequest, PlanFragmentRecord, PlanRecord
 from tools.dfm.errors import DFMError, ReviewSaveError
 from tools.dfm.project.geometry_edits import GeometryEdit
 from tools.dfm.service import DFMService
@@ -73,6 +74,45 @@ def model(tmp_path):
         yield service, project_id, wall, refs
     finally:
         service.close()
+
+
+def test_native_appearance_edit_invalidates_consumers_and_resumes_after_confirmation(model, monkeypatch):
+    service, project_id, wall, refs = model
+    manifest, _, prior = metadata(service, project_id)
+    capability = manifest.capabilities["geometry_discovery"]["geometry_capability"]
+    assert any(row["geometric_id"] == "G_WALL_APPEARANCE_DRAFT" and row.get("requires_annotations") == ["appearance"]
+               for row in capability["geometrics"])
+    def fragment(identity, geometric_id):
+        return PlanFragmentRecord(identity, prior["worker_snapshot_id"], "discovery", "test", "a" * 64,
+                                  [], [], [GeometricRequest(wall["feature_id"], [geometric_id], {})])
+    plans = [PlanRecord("appearance", "step", ["occt_cpp"], "ready", "now",
+                        plan_fragments=[fragment("appearance", "G_WALL_APPEARANCE_DRAFT")]),
+             PlanRecord("thickness", "step", ["occt_cpp"], "ready", "now",
+                        plan_fragments=[fragment("thickness", "G_WALL_THK_MIN")])]
+    service._store(project_id).update(lambda current: replace(current, plans=[*current.plans, *plans]))
+    resumed = []
+    def after_update(identity, response):
+        resumed.append(identity)
+        return response
+    monkeypatch.setattr(service, "_after_workflow_update", after_update)
+    before = service._store(project_id).load()
+    saved = service.analysis("revise_annotations", project_id=project_id, expected_revision=before.revision,
+                             annotations=[{"annotation_id": "appearance-dependency", "kind": "appearance",
+                                           "value": "appearance", "geometry_refs": refs[:1]}])
+    current = service._store(project_id).load()
+    assert {plan.plan_id: plan.status for plan in current.plans if plan.plan_id in {"appearance", "thickness"}} == {
+        "appearance": "invalidated", "thickness": "ready"}
+    attribute = next(row for row in saved["review_groups"] if row["kind"] == "surface_attribute"
+                     and row["target_refs"] == ["appearance-dependency"])
+    service.analysis("confirm_discovery", project_id=project_id, expected_revision=saved["revision"],
+                     review_group_ids=[attribute["review_group_id"]])
+    assert resumed == [project_id, project_id]
+    latest = service._store(project_id).load()
+    removed = service.analysis("revise_annotations", project_id=project_id, expected_revision=latest.revision,
+                               annotations=[], retire_annotation_ids=["appearance-dependency"])
+    assert all(row["status"] == "stale" for row in removed["review_groups"]
+               if row["kind"] == "surface_attribute" and row["target_refs"] == ["appearance-dependency"])
+    assert resumed == [project_id, project_id, project_id]
 
 
 def metadata(service, project_id):

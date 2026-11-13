@@ -1,10 +1,10 @@
 # Hermes：Geometric 契约接入与模型会话管理
 
-> 当前合并基线（2026-11-06）：Worker **3.0.0** / `dfm.geometry/v2` / bundle **2.5.0**。采用分组审核、按依赖计算；取消 `reviews.commit` 和 Worker 快照全局 `review` 门槛，保留本地按需基础场计算、通用交集拔模及预算。下文 1.13.x 的安装哈希和 Desktop 验收属于历史记录；本次适配及验证见[整合记录](#15-远端审核交互与本地主流程适配)。
+> 当前随仓交付 Worker **3.1.0** / `dfm.geometry/v2` / bundle **2.6.0**。保留分组审核、按依赖计算、本地基础场计算和通用交集拔模；新增 G 的外观分类及注解依赖声明见第 14 节。实际环境升级步骤见[部署指南](dfm-deployment-environment.md#34-已有-windows-环境升级)，下文旧版本记录仅说明对应历史验证。
 
-更新：2026-11-06。目标方案为“一轮识别、统一快照、面归属索引、按组确认后计算”。总体流程见[DFM 主流程](dfm-main-workflow-explained.md)，本篇负责 Hermes 的调用、缓存、确认和计划实现。
+更新：2026-11-13。目标方案为“一轮识别、统一快照、面归属索引、按组确认后计算”。总体流程见[DFM 主流程](dfm-main-workflow-explained.md)，本篇负责 Hermes 的调用、缓存、确认和计划实现。
 
-引擎 1.12.0、dfm.geometry/v2 / bundle 2.3.0 及规则 V1.0.11 的旧联调记录保留在第 10 节，1.13.x 的单轮改造记录保留在第 11 节。当前 Hermes 自带运行包为 Worker 3.0.0 / bundle 2.5.0；本次合并保留整套 EXE、DLL 和 Schema，适配范围及验证见第 15 节。其他机器须完整安装同版运行包，不能混用旧包。
+引擎 1.12.0、dfm.geometry/v2 / bundle 2.3.0 及规则 V1.0.11 的旧联调记录保留在第 10 节，1.13.x 的单轮改造记录保留在第 11 节。当前开发候选自带 Worker 3.1.0 / bundle 2.6.0，新增外观分类及标注依赖；整套 EXE、DLL 和 Schema 已在隔离环境联调，日常运行环境尚未切换。第 15 节记录上一合并基线，其他机器须完整安装匹配运行包，不能混用旧包。
 
 [开发导航](README.md)
 
@@ -37,7 +37,7 @@ Hermes 负责决定“检查什么、需要算什么、结果是否符合要求�
 | 可执行契约和联调样例 | Worker 仓库 `schemas/` 及契约测试样例统一维护并随版本发布 | 固定所接入的契约制品版本，运行消费端契约测试 |
 | 客户端、计划、规则、Viewer 和报告接入 | 当前 Hermes 文档 | 由 Hermes 实现和验证 |
 
-主契约为 `dfm.geometry/v2`。Worker 仓库发布的 `schemas/session-v2.schema.json` 是会话可执行契约的唯一来源，Hermes 当前开发分支固定并校验 `2.5.0` Schema bundle；双方确认公共接口变更后更新同一套定义和样例，不在 Hermes 手工维护另一套近似协议。
+主契约为 `dfm.geometry/v2`。Worker 仓库发布的 `schemas/session-v2.schema.json` 是会话可执行契约的唯一来源，Hermes 当前开发分支接受 `2.5.0/2.6.0` Schema bundle，新外观分类还须核对具体 G 能力；双方确认公共接口变更后更新同一套定义和样例，不在 Hermes 手工维护另一套近似协议。
 
 契约版本用于校验通信格式；引擎构建及依赖指纹用于追溯与缓存。不能只检查 EXE 版本号，也不能以两篇说明文档的内容哈希相同作为兼容证明。
 
@@ -251,6 +251,8 @@ Hermes 按快照、Feature、G 和有效 context 关联结果，不依赖数组�
 ### 7.1 将有效结果交给规则执行器
 
 本节只规定接入行为；规则字段、OR-of-AND 三态求值和问题计数统一见[本地规则执行](dfm-rule-catalog-database-design.md#55-rule_version)。
+
+显式配置 `comparison_operand_alias` 的 Check 按受检对象分别选规；延迟到测量后的选规用例也包含该别名。两个对象各自保留结果、严重度与证据，一组缺测或无能力不取消另一组。未配置时保持原 Check 级选择，不从测量操作数自动推断分组。
 
 每个 G 结果就绪后，更新依赖它的 Check；已有确定结论即可发布，不等待无关任务。保留数值、单位、来源与失败原因，不能把缺失结果填零，也不能从 Check 严重度推断 pass/fail。
 
@@ -527,6 +529,10 @@ Feature 的选面修改同样必须重建其与现有成型范围的成员关联
 ### 10.11 参考对象依赖的确定性编排
 
 Schema bundle 2.2.0 的 G 能力新增必填 requires_relationships，元素为 type 和 target_feature_kind；空数组表示不依赖参考对象。Hermes 不根据 G 名称猜依赖，也不自行选择参考面，而是解析当前 DiscoverySnapshot 的 relationships。例如 Boss 参考主体壁厚要求 adjacent_main_wall 关系指向 main_wall。
+
+Schema bundle 2.6.0 的 G 能力可声明 `requires_annotations`，缺省为空数组。声明 `appearance` 的 G 从当前快照读取外观标注；
+Hermes 将与目标面重叠的待确认属性纳入片段审核依赖。保存、修改或退役此类标注后，使相关计划与 Finding 失效，
+保留无关 G 的片段；确认属性后按既有工作流重建计算。已完成运行保留历史，重新分析使用新的几何快照，不原地修改旧报告。
 
 计划逐 G 校验关系唯一性、目标类别和目标结构确认。缺失/歧义保留带关系类型和候选对象的阻塞原因；参考对象未确认时，仅等待使用它的 G。其普通结构确认组、实际关系和参考几何内容进入片段依赖，不能只固定 Boss 自身的确认引用。参考主体壁可位于 SIDE_01 之外；不因此要求它成为该局部范围的成员。
 
@@ -894,7 +900,8 @@ Desktop 沿用 `POST /api/dfm/projects/{project_id}/discovery/review/direction`�
 请求身份 `(feature_id, geometric_id, canonical context)` 表示需要计算什么，不能用作唯一测量结果身份。Worker 对局部圆角、壁厚过渡等请求可以返回多个物理位置；这些结果通过 `quality.measurement_instance_id` 区分。Hermes 保留每个实例的数值、依据和来源，禁止覆盖为最后一条、取极值替代全部结果，或仅删除重复校验。
 
 - 一个请求返回一条未命名结果，或者返回全部具有不同实例 ID 的结果。混合命名与未命名结果、重复实例、未请求的 G、遗漏请求仍是协议错误。`geometry/result_identity.py` 统一实例校验，结果索引与持久化 ID 均包含实例身份。
-- `evaluation/cases.py` 在规则选择之前建立物理实例用例。`identity` 操作数按相同实例 ID 配对；未命名的单值可共享；缺少对应实例时保留不可判定，禁止跨位置配对。明确指定 minimum/maximum 等聚合的操作数仍读取完整序列。评估来源记录实例 ID。
+- `evaluation/cases.py` 在规则选择之前建立物理实例用例。`identity` 操作数按相同实例 ID 配对；历史无门槛、无实例外观选择的绑定保留未命名单值共享行为；带门槛或实例外观选择的绑定禁止隐式广播。缺少对应实例时保留不可判定，禁止跨位置配对。明确指定 minimum/maximum 等聚合的操作数仍读取完整序列，例如逐过渡门槛可使用明确声明 `maximum` 的整片主体壁台阶计数。评估来源记录实例 ID。
+- 外观 G 的 `quality.appearance_class` 为 `appearance/non_appearance`，两类选面集合使用不同的稳定实例 ID；只有明确的 `measurement_not_applicable: appearance_scope_empty` 才跳过该空类别。非空选面无法测量仍不可判定。过渡 G 的同一实例只有支持面分类一致时才返回类别，混合或缺少支持面以 `appearance_classification_reason` 说明原因；Hermes 不猜测优先类别。带门槛的分类优先读取门槛 G 的同实例结果，不能因下游长度缺失阻止已知 false 门槛跳过。
 - 特征覆盖的身份是 `(feature_kind, forming_scope_id, context)`。不同成型域不能被当成重复覆盖，域 ID 必须从 Worker 保留到发现快照。
 - RPC 读取线程仅解析、分发应答，并为每个正在等待的 job 保存一个最新状态槽；不调用业务回调、不写项目清单。等待 job 的业务线程消费状态，进度最多每 0.5 秒交付一次，静止时每 5 秒保活，终态始终交付。取消、错误、产物和完成结果不作为可丢弃进度处理。
 - 非法后端配置在加载边界拒绝。doctor 的能力盘点与“配置的后端是否就绪”分开；默认配置的探测结果不能证明非法配置可用。桌面保留失败项目的模型并显示失败原因，重新打开会话仍从工具记录恢复此状态。

@@ -34,7 +34,8 @@ from .events import parse_worker_event
 
 
 SESSION_CONTRACT = "dfm.geometry/v2"
-SESSION_SCHEMA_BUNDLE_VERSION = "2.5.0"
+SESSION_SCHEMA_BUNDLE_VERSION = "2.6.0"
+SUPPORTED_SESSION_SCHEMA_BUNDLE_VERSIONS = frozenset({"2.5.0", SESSION_SCHEMA_BUNDLE_VERSION})
 TERMINAL_JOB_STATES = frozenset({"completed", "failed", "cancelled"})
 _RECOVERABLE_SNAPSHOT_METHODS = frozenset({
     "features.discover",
@@ -215,13 +216,13 @@ class GeometrySession:
                 "The OCCT geometry Worker does not provide dfm.geometry/v2.",
                 {"contract_version": capability.get("contract_version")},
             )
-        if capability.get("schema_bundle_version") != SESSION_SCHEMA_BUNDLE_VERSION:
+        if capability.get("schema_bundle_version") not in SUPPORTED_SESSION_SCHEMA_BUNDLE_VERSIONS:
             self.close()
             raise DFMError(
                 "geometry_schema_bundle_invalid",
-                "The OCCT geometry Worker schema bundle is not the pinned v2 release.",
+                "The OCCT geometry Worker schema bundle is not a supported v2 release.",
                 {
-                    "expected": SESSION_SCHEMA_BUNDLE_VERSION,
+                    "expected": sorted(SUPPORTED_SESSION_SCHEMA_BUNDLE_VERSIONS),
                     "actual": capability.get("schema_bundle_version"),
                 },
             )

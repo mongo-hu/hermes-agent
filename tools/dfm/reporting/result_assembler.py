@@ -105,6 +105,10 @@ def materialize_result_reports(
             "check_id": item.get("check_id"),
             "rule_id": item.get("rule_id"),
             "criterion_results": item.get("criterion_results", []),
+            **({"evaluation_gate_result": item["evaluation_gate_result"]}
+               if item.get("evaluation_gate_result") is not None else {}),
+            **({"rule_selection_result": item["rule_selection_result"]}
+               if item.get("rule_selection_result") is not None else {}),
         }
         for item in evaluations_payload.get("evaluations", [])
         if isinstance(item, dict) and item.get("outcome") == "indeterminate"

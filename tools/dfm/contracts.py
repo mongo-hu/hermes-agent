@@ -765,6 +765,61 @@ def _validate_acceptance_criteria(criteria: Any, *, binding_id: str) -> set[str]
     return aliases
 
 
+def _valid_appearance_conditions(selection: dict[str, Any]) -> bool:
+    if ("appearance_conditions" in selection) != ("appearance_operands" in selection):
+        return False
+    if "appearance_operands" in selection:
+        aliases = selection["appearance_operands"]
+        if not isinstance(aliases, list) or not aliases or any(not isinstance(alias, str) or not alias for alias in aliases):
+            return False
+        if len(set(aliases)) != len(aliases):
+            return False
+    conditions = selection.get("appearance_conditions", [])
+    if not isinstance(conditions, list) or ("appearance_conditions" in selection and not conditions):
+        return False
+    for condition in conditions:
+        if not isinstance(condition, dict) or set(condition) != {"factor_id", "operator", "value"}:
+            return False
+        if condition["factor_id"] != "F_APPR_REGION_REQ":
+            return False
+        values = condition["value"] if condition["operator"] == "IN" else [condition["value"]]
+        if condition["operator"] not in {"EQ", "IN"} or not isinstance(values, list) or not values:
+            return False
+        if any(value not in ("外观", "非外观") for value in values):
+            return False
+    return True
+
+
+def _validate_evaluation_gate(gate: Any, *, binding_id: str) -> set[str]:
+    """Validate one optional applicability gate, separate from acceptance."""
+    if gate is None:
+        return set()
+    if not isinstance(gate, dict) or set(gate) != {
+        "expression", "comparator", "threshold", "result_unit"
+    }:
+        raise DFMError(
+            "plan_rule_binding_invalid",
+            "An evaluation gate must be null or one complete comparison.",
+            {"binding_id": binding_id},
+        )
+    return _validate_acceptance_criteria(
+        [{"criterion_id": "evaluation_gate", **gate}], binding_id=binding_id
+    )
+
+
+def _validate_comparison_operand(alias: Any, criteria: Any, *, binding_id: str) -> None:
+    """A reviewed selection group names a criterion operand, never a guessed formula scope."""
+    if alias is None:
+        return
+    if (not isinstance(alias, str) or not alias.strip() or not criteria
+            or alias not in _validate_acceptance_criteria(criteria, binding_id=binding_id)):
+        raise DFMError(
+            "plan_rule_binding_invalid",
+            "The comparison operand must reference an acceptance criterion operand.",
+            {"binding_id": binding_id, "comparison_operand_alias": alias},
+        )
+
+
 @dataclass(frozen=True)
 class RuleOperand:
     """Legacy non-v2 Measurement input retained for explicit old backends."""
@@ -836,6 +891,8 @@ class RuleBinding:
     acceptance_criteria_json: list[dict[str, Any]] | list[list[dict[str, Any]]] = field(
         default_factory=list
     )
+    evaluation_gate_json: dict[str, Any] | None = None
+    comparison_operand_alias: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
@@ -847,6 +904,10 @@ class RuleBinding:
         }
         if self.rule_selection is None:
             values.pop("rule_selection")
+        if self.evaluation_gate_json is None:
+            values.pop("evaluation_gate_json")
+        if self.comparison_operand_alias is None:
+            values.pop("comparison_operand_alias")
         return values
 
     @classmethod
@@ -941,8 +1002,10 @@ class RuleBinding:
             selection = self.rule_selection
             valid = (
                 isinstance(selection, dict)
-                and set(selection)
+                and set(selection) - {"appearance_conditions", "appearance_operands"}
                 == {"conditions", "priority", "specificity", "is_default"}
+                and _valid_appearance_conditions(selection)
+                and "appearance_conditions" not in selection
                 and isinstance(selection.get("conditions"), list)
                 and type(selection.get("priority")) is int
                 and type(selection.get("specificity")) is int
@@ -1003,6 +1066,12 @@ class RuleBinding:
                     "The primary binding must match the first acceptance criterion.",
                     {"binding_id": self.binding_id},
                 )
+        _validate_comparison_operand(self.comparison_operand_alias, self.acceptance_criteria_json, binding_id=self.binding_id)
+        gate_aliases = _validate_evaluation_gate(
+            self.evaluation_gate_json, binding_id=self.binding_id
+        )
+        if gate_aliases and not self.acceptance_criteria_json:
+            raise DFMError("plan_rule_binding_invalid", "A gated binding requires acceptance criteria.")
         if self.expression is not None:
             referenced = (
                 _validate_acceptance_criteria(
@@ -1013,7 +1082,7 @@ class RuleBinding:
                     self.expression, binding_id=self.binding_id
                 )
             )
-            if referenced | condition_aliases != set(aliases):
+            if referenced | condition_aliases | gate_aliases != set(aliases):
                 raise DFMError(
                     "plan_rule_binding_invalid",
                     "Rule expressions must reference every declared operand exactly by alias.",
@@ -1098,6 +1167,8 @@ class GeometricRuleBinding:
     acceptance_criteria_json: list[dict[str, Any]] | list[list[dict[str, Any]]] = field(
         default_factory=list
     )
+    evaluation_gate_json: dict[str, Any] | None = None
+    comparison_operand_alias: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
@@ -1109,6 +1180,10 @@ class GeometricRuleBinding:
         }
         if self.rule_selection is None:
             values.pop("rule_selection")
+        if self.evaluation_gate_json is None:
+            values.pop("evaluation_gate_json")
+        if self.comparison_operand_alias is None:
+            values.pop("comparison_operand_alias")
         return values
 
     @classmethod
@@ -1184,8 +1259,10 @@ class GeometricRuleBinding:
             selection = self.rule_selection
             valid = (
                 isinstance(selection, dict)
-                and set(selection)
+                and set(selection) - {"appearance_conditions", "appearance_operands"}
                 == {"conditions", "priority", "specificity", "is_default"}
+                and _valid_appearance_conditions(selection)
+                and set(selection.get("appearance_operands", [])).issubset(aliases)
                 and isinstance(selection.get("conditions"), list)
                 and type(selection.get("priority")) is int
                 and type(selection.get("specificity")) is int
@@ -1246,6 +1323,12 @@ class GeometricRuleBinding:
                     "The primary binding must match the first acceptance criterion.",
                     {"binding_id": self.binding_id},
                 )
+        _validate_comparison_operand(self.comparison_operand_alias, self.acceptance_criteria_json, binding_id=self.binding_id)
+        gate_aliases = _validate_evaluation_gate(
+            self.evaluation_gate_json, binding_id=self.binding_id
+        )
+        if gate_aliases and not self.acceptance_criteria_json:
+            raise DFMError("plan_rule_binding_invalid", "A gated binding requires acceptance criteria.")
         if self.expression is not None:
             referenced = (
                 _validate_acceptance_criteria(
@@ -1256,7 +1339,7 @@ class GeometricRuleBinding:
                     self.expression, binding_id=self.binding_id
                 )
             )
-            if referenced | condition_aliases != set(aliases):
+            if referenced | condition_aliases | gate_aliases != set(aliases):
                 raise DFMError(
                     "plan_rule_binding_invalid",
                     "Rule expressions must reference every declared operand exactly by alias.",
@@ -1967,9 +2050,13 @@ class EvaluationRecord:
     severity: str = "unclassified"
     severity_rationale: str | None = None
     criterion_results: list[dict[str, Any]] = field(default_factory=list)
+    evaluation_gate_result: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        values = asdict(self)
+        if self.evaluation_gate_result is None:
+            values.pop("evaluation_gate_result")
+        return values
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "EvaluationRecord":
@@ -1998,9 +2085,16 @@ class GeometricEvaluationRecord:
     severity: str = "unclassified"
     severity_rationale: str | None = None
     criterion_results: list[dict[str, Any]] = field(default_factory=list)
+    evaluation_gate_result: dict[str, Any] | None = None
+    rule_selection_result: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        values = asdict(self)
+        if self.evaluation_gate_result is None:
+            values.pop("evaluation_gate_result")
+        if self.rule_selection_result is None:
+            values.pop("rule_selection_result")
+        return values
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "GeometricEvaluationRecord":
