@@ -264,7 +264,7 @@ def serve_v2():
                 request_id,
                 {
                     "contract_version": contract,
-                    "schema_bundle_version": "2.5.0",
+                    "schema_bundle_version": "2.11.0",
                     "engine_version": "contract-fixture-1",
                     "dependency_fingerprint": dependency_fingerprint,
                     "backend": "analysis_situs+occt",
