@@ -719,7 +719,9 @@ OCCT 新增 Feature/Geometric Capability（Recognizer、部位选择器和 Calcu
 
 配置 ontology.endpoint 后，DFMService 初始化 BackgroundOntologySync；线程立即执行首次同步，再按 interval_seconds 周期重试。应用是否在启动时创建 DFMService，需结合实际入口的启动初始化验证，不能仅凭线程类存在推定所有入口已完成同步。主动同步仍通过既有工具入口执行，不另建安装脚本。
 
-同步实现按 process、organization_id 查询发布物；设置 pinned_snapshot_id 时使用固定发布身份，而非始终追 latest。下载后校验身份及内容哈希，保存 packages 历史包，再原子安装本地 SQLite。失败保留日志和已有可用投影，不改写已完成 Run。
+同步实现按 process、organization_id 查询发布物；设置 pinned_snapshot_id 时使用固定发布身份，而非始终追 latest。当前 Hermes 不发送 ontology_version 筛选参数，也不要求它与 rule_set.version 相等；兼容校验使用 schema_version，Plan 固定 snapshot_id 与内容哈希。下载后校验身份及内容哈希，保存 packages 历史包，再原子安装本地 SQLite。失败保留日志和已有可用投影，不改写已完成 Run。
+
+ontology_version 进入发布物内容哈希；中心 `dictionary` 以及未指定 snapshot_id 的 `checks/context` 接口支持按它筛选，显式使用这些筛选的客户端会受标签变化影响。当前 `/publications/latest` View 只转发 process、organization_id，不接受该筛选。已发布 Snapshot 不可只改此字段或沿同 ID 换包；Hermes 会拒绝同 ID 对应不同内容。更正发布信息须按中心库的不可变发布流程处理，保留原身份及历史证据。
 
 是否获取最新要分别检查：远程返回的身份、本地缓存包、本地安装元数据、新 Plan 固定的身份。安装成功不表示已经开始的分析会换用新规则。签名、撤销与认证策略按实际实现和部署配置验收，不能仅因有 SHA256 就声称完成签名认证。
 
@@ -739,8 +741,10 @@ Check 通过 USES_OPERAND 绑定公式 alias 与 G；Operand 是现有关系及�
 
 ## 9. 实现核对与迁移边界
 
-核对日期：2026-11-13；本节描述当前消费者代码契约。已用 MoldMind 真实 Schema 5 导出在隔离 SQLite 安装并校验内容哈希，
-配套 Worker 3.1.0 / bundle 2.6.0 验证新外观 G 的实际分类与求值；这不代表日常环境已切换或新规则已正式发布。
+核对日期：2026-11-13。Hermes 已合入团队 `dfm-hermes-agent@1876089f`，配套 Worker 3.1.0 / bundle 2.6.0。
+正式发布为 `RS_INJECTION_MOLDING_BASE@V1.0.12`：RuleSet `V1.0.12`、Schema 5、71 条规则，`ontology_version` 仍为 `V1.2.9`（本轮受控 Excel 版本标签），内容 SHA-256 为 `712ce660b6b91726a47e941324e3b696c0cc2dfd6e3e7ca0f3c2601423ad24e6`。隔离验收使用过的 V13 是测试版本，不是另一条正式发布；本次未更改已发布标签。
+
+正式 HTTP 发布物已在空 SQLite 验证首次安装及重复同步幂等；另一个全新 profile 经正常 DFMService 完成真实 STEP 导入、分组确认后续算及 HTML 生成，该报告已在实际 Electron 编辑器和展示页打开。新外观 G 的分类与求值另有原生 Worker 验证。这些软件链路验收不等于客户模型工程认证、外部大模型生成或安装器升级验收，也不表示保留的旧日常环境已切换。升级步骤见[部署指南](dfm-deployment-environment.md#34-已有-windows-环境升级)。
 门槛、旧包兼容及外观范围回归见 `test_catalog_alignment.py`、`test_geometric_instances.py` 和原生 Worker 测试；受检对象分组、部分能力缺失、冲突及独立报告回归见 `test_comparison_operand_groups.py`。
 
 | 内容 | 核对入口 | 状态与边界 |
