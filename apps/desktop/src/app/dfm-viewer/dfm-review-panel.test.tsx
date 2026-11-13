@@ -90,6 +90,66 @@ function mount(initial: ReviewContext, next = initial, props: Partial<ComponentP
 }
 
 describe('DFM grouped review interaction', () => {
+  it('confirms only the card group and preserves another checked group', async () => {
+    const initial = { ...context(), snapshot_id: 'snapshot-current' }
+    initial.features[1].confidence = 0.726
+    const next = { ...initial, revision: 8, review_groups: initial.review_groups.map(group =>
+      group.review_group_id === 'boss-2' ? { ...group, status: 'confirmed' as const } : group) }
+    const { api, onChanged } = mount(initial, next)
+    await screen.findByText(/带孔 BOSS 柱/)
+    openBucket(/带孔 BOSS 柱/)
+    fireEvent.click(screen.getByRole('checkbox', { name: '选择 BOSS_1' }))
+    const card = document.querySelector('[data-review-object="BOSS_2"]') as HTMLElement
+    expect(within(card).getByText('72.6%')).toBeTruthy()
+    fireEvent.click(within(card).getByRole('button', { name: '确认' }))
+    await waitFor(() => expect(onChanged).toHaveBeenCalledWith(next))
+    expect(api.mock.calls.filter(([request]) => request.method === 'POST')).toHaveLength(1)
+    expect(api.mock.calls[1][0]).toMatchObject({
+      path: '/api/dfm/projects/project-a/discovery/review/confirm',
+      body: { review_group_ids: ['boss-2'], expected_revision: 7, expected_snapshot_id: 'snapshot-current' }
+    })
+    expect((screen.getByRole('checkbox', { name: '选择 BOSS_1' }) as HTMLInputElement).checked).toBe(true)
+    expect(screen.getByRole('button', { name: '确认选中组（1）' })).toBeTruthy()
+    expect(next.features[1].confidence).toBe(0.726)
+  })
+
+  it('sorts hundreds of pending cards stably without changing numbers, selections or navigation', async () => {
+    const initial = context()
+    const ref = initial.features[0].properties.geometry_refs![0]
+    initial.features = Array.from({ length: 305 }, (_, index) => ({
+      feature_id: `BLEND_${index}`, kind: 'blend', confidence: index === 0 ? 0.9 : index < 3 ? 0.2 : index === 3 ? 0 : 0.5,
+      properties: { geometry_refs: [{ ...ref, index: index + 1, entity_id: `face-${index + 1}` }],
+        ...(index === 4 ? { quality: { confidence_available: false } } : {}) }
+    }))
+    initial.features[5].confidence = NaN
+    initial.review_groups = initial.features.map(feature => ({ review_group_id: `review-${feature.feature_id}`,
+      kind: 'ordinary_structure', target_refs: [feature.feature_id], status: 'pending_review' }))
+    Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
+    const { onHighlight, onChanged, rerender } = mount(initial)
+    await screen.findByText(/^圆角链 ·/, { selector: 'summary' })
+    const bucket = openBucket(/^圆角链 ·/)
+    expect(within(bucket).getAllByRole('checkbox')).toHaveLength(50)
+    fireEvent.click(screen.getByRole('checkbox', { name: '选择 BLEND_0' }))
+    fireEvent.change(screen.getByRole('combobox', { name: '待确认特征排序' }), { target: { value: 'confidence' } })
+    const ids = () => [...bucket.querySelectorAll<HTMLElement>('[data-review-object]')].map(item => item.dataset.reviewObject)
+    expect(ids().slice(0, 4)).toEqual(['BLEND_3', 'BLEND_1', 'BLEND_2', 'BLEND_6'])
+    expect(within(bucket).getByRole('button', { name: '圆角链 #4' })).toBeTruthy()
+    const card = bucket.querySelector('[data-review-object="BLEND_3"]') as HTMLElement
+    fireEvent.click(within(card).getByRole('button', { name: '定位' }))
+    expect(onHighlight).toHaveBeenLastCalledWith(initial.features[3].properties.geometry_refs,
+      { category: 'structure', bucketId: 'structure:blend', objectId: 'BLEND_3' }, true)
+    fireEvent.click(screen.getByRole('button', { name: '再显示 50 组' }))
+    expect(within(bucket).getAllByRole('checkbox')).toHaveLength(100)
+    rerender(<DfmReviewPanel onChanged={onChanged} onHighlight={onHighlight} projectId={initial.project_id}
+      revision={initial.revision} navigation={{ category: 'structure', objectId: 'BLEND_5', sequence: 1 }} />)
+    await waitFor(() => expect(ids()).toHaveLength(305))
+    expect(ids().slice(-3)).toEqual(['BLEND_0', 'BLEND_4', 'BLEND_5'])
+    expect((screen.getByRole('checkbox', { name: '选择 BLEND_0' }) as HTMLInputElement).checked).toBe(true)
+    fireEvent.change(screen.getByRole('combobox', { name: '待确认特征排序' }), { target: { value: 'original' } })
+    expect(ids().slice(0, 3)).toEqual(['BLEND_0', 'BLEND_1', 'BLEND_2'])
+    expect((screen.getByRole('checkbox', { name: '选择 BLEND_0' }) as HTMLInputElement).checked).toBe(true)
+  })
+
   it.each(['structure', 'annotation', 'forming'] as const)(
     'routes external %s deletion through the versioned panel action', async category => {
       const initial = { ...context(), snapshot_id: 'snapshot-current' }
@@ -106,7 +166,7 @@ describe('DFM grouped review interaction', () => {
 
       const actionsRef = createRef<DfmReviewPanelActions>()
       const { api, onChanged } = mount(initial, next, { actionsRef })
-      await screen.findByText(/带孔 Boss 柱/)
+      await screen.findByText(/带孔 BOSS 柱/)
       await act(() => actionsRef.current!.removeObject({ category, objectId: targets[category] }))
       expect(api.mock.calls.filter(call => call[0].method === 'POST')).toHaveLength(1)
       expect(api.mock.calls[1][0]).toMatchObject({
@@ -167,7 +227,7 @@ describe('DFM grouped review interaction', () => {
     const actionsRef = createRef<DfmReviewPanelActions>()
     const onRefreshed = vi.fn()
     const { api, onChanged } = mount(initial, initial, { actionsRef, onRefreshed })
-    await screen.findByText(/带孔 Boss 柱/)
+    await screen.findByText(/带孔 BOSS 柱/)
     const updated = { ...initial, revision: 9, snapshot_id: 'snapshot-new' }
     api.mockRejectedValueOnce(new Error('409 manifest_conflict: project changed'))
     api.mockResolvedValueOnce(updated)
@@ -187,7 +247,7 @@ describe('DFM grouped review interaction', () => {
     const initial = { ...context(), snapshot_id: 'snapshot-current' }
     const actionsRef = createRef<DfmReviewPanelActions>()
     const { api, rerender, onChanged, onHighlight } = mount(initial, initial, { actionsRef })
-    await screen.findByText(/带孔 Boss 柱/)
+    await screen.findByText(/带孔 BOSS 柱/)
 
     const updated: ReviewContext = { ...initial, revision: 9, snapshot_id: 'snapshot-new',
       review_groups: initial.review_groups.map(group => group.review_group_id === 'boss-1'
@@ -230,7 +290,7 @@ describe('DFM grouped review interaction', () => {
     fireEvent.click(shortcut)
     await waitFor(() => expect(forming.open).toBe(true))
     // Confirming this range must leave another selected group unsubmitted.
-    openBucket(/带孔 Boss 柱/)
+    openBucket(/带孔 BOSS 柱/)
     fireEvent.click(screen.getByRole('checkbox', { name: '选择 BOSS_1' }))
     fireEvent.click(confirm)
     await waitFor(() => expect(onChanged).toHaveBeenCalledWith(next))
@@ -246,15 +306,15 @@ describe('DFM grouped review interaction', () => {
     const initial = context()
     initial.review_groups = initial.review_groups.filter(group => group.kind !== 'forming_scope')
     mount(initial)
-    await screen.findByText(/带孔 Boss 柱/)
+    await screen.findByText(/带孔 BOSS 柱/)
     expect(screen.queryByRole('button', { name: /^局部成型方案/ })).toBeNull()
   })
 
   it('pins the reviewed snapshot while submitting a group confirmation', async () => {
     const initial = { ...context(), snapshot_id: 'discovery.snapshot.reviewed', edit_timeout_ms: 180_000 }
     const { api } = mount(initial, { ...initial, revision: 8 })
-    await screen.findByText(/带孔 Boss 柱/)
-    openBucket(/带孔 Boss 柱/)
+    await screen.findByText(/带孔 BOSS 柱/)
+    openBucket(/带孔 BOSS 柱/)
     fireEvent.click(screen.getByRole('checkbox', { name: '选择 BOSS_1' }))
     fireEvent.click(screen.getByRole('button', { name: '确认选中组（1）' }))
     await waitFor(() => expect(api).toHaveBeenCalledTimes(2))
@@ -329,8 +389,8 @@ describe('DFM grouped review interaction', () => {
   it('does not carry a pending request or late result into another project', async () => {
     const initial = context()
     const { api, rerender, onChanged, onHighlight } = mount(initial)
-    await screen.findByText(/带孔 Boss 柱/)
-    openBucket(/带孔 Boss 柱/)
+    await screen.findByText(/带孔 BOSS 柱/)
+    openBucket(/带孔 BOSS 柱/)
     fireEvent.click(await screen.findByRole('checkbox', { name: '选择 BOSS_1' }))
     let resolve!: (value: ReviewContext) => void
 
@@ -344,7 +404,7 @@ describe('DFM grouped review interaction', () => {
     api.mockResolvedValue(next)
     rerender(<DfmReviewPanel onChanged={onChanged} onHighlight={onHighlight} projectId="project-b" revision={1} />)
     await waitFor(() => expect(api).toHaveBeenCalledTimes(3))
-    openBucket(/带孔 Boss 柱/)
+    openBucket(/带孔 BOSS 柱/)
     const checkbox = await screen.findByRole('checkbox', { name: '选择 BOSS_1' })
     expect((checkbox as HTMLInputElement).disabled).toBe(false)
     fireEvent.click(checkbox)
@@ -368,11 +428,11 @@ describe('DFM grouped review interaction', () => {
     }
 
     const { api, onChanged, onHighlight } = mount(initial, next)
-    await screen.findByText(/带孔 Boss 柱/)
+    await screen.findByText(/带孔 BOSS 柱/)
     expect(api).toHaveBeenCalledTimes(1)
     expect(api.mock.calls[0][0].method).toBeUndefined()
     expect(screen.queryByRole('checkbox', { name: '选择 BOSS_1' })).toBeNull()
-    const bucket = openBucket(/带孔 Boss 柱/)
+    const bucket = openBucket(/带孔 BOSS 柱/)
     const checkbox = await screen.findByRole('checkbox', { name: '选择 BOSS_1' })
     fireEvent.click(within(bucket).getAllByRole('button', { name: '定位' })[0])
     expect(onHighlight).toHaveBeenCalledWith(initial.features[0].properties.geometry_refs,
@@ -433,8 +493,8 @@ describe('DFM grouped review interaction', () => {
   it('refreshes after a version conflict and retries against the new revision', async () => {
     const initial = context()
     const { api } = mount(initial)
-    await screen.findByText(/带孔 Boss 柱/)
-    openBucket(/带孔 Boss 柱/)
+    await screen.findByText(/带孔 BOSS 柱/)
+    openBucket(/带孔 BOSS 柱/)
     fireEvent.click(await screen.findByRole('checkbox', { name: '选择 BOSS_1' }))
     api.mockRejectedValueOnce(new Error('409 manifest_conflict: project changed'))
     api.mockResolvedValueOnce({ ...initial, revision: 9 })
@@ -472,8 +532,8 @@ describe('DFM grouped review interaction', () => {
     }
 
     render(<Harness />)
-    const blend = await screen.findByText(/^圆角 ·/, { selector: 'summary' })
-    const hole = screen.getByText(/^孔 ·/, { selector: 'summary' })
+    const blend = await screen.findByText(/^圆角链 ·/, { selector: 'summary' })
+    const hole = screen.getByText(/^钻孔 ·/, { selector: 'summary' })
     fireEvent.click(blend)
     expect(highlight.mock.calls[0][0]).toHaveLength(102)
     expect(screen.getAllByRole('checkbox')).toHaveLength(50)
@@ -521,32 +581,35 @@ describe('DFM grouped review interaction', () => {
       review_groups: initial.review_groups.filter(group => group.review_group_id !== 'boss-1') }
 
     const { api, onChanged } = mount(initial, next)
-    await screen.findByText(/带孔 Boss 柱/)
-    openBucket(/带孔 Boss 柱/)
+    await screen.findByText(/带孔 BOSS 柱/)
+    openBucket(/带孔 BOSS 柱/)
     fireEvent.click(screen.getByRole('checkbox', { name: '选择 BOSS_2' }))
-    const row = screen.getByRole('button', { name: 'BOSS_1' }).closest('[data-review-object]') as HTMLElement
-    fireEvent.click(within(row).getByRole('button', { name: '删除' }))
+    const row = document.querySelector('[data-review-object="BOSS_1"]') as HTMLElement
+    const details = within(row).getByText('详情').closest('details')!
+    details.open = true
+    fireEvent.click(within(row).getByRole('button', { name: '删除特征' }))
     await waitFor(() => expect(onChanged).toHaveBeenCalledWith(next))
     expect(api.mock.calls[1][0]).toMatchObject({
       path: '/api/dfm/projects/project-a/discovery/review/remove', method: 'POST',
       body: { review_group_id: 'boss-1', expected_revision: 7, expected_snapshot_id: 'snapshot-current' }
     })
-    expect(screen.queryByRole('button', { name: 'BOSS_1' })).toBeNull()
+    expect(document.querySelector('[data-review-object="BOSS_1"]')).toBeNull()
     expect((screen.getByRole('checkbox', { name: '选择 BOSS_2' }) as HTMLInputElement).checked).toBe(true)
     const range = openBucket(/局部成型方案/)
     expect(within(range).queryByRole('button', { name: '删除' })).toBeNull()
   })
 
   it('blocks batch confirmation and deletion while editing without losing pending groups', async () => {
-    const initial = context()
+    const initial = { ...context(), snapshot_id: 'snapshot-current' }
     const { rerender, onChanged, onHighlight, api } = mount(initial)
-    await screen.findByText(/带孔 Boss 柱/)
-    openBucket(/带孔 Boss 柱/)
+    await screen.findByText(/带孔 BOSS 柱/)
+    openBucket(/带孔 BOSS 柱/)
     rerender(<DfmReviewPanel editing onChanged={onChanged}
       onHighlight={onHighlight} projectId={initial.project_id} revision={initial.revision} />)
     expect((screen.getByRole('button', { name: '接受全部可确认项（3）' }) as HTMLButtonElement).disabled).toBe(true)
 
-    for (const button of screen.getAllByRole('button', { name: '删除' })) {
+    for (const details of document.querySelectorAll('[data-review-object] details')) {(details as HTMLDetailsElement).open = true}
+    for (const button of screen.getAllByRole('button', { name: '删除特征' })) {
       expect((button as HTMLButtonElement).disabled).toBe(true)
     }
 

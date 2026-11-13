@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from tools.dfm.contracts import (
     ArtifactRecord,
     FeatureRecord,
@@ -299,6 +301,59 @@ def test_discovery_manifest_exposes_editable_feature_regions(tmp_path):
     assert payload["issues"] == []
     assert payload["features"][0]["feature_id"] == feature.feature_id
     assert payload["features"][0]["geometry_refs"] == [geometry_ref.to_dict()]
+
+
+@pytest.mark.parametrize("source", ["discovery", "analysis_records", "analysis_artifact"])
+def test_viewer_preserves_unavailable_confidence_without_hiding_valid_zero(tmp_path, source):
+    quality = {"confidence_available": False, "confidence_basis": "visual_hypothesis"}
+    features = [
+        FeatureRecord("feature-zero", "main_wall", [], 0.0, input_sha256="a" * 64),
+        FeatureRecord(
+            "feature-unavailable", "main_wall", [], 0.0,
+            input_sha256="a" * 64, properties={"quality": quality},
+        ),
+    ]
+    scene = _artifact(tmp_path, "render_scene", "render_scene.json", {})
+    topology = _artifact(tmp_path, "topology_map", "topology_map.json", {})
+    if source == "discovery":
+        manifest = ProjectManifest(
+            "dfm_1", "part", "now", "now", features=features,
+            artifacts=[scene, topology],
+            capabilities={"geometry_discovery": {"inputs": {"a" * 64: {
+                "artifact_refs": [scene.artifact_id, topology.artifact_id],
+            }}}},
+        )
+        path = materialize_discovery_viewer_manifest(
+            tmp_path, manifest, review_status="pending"
+        )
+    else:
+        artifacts = [
+            scene, topology,
+            _artifact(tmp_path, "measurements", "measurements.json", {"measurements": []}),
+            _artifact(tmp_path, "evaluations", "evaluations.json", {"evaluations": []}),
+        ]
+        if source == "analysis_artifact":
+            artifacts.append(_artifact(tmp_path, "features", "features.json", {"features": [
+                {"feature_id": "feature-zero", "kind": "main_wall", "confidence": 0.0},
+                {"feature_id": "feature-unavailable", "kind": "main_wall", "confidence": 0.0,
+                 "quality": quality},
+            ]}))
+        artifact = materialize_viewer_manifest(
+            tmp_path, "run_1", PlanRecord("plan_1", "step", ["occt_cpp"], "ready", "now"),
+            artifacts, features=features if source == "analysis_records" else None,
+        )
+        assert artifact is not None
+        path = tmp_path / artifact.relative_path
+
+    assert path is not None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    zero, unavailable = payload["features"]
+    assert zero["confidence"] == 0.0
+    assert "quality" not in zero
+    assert unavailable["confidence"] == 0.0
+    assert unavailable["quality"] == quality
+    assert features[0].properties == {}
+    assert features[1].properties == {"quality": quality}
 
 
 def test_viewer_manifest_uses_failed_patches_instead_of_representative_measurement_face(tmp_path):

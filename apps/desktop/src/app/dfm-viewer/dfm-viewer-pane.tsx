@@ -13,6 +13,8 @@ import { DfmDirectionEditor, type DirectionDraft } from './dfm-direction-editor'
 import { createFaceCandidateIndex, type FaceCandidate } from './dfm-face-navigation'
 import { DfmFeatureEditor } from './dfm-feature-editor'
 import { DfmFeatureGroups } from './dfm-feature-groups'
+import { DfmFeatureCard } from './dfm-feature-card'
+import { FEATURE_LABELS } from './dfm-feature-presentation'
 import { ModelCanvas } from './dfm-model-canvas'
 import { DfmManualReviewNotice, type ManualReviewResult } from './dfm-manual-review-notice'
 import { DfmObjectMenu, type ObjectMenuItem } from './dfm-object-menu'
@@ -53,6 +55,7 @@ interface ViewerIssue {
 
 interface ViewerFeature {
   confidence: unknown
+  quality?: unknown
   diagnostics: Record<string, unknown>
   feature_id: string
   geometry_refs: GeometryReference[]
@@ -120,76 +123,6 @@ async function readJson<T>(filePath: string): Promise<T> {
   return JSON.parse(result.text) as T
 }
 
-
-const FEATURE_LABELS: Record<string, string> = {
-  main_wall: '主体壁',
-  hollow_boss: '带孔 BOSS 柱',
-  screw_boss: '带孔 BOSS 柱', // Display historical snapshots without changing their IDs.
-  solid_boss: '实心 BOSS 柱',
-  blend: '圆角链',
-  canonical_surface: '规范曲面',
-  cavity: '几何凹腔',
-  chamfer: '倒角',
-  convex_hull: '凸包面集',
-  drilled_hole: '钻孔',
-  isolated: '孤立特征',
-  rib: '加强筋',
-  shaft: '轴类特征',
-  surface_probe: '曲面探针'
-}
-
-const FEATURE_SUBTYPE_LABELS: Record<string, string> = {
-  hollow_boss: '空心柱',
-  solid_boss: '实心柱',
-  arbitrary_cavity: '任意型腔',
-  blind_hole: '盲孔',
-  cliff_blend_chain: '悬崖圆角链',
-  coaxial_shaft: '同轴轴段',
-  conical: '圆锥倒角',
-  conical_hole: '锥孔',
-  countersunk_hole: '沉头孔',
-  edge_blend_chain: '边圆角链',
-  face_probe_set: '面探针集',
-  hull_face_set: '凸包面集',
-  inner_contour_feature: '内轮廓孤立特征',
-  planar_band: '平面倒角',
-  straight_rib: '直加强筋',
-  stepped_countersunk_hole: '阶梯沉头孔',
-  stepped_hole: '阶梯孔',
-  through_hole: '通孔',
-  uncertain_blend_chain: '待确认圆角链',
-  vertex_blend_chain: '顶点圆角链'
-}
-
-const PARAMETER_LABELS: Record<string, string> = {
-  depth_mm: '深度',
-  diameter_mm: '直径',
-  face_count: '面数',
-  height_mm: '高度',
-  length_mm: '长度',
-  radius_mm: '半径',
-  semi_angle_deg: '半角',
-  thickness_mm: '厚度',
-  width_mm: '宽度'
-}
-
-function formatFeatureParameters(parameters: Record<string, unknown>): string {
-  const preferred = Object.entries(parameters)
-    .filter(([key, value]) => key in PARAMETER_LABELS && (typeof value === 'number' || typeof value === 'string'))
-    .slice(0, 3)
-
-  return (
-    preferred
-      .map(
-        ([key, value]) =>
-          PARAMETER_LABELS[key] +
-          ' ' +
-          formatViewerValue(value) +
-          (key.endsWith('_mm') ? ' mm' : key.endsWith('_deg') ? '°' : '')
-      )
-      .join(' · ') || '无尺寸参数'
-  )
-}
 
 export function DfmClarificationPanel({
   features,
@@ -1149,6 +1082,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
                 feature_id: feature.feature_id,
                 kind: feature.kind,
                 confidence: feature.confidence,
+                quality: feature.properties.quality,
                 subtype: String(feature.properties.subtype ?? ''),
                 geometry_refs: feature.properties.geometry_refs ?? [],
                 parameters: feature.properties,
@@ -1618,81 +1552,26 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
                 labels={FEATURE_LABELS}
                 navigationSequence={reviewNavigation?.category === 'structure' ? reviewNavigation.sequence : undefined}
                 onToggleKind={toggleFeatureKind}
-                renderFeature={(feature, index) => {
+                renderFeature={feature => {
                   const selected = feature.feature_id === activeFeatureId
                   const editing = feature.feature_id === editingFeatureId
-
-                  const visibleRefs = editing
-                    ? Array.from(draftFaceIndices ?? []).sort((left, right) => left - right)
-                    : feature.geometry_refs.map(ref => ref.index)
-
-                  const refs = visibleRefs.map(indexValue => 'face #' + indexValue).join('、') || '无拓扑引用'
-
-                  const confidence =
-                    typeof feature.confidence === 'number' ? Math.round(feature.confidence * 100) + '%' : '—'
-
-                  return (
-                    <div
-                      className={
-                        'flex w-full items-start gap-2 rounded-lg border p-2.5 text-left transition ' +
-                        (selected
-                          ? 'border-amber-400/70 bg-amber-500/18 shadow-[0_0_0_1px_rgba(251,191,36,0.12)]'
-                          : 'border-white/10 bg-white/[0.035] hover:border-white/20 hover:bg-white/[0.07]')
-                      }
-                      data-review-object={feature.feature_id}
-                      key={feature.feature_id}
-                      ref={selected ? activeFeatureElementRef : undefined}
-                    >
-                      <button
-                        aria-pressed={selected}
-                        className="flex min-w-0 flex-1 items-start gap-2 text-left"
-                        disabled={editingGeometry || savingFeature}
-                        onClick={() => toggleFeatureSelection(feature)}
-                        type="button"
-                      >
-                        <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-amber-500/20 text-[10px] text-amber-100">
-                          {index + 1}
-                        </span>
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <h2 className="text-xs font-medium text-slate-100">
-                              {FEATURE_LABELS[feature.kind] ?? feature.kind}
-                            </h2>
-                            <span className="rounded bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-400">
-                              {FEATURE_SUBTYPE_LABELS[feature.subtype] ?? feature.subtype}
-                            </span>
-                            {Array.isArray(feature.diagnostics.unassigned_geometry_refs) && feature.diagnostics.unassigned_geometry_refs.length > 0 && (
-                              <span className="text-[9px] text-amber-200">新增面待分区</span>
-                            )}
-                          </div>
-                          <p className="mt-1.5 text-[11px] text-slate-300">
-                            {formatFeatureParameters(feature.parameters)}
-                          </p>
-                          <p className="mt-1 text-[10px] text-slate-500">
-                            置信度 {confidence} · {refs}
-                          </p>
-                        </div>
-                      </button>
-                      {canEditDiscovery && (
-                        <div className="flex shrink-0 gap-1">
-                          {editing ? (
-                            <span className="text-[10px] text-amber-100">上方编辑中</span>
-                          ) : (
-                            <button
-                              className="rounded bg-white/5 px-1.5 py-1 text-[10px] text-slate-300 hover:bg-white/10 disabled:opacity-50"
-                              disabled={
-                                editingGeometry || savingFeature
-                              }
-                              onClick={() => startFeatureEdit(feature)}
-                              type="button"
-                            >
-                              编辑
-                            </button>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )
+                  return <DfmFeatureCard
+                    actions={editing ? <span className="text-[10px] text-amber-100">上方编辑中</span> : undefined}
+                    confirmed
+                    disabled={editingGeometry || savingFeature}
+                    editLabel="编辑"
+                    elementRef={selected ? activeFeatureElementRef : undefined}
+                    feature={editing ? { ...feature, geometry_refs: topologyFaces
+                      .filter(face => draftFaceIndices?.has(face.geometry_ref.index)).map(face => face.geometry_ref) } : feature}
+                    featureNumber={(manifest?.features?.findIndex(item => item.feature_id === feature.feature_id) ?? -1) + 1}
+                    key={feature.feature_id}
+                    notice={Array.isArray(feature.diagnostics?.unassigned_geometry_refs) && feature.diagnostics.unassigned_geometry_refs.length > 0
+                      ? '新增面待分区' : undefined}
+                    onEdit={canEditDiscovery && !editing ? () => startFeatureEdit(feature) : undefined}
+                    onLocate={() => handleFeatureSelect(feature)}
+                    onSelect={() => toggleFeatureSelection(feature)}
+                    selected={selected}
+                  />
                 }}
                 selectionDisabled={editingGeometry || savingFeature}
               />

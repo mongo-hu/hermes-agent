@@ -23,6 +23,8 @@ import {
 } from './dfm-review'
 import type { AnnotationKind, ReviewAnnotation } from './dfm-review'
 import { isReviewConflict } from './dfm-review-edits'
+import { DfmFeatureCard } from './dfm-feature-card'
+import { featurePresentation } from './dfm-feature-presentation'
 import type { GeometryReference } from './dfm-viewer-geometry'
 import { type DfmHighlightSelection, sameHighlightSelection } from './dfm-viewer-selection'
 
@@ -125,6 +127,7 @@ export function DfmReviewPanel({
 
   const [openBuckets, setOpenBuckets] = useState<Set<string>>(new Set())
   const [limits, setLimits] = useState<Record<string, number>>({})
+  const [lowConfidenceFirst, setLowConfidenceFirst] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [openCategories, setOpenCategories] = useState<Set<ReviewCategory>>(new Set(['structure']))
@@ -136,7 +139,20 @@ export function DfmReviewPanel({
   const onRefreshedRef = useRef(onRefreshed)
   onRefreshedRef.current = onRefreshed
   const base = `/api/dfm/projects/${encodeURIComponent(projectId)}/discovery/review`
-  const buckets = useMemo(() => (context ? reviewBuckets(context, true) : []), [context])
+  const featureEntries = useMemo(() => new Map(context?.features.map((feature, index) =>
+    [feature.feature_id, { feature, number: index + 1 }]) ?? []), [context])
+  const buckets = useMemo(() => {
+    if (!context) {return []}
+    return reviewBuckets(context, true).map(bucket => {
+      if (!lowConfidenceFirst || bucket.category !== 'structure') {return bucket}
+      const scored = bucket.groups.map((group, index) => {
+        const feature = group.target_refs.map(id => featureEntries.get(id)?.feature).find(Boolean)
+        return { group, index, score: feature ? featurePresentation(feature).confidence.value : null }
+      })
+      scored.sort((a, b) => (a.score ?? Infinity) - (b.score ?? Infinity) || a.index - b.index)
+      return { ...bucket, groups: scored.map(item => item.group) }
+    })
+  }, [context, featureEntries, lowConfidenceFirst])
   const undercutBuckets = buckets.filter(bucket => bucket.groups[0]?.kind === 'forming_scope')
   const pendingUndercuts = undercutBuckets.filter(bucket => bucket.groups[0].status === 'pending_review')
   const undercutTarget = pendingUndercuts[0] ?? undercutBuckets[0]
@@ -154,6 +170,7 @@ export function DfmReviewPanel({
     setActiveScopeId(null)
     setOpenBuckets(new Set())
     setLimits({})
+    setLowConfidenceFirst(false)
     setOpenCategories(new Set(['structure']))
     setBucketNavigation(null)
     setNotice('')
@@ -385,6 +402,30 @@ export function DfmReviewPanel({
     }
   }
 
+  const structureCard = (group: ReviewGroup, bucketId: string) => {
+    const entry = group.target_refs.map(id => featureEntries.get(id)).find(Boolean)
+    if (!context || !entry) {return null}
+    const { feature, number } = entry
+    return <DfmFeatureCard
+      confirmed={false}
+      disabled={busy || editing}
+      feature={feature}
+      featureNumber={number}
+      key={group.review_group_id}
+      notice={featureNeedsPartReview(feature) ? <span title="新增面尚未归入外壁、孔壁等部位，相关指标暂不计算。">新增面待分区</span> : undefined}
+      onConfirm={() => void submit('confirm', { review_group_ids: [group.review_group_id] })}
+      onDelete={removableReviewGroup(context, group) && context.snapshot_id
+        ? () => void submit('remove', { review_group_id: group.review_group_id }) : undefined}
+      onEdit={onEditFeature ? () => onEditFeature(feature, context) : undefined}
+      onLocate={() => selectForming(group, bucketId, true)}
+      onSelect={() => selectForming(group, bucketId)}
+      selected={highlightSelection?.category === 'structure' && group.target_refs.includes(highlightSelection.objectId ?? '')}
+      selection={<input aria-label={`选择 ${group.target_refs[0]}`} checked={selected.includes(group.review_group_id)}
+        disabled={busy || editing} onChange={event => setSelected(previous => event.target.checked
+          ? [...previous, group.review_group_id] : previous.filter(id => id !== group.review_group_id))} type="checkbox" />}
+    />
+  }
+
   const localScopeCard = (group: ReviewGroup, bucketId: string) => {
     if (!context) {return null}
     const scope = context.forming_scopes.find(item => item.forming_scope_id === group.target_refs[0])
@@ -530,6 +571,17 @@ export function DfmReviewPanel({
               </span>
             </summary>
             <div className="mt-2">
+              {category.id === 'structure' && buckets.some(bucket => bucket.category === 'structure') && (
+                <label className="mb-2 flex items-center justify-between gap-2 text-[10px] text-slate-400">
+                  待确认排序
+                  <select aria-label="待确认特征排序" className="min-w-0 rounded border border-white/15 bg-[#18232c] p-1 text-slate-200"
+                    disabled={busy || editing} onChange={event => setLowConfidenceFirst(event.target.value === 'confidence')}
+                    value={lowConfidenceFirst ? 'confidence' : 'original'}>
+                    <option value="original">原始顺序</option>
+                    <option value="confidence">低置信度优先</option>
+                  </select>
+                </label>
+              )}
               {category.id === 'annotation' && (
                 <>
                   {context && onCreateAnnotation && (
@@ -618,7 +670,7 @@ export function DfmReviewPanel({
                       </summary>
                       {openBuckets.has(bucket.id) &&
                         bucket.groups.slice(0, limits[bucket.id] ?? 50).map(group => group.kind === 'forming_scope'
-                          ? localScopeCard(group, bucket.id) : (
+                          ? localScopeCard(group, bucket.id) : (group.kind === 'ordinary_structure' ? structureCard(group, bucket.id) : null) ?? (
                           <div
                             className={`mt-2 rounded border p-1.5 ${navigation?.category === category.id && group.target_refs.includes(navigation.objectId) ? 'border-amber-400/70 bg-amber-500/10' : 'border-transparent bg-black/10'}`}
                             data-review-object={group.target_refs[0]}

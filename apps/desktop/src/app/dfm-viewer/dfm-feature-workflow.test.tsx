@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { ArrowHelper, LineSegments, Mesh, Raycaster } from 'three'
+import { ArrowHelper, LineSegments, Mesh, Raycaster, Vector3 } from 'three'
 import type * as ThreeTypes from 'three'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -7,7 +7,11 @@ import type { ReviewContext } from './dfm-review'
 import { DfmViewerPane } from './dfm-viewer-pane'
 import { DfmWorkbench } from './dfm-workbench'
 
-const rendered = vi.hoisted(() => ({ scene: null as ThreeTypes.Scene | null }))
+const rendered = vi.hoisted(() => ({
+  scene: null as ThreeTypes.Scene | null,
+  camera: null as ThreeTypes.OrthographicCamera | null,
+  frame: null as FrameRequestCallback | null
+}))
 
 vi.mock('three', async importOriginal => {
   const actual = await importOriginal<typeof ThreeTypes>()
@@ -18,7 +22,10 @@ vi.mock('three', async importOriginal => {
       domElement = document.createElement('canvas')
       setPixelRatio() {}
       setSize() {}
-      render(scene: ThreeTypes.Scene) { rendered.scene = scene }
+      render(scene: ThreeTypes.Scene, camera: ThreeTypes.OrthographicCamera) {
+        rendered.scene = scene
+        rendered.camera = camera
+      }
       dispose() {}
     }
   }
@@ -48,6 +55,8 @@ afterEach(() => {
   Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: previousBridge })
   Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: previousScroll })
   rendered.scene = null
+  rendered.camera = null
+  rendered.frame = null
 })
 
 function faceMaterials(): number[] {
@@ -71,7 +80,7 @@ function expand(label: string) {
 
 async function mountObjectMenuWorkflow(inWorkbench = false) {
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
-  vi.stubGlobal('requestAnimationFrame', () => 0)
+  vi.stubGlobal('requestAnimationFrame', (frame: FrameRequestCallback) => { rendered.frame = frame; return 0 })
   vi.stubGlobal('cancelAnimationFrame', () => {})
   vi.stubGlobal('PointerEvent', MouseEvent)
   Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
@@ -112,7 +121,7 @@ async function mountObjectMenuWorkflow(inWorkbench = false) {
   render(inWorkbench
     ? <DfmWorkbench analysisView={<div>Analysis conversation</div>} target={target} />
     : <DfmViewerPane target={target} />)
-  await screen.findByText('带孔 Boss 柱 · 1 组待确认')
+  await screen.findByText('带孔 BOSS 柱 · 1 组待确认', {}, { timeout: 5000 })
   const canvas = document.querySelector('canvas')!
   canvas.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, width: 400, height: 400, right: 400, bottom: 400, toJSON() {} })
   const ray = vi.spyOn(Raycaster.prototype, 'intersectObject')
@@ -201,6 +210,43 @@ function directionArrowVisible() {
 }
 
 describe('candidate confirmation and feature editing', () => {
+  it.each([
+    { confidence: 0.726, quality: undefined, label: '72.6%' },
+    { confidence: 0, quality: undefined, label: '0%' },
+    { confidence: 0, quality: { confidence_available: false }, label: '未提供' }
+  ])('preserves confidence $label when a pending card becomes confirmed', async ({ confidence, quality, label }) => {
+    const workflow = await mountObjectMenuWorkflow()
+    const state = workflow.getState()
+    workflow.setState({ ...state, revision: state.revision + 1,
+      features: state.features.map(feature => feature.feature_id === 'BOSS_1'
+        ? { ...feature, confidence, properties: { ...feature.properties, quality } } : feature) })
+    workflow.api.mockImplementation(async request => {
+      if (request.path.endsWith('/confirm')) {
+        const current = workflow.getState()
+        const ids = (request.body as { review_group_ids: string[] }).review_group_ids
+        workflow.setState({ ...current, revision: current.revision + 1,
+          review_groups: current.review_groups.map(group => ids.includes(group.review_group_id)
+            ? { ...group, status: 'confirmed' } : group) })
+      }
+      return structuredClone(workflow.getState())
+    })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '刷新' })) })
+    expand('带孔 BOSS 柱 · 1 组待确认')
+    const pending = document.querySelector('[data-review-object="BOSS_1"]') as HTMLElement
+    expect(within(pending).getByTitle(/^识别置信度仅供/).textContent).toContain(label)
+    expect(within(pending).getByRole('button', { name: '带孔 BOSS 柱 #1' })).toBeTruthy()
+    fireEvent.click(within(pending).getByRole('button', { name: '确认' }))
+    await screen.findByText('已确认特征 · 1 个实例')
+    fireEvent.click(screen.getByText('带孔 BOSS 柱 · 1 个实例'))
+    const confirmed = document.querySelector('[data-review-object="BOSS_1"]') as HTMLElement
+    expect(within(confirmed).getByTitle(/^识别置信度仅供/).textContent).toContain(label)
+    expect(within(confirmed).getByRole('button', { name: '带孔 BOSS 柱 #1' })).toBeTruthy()
+    expect(within(confirmed).queryByRole('button', { name: '确认' })).toBeNull()
+    expect(workflow.getState().features[0].confidence).toBe(confidence)
+    fireEvent.click(within(confirmed).getByRole('button', { name: '定位' }))
+    expect(within(confirmed).getByRole('button', { name: '带孔 BOSS 柱 #1' }).getAttribute('aria-pressed')).toBe('true')
+  })
+
   it.each([false, true])('shows preparation and elapsed time at the current plan while pending (workbench=%s)', async inWorkbench => {
     const { api, getState } = await mountFormingWorkflow(inWorkbench)
     let finish!: (context: ReviewContext) => void
@@ -425,9 +471,71 @@ describe('candidate confirmation and feature editing', () => {
     expect(api.mock.calls.filter(([request]) => request.method === 'POST')).toHaveLength(0)
   })
 
+  it.each(['up', 'align'] as const)('fits and centers the whole model when the %s menu command follows local focus and rotation', async command => {
+    const { api, clickCanvas } = await mountObjectMenuWorkflow()
+    let now = performance.now()
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+    const finishAnimation = async () => {
+      now += 300
+      await act(() => { rendered.frame!(now) })
+      rendered.camera!.updateMatrixWorld()
+    }
+    const camera = rendered.camera!
+    const model = rendered.scene!.getObjectByProperty('type', 'Mesh') as Mesh
+    model.geometry.computeBoundingBox()
+    const bounds = model.geometry.boundingBox!.clone().applyMatrix4(model.matrixWorld)
+    const center = bounds.getCenter(new Vector3())
+    const corners = [bounds.min.x, bounds.max.x].flatMap(x =>
+      [bounds.min.y, bounds.max.y].flatMap(y =>
+        [bounds.min.z, bounds.max.z].map(z => new Vector3(x, y, z))))
+
+    fireEvent.click(screen.getByText('带孔 BOSS 柱 · 1 组待确认'))
+    const row = document.querySelector('[data-review-object="BOSS_1"]') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: '定位' }))
+    await finishAnimation()
+    const host = screen.getByLabelText('DFM 三维画布')
+    const localTarget = new Vector3().fromArray(JSON.parse(host.dataset.cameraTarget!))
+    expect(localTarget.distanceTo(center)).toBeGreaterThan(1)
+    expect(corners.some(corner => Math.abs(corner.clone().project(camera).x) > 1)).toBe(true)
+
+    // The existing Trackball mock does not consume gestures. Set the camera to
+    // the equivalent rotated pose while retaining the actual local focus/zoom.
+    camera.position.copy(localTarget).add(new Vector3(1, 0.1, 0.08).normalize().multiplyScalar(30))
+    camera.up.set(0.1, 0.3, 1).normalize()
+    camera.lookAt(localTarget)
+    camera.updateMatrixWorld()
+    clickCanvas(null, 2, true)
+    const menu = screen.getByRole('group', { name: '视图方向菜单' })
+    if (command === 'up') {
+      fireEvent.click(within(menu).getByRole('button', { name: '上视' }))
+    } else {
+      fireEvent.pointerMove(window, { button: 2, buttons: 2, clientX: 240, clientY: 120 })
+      fireEvent.pointerUp(window, { button: 2, clientX: 240, clientY: 120 })
+    }
+    await finishAnimation()
+
+    expect(screen.queryByRole('group', { name: '视图方向菜单' })).toBeNull()
+    const target = new Vector3().fromArray(JSON.parse(host.dataset.cameraTarget!))
+    expect(target.distanceTo(center)).toBeLessThan(1e-7)
+    const projectedCenter = center.clone().project(camera)
+    expect(projectedCenter.x).toBeCloseTo(0)
+    expect(projectedCenter.y).toBeCloseTo(0)
+    for (const corner of corners) {
+      const projected = corner.clone().project(camera)
+      expect(Math.abs(projected.x)).toBeLessThan(1)
+      expect(Math.abs(projected.y)).toBeLessThan(1)
+      expect(Math.abs(projected.z)).toBeLessThan(1)
+    }
+    const expectedForward = command === 'up' ? new Vector3(0, 0, -1) : new Vector3(-1, 0, 0)
+    const expectedUp = command === 'up' ? new Vector3(0, 1, 0) : new Vector3(0, 0, 1)
+    expect(camera.getWorldDirection(new Vector3()).distanceTo(expectedForward)).toBeLessThan(1e-7)
+    expect(camera.up.distanceTo(expectedUp)).toBeLessThan(1e-7)
+    expect(api.mock.calls.filter(([request]) => request.method === 'POST' || request.method === 'PATCH')).toHaveLength(0)
+  })
+
   it('protects the active face draft and review checkboxes from object context menus', async () => {
     const { api, canvas, clickCanvas } = await mountObjectMenuWorkflow()
-    fireEvent.click(screen.getByText('带孔 Boss 柱 · 1 组待确认'))
+    fireEvent.click(screen.getByText('带孔 BOSS 柱 · 1 组待确认'))
     const row = document.querySelector('[data-review-object="BOSS_1"]') as HTMLElement
     fireEvent.click(within(row).getByRole('checkbox', { name: '选择 BOSS_1' }))
     fireEvent.click(within(row).getByRole('button', { name: '编辑选面' }))
@@ -542,8 +650,8 @@ describe('candidate confirmation and feature editing', () => {
     expect(faceMaterials()).toEqual([0, 0, 0, 2])
     expect(bossTitle.closest('details')?.open).toBe(false)
     const blendRow = document.querySelector('[data-review-object="blend-1"]') as HTMLElement
-    fireEvent.click(within(blendRow).getByRole('button'))
-    fireEvent.click(within(blendRow).getByRole('button'))
+    fireEvent.click(within(blendRow).getByRole('button', { name: '圆角链 #3' }))
+    fireEvent.click(within(blendRow).getByRole('button', { name: '圆角链 #3' }))
     expect(faceMaterials()).toEqual([0, 0, 0, 0])
     expect(blendTitle.closest('details')?.open).toBe(false)
     clickCanvas(0)
@@ -592,7 +700,7 @@ describe('candidate confirmation and feature editing', () => {
     const readJsonFile = vi.fn(async (path: string) => path.endsWith('scene.json') ? scene : path.endsWith('topology.json') ? topology : manifest)
     Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api, readJsonFile } })
     render(<DfmViewerPane target={{ projectId: project, manifestPath: '/project/viewer.json', status: 'discovery' }} />)
-    fireEvent.click(await screen.findByText('带孔 Boss 柱 · 1 组待确认'))
+    fireEvent.click(await screen.findByText('带孔 BOSS 柱 · 1 组待确认'))
     const row = document.querySelector('[data-review-object="BOSS_1"]') as HTMLElement
     fireEvent.click(within(row).getByRole('button', { name: '编辑选面' }))
     const editor = await screen.findByRole('region', { name: '编辑特征选面' })
@@ -980,7 +1088,8 @@ describe('candidate confirmation and feature editing', () => {
       const blendRow = document.querySelector('[data-review-object="BLEND_1"]') as HTMLElement
       const originalCanvas = canvas
       const readsBeforeRemoval = readJsonFile.mock.calls.length
-      fireEvent.click(within(blendRow).getByRole('button', { name: '删除' }))
+      within(blendRow).getByText('详情').closest('details')!.open = true
+      fireEvent.click(within(blendRow).getByRole('button', { name: '删除特征' }))
       await waitFor(() => expect(state.features.some(feature => feature.feature_id === 'BLEND_1')).toBe(false))
       await waitFor(() => expect(screen.queryByText('Existing issue')).toBeNull())
       expect(document.querySelector('canvas')).toBe(originalCanvas)
@@ -1079,8 +1188,8 @@ describe('candidate confirmation and feature editing', () => {
       await waitFor(() => expect(document.querySelector('canvas')).not.toBeNull())
       pick(0)
       fireEvent.click(screen.getByRole('tab', { name: /特征点/ }))
-      await screen.findByText('带孔 Boss 柱 · 1 组待确认')
-      const pending = expand('带孔 Boss 柱 · 1 组待确认')
+      await screen.findByText('带孔 BOSS 柱 · 1 组待确认')
+      const pending = expand('带孔 BOSS 柱 · 1 组待确认')
       fireEvent.click(within(pending).getByRole('checkbox', { name: '选择 BOSS_1' }))
       await act(async () => { fireEvent.click(screen.getByRole('button', { name: '确认选中组（1）' })) })
       await screen.findByText('已确认特征 · 1 个实例')
@@ -1100,6 +1209,7 @@ describe('candidate confirmation and feature editing', () => {
       fireEvent.pointerDown(canvas, { button: 0, clientX: 100, clientY: 100 })
       fireEvent.pointerUp(canvas, { button: 0, clientX: 100, clientY: 100 })
       expect(within(editor).getByText(/已选 2 个面 · 新增 1/)).toBeTruthy()
+      expect(document.querySelector('[data-review-object="BOSS_1"]')?.textContent).toContain('关联面 2 个')
       ray.mockReturnValue([])
       fireEvent.pointerDown(canvas, { button: 0, clientX: 100, clientY: 100 })
       fireEvent.pointerUp(canvas, { button: 0, clientX: 100, clientY: 100 })
@@ -1123,8 +1233,8 @@ describe('candidate confirmation and feature editing', () => {
       fireEvent.click(within(editor).getByRole('button', { name: '保存选面' }))
       await waitFor(() => expect(screen.queryByRole('region', { name: '编辑特征选面' })).toBeNull())
       await screen.findByText('已确认特征 · 0 个实例')
-      await screen.findByText('带孔 Boss 柱 · 1 组待确认')
-      const returned = expand('带孔 Boss 柱 · 1 组待确认')
+      await screen.findByText('带孔 BOSS 柱 · 1 组待确认')
+      const returned = expand('带孔 BOSS 柱 · 1 组待确认')
       expect(readJsonFile.mock.calls.some(([path]) => path === '/project/discovery-viewer.json')).toBe(true)
       expect(within(returned).getByRole('checkbox', { name: '选择 BOSS_1' })).toBeTruthy()
       const edits = api.mock.calls.filter(([request]) => request.method === 'PATCH')

@@ -82,6 +82,47 @@ def test_occt_cpp_discovery_rejects_a_short_lived_session_fallback(tmp_path):
     assert exc_info.value.code == "geometry_session_required"
 
 
+@pytest.mark.parametrize(
+    "score_fields,expected_confidence,expected_quality",
+    [
+        pytest.param({"confidence": 0.0}, 0.0, None, id="valid-zero"),
+        pytest.param(
+            {"confidence": 0.91, "quality": {"confidence_basis": "geometric_heuristic"}},
+            0.91,
+            {"confidence_basis": "geometric_heuristic"},
+            id="quality-preserved",
+        ),
+        pytest.param(
+            {"confidence": 0.0, "quality": {"confidence_available": False}},
+            0.0,
+            {"confidence_available": False},
+            id="explicit-unavailable",
+        ),
+        pytest.param({}, 0.0, {"confidence_available": False}, id="missing"),
+        pytest.param(
+            {"confidence": None, "quality": {"confidence_available": True}},
+            0.0,
+            {"confidence_available": False},
+            id="null-overrides-availability",
+        ),
+    ],
+)
+def test_occt_snapshot_projection_preserves_confidence_availability(
+    score_fields, expected_confidence, expected_quality
+):
+    raw = {"feature_id": "feature-main-wall", "kind": "main_wall", **score_fields}
+    original = {**raw, "quality": dict(raw["quality"])} if "quality" in raw else dict(raw)
+    result = OCCTCppFeatureRecognitionProvider().project_snapshot(
+        _input(), {"snapshot_id": "snapshot-1", "features": [raw]}
+    )
+
+    feature = result.features[0]
+    assert feature.confidence == expected_confidence
+    assert feature.properties.get("quality") == expected_quality
+    assert feature.to_dict()["properties"].get("quality") == expected_quality
+    assert raw == original
+
+
 def test_feature_catalog_declares_executable_facts_and_honest_placeholder_fallback():
     engine = DiscoveryEngine()
     capability = engine.capability()

@@ -290,6 +290,7 @@ def materialize_viewer_manifest(
             "kind": str(item.get("kind") or "feature"),
             "subtype": str(item.get("subtype") or ""),
             "confidence": item.get("confidence"),
+            **({"quality": dict(item["quality"])} if isinstance(item.get("quality"), dict) else {}),
             "geometry_refs": refs,
             "parameters": (
                 item["parameters"] if isinstance(item.get("parameters"), dict) else {}
@@ -473,6 +474,7 @@ def materialize_discovery_viewer_manifest(
             "kind": feature.kind,
             "subtype": str(properties.get("subtype") or ""),
             "confidence": feature.confidence,
+            **({"quality": dict(properties["quality"])} if isinstance(properties.get("quality"), dict) else {}),
             "geometry_refs": sorted(
                 refs.values(), key=lambda item: (str(item["kind"]), int(item["index"]))
             ),
