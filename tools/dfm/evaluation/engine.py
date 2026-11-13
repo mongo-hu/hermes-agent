@@ -76,7 +76,7 @@ def _utc_now() -> str:
 class EvaluationEngine:
     """The sole production owner of Measurement → Evaluation comparison."""
 
-    version = "hermes-evaluation-v6"
+    version = "hermes-evaluation-v7"
 
     def materialize(
         self,
@@ -168,8 +168,17 @@ class EvaluationEngine:
         if plan.rule_bindings:
             for case in evaluation_cases(measurements, plan):
                 case_plan = replace(plan, rule_bindings=case.bindings)
-                for binding in self._select_measured_rules(case.measurements, case_plan, instance_id=case.instance_id):
+                selected, unresolved = self._select_measured_rules(case.measurements, case_plan, instance_id=case.instance_id)
+                for binding, selection in unresolved:
+                    evaluation, source = self._appearance_selection_evaluation(binding, plan.rules[binding.rule_id], selection, case.instance_id)
+                    results.append(evaluation)
+                    provenance[evaluation.evaluation_id] = source
+                for binding in selected:
                     evaluation, source = self._evaluate_binding(case.measurements, case_plan, binding, instance_id=case.instance_id)
+                    if (binding.rule_selection or {}).get("appearance_conditions"):
+                        selection = self._instance_appearance(case.measurements, case_plan, [binding], case.instance_id)
+                        evaluation = replace(evaluation, rule_selection_result=selection)
+                        source["rule_selection_result"] = selection
                     if case.instance_id is not None:
                         source["measurement_instance_id"] = case.instance_id
                     results.append(evaluation)
@@ -201,6 +210,7 @@ class EvaluationEngine:
             for binding_ref in fragment.rule_binding_refs
         }
         direct = []
+        unresolved = []
         groups = {}
         for binding in plan.rule_bindings:
             binding.validate()
@@ -218,8 +228,20 @@ class EvaluationEngine:
             "LTE": operator.le,
         }
         for candidates in groups.values():
+            appearance = self._instance_appearance(measurements, plan, candidates, instance_id)
+            if appearance is not None and appearance["outcome"] != "selected":
+                applicable = candidates
+                if appearance["appearance_class"] is not None:
+                    applicable = [binding for binding in candidates if self._matches_appearance(binding, appearance["appearance_class"])]
+                if applicable:
+                    unresolved.append((sorted(applicable, key=lambda item: item.rule_id)[0], appearance))
+                continue
             matched = []
             for binding in candidates:
+                appearance_conditions = binding.rule_selection.get("appearance_conditions", [])
+                if appearance_conditions:
+                    if not self._matches_appearance(binding, appearance["appearance_class"]):
+                        continue
                 conditions = binding.rule_selection["conditions"]
                 operands = {item.alias: item for item in binding.measurement_operands()}
                 applicable = True
@@ -268,6 +290,7 @@ class EvaluationEngine:
                 item.operator,
                 item.expression,
                 item.acceptance_criteria_json,
+                item.evaluation_gate_json,
             )
             if any(
                 rank(item) == rank(winner) and signature(item) != signature(winner)
@@ -286,7 +309,68 @@ class EvaluationEngine:
                     },
                 )
             direct.append(winner)
-        return direct
+        return direct, unresolved
+
+    @staticmethod
+    def _matches_appearance(binding, appearance_class):
+        value = {"appearance": "外观", "non_appearance": "非外观"}[appearance_class]
+        return all(value == row["value"] if row["operator"] == "EQ" else value in row["value"]
+                   for row in binding.rule_selection.get("appearance_conditions", []))
+
+    @staticmethod
+    def _instance_appearance(measurements, plan, candidates, instance_id):
+        if not any(binding.rule_selection.get("appearance_conditions") for binding in candidates):
+            return None
+        matches = {}
+        for binding in candidates:
+            aliases = set(binding.rule_selection.get("appearance_operands", []))
+            if binding.evaluation_gate_json is not None:
+                gate_aliases = _expression_operand_aliases(binding.evaluation_gate_json["expression"], binding_id=binding.binding_id)
+                # Routing must not require a downstream criterion that a false
+                # gate explicitly says to skip.
+                aliases = aliases.intersection(gate_aliases) or aliases
+            for operand in binding.measurement_operands():
+                if operand.alias not in aliases:
+                    continue
+                for result in geometric_operand_matches(measurements, plan, binding, operand):
+                    if result.measurement_instance_id == instance_id and instance_id is not None:
+                        matches[result.result_id] = result
+        reasons = {str((row.quality or {}).get("appearance_classification_reason") or "appearance_class_missing")
+                   for row in matches.values() if (row.quality or {}).get("appearance_class") not in ("appearance", "non_appearance")}
+        classes = {(row.quality or {}).get("appearance_class") for row in matches.values()
+                   if (row.quality or {}).get("appearance_class") in ("appearance", "non_appearance")}
+        if not matches:
+            reasons.add("measurement_support_missing")
+        elif len(classes) > 1:
+            reasons.add("conflicting_instance_appearance")
+        empty = bool(matches) and not reasons and all(row.status == "not_applicable"
+            and row.reason == "measurement_not_applicable: appearance_scope_empty" for row in matches.values())
+        return {
+            "outcome": "indeterminate" if reasons else "not_applicable" if empty else "selected",
+            "appearance_class": next(iter(classes)) if not reasons else None,
+            "reason_codes": ["appearance_scope_empty"] if empty else sorted(reasons), "measurement_ids": sorted(matches),
+            "candidate_rule_ids": sorted(binding.rule_id for binding in candidates),
+        }
+
+    def _appearance_selection_evaluation(self, binding, parameter, selection, instance_id):
+        rule_hash = self._rule_hash(binding=binding, rule_version=parameter.version,
+                                    expected=parameter.value, expected_unit=parameter.unit)
+        identity = {"binding_id": binding.binding_id, "rule_hash": rule_hash,
+                    "measurement_instance_id": instance_id, "rule_selection_result": selection}
+        stable_id = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:24]
+        evaluation = GeometricEvaluationRecord(
+            evaluation_id="evaluation-" + stable_id, geometric_id=binding.geometric_id,
+            measurement_ids=selection["measurement_ids"], rule_id=binding.rule_id,
+            rule_version=parameter.version, rule_hash=rule_hash, operator=binding.operator,
+            expected=parameter.value, actual=None, outcome=selection["outcome"],
+            feature_refs=binding.feature_refs, check_id=binding.check_id,
+            actual_unit=parameter.unit, expression=binding.expression,
+            severity=parameter.severity, severity_rationale=parameter.severity_rationale,
+            rule_selection_result=selection,
+        )
+        return evaluation, {"type": "rule_selection", "binding_id": binding.binding_id,
+                            "check_id": binding.check_id, "rule_selection_result": selection,
+                            "measurement_instance_id": instance_id, "acceptance_skipped": True}
 
     def _evaluate_binding(
         self,
@@ -322,6 +406,16 @@ class EvaluationEngine:
                     "evaluation_rule_invalid",
                     "The pinned primary rule parameter does not match its first acceptance criterion.",
                     {"binding_id": binding.binding_id, "rule_id": binding.rule_id},
+                )
+
+        gate_result = None
+        if binding.evaluation_gate_json is not None:
+            gate_result, gate_inputs = self._evaluate_gate(
+                measurements, plan, binding, instance_id=instance_id
+            )
+            if gate_result["outcome"] != "true":
+                return self._gated_out_evaluation(
+                    binding, parameter, gate_result, gate_inputs, instance_id
                 )
 
         resolved = {}
@@ -607,6 +701,7 @@ class EvaluationEngine:
             "actual_unit": actual.unit,
             "expression": expression,
             "operand_values": operand_values,
+            "evaluation_gate_result": gate_result,
         }
         if isinstance(binding, GeometricRuleBinding):
             evaluation = GeometricEvaluationRecord(
@@ -642,7 +737,97 @@ class EvaluationEngine:
             "unavailable_operands": unavailable,
             "severity_rationale": parameter.severity_rationale,
         }
+        if gate_result is not None:
+            source["evaluation_gate_result"] = gate_result
         return evaluation, source
+
+    def _evaluate_gate(self, measurements, plan, binding, *, instance_id=None):
+        """Resolve only gate operands before touching acceptance criteria."""
+        gate = binding.evaluation_gate_json
+        aliases = _expression_operand_aliases(gate["expression"], binding_id=binding.binding_id)
+        resolved, unavailable = {}, {}
+        for operand in binding.measurement_operands():
+            if operand.alias not in aliases:
+                continue
+            try:
+                resolved[operand.alias] = self._resolve_operand(
+                    measurements, plan, binding, operand, instance_id=instance_id
+                )
+            except DFMError as exc:
+                if exc.code not in {
+                    "evaluation_operand_missing", "evaluation_operand_ambiguous",
+                    "evaluation_operand_unavailable", "evaluation_value_invalid",
+                    "evaluation_unit_invalid",
+                }:
+                    raise
+                unavailable[operand.alias] = {
+                    "code": exc.code, "message": exc.message, "details": exc.details or {},
+                }
+        linked = [row for operand in resolved.values() for row in operand.measurements]
+        if len({row.input_sha256 for row in linked}) > 1:
+            raise DFMError("evaluation_operand_invalid", "A gate cannot combine different model inputs.")
+        result = {
+            "expression": gate["expression"],
+            "operator": _CRITERION_OPERATORS[gate["comparator"]],
+            "expected": gate["threshold"], "unit": gate["result_unit"],
+            "actual": None, "outcome": "indeterminate",
+            "measurement_ids": list(dict.fromkeys(row.measurement_id for row in linked)),
+        }
+        if unavailable:
+            result["unavailable_operands"] = sorted(unavailable)
+            result["unavailable_reasons"] = unavailable
+        else:
+            try:
+                value = self._evaluate_expression(gate["expression"], resolved, binding.binding_id)
+                self._validate_result_unit(value.unit, gate["result_unit"], binding_id=binding.binding_id)
+                number = self._finite_number(value.value, binding_id=binding.binding_id, operand_alias="evaluation_gate")
+                result["actual"] = value.value
+                result["outcome"] = "true" if self._compare(
+                    result["operator"], number, gate["threshold"], binding_id=binding.binding_id
+                ) else "false"
+            except DFMError as exc:
+                if exc.code not in {"evaluation_expression_invalid", "evaluation_value_invalid", "evaluation_unit_invalid"}:
+                    raise
+                result["error_code"] = exc.code
+        return result, resolved
+
+    def _gated_out_evaluation(self, binding, parameter, gate, resolved, instance_id):
+        """A false gate skips the check; an unknown gate cannot certify a pass."""
+        rule_hash = self._rule_hash(binding=binding, rule_version=parameter.version,
+                                    expected=parameter.value, expected_unit=parameter.unit)
+        linked = [row for operand in resolved.values() for row in operand.measurements]
+        measurement_ids = gate["measurement_ids"]
+        identity = {"binding_id": binding.binding_id, "rule_hash": rule_hash,
+                    "measurement_ids": measurement_ids, "measurement_instance_id": instance_id}
+        stable_id = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:24]
+        operand_values = {alias: {
+            "value": operand.value, "unit": operand.unit, "aggregation": operand.aggregation,
+            "measurement_ids": [row.measurement_id for row in operand.measurements],
+        } for alias, operand in resolved.items()}
+        common = {
+            "evaluation_id": "evaluation-" + stable_id, "measurement_ids": measurement_ids,
+            "rule_id": binding.rule_id, "rule_version": parameter.version, "rule_hash": rule_hash,
+            "operator": gate["operator"], "expected": gate["expected"], "actual": gate["actual"],
+            "outcome": "not_applicable" if gate["outcome"] == "false" else "indeterminate",
+            "feature_refs": sorted(set(binding.feature_refs) | {ref for row in linked for ref in row.feature_refs}),
+            "check_id": binding.check_id, "actual_unit": gate["unit"], "expression": gate["expression"],
+            "operand_values": operand_values, "severity": parameter.severity,
+            "severity_rationale": parameter.severity_rationale, "evaluation_gate_result": gate,
+        }
+        if isinstance(binding, GeometricRuleBinding):
+            evaluation = GeometricEvaluationRecord(geometric_id=binding.geometric_id, **common)
+        else:
+            evaluation = EvaluationRecord(operation_id=binding.operation_id, metric_id=binding.metric_id,
+                region_refs=sorted(set(binding.region_refs) | {ref for row in linked for ref in row.region_refs}), **common)
+        return evaluation, {
+            "type": "effective_rule", "binding_id": binding.binding_id, "check_id": binding.check_id,
+            "source": parameter.source, "version": parameter.version, "unit": parameter.unit,
+            "expression": gate["expression"], "operands": operand_values,
+            "rule_selection": binding.rule_selection, "criterion_results": [],
+            "evaluation_gate_result": gate, "acceptance_skipped": True,
+            "unavailable_operands": gate.get("unavailable_reasons", {}),
+            "severity_rationale": parameter.severity_rationale,
+        }
 
     def _resolve_operand(
         self,
@@ -659,7 +844,9 @@ class EvaluationEngine:
             if instance_id is not None and operand.aggregation == "identity":
                 # A truly unscoped singleton is shared. Named quantities must
                 # match this physical instance even when only one is returned.
-                if any(item.measurement_instance_id is not None for item in matches):
+                if binding.evaluation_gate_json is not None or (binding.rule_selection or {}).get("appearance_conditions") or any(
+                    item.measurement_instance_id is not None for item in matches
+                ):
                     matches = [item for item in matches if item.measurement_instance_id == instance_id]
         else:
             matches = sorted(

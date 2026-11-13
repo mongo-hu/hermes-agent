@@ -14,6 +14,7 @@ from ..contracts import (
     _acceptance_criteria_groups,
     _expression_operand_aliases,
     _validate_acceptance_criteria,
+    _validate_evaluation_gate,
 )
 from ..errors import DFMError
 
@@ -30,6 +31,7 @@ PROPERTY_FIELDS = {
         "impact_scope",
     },
     "check": {"default_severity", "report_group"},
+    "risk_category": set(),
 }
 REQUIRED_PROPERTY_FIELDS = {
     kind: fields - ({"impact_scope"} if kind == "factor" else set())
@@ -50,6 +52,7 @@ ENDPOINTS = {
     "APPLIES_TO_FEATURE": ({"check"}, {"feature_type"}),
     "USES_OPERAND": ({"check"}, {"geometric"}),
     "REQUIRES_FACTOR": ({"process", "check"}, {"factor"}),
+    "HAS_RISK_CATEGORY": ({"check"}, {"risk_category"}),
     "AFFECTS": ({"factor", "feature_type"}, {"check"}),
     "RELATED_TO": (set(PROPERTY_FIELDS), set(PROPERTY_FIELDS)),
 }
@@ -332,6 +335,12 @@ def validate_catalog(payload: Mapping[str, Any], validate_source_policy) -> None
                     catalog_json_field(rule, "acceptance_criteria", version),
                     binding_id=rule["rule_id"],
                 )
+                comparison_alias = rule.get("comparison_operand_alias")
+                if comparison_alias is not None and comparison_alias not in aliases:
+                    invalid("Comparison operand must occur in acceptance criteria, not only the gate.", rule_id=rule["rule_id"])
+                aliases.update(_validate_evaluation_gate(
+                    rule.get("evaluation_gate_json"), binding_id=rule["rule_id"]
+                ))
             except DFMError as exc:
                 invalid("Acceptance criteria are invalid.", rule_id=rule["rule_id"], reason=exc.message)
             operand_units = {}
@@ -348,7 +357,10 @@ def validate_catalog(payload: Mapping[str, Any], validate_source_policy) -> None
                 catalog_json_field(rule, "acceptance_criteria", version),
                 binding_id=rule["rule_id"],
             )
-            for criterion in (item for group in groups for item in group):
+            comparisons = [item for group in groups for item in group]
+            if rule.get("evaluation_gate_json") is not None:
+                comparisons.append({"criterion_id": "evaluation_gate", **rule["evaluation_gate_json"]})
+            for criterion in comparisons:
                 try:
                     unit = expression_unit(criterion["expression"], operand_units)
                 except (KeyError, ValueError) as exc:
@@ -383,6 +395,10 @@ def validate_catalog(payload: Mapping[str, Any], validate_source_policy) -> None
                     "Factor condition references an invalid Factor.",
                     rule_id=rule["rule_id"],
                 )
+    grouped_checks = {rule["check_id"] for rule in payload["rules"] if rule.get("comparison_operand_alias") is not None}
+    for rule in payload["rules"]:
+        if rule["check_id"] in grouped_checks and rule.get("comparison_operand_alias") is None:
+            invalid("Every effective rule of an explicitly grouped Check must declare a comparison operand.", rule_id=rule["rule_id"])
     for option in payload["factor_options"]:
         if concepts.get(option["factor_id"], {}).get("concept_type") != "factor":
             invalid("Factor option references an invalid Factor.")

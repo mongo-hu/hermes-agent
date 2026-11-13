@@ -46,6 +46,7 @@ def geometry_binding_index(scope: Mapping[str, Any]) -> dict[str, dict[str, Any]
         direction_modes = raw.get("direction_modes")
         context_schema = raw.get("context_schema")
         reference_requirements = raw.get("requires_relationships")
+        annotation_requirements = raw.get("requires_annotations", [])
         if (
             not feature_kind
             or not isinstance(scope_modes, list)
@@ -59,6 +60,9 @@ def geometry_binding_index(scope: Mapping[str, Any]) -> dict[str, dict[str, Any]
                    or any(not isinstance(item.get(key), str) or not item[key] for key in ("type", "target_feature_kind"))
                    for item in reference_requirements)
             or len({item["type"] for item in reference_requirements}) != len(reference_requirements)
+            or not isinstance(annotation_requirements, list)
+            or any(not isinstance(kind, str) or not kind for kind in annotation_requirements)
+            or len(set(annotation_requirements)) != len(annotation_requirements)
             or not isinstance(context_schema, Mapping)
         ):
             raise DFMError(
@@ -72,6 +76,7 @@ def geometry_binding_index(scope: Mapping[str, Any]) -> dict[str, dict[str, Any]
             "direction_modes": [str(value) for value in direction_modes],
             "requires_complete_inventory": list(raw["requires_complete_inventory"]),
             "requires_relationships": [dict(item) for item in reference_requirements],
+            "requires_annotations": list(annotation_requirements),
             "context_schema": dict(context_schema),
         }
     return result

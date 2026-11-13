@@ -41,9 +41,12 @@ from .catalog_contract import (
 )
 
 
-ONTOLOGY_SNAPSHOT_SCHEMA_VERSION = 4
-SUPPORTED_ONTOLOGY_SNAPSHOT_SCHEMA_VERSIONS = {1, 2, 3, 4}
-LOCAL_DATABASE_SCHEMA_VERSION = 3
+ONTOLOGY_SNAPSHOT_SCHEMA_VERSION = 5
+SUPPORTED_ONTOLOGY_SNAPSHOT_SCHEMA_VERSIONS = {1, 2, 3, 4, 5}
+LOCAL_DATABASE_SCHEMA_VERSION = 5
+# Only these Schema 5 Checks adopt the reviewed face/transition appearance
+# contract. Other Checks retain their published, human-confirmed Factor policy.
+INSTANCE_APPEARANCE_CHECK_IDS = frozenset({"C_WALL_DRAFT", "C_WALL_THK_TRANSITION"})
 _CONCEPT_TYPES = {
     "process",
     "feature_type",
@@ -335,6 +338,7 @@ class LocalOntologyStore:
         if identity.process != process:
             return ()
         with self._connect() as connection:
+            instance_appearance_checks = self._instance_appearance_checks(connection)
             blocked_checks: set[str] = set()
             if self._geometric_binding_mode_configured:
                 blocked_checks = {
@@ -346,6 +350,26 @@ class LocalOntologyStore:
                     if str(row["object_id"]).startswith("G_")
                     and str(row["object_id"]) not in self._geometric_bindings
                 }
+                for check_id in tuple(blocked_checks):
+                    rules = connection.execute(
+                        "SELECT * FROM rule_version WHERE check_id=? AND status='released'", (check_id,)
+                    ).fetchall()
+                    if not any("comparison_operand_alias" in row.keys() and row["comparison_operand_alias"] is not None for row in rules):
+                        continue
+                    operand_ids = {json.loads(row["qualifiers_json"])["alias"]: row["object_id"]
+                                   for row in connection.execute(
+                                       "SELECT object_id, qualifiers_json FROM ontology_relation WHERE subject_id=? AND predicate='USES_OPERAND'", (check_id,))}
+                    for rule in rules:
+                        expressions = [criterion["expression"] for group in _acceptance_criteria_groups(
+                            _load_json(rule["acceptance_criteria_json"], []), binding_id=rule["rule_id"]
+                        ) for criterion in group]
+                        gate = _load_json(rule["evaluation_gate_json"], None)
+                        if gate is not None:
+                            expressions.append(gate["expression"])
+                        aliases = set().union(*(_expression_operand_aliases(expression, binding_id=rule["rule_id"]) for expression in expressions))
+                        if all(operand_ids[alias] in self._geometric_bindings for alias in aliases):
+                            blocked_checks.remove(check_id)
+                            break
             rows = connection.execute(
                 """
                 SELECT relation.subject_id,
@@ -364,6 +388,8 @@ class LocalOntologyStore:
             ).fetchall()
         merged: dict[str, dict[str, Any]] = {}
         for row in rows:
+            if row["concept_id"] == "F_APPR_REGION_REQ" and row["subject_id"] in instance_appearance_checks:
+                continue
             if (
                 row["subject_type"] == "check"
                 and str(row["subject_id"]) in blocked_checks
@@ -404,6 +430,19 @@ class LocalOntologyStore:
                 current["phase"] = "discovery"
                 current["question"] = requirement["question"]
         return tuple(merged[key] for key in sorted(merged))
+
+    def _instance_appearance_checks(self, connection) -> set[str]:
+        """Schema 5 obtains this published Factor from annotated measurement support."""
+        metadata = connection.execute("SELECT * FROM snapshot_metadata WHERE singleton_id=1").fetchone()
+        if not metadata or "publication_schema_version" not in metadata.keys() or metadata["publication_schema_version"] < 5:
+            return set()
+        checks = {row["subject_id"] for row in connection.execute(
+            "SELECT subject_id FROM ontology_relation WHERE predicate='REQUIRES_FACTOR' AND object_id='F_APPR_REGION_REQ'"
+        )}
+        checks.update(row["check_id"] for row in connection.execute(
+            "SELECT check_id, conditions_json FROM rule_version WHERE status='released'"
+        ) if any(item.get("factor_id") == "F_APPR_REGION_REQ" for item in _load_json(row["conditions_json"], [])))
+        return checks.intersection(INSTANCE_APPEARANCE_CHECK_IDS)
 
     def fact_enum_values(self, process: str, fact_name: str) -> tuple[Any, ...]:
         """Return published choices for a closed, user-confirmed factor."""
@@ -806,6 +845,7 @@ class LocalOntologyStore:
         requirements = self.fact_requirements(process)
         accepted = {item["name"] for item in requirements}
         with self._connect() as connection:
+            instance_appearance_checks = self._instance_appearance_checks(connection)
             factor_rows = connection.execute(
                 "SELECT concept_id, properties_json FROM ontology_concept "
                 "WHERE concept_type = 'factor' AND status = 'active'"
@@ -854,76 +894,85 @@ class LocalOntologyStore:
                     "SELECT * FROM rule_version WHERE check_id = ? AND status = 'released'",
                     (check_id,),
                 ).fetchall()
-                candidates, deferred = self._plan_rule_candidates(
-                    rules, check_facts, check_id
-                )
-                if not candidates:
-                    continue
-                operand_rows = connection.execute(
-                    """
-                    SELECT relation.*, metric.properties_json AS metric_properties_json
-                    FROM ontology_relation AS relation
-                    JOIN ontology_concept AS metric ON metric.concept_id = relation.object_id
-                    WHERE relation.subject_id = ? AND relation.predicate = 'USES_OPERAND'
-                    ORDER BY relation.sort_order, relation.relation_id
-                    """,
-                    (check_id,),
-                ).fetchall()
-                check_skipped = False
-                for selected in candidates:
-                    result = self._compile_binding(
-                        connection,
-                        check_id,
-                        selected,
-                        operand_rows,
-                        operations,
-                        factor_runtime_keys,
-                        geometric_bindings=(
-                            self._geometric_bindings
-                            if self._geometric_binding_mode_configured
-                            else None
-                        ),
-                        deferred=deferred,
+                for comparison_rows in self._comparison_rule_groups(rules):
+                    candidates, deferred = self._plan_rule_candidates(
+                        comparison_rows, check_facts, check_id, instance_appearance=check_id in instance_appearance_checks
                     )
-                    if result[0] is None:
-                        details = result[1]
-                        skipped.append(
-                            SkippedCheck(
-                                check_id=check_id,
-                                reason=str(details.get("reason") or "operand_unresolvable"),
-                                details=details,
+                    if not candidates:
+                        continue
+                    operand_rows = connection.execute(
+                        """
+                        SELECT relation.*, metric.properties_json AS metric_properties_json
+                        FROM ontology_relation AS relation
+                        JOIN ontology_concept AS metric ON metric.concept_id = relation.object_id
+                        WHERE relation.subject_id = ? AND relation.predicate = 'USES_OPERAND'
+                        ORDER BY relation.sort_order, relation.relation_id
+                        """,
+                        (check_id,),
+                    ).fetchall()
+                    group_skipped = False
+                    first_binding = len(bindings)
+                    for selected in candidates:
+                        result = self._compile_binding(
+                            connection,
+                            check_id,
+                            selected,
+                            operand_rows,
+                            operations,
+                            factor_runtime_keys,
+                            geometric_bindings=(
+                                self._geometric_bindings
+                                if self._geometric_binding_mode_configured
+                                else None
+                            ),
+                            deferred=deferred,
+                            instance_appearance=check_id in instance_appearance_checks,
+                        )
+                        if result[0] is None:
+                            details = result[1]
+                            if "comparison_operand_alias" in selected.keys() and selected["comparison_operand_alias"] is not None:
+                                details = {**details, "comparison_operand_alias": selected["comparison_operand_alias"]}
+                            skipped.append(
+                                SkippedCheck(
+                                    check_id=check_id,
+                                    reason=str(details.get("reason") or "operand_unresolvable"),
+                                    details=details,
+                                )
                             )
+                            group_skipped = True
+                            break
+                        binding, binding_selectors = result
+                        rule_id = str(selected["rule_id"])
+                        if rule_id in compiled_rules:
+                            self._invalid(
+                                "A flattened publication contains multiple candidates with the same Rule ID.",
+                                {"rule_id": rule_id},
+                            )
+                        compiled_rules[rule_id] = EffectiveRule(
+                            value=_load_json(selected["threshold_json"], None),
+                            unit=selected["result_unit"],
+                            source=(
+                                f"ontology:{identity.snapshot_id}/{rule_id}"
+                                f"@{selected['version']}#{selected['content_sha256']}"
+                            ),
+                            version=str(selected["version"]),
+                            severity=str(selected["severity"] or "unclassified"),
+                            severity_rationale=(
+                                selected["severity_rationale"]
+                                if "severity_rationale" in selected.keys()
+                                else None
+                            ),
+                            name=selected["name"],
+                            recommendation_template=selected["recommendation_template"],
                         )
-                        check_skipped = True
-                        break
-                    binding, binding_selectors = result
-                    rule_id = str(selected["rule_id"])
-                    if rule_id in compiled_rules:
-                        self._invalid(
-                            "A flattened publication contains multiple candidates with the same Rule ID.",
-                            {"rule_id": rule_id},
-                        )
-                    compiled_rules[rule_id] = EffectiveRule(
-                        value=_load_json(selected["threshold_json"], None),
-                        unit=selected["result_unit"],
-                        source=(
-                            f"ontology:{identity.snapshot_id}/{rule_id}"
-                            f"@{selected['version']}#{selected['content_sha256']}"
-                        ),
-                        version=str(selected["version"]),
-                        severity=str(selected["severity"] or "unclassified"),
-                        severity_rationale=(
-                            selected["severity_rationale"]
-                            if "severity_rationale" in selected.keys()
-                            else None
-                        ),
-                        name=selected["name"],
-                        recommendation_template=selected["recommendation_template"],
-                    )
-                    bindings.append(binding)
-                    selectors[binding.binding_id] = binding_selectors
-                if check_skipped:
-                    continue
+                        bindings.append(binding)
+                        selectors[binding.binding_id] = binding_selectors
+                    if group_skipped:
+                        for binding in bindings[first_binding:]:
+                            compiled_rules.pop(binding.rule_id, None)
+                            selectors.pop(binding.binding_id, None)
+                        del bindings[first_binding:]
+                        continue
         return CompiledOntologyPlan(
             identity=identity,
             rules=compiled_rules,
@@ -988,9 +1037,21 @@ class LocalOntologyStore:
 
     @classmethod
     def _validate_package(cls, payload: Mapping[str, Any]) -> None:
+        if payload.get("schema_version") != 5 and any(
+            isinstance(rule, Mapping) and rule.get("comparison_operand_alias") is not None
+            for rule in payload.get("rules", [])
+        ):
+            cls._invalid("Explicit comparison operands require publication Schema 5.")
+        if payload.get("schema_version") != 5 and any(
+            isinstance(rule, Mapping) and "evaluation_gate_json" in rule
+            for rule in payload.get("rules", [])
+        ):
+            cls._invalid("Evaluation gates require publication Schema 5.")
         if current_catalog(payload):
             validate_catalog(payload, cls._validate_source_policy)
             return
+        if payload.get("schema_version") == 5:
+            cls._invalid("Schema 5 requires the public Geometric catalog contract.")
         required_strings = (
             "snapshot_id",
             "ontology_version",
@@ -1396,6 +1457,8 @@ class LocalOntologyStore:
                 name TEXT NOT NULL,
                 conditions_json TEXT NOT NULL,
                 acceptance_criteria_json TEXT NOT NULL,
+                evaluation_gate_json TEXT NOT NULL,
+                comparison_operand_alias TEXT,
                 expression_json TEXT NOT NULL,
                 comparator TEXT NOT NULL,
                 threshold_json TEXT NOT NULL,
@@ -1531,6 +1594,8 @@ class LocalOntologyStore:
                     )
                 ),
                 _json(criteria),
+                _json(item.get("evaluation_gate_json")),
+                item.get("comparison_operand_alias"),
                 _json(primary["expression"]),
                 primary["comparator"],
                 _json(primary["threshold"]),
@@ -1543,10 +1608,11 @@ class LocalOntologyStore:
                 1 if item.get("is_default") else 0,
                 item["status"],
                 _json(item.get("citation_refs", [])),
-                _content_hash(item),
+                _content_hash({key: value for key, value in item.items()
+                               if key != "comparison_operand_alias" or value is not None}),
             ))
         connection.executemany(
-            "INSERT INTO rule_version VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO rule_version VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rule_rows,
         )
         connection.commit()
@@ -1642,6 +1708,10 @@ class LocalOntologyStore:
             payload["severity_rationale"] = row["severity_rationale"]
             for legacy_key in ("expression", "comparator", "threshold", "result_unit"):
                 payload.pop(legacy_key)
+        if publication_schema_version >= 5:
+            payload["evaluation_gate_json"] = _load_json(row["evaluation_gate_json"], None)
+            if "comparison_operand_alias" in row.keys() and row["comparison_operand_alias"] is not None:
+                payload["comparison_operand_alias"] = row["comparison_operand_alias"]
         return payload
 
     @staticmethod
@@ -1653,18 +1723,26 @@ class LocalOntologyStore:
         return normalized
 
     @classmethod
-    def _plan_rule_candidates(cls, rows, facts, check_id):
+    def _comparison_rule_groups(cls, rows):
+        groups = {}
+        for row in rows:
+            alias = row["comparison_operand_alias"] if "comparison_operand_alias" in row.keys() else None
+            groups.setdefault(alias, []).append(row)
+        return groups.values()
+
+    @classmethod
+    def _plan_rule_candidates(cls, rows, facts, check_id, *, instance_appearance=False):
         candidates = [
             row
             for row in rows
             if all(
                 cls._condition_matches(item, facts)
                 for item in _load_json(row["conditions_json"], [])
-                if "factor_id" in item
+                if "factor_id" in item and not (instance_appearance and item["factor_id"] == "F_APPR_REGION_REQ")
             )
         ]
         deferred = any(
-            "geometric_id" in item
+            "geometric_id" in item or (instance_appearance and item.get("factor_id") == "F_APPR_REGION_REQ")
             for row in candidates
             for item in _load_json(row["conditions_json"], [])
         )
@@ -1715,6 +1793,10 @@ class LocalOntologyStore:
                     "acceptance_criteria_json" in row.keys()
                     and row["acceptance_criteria_json"]
                     != winner["acceptance_criteria_json"]
+                )
+                or (
+                    "evaluation_gate_json" in row.keys()
+                    and row["evaluation_gate_json"] != winner["evaluation_gate_json"]
                 )
             )
         ]
@@ -1789,6 +1871,7 @@ class LocalOntologyStore:
         *,
         geometric_bindings: Mapping[str, Mapping[str, Any]] | None = None,
         deferred: bool = False,
+        instance_appearance: bool = False,
     ) -> tuple[RuleBinding | GeometricRuleBinding, dict[str, dict[str, Any]]]:
         if not operand_rows:
             cls._invalid(
@@ -1802,6 +1885,10 @@ class LocalOntologyStore:
             _load_json(rule["acceptance_criteria_json"], [])
             if "acceptance_criteria_json" in rule.keys()
             else []
+        )
+        gate = (
+            _load_json(rule["evaluation_gate_json"], None)
+            if "evaluation_gate_json" in rule.keys() else None
         )
         if criteria:
             groups = _acceptance_criteria_groups(
@@ -1825,6 +1912,8 @@ class LocalOntologyStore:
         referenced.update(
             item["geometric_id"] for item in conditions if "geometric_id" in item
         )
+        if gate is not None:
+            referenced.update(_expression_operand_aliases(gate["expression"], binding_id=str(rule["rule_id"])))
         for row in sorted(
             operand_rows,
             key=lambda item: (
@@ -1884,6 +1973,10 @@ class LocalOntologyStore:
                 for name, value in target.items()
                 if name not in {"alias", "metric_id", "quantity_id"}
             }
+        if instance_appearance and any(item.get("factor_id") == "F_APPR_REGION_REQ" for item in conditions):
+            if not any("appearance" in (geometric_bindings or {}).get(getattr(operand, "geometric_id", ""), {}).get("requires_annotations", [])
+                       for operand in operands if operand.aggregation == "identity"):
+                return None, {"check_id": check_id, "reason": "appearance_classification_unsupported"}
         primary, *additional = operands
         common = {
             "binding_id": f"binding.{check_id}.{rule['rule_id']}",
@@ -1893,13 +1986,15 @@ class LocalOntologyStore:
             "required_fact_names": sorted({
                 factor_runtime_keys.get(str(item["factor_id"]), str(item["factor_id"]))
                 for item in conditions
-                if "factor_id" in item
+                if "factor_id" in item and not (instance_appearance and item["factor_id"] == "F_APPR_REGION_REQ")
             }),
             "check_id": check_id,
             "operand_alias": primary.alias,
             "additional_operands": additional,
             "expression": _load_json(rule["expression_json"], None),
             "acceptance_criteria_json": criteria,
+            "evaluation_gate_json": gate,
+            "comparison_operand_alias": rule["comparison_operand_alias"] if "comparison_operand_alias" in rule.keys() else None,
             "rule_selection": {
                 "conditions": [
                     dict(item) for item in conditions if "geometric_id" in item
@@ -1907,6 +2002,11 @@ class LocalOntologyStore:
                 "priority": int(rule["priority"]),
                 "specificity": len(conditions),
                 "is_default": bool(rule["is_default"]),
+                **({"appearance_conditions": [dict(item) for item in conditions
+                                               if item.get("factor_id") == "F_APPR_REGION_REQ"],
+                    "appearance_operands": [operand.alias for operand in operands if operand.aggregation == "identity"
+                                            and "appearance" in (geometric_bindings or {}).get(getattr(operand, "geometric_id", ""), {}).get("requires_annotations", [])]}
+                   if instance_appearance and any(item.get("factor_id") == "F_APPR_REGION_REQ" for item in conditions) else {}),
             }
             if deferred
             else None,

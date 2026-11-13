@@ -274,8 +274,23 @@ def test_occt_scope_projects_worker_binding_from_geometric_id_only():
         "direction_modes": ["none"],
         "requires_complete_inventory": [],
         "requires_relationships": [],
+        "requires_annotations": [],
         "context_schema": {},
     }
+
+
+@pytest.mark.parametrize("requirements", [None, True, "appearance", [""], [42], ["appearance", "appearance"]])
+def test_occt_annotation_dependencies_reject_malformed_declarations(requirements):
+    scope = _occt_geometric_scope()
+    scope["geometrics"][0]["requires_annotations"] = requirements
+    with pytest.raises(DFMError, match="invalid public declaration"):
+        geometry_binding_index(scope)
+
+
+def test_occt_annotation_dependencies_keep_public_kinds():
+    scope = _occt_geometric_scope()
+    scope["geometrics"][0]["requires_annotations"] = ["appearance"]
+    assert geometry_binding_index(scope)["G_WALL_THK_MIN"]["requires_annotations"] == ["appearance"]
 
 
 @pytest.mark.parametrize("requirements", [None, True, ["adjacent_main_wall"], [{"type": "adjacent_main_wall"}],

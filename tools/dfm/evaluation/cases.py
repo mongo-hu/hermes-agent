@@ -59,6 +59,7 @@ def rule_case_key(binding: RuleBinding | GeometricRuleBinding) -> tuple:
     return (
         "selected",
         binding.check_id,
+        binding.comparison_operand_alias,
         tuple(sorted(binding.feature_refs)),
         request_key("", "", binding.context)[2]
         if isinstance(binding, GeometricRuleBinding)

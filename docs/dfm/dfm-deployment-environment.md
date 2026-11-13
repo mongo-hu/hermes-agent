@@ -1,10 +1,7 @@
 ---
-
-> 当前合并基线（2026-11-03）：Worker **3.0.0** / `dfm.geometry/v2` / bundle **2.5.0**。采用分组审核、按依赖计算；取消 `reviews.commit` 和 Worker 快照全局 `review` 门槛，保留本地预计算、通用交集拔模及预算。下文 1.13.0 的安装哈希和 Desktop 验收属于历史记录；本次适配及验证见[整合记录](dfm-geometric-session-contract.md#12-本地算法与远端编排整合)。
-
 title: "DFM 部署环境定义"
 status: implementation-reference
-updated: 2026-11-03
+updated: 2026-11-13
 type: deployment-guide
 ---
 
@@ -14,21 +11,21 @@ type: deployment-guide
 
 本文件只维护依赖、配置、启动与环境验证。总体流程在[主流程](dfm-main-workflow-explained.md)，常驻 Worker、单轮识别与分组确认的目标接入在[会话设计](dfm-geometric-session-contract.md)，不在此复制全流程图。
 
-已验证的外部链路基线使用 dfm.geometry/v2 常驻 Worker，配套 Schema bundle 2.3.0；预览、原两轮识别、人工修订和 G 计算复用模型资源。真实 Worker、独立安装目录及 Electron 两轮确认到异步 HTML 演示已联调，记录见会话文档第 10 节。单轮统一快照、成型方案新字段和私有面索引已进入开发联调，实施状态及验收见第 11 节；旧版联调记录不证明新版已交付。自然语言聊天全场景与正式发布包仍单独验收；旧安装 EXE 不会因更新 Hermes 源码自动升级。PythonOCC 仅在选择内部参考后端时需要，不要求 C++ 引擎安装进 Agent 的 Python 环境。
+当前随仓交付 Worker 3.1.0 / `dfm.geometry/v2` / bundle 2.6.0，采用单轮识别、分组确认和按依赖计算。Schema 5 规则的几何门槛、外观分类和独立比较对象见[会话记录](dfm-geometric-session-contract.md)与[规则契约](dfm-rule-catalog-database-design.md)。历史两轮联调不代表当前安装已升级；源码、实际启动目录、随包 Worker 和已同步规则身份需要分别核对。PythonOCC 仅在选择内部参考后端时需要，不要求 C++ 引擎安装进 Agent 的 Python 环境。
 
 `available` 表示依赖与能力探测成功，不等于算法已获工程认证。不要将参考结果或旧 Capability 直接当作生产发布依据。
 
 ## 1. 版本基线
 
-当前版本核对（2026-11-03）：
+当前版本核对（2026-11-13）：
 
 | 位置 | 实测或源码要求 | 用途 |
 | --- | --- | --- |
-| Hermes `tools/dfm/runtime/process.py` | 要求 bundle 2.5.0 | 开发分支的握手约束 |
-| Worker `out/build/session-v2/dfm-geometry.exe` | 引擎 1.13.0 / bundle 2.5.0 | 本次通过原生及跨端回归的构建 |
-| Hermes `dfm-geometry-exe/windows-x64/dfm-geometry.exe` | 引擎 1.13.0 / bundle 2.5.0 | 已更新为同版完整目录；doctor 的外部引擎、常驻会话及 HTML 环境可用 |
+| Hermes `tools/dfm/runtime/process.py` | 接受 bundle 2.5.0 / 2.6.0 | 新外观规则还需对应 G 和注解依赖声明 |
+| Worker 当前安装输出 | 引擎 3.1.0 / bundle 2.6.0，27 个 G binding | 随 EXE 交付同版 DLL 和 Schema |
+| Hermes `dfm-geometry-exe/windows-x64/dfm-geometry.exe` | 引擎 3.1.0 / bundle 2.6.0 | Windows 使用者拉取完整 Hermes 仓库即可取得，不需自行编译 Worker |
 
-本次独立安装目录为 Worker 的 out/install/session-1.13.0-20261103，旧 Hermes 运行目录备份在 out/backups/hermes-windows-x64-1.12.0-20261103；58 个配套文件已逐一核对。构建哈希与验证范围见[会话记录第 11.2 节](dfm-geometric-session-contract.md#112-本次实现与验证记录)。
+本轮 58 个安装输出已与随包目录逐文件核对；EXE 的 SHA-256 为 `fba8d60a6579584bf5defd7dc0865a7167506ec21aabceee89d346b560bfcd93`。旧运行目录和已有项目不自动替换。
 
 安装时交付完整目录中的 EXE、DLL 和 Schema；不能只把版本号或一个 EXE 替换掉。先验证独立安装目录，再修改 `dfm.geometry.executable` 并重启持有旧 Worker 的 Hermes 后台。详细构建与安装步骤由 Worker 仓库维护。
 
@@ -66,7 +63,7 @@ Hermes 不链接或 vendoring C++ 内部库，只发现已构建的可执行程�
 | 几何通信 | EXE 能力、runtime/process.py 和 Worker schemas/session-v2.schema.json | contract_version=dfm.geometry/v2、schema_bundle_version、engine_version、dependency_fingerprint；与实际安装文件匹配 |
 | 显示与测量制品 | 实际 Artifact Schema、Manifest 和内容哈希 | 几何／网格身份、采样精度和制品版本，不混用三角形编号 |
 
-Agent 当前接受规则包 Schema 2/3/4，后续新规则使用 Schema 4；这是规则包版本，不等于几何通信 v2。新外部链路不提供旧 Worker 公共协议适配，不能只改版本号混用。
+Agent 当前接受规则包 Schema 2/3/4/5；Schema 5 要求每条规则包含可空的 `evaluation_gate_json`，旧包不接受该字段。规则包版本不等于几何通信 v2。当前外部链路接受会话 bundle 2.5.0/2.6.0；逐面外观规则还要求 G 能力声明 `requires_annotations: ["appearance"]`，仅版本匹配不足以证明可执行。EXE、DLL 和 Schema 必须来自匹配的安装产物，不能只改版本号混用；新开发包不自动替换已有日常入口或历史规则包。
 
 ## 2. 当前 Python 依赖
 
@@ -155,6 +152,17 @@ python .\hermes serve --host 127.0.0.1 --port 9120
 npm run dev --workspace apps/desktop
 ```
 
+### 3.4 已有 Windows 环境升级
+
+1. 在实际运行的 Hermes checkout 保存本地改动，再同步团队 `dfm-hermes-agent` 分支。完整保留 `dfm-geometry-exe/windows-x64` 内的 EXE、DLL、Schema 和许可证；本轮不要求重新编译 Worker，也未新增 Python/npm 依赖。
+2. 核对启动器、IDE、`HERMES_DESKTOP_HERMES_ROOT` 或桌面的远程后端地址是否仍指旧 checkout/服务；同一 `HERMES_HOME` 下核对 `dfm.geometry.executable` 和 `dfm.ontology.endpoint`。显式旧 EXE 路径会优先于新随包程序。
+3. 停止该环境的旧桌面和 Hermes 后台后，在仓库根目录执行 `npm run build --workspace apps/desktop`，再按原入口重启后台与桌面。开发模式用上面的命令；源码桌面可用 `npm run start --workspace apps/desktop`（会再次构建）。单独关闭桌面不会替换仍在运行的独立后台；已安装桌面应用也不会因另一目录 `git pull` 自动更新。
+4. 使用后台的同一 Python、同一 profile 执行 `python .\hermes dfm doctor --json`，核对实际 EXE、3.1.0/2.6.0、所需 G 和 `html_report.ready`。仅缺少已有依赖时按第 2 节补齐，不要清空已有环境。
+5. 规则管理员发布 Schema 5 后，通过正常 `dfm_project` 工具的 `sync_ontology` 操作同步，再用 `ontology_status` 核对管理员给出的 `snapshot_id`、规则集版本和 `content_sha256`。这两个是工具操作，不是 `hermes dfm` CLI 子命令。配置 endpoint 的 DFMService 启动时同步，并按 `sync_interval_seconds`（默认 300 秒）轮询；`pinned_snapshot_id` 非空时继续固定该版本，升级前先确认是否应解除旧固定。
+6. 用新项目/新 Run 做一次 STEP 上传、分组确认、分析及 HTML 报告验收。已有 Run 固定原规则快照；跨 Worker 构建恢复旧会话会明确报 `geometry_recovery_dependency_changed`，不能承诺旧任务原地续跑。保留旧 profile/程序用于查阅，勿删除历史数据。
+
+先升级并验收消费者代码及 Worker，再切换规则发布。Git 拉取只交付代码和随包程序，不等于数据库规则发布或本机已同步；自然语言聊天、客户模型工程判断与已安装桌面升级仍须在各自运行环境验证。
+
 ## 4. DFM 配置
 
 当前代码可使用：
@@ -201,8 +209,8 @@ dfm:
 旧值 `occt_cpp`、`step` 仅作为兼容别名继续读取，并分别归一化为上述两个名称；新配置不要再使用旧值。
 内部 Analyzer key 暂时仍为 `occt_cpp`、`step`，用于兼容已有 Plan、Run 和 Artifact，不属于用户配置契约。
 
-`dfm.geometry.executable` 可留空；此时 Hermes 会检查仓库旁的标准 `dfm-geometry` 构建/安装
-目录，再检查 `PATH`。配置相对路径时以 Hermes 仓库根目录解析。找不到程序时 OCCT Capability
+程序按 `dfm.geometry.executable`、`DFM_GEOMETRY_EXE`、当前 Hermes 仓库内
+`dfm-geometry-exe/windows-x64`、`PATH` 的顺序选择。配置相对路径时以 Hermes 仓库根目录解析。找不到程序时 OCCT Capability
 显式返回依赖缺失，PythonOCC、NX/Parasolid 和其他占位能力仍按各自原有状态保留。
 
 二维图纸管线只执行程序化 OCR，没有独立模型、Endpoint、API Key 或模型超时配置。OCR 后的语义

@@ -4,6 +4,7 @@ from copy import deepcopy
 from dataclasses import replace
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator
@@ -84,6 +85,283 @@ def grouped_payload():
     rule["acceptance_criteria_json"] = [bounded_group, [alternate]]
     rule["severity_rationale"] = "Either released engineering range is acceptable."
     return rehash(value)
+
+
+def gated_payload():
+    value = grouped_payload()
+    value["schema_version"] = 5
+    value["rules"][0]["evaluation_gate_json"] = {
+        "expression": {"operand": "actual"}, "comparator": "GT",
+        "threshold": 0.2, "result_unit": "mm",
+    }
+    return rehash(value)
+
+
+@pytest.mark.parametrize("actual,outcome", [(0.2, "not_applicable"), (1.5, "pass"), (2.5, "fail"), (3.5, "pass")])
+def test_schema_5_gate_roundtrips_snapshot_sqlite_plan_and_evaluation(tmp_path, actual, outcome):
+    value = gated_payload()
+    store = LocalOntologyStore(tmp_path / "gated.sqlite3")
+    store.install_package(value)
+    context = store.check_context("check.main_wall_minimum_thickness")
+    assert context["rules"][0]["evaluation_gate_json"] == value["rules"][0]["evaluation_gate_json"]
+    pinned = plan(store.compile("injection", {"material": "ABS"}, operations()))
+    pinned = PlanRecord.from_dict(pinned.to_dict())
+    assert pinned.rule_bindings[0].evaluation_gate_json == value["rules"][0]["evaluation_gate_json"]
+    result, _ = EvaluationEngine().evaluate([measurement(actual)], pinned)
+    assert result[0].outcome == outcome
+    assert len(result[0].criterion_results) == (0 if outcome == "not_applicable" else 3)
+
+
+def test_existing_schema4_local_database_without_gate_column_still_compiles(tmp_path):
+    path = tmp_path / "old-install.sqlite3"
+    store = LocalOntologyStore(path)
+    store.install_package(grouped_payload())
+    before = store.compile("injection", {"material": "ABS"}, operations())
+    with sqlite3.connect(path) as connection:
+        connection.execute("ALTER TABLE rule_version DROP COLUMN evaluation_gate_json")
+        connection.execute("UPDATE snapshot_metadata SET database_schema_version=3")
+    after = store.compile("injection", {"material": "ABS"}, operations())
+    assert [row.to_dict() for row in after.rule_bindings] == [row.to_dict() for row in before.rule_bindings]
+    assert "evaluation_gate_json" not in store.check_context("check.main_wall_minimum_thickness")["rules"][0]
+    result, _ = EvaluationEngine().evaluate([measurement(1.5)], plan(after))
+    assert result[0].outcome == "pass"
+
+
+def appearance_payload(schema=5, check_id="C_WALL_DRAFT"):
+    value = gated_payload()
+    value["schema_version"] = schema
+    original_check = value["rules"][0]["check_id"]
+    for concept in value["concepts"]:
+        if concept["concept_id"] == original_check:
+            concept["concept_id"] = check_id
+    for row in value["relations"]:
+        for field in ("subject_id", "object_id"):
+            if row[field] == original_check:
+                row[field] = check_id
+    for row in value["rules"]:
+        row["check_id"] = check_id
+    for row in value["relations"]:
+        if row["predicate"] == "USES_OPERAND":
+            row["qualifiers_json"]["aggregation"] = "identity"
+    factor = deepcopy(next(row for row in value["concepts"] if row["concept_id"] == "factor.material"))
+    factor.update(concept_id="F_APPR_REGION_REQ", aliases_json=[], data_schema_json={"type": "string", "enum": ["外观", "非外观"]})
+    factor["properties_json"].update(runtime_key="appr_region_req", default_value="非外观")
+    value["concepts"].append(factor)
+    relation = deepcopy(next(row for row in value["relations"] if row["predicate"] == "REQUIRES_FACTOR"))
+    relation.update(relation_id="rel.appearance", subject_id=value["rules"][0]["check_id"], object_id="F_APPR_REGION_REQ")
+    value["relations"].append(relation)
+    original = value["rules"][0]
+    value["rules"] = []
+    for class_name, threshold in [("外观", 2.0), ("非外观", 1.0)]:
+        rule = deepcopy(original)
+        rule.update(rule_id="R_" + class_name, rule_version_id="RV_" + class_name, evaluation_gate_json=None)
+        if schema < 5:
+            rule.pop("evaluation_gate_json")
+        rule["conditions_json"].append({"factor_id": "F_APPR_REGION_REQ", "operator": "EQ", "value": class_name})
+        criterion = deepcopy(rule["acceptance_criteria_json"][0][0])
+        criterion["threshold"] = threshold
+        rule["acceptance_criteria_json"] = [[criterion]]
+        value["rules"].append(rule)
+    return rehash(value)
+
+
+@pytest.mark.parametrize("check_id", ["C_WALL_DRAFT", "C_WALL_THK_TRANSITION"])
+def test_schema5_appearance_rules_select_each_instance_and_ignore_whole_feature_fact(check_id):
+    store = LocalOntologyStore.from_package(appearance_payload(check_id=check_id))
+    capability = wall_geometric_capability()
+    capability["G_WALL_THK_MIN"]["requires_annotations"] = ["appearance"]
+    store.configure_geometric_bindings(capability)
+    assert "appr_region_req" not in {row["name"] for row in store.fact_requirements("injection")}
+    compiled = store.compile("injection", {"material": "ABS", "appr_region_req": "非外观"}, operations())
+    assert len(compiled.rule_bindings) == 2
+    pinned = PlanRecord.from_dict(plan(compiled).to_dict())
+    rows = [replace(measurement(1.5), result_id=identity,
+                    quality={"measurement_instance_id": identity, "appearance_class": class_name})
+            for identity, class_name in [("first", "appearance"), ("second", "non_appearance")]]
+    evaluated, provenance = EvaluationEngine().evaluate(rows, pinned)
+    assert {provenance[row.evaluation_id]["measurement_instance_id"]: (row.rule_id, row.outcome)
+            for row in evaluated} == {"first": ("R_外观", "fail"), "second": ("R_非外观", "pass")}
+
+
+def test_schema5_missing_appearance_is_indeterminate_not_a_default_fact():
+    store = LocalOntologyStore.from_package(appearance_payload())
+    capability = wall_geometric_capability()
+    capability["G_WALL_THK_MIN"]["requires_annotations"] = ["appearance"]
+    store.configure_geometric_bindings(capability)
+    pinned = plan(store.compile("injection", {"material": "ABS"}, operations()))
+    row = replace(measurement(1.5), quality={"measurement_instance_id": "mixed", "appearance_classification_reason": "mixed_support_classes"})
+    evaluated, provenance = EvaluationEngine().evaluate([row], pinned)
+    assert len(evaluated) == 1
+    assert evaluated[0].outcome == "indeterminate"
+    assert evaluated[0].criterion_results == []
+    assert evaluated[0].rule_selection_result["reason_codes"] == ["mixed_support_classes"]
+    assert provenance[evaluated[0].evaluation_id]["acceptance_skipped"]
+
+
+@pytest.mark.parametrize("reason,outcome", [
+    ("measurement_not_applicable: appearance_scope_empty", "not_applicable"),
+    ("measurement_not_applicable: no supported draft side wall", "indeterminate"),
+])
+def test_only_explicit_empty_appearance_scope_skips_the_category(reason, outcome):
+    store = LocalOntologyStore.from_package(appearance_payload())
+    capability = wall_geometric_capability()
+    capability["G_WALL_THK_MIN"]["requires_annotations"] = ["appearance"]
+    store.configure_geometric_bindings(capability)
+    pinned = plan(store.compile("injection", {"material": "ABS"}, operations()))
+    row = replace(measurement(None), status="not_applicable", reason=reason,
+                  quality={"measurement_instance_id": "appearance-scope", "appearance_class": "appearance"})
+    evaluated, _ = EvaluationEngine().evaluate([row], pinned)
+    assert len(evaluated) == 1
+    assert evaluated[0].rule_id == "R_外观"
+    assert evaluated[0].outcome == outcome
+
+
+def test_two_appearance_g_scopes_do_not_borrow_each_others_measurement():
+    value = appearance_payload()
+    relation = deepcopy(next(row for row in value["relations"] if row["predicate"] == "USES_OPERAND"))
+    new_gid = "G_WALL_NON_APPEARANCE_DRAFT"
+    original_gid = relation["object_id"]
+    concept = deepcopy(next(row for row in value["concepts"] if row["concept_id"] == original_gid))
+    concept["concept_id"] = new_gid
+    value["concepts"].append(concept)
+    relation.update(relation_id="rel.non_appearance", object_id=new_gid)
+    relation["qualifiers_json"]["alias"] = "non_appearance"
+    value["relations"].append(relation)
+    value["rules"][1]["acceptance_criteria_json"][0][0]["expression"] = {"operand": "non_appearance"}
+    store = LocalOntologyStore.from_package(rehash(value))
+    capability = wall_geometric_capability()
+    capability[original_gid]["requires_annotations"] = ["appearance"]
+    capability[new_gid] = deepcopy(capability[original_gid])
+    store.configure_geometric_bindings(capability)
+    pinned = plan(store.compile("injection", {"material": "ABS"}, operations()))
+    rows = [replace(measurement(1.5), result_id="appearance", quality={"measurement_instance_id": "app", "appearance_class": "appearance"}),
+            replace(measurement(1.5), result_id="non-appearance", geometric_id=new_gid,
+                    quality={"measurement_instance_id": "non-app", "appearance_class": "non_appearance"})]
+    evaluated, _ = EvaluationEngine().evaluate(rows, pinned)
+    assert {(row.rule_id, row.outcome, tuple(row.measurement_ids)) for row in evaluated} == {
+        ("R_外观", "fail", ("appearance",)), ("R_非外观", "pass", ("non-appearance",))}
+    store.configure_geometric_bindings({original_gid: capability[original_gid]})
+    incomplete = store.compile("injection", {"material": "ABS"}, operations())
+    assert not incomplete.rule_bindings and not incomplete.rules and not incomplete.binding_selectors
+    assert incomplete.skipped_checks[0].reason == "geometric_id_unsupported"
+
+
+@pytest.mark.parametrize("check_id", ["C_WALL_DRAFT", "C_WALL_THK_TRANSITION"])
+def test_schema5_old_worker_cannot_fall_back_to_whole_feature_appearance(check_id):
+    store = LocalOntologyStore.from_package(appearance_payload(check_id=check_id))
+    store.configure_geometric_bindings(wall_geometric_capability())
+    compiled = store.compile("injection", {"material": "ABS", "appr_region_req": "非外观"}, operations())
+    assert not compiled.rule_bindings
+    assert compiled.skipped_checks[0].reason == "appearance_classification_unsupported"
+
+
+def test_schema4_keeps_its_original_whole_feature_appearance_selection():
+    store = LocalOntologyStore.from_package(appearance_payload(4))
+    capability = wall_geometric_capability()
+    capability["G_WALL_THK_MIN"]["requires_annotations"] = ["appearance"]
+    store.configure_geometric_bindings(capability)
+    compiled = store.compile("injection", {"material": "ABS", "appr_region_req": "非外观"}, operations())
+    assert len(compiled.rule_bindings) == 1
+    assert compiled.rule_bindings[0].rule_selection is None
+    assert "appr_region_req" in {row["name"] for row in store.fact_requirements("injection")}
+    evaluated, _ = EvaluationEngine().evaluate([measurement(1.5)], plan(compiled))
+    assert evaluated[0].rule_id == "R_非外观" and evaluated[0].outcome == "pass"
+
+
+@pytest.mark.parametrize("check_id", [
+    "C_HOLLOW_BOSS_WALL_THK", "C_HOLLOW_BOSS_BOTTOM_THK", "C_HOLLOW_BOSS_FILLET",
+])
+def test_schema5_preserves_existing_hollow_boss_rule_factor_confirmation(check_id):
+    value = appearance_payload()
+    for concept in value["concepts"]:
+        if concept["concept_id"] == "C_WALL_DRAFT":
+            concept["concept_id"] = check_id
+    for row in value["relations"]:
+        for field in ("subject_id", "object_id"):
+            if row[field] == "C_WALL_DRAFT":
+                row[field] = check_id
+    rule = value["rules"][1]
+    rule.update(check_id=check_id, rule_id=f"R_{check_id[2:]}_001")
+    value["rules"] = [rule]
+    factor = next(row for row in value["concepts"] if row["concept_id"] == "F_APPR_REGION_REQ")
+    factor["properties_json"]["default_value"] = None
+    store = LocalOntologyStore.from_package(rehash(value))
+    store.configure_geometric_bindings(wall_geometric_capability())
+    assert "appr_region_req" in {row["name"] for row in store.fact_requirements("injection")}
+    assert not store.compile("injection", {"material": "ABS"}, operations()).rule_bindings
+    confirmed = store.compile("injection", {"material": "ABS", "appr_region_req": "非外观"}, operations())
+    assert not confirmed.skipped_checks
+    assert len(confirmed.rule_bindings) == 1
+    assert confirmed.rule_bindings[0].rule_id == rule["rule_id"]
+    assert confirmed.rule_bindings[0].rule_selection is None
+    assert "appr_region_req" in confirmed.rule_bindings[0].required_fact_names
+
+
+@pytest.mark.parametrize("gate", [None, {}, {"expression": {"operand": "actual"}},
+    {"expression": {"operand": "missing"}, "comparator": "GT", "threshold": 0.2, "result_unit": "mm"},
+    {"expression": {"operand": "actual"}, "comparator": "GT", "threshold": float("nan"), "result_unit": "mm"},
+    {"expression": {"operand": "actual"}, "comparator": "GT", "threshold": 0.2, "result_unit": "degree"}])
+def test_schema_5_gate_requires_complete_valid_declared_comparison(gate):
+    value = gated_payload()
+    if gate is None:
+        value["rules"][0].pop("evaluation_gate_json")
+    else:
+        value["rules"][0]["evaluation_gate_json"] = gate
+    with pytest.raises(DFMError) as error:
+        LocalOntologyStore.from_package(rehash(value))
+    assert error.value.code == "ontology_snapshot_invalid"
+
+
+@pytest.mark.parametrize("builder", [payload, composite_payload, grouped_payload])
+@pytest.mark.parametrize("gate", [None, {"expression": {"operand": "actual"}, "comparator": "GT", "threshold": 0.2, "result_unit": "mm"}])
+def test_old_schema_never_silently_ignores_a_gate(builder, gate):
+    value = builder()
+    value["rules"][0]["evaluation_gate_json"] = gate
+    with pytest.raises(DFMError, match="Schema 5"):
+        LocalOntologyStore.from_package(rehash(value))
+
+
+def test_schema_5_null_gate_is_unconditional_and_preserves_primary_criterion():
+    value = gated_payload()
+    value["rules"][0]["evaluation_gate_json"] = None
+    compiled = LocalOntologyStore.from_package(rehash(value)).compile("injection", {"material": "ABS"}, operations())
+    binding = compiled.rule_bindings[0]
+    assert binding.evaluation_gate_json is None
+    assert "evaluation_gate_json" not in binding.to_dict()
+    assert compiled.rules[binding.rule_id].value == 1.2
+    assert EvaluationEngine().evaluate([measurement(0.2)], plan(compiled))[0][0].outcome == "fail"
+
+
+def test_schema_5_compiler_includes_gate_only_operand_without_changing_primary():
+    value = gated_payload()
+    original = next(row for row in value["relations"] if row["predicate"] == "USES_OPERAND"
+                    and row["subject_id"] == "check.main_wall_minimum_thickness")
+    extra = deepcopy(original)
+    extra["relation_id"] = "rel.wall.gate_only"
+    extra["qualifiers_json"].update(alias="gate_only", operand_text="Gate measurement")
+    value["relations"].append(extra)
+    value["rules"][0]["evaluation_gate_json"]["expression"] = {"operand": "gate_only"}
+    compiled = LocalOntologyStore.from_package(rehash(value)).compile("injection", {"material": "ABS"}, operations())
+    binding = compiled.rule_bindings[0]
+    assert binding.operand_alias == "actual"
+    assert {operand.alias for operand in binding.measurement_operands()} == {"actual", "gate_only"}
+
+
+def test_schema_5_risk_classification_roundtrips_without_becoming_an_operand():
+    value = gated_payload()
+    value["concepts"].append({"concept_id": "RISK_FORMING", "concept_type": "risk_category",
+        "name_zh": "成型风险", "definition": "Classification only.", "properties_json": {}, "status": "active"})
+    value["relations"].append({"relation_id": "rel.check.risk", "subject_id": "check.main_wall_minimum_thickness",
+        "predicate": "HAS_RISK_CATEGORY", "object_id": "RISK_FORMING", "qualifiers_json": {}, "sort_order": 0})
+    store = LocalOntologyStore.from_package(rehash(value))
+    context = store.check_context("check.main_wall_minimum_thickness")
+    assert any(row["predicate"] == "HAS_RISK_CATEGORY" for row in context["relations"])
+    binding = store.compile("injection", {"material": "ABS"}, operations()).rule_bindings[0]
+    assert len(binding.measurement_operands()) == 1
+    value["schema_version"] = 4
+    value["rules"][0].pop("evaluation_gate_json")
+    with pytest.raises(DFMError):
+        LocalOntologyStore.from_package(rehash(value))
 
 
 def test_schema_4_factor_impact_scope_is_validated_and_projected(tmp_path):

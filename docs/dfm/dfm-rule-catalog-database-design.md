@@ -1,7 +1,7 @@
 ---
 title: "DFM 本体、规则库与 Agent 运行快照设计"
 status: implementation-reference
-updated: 2026-10-21
+updated: 2026-11-13
 type: architecture-database-design
 ---
 
@@ -10,10 +10,11 @@ type: architecture-database-design
 [开发导航](README.md)
 
 本文是本体、规则字段、发布物与 Hermes 本地消费的维护位置，并按当前 Mold 管理端、Excel 导入器、
-Schema 4 发布器和 Hermes 运行代码描述已经落地的应用。生产数据库中的实际数据和部署开关仍须在目标环境验收。
+版本化发布契约和 Hermes 运行代码描述已经落地的应用。生产数据库中的实际数据和部署开关仍须在目标环境验收。
 
-当前实现已经包含：Mold 九张中心表及管理界面、`V2.2.3.xlsx` 导入、Schema 4 两层 OR-of-AND
-发布、四个只读运行接口、Hermes Schema 2/3/4 安装与求值，以及 Worker 直接使用 G ID 的常驻会话。
+当前实现包含中心本体与规则管理、Excel 导入、两层 OR-of-AND 判定、独立的几何检查门槛、四个只读运行接口、
+Hermes Schema 2/3/4/5 安装与求值，以及 Worker 直接使用 G ID 的常驻会话。Schema 5 新增可空门槛和风险类别投影；
+历史 Schema 4 发布物和规则绑定继续按原字段及哈希读取，不原地补字段或改写。
 规则包 Schema 版本与几何会话协议版本是两个独立版本体系。完整流程只在[主流程](dfm-main-workflow-explained.md)维护，
 几何接入只在[会话设计](dfm-geometric-session-contract.md)维护。
 
@@ -66,7 +67,7 @@ flowchart LR
 管理库和 Agent 本地库不是同一个数据库。管理库支持编辑和继承；本地库是一次发布后展开、校验、
 不可变的运行投影。
 
-管理控制层现已在独立的 Mold 仓库实现；Agent 可将 Snapshot Schema 2/3/4 发布包安装为本地 SQLite，
+管理控制层现已在独立的 Mold 仓库实现；Agent 可将 Snapshot Schema 2/3/4/5 发布包安装为本地 SQLite，
 随仓库示例发布包仍为 Schema 2；实际安装身份以本地元数据为准，不用示例版本推断远程最新版本。
 两端按本文的 Geometric/Operand 契约对接；数据库迁移、工作簿导入、认证 Capability 和签名校验
 是否已启用，仍须按实际部署环境逐项验证，不能由本地测试代替上线验收。
@@ -314,9 +315,9 @@ AnalysisPlan 时结合 G 的明确语义、已确认 Discovery 特征和经过�
 
 ### 4.4 `dfm_rule_version`
 
-一行保存一条完整、不可变的规则版本。一条 Rule Version 对一个 Check 定义一个或多个可替代的合格判定组：
-组内判定项全部 AND，组间 OR；不按技术指标拆成多条规则或新增 `rule_condition` 表。Agent 按 Check 获取
-候选规则，管理后台以完整决策行编辑和审核。
+一行保存一条完整、不可变的规则版本。一条 Rule Version 对一个 Check 的受检对象定义一个或多个可替代的合格判定组：
+组内判定项全部 AND，组间 OR。不同受检对象可由明确的 `comparison_operand_alias` 分组选规，各自保留规则与结果；
+不将同一对象的公式操作数拆成多条规则，也不新增 `rule_condition` 表。管理后台以完整决策行编辑和审核。
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -328,6 +329,8 @@ AnalysisPlan 时结合 G 的明确语义、已确认 Discovery 特征和经过�
 | `name` | varchar(180) | 规则名称 |
 | `conditions_json` | json | 规则适用条件数组，仅使用已确认的 Factor/Fact，全部 AND；不表示 Check 的合格判定 |
 | `acceptance_criteria_json` | json | 非空两层数组；外层为 OR 分组，内层为 AND 判定项；每项包含 `criterion_id/expression/comparator/threshold/result_unit` |
+| `evaluation_gate_json` | json nullable | Schema 5 独立检查门槛；`null` 表示无门槛，否则严格包含 `expression/comparator/threshold/result_unit` 四键 |
+| `comparison_operand_alias` | varchar nullable | Schema 5 可选的主受检量别名；按 `(Check, alias)` 独立选规，省略或 `null` 保留原 Check 级选规 |
 | `severity` | varchar(20) nullable | 规则失效后果的严重度代码：`critical/high/medium/low`；Draft 可暂空，审核通过前必填；无 `warning` 默认值 |
 | `severity_rationale` | text nullable | 针对本规则及适用条件的定级理由；Draft 可暂空，审核通过前必填 |
 | `recommendation_template` | text nullable | 工程建议模板 |
@@ -350,6 +353,15 @@ AnalysisPlan 时结合 G 的明确语义、已确认 Discovery 特征和经过�
 筛选适用的 Rule Version；若今后确需按孔径等几何量选择不同规格，须单独定义明确的几何适用条件契约，
 与合格判定项严格区分，不把它伪装成 Factor。
 
+`evaluation_gate_json` 使用同一受控表达式、比较符和单位契约，但没有 `criterion_id`，也不是 OR 分组内的判定项。
+每个物理测量实例先求门槛：false 返回 `not_applicable`，缺失、无效或无法计算返回 `indeterminate`，两者均不判定后续合格项；
+仅 true 执行完整 OR-of-AND。门槛可以引用只用于触发的 Operand。当前几何需求仍可单批计算，门槛控制业务求值，
+不承诺跳过 Worker 的几何计算。Schema 5 的所有规则必须带该字段（无门槛写 `null`）；Schema 2/3/4 不接受该字段。
+
+`comparison_operand_alias` 必须是本 Check 的 `USES_OPERAND` 别名，并在合格判定表达式中实际引用；仅在门槛中引用不够。
+同一发布 Check 的有效规则只要有一条配置，全部都必须配置。该字段由工程审核明确指定，不按表达式顺序、全部操作数或
+`operand_text` 自动推断；共享参考壁厚也不代表同一受检对象。Schema 5 允许省略或 `null`，Schema 4 不接受非空值。
+
 `acceptance_criteria_json` 中每个 `criterion_id` 在整条 Rule Version（跨所有分组）内唯一，用于结果和证据追踪；
 `expression` 可引用同一 Check 的多个 `USES_OPERAND.qualifiers_json.alias` 并使用受控算术运算；
 `comparator` 为 `GT/GTE/LT/LTE/EQ/NE/BETWEEN`；`threshold` 为常量、上下限或发布前已编译的
@@ -358,8 +370,8 @@ AnalysisPlan 时结合 G 的明确语义、已确认 Discovery 特征和经过�
 该组才通过；任一项失败则该组失败；无失败但存在缺失或无效 Measurement 时该组无法判定。
 任一组通过则 Check 通过；所有组都失败才算 Check 失败；没有组通过且至少一组无法判定时，Check
 为无法判定。不得因某一组失败或无法判定而换选另一条 Rule Version；所有已取得的测量与判定结果均须保留。
-`conditions_json` 和 `acceptance_criteria_json` 均属于规则语义内容，纳入 `content_sha256`；
-改变适用条件、任一判定表达式或阈值时，必须创建新的 Rule Version。
+`conditions_json`、`acceptance_criteria_json`、Schema 5 的 `evaluation_gate_json` 及非空 `comparison_operand_alias` 均属于规则语义内容，纳入 `content_sha256`；
+改变适用条件、受检对象、门槛、任一判定表达式或阈值时，必须创建新的 Rule Version。空的受检对象字段从旧规则内容与绑定哈希投影中省略，历史 Schema 4 内容哈希保持原投影。
 
 唯一约束：`UNIQUE(rule_id, version)`。
 
@@ -527,7 +539,7 @@ Measurement/Feature/Region 证据。若工程要求“等于某标称值”，�
 | `ontology_version` | varchar(32) | 本体版本 |
 | `rule_set_id` | char(32) FK | 已展开的规则集 |
 | `scope_type/scope_key` | varchar | 运行作用域 |
-| `schema_version` | integer | Snapshot Schema 版本；`2` 为历史单判定，`3` 为一维全 AND 复合判定，`4` 为两层 OR-of-AND 复合判定；新发布使用 `4` |
+| `schema_version` | integer | Snapshot Schema 版本；`2` 为历史单判定，`3` 为一维全 AND，`4` 为两层 OR-of-AND，`5` 在此基础上增加可空独立门槛和风险类别；需要新契约的发布使用 `5` |
 | `artifact_uri` | text | JSON/SQLite 发布物位置 |
 | `content_sha256` | char(64) | 发布物哈希 |
 | `status` | varchar(20) | `building/released/revoked` |
@@ -539,6 +551,7 @@ Measurement/Feature/Region 证据。若工程要求“等于某标称值”，�
 - Check 的每个 Operand 使用权威 G ID，且 Feature 类别、参考对象语义、聚合、数据 Schema、量纲和单位完整一致；
   目标 OCCT Capability 是否支持该 G ID 由 Hermes 在计划编译时校验，不在 Mold 保存或发布 Worker 私有绑定；
 - `conditions_json` 只用于 Factor 适用性筛选，不含 Geometric 合格判定；
+- Schema 5 的 `evaluation_gate_json` 为 `null` 或严格四键门槛；引用的 Operand、数值和单位均通过相同契约验证，不能以缺值或零代替未知门槛；
 - `acceptance_criteria_json` 是非空外层 OR 数组，每个内层 AND 数组也非空，`criterion_id` 在整条规则内不重复；每项表达式只使用本 Check 声明的
   Operand Alias 和白名单算术运算，比较符属于受控集合；
 - Factor 条件满足其数据 Schema 或枚举选项；
@@ -569,11 +582,12 @@ Agent 不复制管理库全部表，只安装一次发布后展开的运行投�
 `USES_OPERAND.qualifiers.operand_text` 中保存比较对象原文；Region 是 Discovery/Measurement
 运行数据，不是本体概念。
 
-Schema 3/4 发布快照与管理库对 JSON 字段采用相同名称，值仍是 JSON 对象、数组或标量，
+Schema 3/4/5 发布快照与管理库对 JSON 字段采用相同名称，值仍是 JSON 对象、数组或标量，
 不是二次序列化的字符串：Concept 使用 `aliases_json/data_schema_json/properties_json`，
 Relation 使用 `qualifiers_json`，FactorOption 使用 `value_json`，Rule Version 使用
 `conditions_json/acceptance_criteria_json`。Agent 的 Check Context 和 Plan 规则绑定也沿用
-这些名称；Schema 4 将 `acceptance_criteria_json` 固定为两层 OR-of-AND 数组。Schema 2/3 历史快照
+这些名称；Schema 4/5 将 `acceptance_criteria_json` 固定为两层 OR-of-AND 数组，Schema 5 还固定 `evaluation_gate_json`。
+本地数据库可保存可空门槛；读取没有门槛列的历史安装库时仍按无门槛执行，旧绑定序列化省略空门槛以保持哈希。Schema 2/3 历史快照
 继续按旧结构读取，不作为新发布物的命名范本。
 
 ### 5.2 `ontology_concept`
@@ -598,16 +612,22 @@ Factor Concept 的 `properties_json.source_policy` 随快照发布，供 Agent �
 
 ### 5.5 `rule_version`
 
-当前 Rule Set 展开后的候选规则版本。Schema 4 规则执行中，Agent 先按 Check 和已确认的 Factor
-选出适用 Rule Version，Plan 固定该版本及完整的发布态 `acceptance_criteria_json`，再编译其引用的
+当前 Rule Set 展开后的候选规则版本。Agent 先按 Check 及可选的 `comparison_operand_alias` 分组，在每组内按已确认的 Factor
+和优先级选出适用 Rule Version；同组同优先级冲突仍报错。一个对象的能力缺失或测量失败不取消其它对象的候选、Fact 需求或结果。
+Plan 固定各组所选版本及完整的发布态 `acceptance_criteria_json`，再编译其引用的
 Geometric Operand 并执行 Measurement。测量后逐项计算合格判定；不得将判定项当作规则选择条件，
-也不得因第一项不合格而跳过后续判定或选择默认规则。
+也不得因第一项不合格而跳过后续判定或选择默认规则。Schema 5 的独立门槛在合格判定之前执行，并保留门槛结果与依据。
 
-一个 Check 实例对应一个综合 Evaluation：任一 AND 组全部通过即 `pass`；所有组各自至少有一项失败
+Schema 5 中，`C_WALL_DRAFT` 和 `C_WALL_THK_TRANSITION` 的 `F_APPR_REGION_REQ` 条件由对应物理实例的
+`quality.appearance_class` 选择；仅具备声明的外观 G 支持此路径，缺少能力或实例分类时不能退回全特征 Fact。
+Worker 对未标注的面按非外观处理，混合或证据不足的过渡实例保留不可判定。其它 Check 继续使用既有人工确认 Factor，
+不因 Schema 升级而自动采用逐面标注或默认非外观；Schema 4 的原选择语义保持不变。
+
+每个 Check 的受检对象和物理测量实例对应一个综合 Evaluation；未配置受检对象时保留原 Check 级行为。任一 AND 组全部通过即 `pass`；所有组各自至少有一项失败
 才 `fail`；没有组通过且至少一组因缺失或无效测量无法判定时，整体为无法判定，不能默认为 `pass`。
 结果保存每个 `criterion_id` 的分组序号、
 表达式值、单位、比较符、阈值、单项状态，以及原始 Measurement 和 Feature/Region 证据引用；
-失败 Check 只生成一个业务问题，不按判定项重复计数。
+每个失败 Evaluation 只生成一个业务问题，不按判定项重复计数；两个明确受检对象可分别形成问题及独立证据。
 
 Schema 3/4 发布 JSON 直接使用表字段名 `acceptance_criteria_json`、`conditions_json`
 和 `severity_rationale`；不再发布旧的 `expression/comparator/threshold/result_unit` 单项字段。
@@ -617,7 +637,7 @@ Agent 本地投影沿用现有 `rule_version.severity`，增加 `severity_ration
 当前问题列表、Viewer 和 HTML 按业务问题类型汇总，不使用严重度划分高中低风险；严重度及理由仅保留作规则元数据。
 Schema 2 历史快照中的 `warning` 或缺失严重度只可作为“历史未定级”展示，
 不得默认为 `medium`，也不得在运行时借用 Check 的 `default_severity` 补齐。
-Schema 2 的单表达式字段和 Geometric 规则选择条件仅供历史快照兼容执行；Schema 4 新发布物
+Schema 2 的单表达式字段和 Geometric 规则选择条件仅供历史快照兼容执行；Schema 4/5 发布物
 使用 `acceptance_criteria_json`，不再把技术指标合格阈值发布到 `conditions_json`。
 
 本地库不需要 `rule_set_item`、审批、用户或知识文档表；这些只属于管理控制层。
@@ -669,8 +689,8 @@ AI 不直接查询任意 SQL，也不靠表名猜测含义。
 → 新 Plan 自动使用新 RuleBinding
 ```
 
-Agent 已支持 Schema 4 通用编译和 OR-of-AND 判定；新增遵循受支持契约的规则无需逐条改 Agent 业务代码；
-Agent 同时保留 Schema 2/3 历史兼容。
+Agent 已支持 Schema 5 通用编译、独立门槛和 OR-of-AND 判定；新增遵循受支持契约的规则无需逐条改 Agent 业务代码；
+Agent 同时保留 Schema 2/3/4 历史兼容。可编译规则仍须具备目标 Worker 的全部实际 G 能力，不能用规则已发布代替算法验收。
 
 ### 7.2 新增特征和 Check
 
@@ -713,29 +733,29 @@ OCCT 新增 Feature/Geometric Capability（Recognizer、部位选择器和 Calcu
 
 ### 8.3 Check、变量与结果的关联
 
-Check 通过 USES_OPERAND 绑定公式 alias 与 G；Operand 是现有关系及规则引用，不新增 CheckOperand 表。一个 Check 可依赖多个 G，同一 G 可供多个 Check 复用。失败 Check 形成业务问题，不按测量数或判定项数重复统计。
+Check 通过 USES_OPERAND 绑定公式 alias 与 G；Operand 是现有关系及规则引用，不新增 CheckOperand 表。一个 Check 可依赖多个 G，同一 G 可供多个 Check 复用。显式受检对象各自选规和形成业务问题，不按公式操作数、测量数或判定项数重复统计。
 
 快照续租、分组确认、计算去重、coverage、跨快照 provenance 和 result_manifest 的实现细节由[会话接入设计](dfm-geometric-session-contract.md)维护，本节不复制运行状态机。
 
 ## 9. 实现核对与迁移边界
 
-核对日期：2026-10-21；基于 Hermes HEAD `9fa1eae19`、Mold HEAD `f6b9b28a3`、当前工作区源码及
-`D:\item\模具项目\Rule_base\V2.2.3.xlsx`。本次核对未连接 Mold 生产数据库，因此描述的是仓库已落地能力，
-不代表目标环境已经执行迁移、导入和发布。
+核对日期：2026-11-13；本节描述当前消费者代码契约。已用 MoldMind 真实 Schema 5 导出在隔离 SQLite 安装并校验内容哈希，
+配套 Worker 3.1.0 / bundle 2.6.0 验证新外观 G 的实际分类与求值；这不代表日常环境已切换或新规则已正式发布。
+门槛、旧包兼容及外观范围回归见 `test_catalog_alignment.py`、`test_geometric_instances.py` 和原生 Worker 测试；受检对象分组、部分能力缺失、冲突及独立报告回归见 `test_comparison_operand_groups.py`。
 
 | 内容 | 核对入口 | 状态与边界 |
 | --- | --- | --- |
-| 规则包 Schema 2/3/4、Schema 4 分组判定 | `tools/dfm/schemas/ontology_snapshot.schema.json`、本体编译与 Evaluation 实现 | 现有代码能力；历史读取不作为新发布命名范本 |
+| 规则包 Schema 2/3/4/5、分组判定和独立门槛 | `tools/dfm/schemas/ontology_snapshot.schema.json`、本体编译与 Evaluation 实现 | 旧包按原语义读取；Schema 5 必须显式包含门槛字段 |
 | SQLite 安装、固定身份、有界 Check Context | `tools/dfm/ontology/store.py` | 现有代码入口；实际选中版本读元数据 |
 | 同步、历史包、撤销与回滚入口 | `tools/dfm/ontology/sync.py` | 现有代码入口；远端鉴权、发布内容与运行策略需部署验证 |
 | 示例规则包 | `tools/dfm/scopes/injection/ontology_snapshot_v2.json` | Schema 2 示例，不代表远程最新发布 |
 | Worker 直接 G ID 与常驻会话 | `tools/dfm/runtime/process.py`、OCCT Worker 公共 v2 Schema | 已落地；普通计算不使用旧 Metric／Quantity／Region 请求路由 |
 | 中心九表与管理界面 | Mold `aimold_app/models/dfm_*`、`views/dfm_management.py`、Web `ruleCatalog` | 已落地模型、审核生命周期、规则集编排、发布和撤销界面；生产数据状态需部署核对 |
 | Excel 导入与新增“影响范围” | Mold `import_dfm_v2.py`、`sync_dfm_workbook_ontology.py`、`V2.2.3.xlsx` | 已按表头读取并写入 `Factor.properties_json.impact_scope`；界面允许修正，重导入以 Excel 为准 |
-| Schema 4 发布与四个运行接口 | Mold `dfm_publication_service.py`、`dfm_runtime_urls.py` | 已落地不可变 Artifact、SHA-256 校验、latest/dictionary/context/artifact；未实现数字签名 |
+| 版本化发布与四个运行接口 | Mold `dfm_publication_service.py`、`dfm_runtime_urls.py` | 不可变 Artifact、SHA-256 校验、latest/dictionary/context/artifact；实际发布 Schema 由目标发布物核对 |
 | Mold 公共属性投影 | Mold `dfm_concept_property_service.py`、`dfm_publication_service.py` | 发布器按稳定 Feature/G ID 生成当前属性并严格使用白名单；旧 Worker 绑定字段不再读取、回填或发布，不要求迁移历史 JSON |
 
-迁移时逐条辨别旧 conditions_json 内的几何条件：合格要求进入 acceptance_criteria_json；真正的几何适用条件另行设计与审核，不伪装成 Factor。判定项 ID、单位、比较符、引用和 AND／OR 语义均需验证，不能按字段形状机械搬迁。
+迁移时逐条辨别旧 conditions_json 内的几何条件：合格要求进入 acceptance_criteria_json；经工程确认的检查触发门槛进入 Schema 5 的 evaluation_gate_json，不伪装成 Factor。判定项 ID、单位、比较符、引用和 AND／OR 语义均需验证，不能按字段形状机械搬迁。
 
 迁移补充约束：旧单项 expression_json／comparator／threshold_json／result_unit 仅作迁移来源；真正的合格要求经审核转为判定项。旧单阈值规则的 support_type=threshold Citation 可在审核后绑定迁入的 criterion_id；多判定项的阈值引用必须逐项确认，不能自动关联到任意判定项。
 
