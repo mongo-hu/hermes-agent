@@ -129,6 +129,12 @@ class OCCTCppFeatureRecognitionProvider:
                     "geometry_protocol_invalid",
                     "Feature discovery returned an unidentifiable feature.",
                 )
+            confidence = raw.get("confidence")
+            quality = dict(raw.get("quality") or {})
+            if confidence is None:
+                # Keep the numeric FeatureRecord contract without presenting a
+                # missing score as a genuine zero-confidence recognition.
+                quality["confidence_available"] = False
             features.append(
                 FeatureRecord(
                     feature_id=feature_id,
@@ -137,7 +143,7 @@ class OCCTCppFeatureRecognitionProvider:
                         f"worker_snapshot:{snapshot_id}",
                         f"input:{input_record.input_id}",
                     ],
-                    confidence=float(raw.get("confidence", 0.0)),
+                    confidence=float(confidence) if confidence is not None else 0.0,
                     input_sha256=input_record.sha256,
                     properties={
                         "subtype": raw.get("subtype"),
@@ -146,6 +152,7 @@ class OCCTCppFeatureRecognitionProvider:
                         "geometry_refs": list(raw.get("geometry_refs") or []),
                         "method": raw.get("method"),
                         "diagnostics": dict(raw.get("diagnostics") or {}),
+                        **({"quality": quality} if quality else {}),
                         "worker_snapshot_id": snapshot_id,
                     },
                     relationships=(

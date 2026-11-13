@@ -1,4 +1,5 @@
 import type { GeometryReference } from './dfm-viewer-geometry'
+import { FEATURE_LABELS } from './dfm-feature-presentation'
 
 export interface ReviewFeature {
   feature_id: string
@@ -124,16 +125,7 @@ export function removableReviewGroup(context: ReviewContext, group: ReviewGroup)
 }
 
 const LABELS: Record<string, string> = {
-  main_wall: '主体壁',
-  rib: '筋',
-  hollow_boss: '带孔 Boss 柱',
-  screw_boss: '带孔 Boss 柱',
-  solid_boss: '实心 Boss 柱',
-  drilled_hole: '孔',
-  blend: '圆角',
-  chamfer: '倒角',
-  shaft: '轴状结构',
-  cavity: '几何凹腔',
+  ...FEATURE_LABELS,
   appearance: '面属性 · 外观',
   mold_side: '面属性 · 定模／动模归属',
   forming_side: '面属性 · 型腔／型芯侧',

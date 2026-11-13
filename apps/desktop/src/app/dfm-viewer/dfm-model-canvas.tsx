@@ -11,7 +11,7 @@ import { createDfmCameraControls, resizeDfmCameraControls } from './dfm-camera-c
 import { attachCanvasMenus, type CanvasMenuPoint, type CanvasViewMenu } from './dfm-canvas-menus'
 import { createDirectionAxis, type DirectionAxisState } from './dfm-direction-axis'
 import { type DfmViewCommand, DfmViewCompass, type DfmViewCompassHandle, DfmViewMenu } from './dfm-view-menu'
-import { type CameraOrientation, fitOrthographicCamera, nearestStandardPose, resizeOrthographicCamera,
+import { type CameraOrientation, fitOrthographicCamera, nearestStandardPose, orthographicVisibleHeight, resizeOrthographicCamera,
   setOrthographicVisibleHeight, standardCameraPose, updateOrthographicClipping } from './dfm-viewer-camera'
 import { createFocusIndex, selectionCameraPose } from './dfm-viewer-focus'
 import { type GeometryReference, mergeRenderScene, type RenderPrimitive,
@@ -302,7 +302,10 @@ export function ModelCanvas({
 
  return}
 
-      animatePose(action === 'align' ? nearestStandardPose(camera) : standardCameraPose(action))
+      const pose = action === 'align' ? nearestStandardPose(camera) : standardCameraPose(action)
+      animatePose(pose, sphere.center, orthographicVisibleHeight(
+        bounds, pose, (camera.right - camera.left) / (camera.top - camera.bottom)
+      ))
     }
 
     const observer = new ResizeObserver(resize)

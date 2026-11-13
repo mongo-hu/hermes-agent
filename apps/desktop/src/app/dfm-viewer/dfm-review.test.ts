@@ -72,7 +72,7 @@ describe('DFM review state', () => {
     expect(
       buckets.find(bucket => bucket.id === 'structure:hollow_boss')?.groups.map(group => group.review_group_id)
     ).toEqual(['b1'])
-    expect(buckets.find(bucket => bucket.id === 'structure:hollow_boss')?.label).toBe('带孔 Boss 柱')
+    expect(buckets.find(bucket => bucket.id === 'structure:hollow_boss')?.label).toBe('带孔 BOSS 柱')
     expect(buckets.find(bucket => bucket.id === 'structure:main_wall')?.groups).toHaveLength(1)
   })
 
