@@ -34,6 +34,11 @@ export interface ReviewScope {
   draw_direction: number[] | null
   geometry_refs: GeometryReference[]
   status?: 'candidate' | 'confirmed' | 'stale'
+  diagnostics?: {
+    /** OCCT's original undercut region score; independent of plan confirmation. */
+    region_confidence?: number | null
+    [key: string]: unknown
+  }
 }
 
 export interface ReviewGroup {

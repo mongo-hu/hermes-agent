@@ -24,7 +24,7 @@ import {
 import type { AnnotationKind, ReviewAnnotation } from './dfm-review'
 import { isReviewConflict } from './dfm-review-edits'
 import { DfmFeatureCard } from './dfm-feature-card'
-import { featurePresentation } from './dfm-feature-presentation'
+import { featurePresentation, formatFeatureConfidence } from './dfm-feature-presentation'
 import type { GeometryReference } from './dfm-viewer-geometry'
 import { type DfmHighlightSelection, sameHighlightSelection } from './dfm-viewer-selection'
 
@@ -442,6 +442,7 @@ export function DfmReviewPanel({
     const ready = directionUnlocked(context, group)
     const mechanism = { none: '主方向', slider: '滑块', lifter: '斜顶', undetermined: '机构待确定' }[scope.mechanism_kind]
     const label = group.status === 'confirmed' ? '已确认' : ready ? '可确认' : '待补充'
+    const confidence = formatFeatureConfidence(scope.diagnostics?.region_confidence)
 
     return <div className={`mt-2 rounded border p-2 ${active ? 'border-cyan-300/50 bg-cyan-500/10' : 'border-white/10 bg-black/10'}`}
       data-forming-status={label} data-review-object={id} key={group.review_group_id}>
@@ -457,6 +458,10 @@ export function DfmReviewPanel({
         </button>
         <span className={`rounded px-1.5 py-0.5 text-[9px] ${group.status === 'confirmed' ? 'bg-cyan-400/10 text-cyan-200' : 'bg-amber-400/10 text-amber-200'}`}>{label}</span>
       </div>
+      {scope.kind === 'undercut' && <p className="mt-1 text-[10px] text-slate-400"
+        title="倒扣识别置信度是原始区域的识别评分，不代表退出方向可靠性或 DFM 合格率；人工确认或修改方案不重新计算此评分。">
+        倒扣识别置信度 <span className="text-slate-200">{confidence.label}</span>
+      </p>}
       {active && (editingScopeId === id && scopeEditor ? scopeEditor : <div className="mt-2 border-t border-white/10 pt-2">
         <dl className="grid grid-cols-2 gap-x-2 gap-y-1.5 text-[10px]">
           <dt className="text-amber-200">倒扣面</dt><dd>{scope.undercut_geometry_refs.length} 个</dd>

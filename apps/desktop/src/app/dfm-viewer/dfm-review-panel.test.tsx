@@ -266,6 +266,7 @@ describe('DFM grouped review interaction', () => {
 
   it('exposes undercut editing and individual confirmation through the collapsed category', async () => {
     const initial = { ...context(), snapshot_id: 'review-current' }
+    initial.forming_scopes[0].diagnostics = { region_confidence: 0.83666 }
     initial.review_groups = initial.review_groups.map(group =>
       group.review_group_id === 'plan' ? { ...group, status: 'pending_review' } : group
     )
@@ -282,6 +283,7 @@ describe('DFM grouped review interaction', () => {
     fireEvent.click(shortcut)
     const confirm = await screen.findByRole('button', { name: '确认方案' })
     const row = confirm.closest('[data-review-object]') as HTMLElement
+    expect(within(row).getByTitle(/^倒扣识别置信度/).textContent).toContain('83.7%')
     fireEvent.click(within(row).getByRole('button', { name: '修改' }))
     expect(onEditDirection).toHaveBeenCalledWith(initial.forming_scopes[0], initial)
     // Reopen an explicitly collapsed category from the same shortcut.
@@ -300,6 +302,42 @@ describe('DFM grouped review interaction', () => {
     const confirmedBucket = screen.getByText(/局部成型方案/, { selector: 'summary' }).closest('details')!
     expect(within(confirmedBucket).getByRole('button', { name: '修改方案' })).toBeTruthy()
     expect(within(confirmedBucket).queryByRole('button', { name: '确认方案' })).toBeNull()
+    expect(within(confirmedBucket).getByTitle(/^倒扣识别置信度/).textContent).toContain('83.7%')
+  })
+
+  it.each([
+    { diagnostics: undefined, label: '未提供' },
+    { diagnostics: {}, label: '未提供' },
+    { diagnostics: { region_confidence: null }, label: '未提供' },
+    { diagnostics: { region_confidence: 0 }, label: '0%' },
+    { diagnostics: { region_confidence: 1 }, label: '100%' },
+    { diagnostics: { region_confidence: 0.726 }, label: '72.6%' },
+    { diagnostics: { region_confidence: -0.1 }, label: '不可用' },
+    { diagnostics: { region_confidence: 1.1 }, label: '不可用' },
+    { diagnostics: { region_confidence: NaN }, label: '不可用' },
+    { diagnostics: { region_confidence: Infinity }, label: '不可用' }
+  ])('shows the Worker undercut score as $label without substituting candidate confidence', async ({ diagnostics, label }) => {
+    const initial = context()
+    const scope = initial.forming_scopes[0]
+    scope.diagnostics = diagnostics
+    scope.candidate_solutions = [{ mechanism_kind: 'slider', geometry_refs: scope.geometry_refs,
+      draw_direction: [1, 0, 0], confidence: 0.99 }]
+    mount(initial)
+    await screen.findByText(/局部成型方案/, { selector: 'summary' })
+    const bucket = openBucket(/局部成型方案/)
+    // The score is visible before selecting or expanding the individual plan.
+    expect(within(bucket).getByTitle(/^倒扣识别置信度/).textContent).toContain(label)
+    expect(within(bucket).queryByRole('button', { name: '确认方案' })).toBeNull()
+  })
+
+  it('does not label other local forming scopes with an undercut score', async () => {
+    const initial = context()
+    initial.forming_scopes[0].kind = 'local_forming'
+    initial.forming_scopes[0].diagnostics = { region_confidence: 0.9 }
+    mount(initial)
+    await screen.findByText(/局部成型方案/, { selector: 'summary' })
+    const bucket = openBucket(/局部成型方案/)
+    expect(within(bucket).queryByTitle(/^倒扣识别置信度/)).toBeNull()
   })
 
   it('does not show an undercut shortcut when discovery has no undercut ranges', async () => {

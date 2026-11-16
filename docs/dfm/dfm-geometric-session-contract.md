@@ -941,3 +941,9 @@ Desktop 沿用 `POST /api/dfm/projects/{project_id}/discovery/review/direction`�
 - 保存失败重试、历史审核组依赖失效、无关任务保留、恢复日志不被失败替换等回归通过。桌面测试截图统一使用 CSS 像素，服务器退出等待覆盖实际连接关闭时限，不修改产品显示或 HTTP 超时配置。
 
 本机日志保存在 Worker 仓库 `out/hermes-plan2-review`，最终后端日志为 `python-tests-final.log`，桌面复测为 `desktop-e2e-recheck.log`。真实拓扑上的 fixture 规则和人工成型候选仅验证软件链路，不表示自动识别能力或工程精度已完成认证。
+
+## 倒扣区域置信度（2026-11-16）
+
+Desktop 局部成型方案卡片对 `kind=undercut` 显示“倒扣识别置信度”，直接读取 Worker 的 `forming_scopes[].diagnostics.region_confidence`。后端快照投影、`FormingScopeRecord` 持久化与审核接口已保留 `diagnostics`，无需新增 RPC 或重复计算评分，也不使用 `candidate_solutions[].confidence` 代替倒扣区域评分。
+
+与当前 OCCT 倒扣算法一致，区域评分为种子平均置信度的 80% 加种子覆盖率的 20%，范围为 0～1；它是原始倒扣区域的识别评分，不代表退出方向可靠性或 DFM 合格率。卡片按百分比显示，最多一位小数，零分保留为 `0%`；旧结果缺少字段或为 null 显示“未提供”，非数值、非有限值或超出范围显示“不可用”。待确认和已确认卡片均展示原值，人工确认或修改方案不重新计算此评分，也不由分数改变方案确认条件。
