@@ -78,7 +78,7 @@ function expand(label: string) {
   return details
 }
 
-async function mountObjectMenuWorkflow(inWorkbench = false) {
+async function mountObjectMenuWorkflow(inWorkbench = false, embedded = false) {
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
   vi.stubGlobal('requestAnimationFrame', (frame: FrameRequestCallback) => { rendered.frame = frame; return 0 })
   vi.stubGlobal('cancelAnimationFrame', () => {})
@@ -116,11 +116,12 @@ async function mountObjectMenuWorkflow(inWorkbench = false) {
 
   const api = vi.fn(async (_request: { path: string; method?: string; body?: unknown }) => structuredClone(state))
   const readJsonFile = vi.fn(async (path: string) => path.endsWith('scene.json') ? scene : path.endsWith('topology.json') ? topology : manifest)
-  Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api, readJsonFile } })
+  const openDfmViewerWindow = vi.fn(async () => ({ ok: true }))
+  Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api, readJsonFile, openDfmViewerWindow } })
   const target = { projectId: project, manifestPath: '/project/viewer.json', status: 'discovery' as const }
   render(inWorkbench
     ? <DfmWorkbench analysisView={<div>Analysis conversation</div>} target={target} />
-    : <DfmViewerPane target={target} />)
+    : <DfmViewerPane embedded={embedded} target={target} />)
   await screen.findByText('带孔 BOSS 柱 · 1 组待确认', {}, { timeout: 5000 })
   const canvas = document.querySelector('canvas')!
   canvas.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, width: 400, height: 400, right: 400, bottom: 400, toJSON() {} })
@@ -137,7 +138,7 @@ async function mountObjectMenuWorkflow(inWorkbench = false) {
     }
   }
 
-  return { api, canvas, clickCanvas, readJsonFile, getState: () => state, setState: (next: ReviewContext) => { state = next } }
+  return { api, canvas, clickCanvas, readJsonFile, openDfmViewerWindow, getState: () => state, setState: (next: ReviewContext) => { state = next } }
 }
 
 async function mountFormingWorkflow(inWorkbench = false) {
@@ -211,6 +212,28 @@ function directionArrowVisible() {
 
 describe('candidate confirmation and feature editing', () => {
   it.each([
+    { surface: 'workbench', inWorkbench: true, embedded: false, canPopout: true },
+    { surface: 'legacy embedded viewer', inWorkbench: false, embedded: true, canPopout: true },
+    { surface: 'standalone viewer', inWorkbench: false, embedded: false, canPopout: false }
+  ])('preserves layout and opens the current model from $surface', async ({ inWorkbench, embedded, canPopout }) => {
+    const { api, openDfmViewerWindow } = await mountObjectMenuWorkflow(inWorkbench, embedded)
+    const layout = document.querySelector<HTMLElement>('section[style]')!
+    expect(Boolean(layout.style.gridTemplateColumns)).toBe(!embedded)
+    expect(Boolean(layout.style.gridTemplateRows)).toBe(embedded)
+    const popout = screen.queryByRole('button', { name: '弹出' })
+    expect(Boolean(popout)).toBe(canPopout)
+    api.mockClear()
+    if (popout) {
+      fireEvent.click(popout)
+      await waitFor(() => expect(openDfmViewerWindow).toHaveBeenCalledExactlyOnceWith('/project/viewer.json'))
+    } else {
+      expect(openDfmViewerWindow).not.toHaveBeenCalled()
+    }
+    expect(api).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('DFM 三维画布')).toBeTruthy()
+  })
+
+  it.each([
     { confidence: 0.726, quality: undefined, label: '72.6%' },
     { confidence: 0, quality: undefined, label: '0%' },
     { confidence: 0, quality: { confidence_available: false }, label: '未提供' }
@@ -273,7 +296,7 @@ describe('candidate confirmation and feature editing', () => {
     if (inWorkbench) {
       expect(screen.getByRole('region', { name: '分析过程' }).textContent).toContain('Analysis conversation')
       expect(screen.getByRole('region', { name: '三维模型与问题' }).contains(row)).toBe(true)
-      expect(screen.queryByRole('button', { name: '弹出' })).toBeNull()
+      expect(screen.getByRole('button', { name: '弹出' })).toBeTruthy()
     }
   })
 

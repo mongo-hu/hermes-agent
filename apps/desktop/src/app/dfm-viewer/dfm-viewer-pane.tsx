@@ -568,7 +568,7 @@ export function DfmClarificationPanel({
   )
 }
 
-export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean; target: DfmViewerTarget }) {
+export function DfmViewerPane({ embedded = false, showPopout = embedded, target }: { embedded?: boolean; showPopout?: boolean; target: DfmViewerTarget }) {
   const reviewActions = useRef<DfmReviewPanelActions>(null)
   const [reviewBusy, setReviewBusy] = useState(false)
   const [objectMenu, setObjectMenu] = useState<{ point: CanvasMenuPoint; candidates: FaceCandidate[]; target: FaceCandidate | null; faceIndex: number } | null>(null)
@@ -1628,7 +1628,7 @@ export function DfmViewerPane({ embedded = false, target }: { embedded?: boolean
           >
             适合窗口
           </button>
-          {embedded && (
+          {showPopout && (
             <button
               className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-slate-200 hover:bg-white/10"
               onClick={() => void openDfmViewerWindow(target.manifestPath)}
