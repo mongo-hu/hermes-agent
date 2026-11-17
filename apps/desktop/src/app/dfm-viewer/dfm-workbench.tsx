@@ -72,7 +72,7 @@ export function DfmWorkbench({ analysisView, target }: { analysisView: ReactNode
           {analysisView}
         </section>
         <section aria-label="三维模型与问题" className="min-h-0 overflow-hidden">
-          <DfmViewerPane target={target} />
+          <DfmViewerPane showPopout target={target} />
         </section>
       </div>
     </section>
