@@ -136,13 +136,13 @@ export async function readFileDataUrlForAttach(filePath: string): Promise<string
     return null
   }
 
-  const dataUrl = await reader(filePath)
+  const dataUrl = await reader(filePath, { purpose: 'attachment' })
 
   return dataUrl || null
 }
 
 // The readFileDataUrl IPC base64-loads the whole file into memory and is
-// hard-capped (DATA_URL_READ_MAX_BYTES, 16 MB) in electron/hardening.ts, which
+// capped (16 MiB by default, 64 MiB for STEP attachments) in electron/hardening.ts, which
 // rejects with a raw "file is too large (N bytes; limit M bytes)" string. In
 // remote mode every attachment's bytes go through that read, so a big file
 // surfaces that internal message verbatim in the failure toast. Translate it
@@ -157,7 +157,7 @@ export function friendlyRemoteAttachError(err: unknown, label: string): Error {
   }
 
   const limitBytes = Number(message.match(/limit (\d+) bytes/)?.[1])
-  const cap = Number.isFinite(limitBytes) && limitBytes > 0 ? ` (max ${Math.floor(limitBytes / (1024 * 1024))} MB)` : ''
+  const cap = Number.isFinite(limitBytes) && limitBytes > 0 ? ` (max ${limitBytes / (1024 * 1024)} MiB)` : ''
 
   return new Error(`${label} is too large to upload to the remote gateway${cap}.`)
 }

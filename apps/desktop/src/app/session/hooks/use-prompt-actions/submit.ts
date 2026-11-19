@@ -307,6 +307,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               await withSessionBusyRetry(() =>
                 requestGateway('prompt.submit', { session_id: recoveredId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
               )
+              sessionId = recoveredId
             } else {
               submitErr = firstErr
             }
@@ -319,8 +320,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           throw submitErr
         }
 
-        if (usingComposerAttachments) {
-          clearComposerAttachments()
+        if (usingComposerAttachments && activeSessionIdRef.current === sessionId) {
+          clearComposerAttachments(syncedAttachments)
         }
 
         // Submit landed — the turn now runs (busy stays true), but the submit

@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   $composerAttachments,
+  ATTACHMENT_UPLOAD_TOKEN,
   addComposerAttachment,
+  clearComposerAttachments,
   clearSessionDraft,
   type ComposerAttachment,
   removeComposerAttachment,
@@ -43,6 +45,28 @@ describe('updateComposerAttachment', () => {
 
     expect(updated).toBe(false)
     expect($composerAttachments.get()).toHaveLength(0)
+  })
+
+  it('does not let an old upload overwrite or clear a re-added attachment with the same id', () => {
+    addComposerAttachment(attachment({ id: 'file:a' }))
+    const original = $composerAttachments.get()[0]!
+    removeComposerAttachment(original.id)
+    addComposerAttachment(original)
+    const readded = $composerAttachments.get()[0]!
+    expect(readded[ATTACHMENT_UPLOAD_TOKEN]).not.toBe(original[ATTACHMENT_UPLOAD_TOKEN])
+    expect(updateComposerAttachment({ ...original, refText: '@file:old' }, original[ATTACHMENT_UPLOAD_TOKEN])).toBe(
+      false
+    )
+    clearComposerAttachments([original])
+    expect($composerAttachments.get()).toEqual([readded])
+  })
+
+  it('clears only submitted instances and retains attachments added during the send', () => {
+    addComposerAttachment(attachment({ id: 'file:a' }))
+    const sent = $composerAttachments.get()[0]!
+    addComposerAttachment(attachment({ id: 'file:b' }))
+    clearComposerAttachments([sent])
+    expect($composerAttachments.get().map(item => item.id)).toEqual(['file:b'])
   })
 })
 
@@ -105,5 +129,15 @@ describe('session drafts', () => {
     taken.attachments[0]!.label = 'mutated'
 
     expect(takeSessionDraft('session-a').attachments[0]?.label).toBe('doc.pdf')
+  })
+
+  it('preserves upload identity in memory across draft clones without persisting attachments', () => {
+    const original = attachment({ id: 'file:a', [ATTACHMENT_UPLOAD_TOKEN]: 'temporary-token' })
+    stashSessionDraft('session-a', 'draft', [original])
+    const restored = takeSessionDraft('session-a').attachments[0]!
+    expect(restored).not.toBe(original)
+    expect(restored[ATTACHMENT_UPLOAD_TOKEN]).toBe(original[ATTACHMENT_UPLOAD_TOKEN])
+    expect(JSON.stringify({ attachments: [restored] })).not.toContain('temporary-token')
+    expect(window.localStorage.getItem(SESSION_DRAFTS_STORAGE_KEY)).not.toContain('temporary-token')
   })
 })

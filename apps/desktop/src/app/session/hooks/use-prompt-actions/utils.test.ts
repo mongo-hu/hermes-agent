@@ -74,9 +74,12 @@ describe('imageFilenameFromPath', () => {
 })
 
 describe('friendlyRemoteAttachError', () => {
-  it('rewrites a too-large error with the parsed cap', () => {
-    const err = friendlyRemoteAttachError(new Error('file is too large (20 bytes; limit 16777216 bytes)'), 'pic.png')
-    expect(err.message).toBe('pic.png is too large to upload to the remote gateway (max 16 MB).')
+  it.each([16, 64])('reports the actual %i MiB IPC cap', limitMiB => {
+    const err = friendlyRemoteAttachError(
+      new Error(`file is too large (N bytes; limit ${limitMiB * 1024 * 1024} bytes)`),
+      'attachment'
+    )
+    expect(err.message).toBe(`attachment is too large to upload to the remote gateway (max ${limitMiB} MiB).`)
   })
 
   it('passes non-cap errors through', () => {

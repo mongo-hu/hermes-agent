@@ -83,7 +83,7 @@ import {
 import { gitRootForIpc } from './git-root'
 import { addWorktree, listBranches, listWorktrees, removeWorktree, switchBranch } from './git-worktree-ops'
 import {
-  DATA_URL_READ_MAX_BYTES,
+  readFileForDataUrlIpc,
   DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret as encryptDesktopSecretStrict,
   resolveReadableFileForIpc,
@@ -7631,13 +7631,10 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
   return true
 })
 
-ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
-  const { resolvedPath } = await resolveReadableFileForIpc(filePath, {
-    maxBytes: DATA_URL_READ_MAX_BYTES,
-    purpose: 'File preview'
+ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath, options?: { purpose?: 'attachment' }) => {
+  const { resolvedPath, data } = await readFileForDataUrlIpc(filePath, {
+    purpose: options?.purpose === 'attachment' ? 'attachment' : undefined
   })
-
-  const data = await fs.promises.readFile(resolvedPath)
 
   return `data:${mimeTypeForPath(resolvedPath)};base64,${data.toString('base64')}`
 })

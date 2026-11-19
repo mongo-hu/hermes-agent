@@ -6,14 +6,87 @@ import test from 'node:test'
 import { pathToFileURL } from 'node:url'
 
 import {
+  DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
+  STEP_ATTACHMENT_MAX_BYTES,
   encryptDesktopSecret,
+  readFileForDataUrlIpc,
   resolveDirectoryForIpc,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
   sensitiveFileBlockReason
 } from './hardening'
+
+test('data URL reads allow larger STEP attachments without widening previews or other files', async () => {
+  const modelPath = path.join(os.tmpdir(), 'model.STEP')
+  let reads = 0
+  const content = Buffer.from('ISO-10303-21;')
+  let fileSize = STEP_ATTACHMENT_MAX_BYTES
+  let realPath = modelPath
+  const fakeFs = {
+    promises: {
+      stat: async () => ({ size: fileSize, isFile: () => true, isDirectory: () => false }),
+      realpath: async () => realPath,
+      access: async () => {},
+      readFile: async () => {
+        reads += 1
+
+        return content
+      }
+    }
+  } as unknown as typeof fs
+
+  for (const size of [STEP_ATTACHMENT_MAX_BYTES - 1, STEP_ATTACHMENT_MAX_BYTES]) {
+    fileSize = size
+    assert.equal((await readFileForDataUrlIpc(modelPath, { purpose: 'attachment', fs: fakeFs })).data, content)
+  }
+  assert.equal(reads, 2)
+  fileSize = STEP_ATTACHMENT_MAX_BYTES + 1
+  await rejectsWithCode(readFileForDataUrlIpc(modelPath, { purpose: 'attachment', fs: fakeFs }), 'EFBIG')
+  assert.equal(reads, 2, 'oversized files must be rejected before reading bytes')
+
+  fileSize = DATA_URL_READ_MAX_BYTES + 1
+  await rejectsWithCode(readFileForDataUrlIpc(modelPath, { fs: fakeFs }), 'EFBIG')
+  for (const extension of ['png', 'pdf', 'txt']) {
+    const otherPath = path.join(os.tmpdir(), `file.${extension}`)
+    realPath = otherPath
+    await rejectsWithCode(readFileForDataUrlIpc(otherPath, { purpose: 'attachment', fs: fakeFs }), 'EFBIG')
+  }
+  // A STEP-named link cannot grant a larger allowance to a non-STEP target.
+  await rejectsWithCode(readFileForDataUrlIpc(modelPath, { purpose: 'attachment', fs: fakeFs }), 'EFBIG')
+  assert.equal(reads, 2)
+
+  realPath = modelPath
+  fileSize = DATA_URL_READ_MAX_BYTES
+  assert.equal((await readFileForDataUrlIpc(modelPath, { fs: fakeFs })).data, content)
+})
+
+test('data URL reads reject a file that grows after stat and preserve sensitive path checks', async () => {
+  let reads = 0
+  const fakeFs = {
+    promises: {
+      stat: async () => ({ size: 1, isFile: () => true, isDirectory: () => false }),
+      realpath: async (value: string) => value,
+      access: async () => {},
+      readFile: async () => {
+        reads += 1
+
+        return { length: STEP_ATTACHMENT_MAX_BYTES + 1 }
+      }
+    }
+  } as unknown as typeof fs
+  await rejectsWithCode(
+    readFileForDataUrlIpc(path.join(os.tmpdir(), 'growing.stp'), { purpose: 'attachment', fs: fakeFs }),
+    'EFBIG'
+  )
+  assert.equal(reads, 1)
+  await rejectsWithCode(
+    readFileForDataUrlIpc(path.join(os.tmpdir(), '.env'), { purpose: 'attachment', fs: fakeFs }),
+    'sensitive-file'
+  )
+  assert.equal(reads, 1)
+})
 
 async function rejectsWithCode(promise, code: string) {
   await assert.rejects(promise, (error: any) => {

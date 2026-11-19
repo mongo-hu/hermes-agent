@@ -17195,6 +17195,9 @@ def _maybe_open_browser(
     threading.Thread(target=_open, daemon=True).start()
 
 
+_WS_MAX_MESSAGE_BYTES = 96 * 1024 * 1024
+
+
 def start_server(
     host: str = "127.0.0.1",
     port: int = 9119,
@@ -17351,6 +17354,8 @@ def start_server(
         # reaped via the WebSocketDisconnect → disconnect/reap path.
         ws_ping_interval=None if _is_loopback else 20.0,
         ws_ping_timeout=None if _is_loopback else 20.0,
+        # A 64 MiB STEP upload needs ~85.34 MiB after base64, plus its RPC envelope.
+        ws_max_size=_WS_MAX_MESSAGE_BYTES,
     )
     server = uvicorn.Server(config)
 

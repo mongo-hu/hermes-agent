@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 
 const DEFAULT_FETCH_TIMEOUT_MS = 15_000
 const DATA_URL_READ_MAX_BYTES = 16 * 1024 * 1024
+const STEP_ATTACHMENT_MAX_BYTES = 64 * 1024 * 1024
 const TEXT_PREVIEW_SOURCE_MAX_BYTES = 64 * 1024 * 1024
 
 const SAFE_ENV_SUFFIXES = new Set(['dist', 'example', 'sample', 'template'])
@@ -302,11 +303,40 @@ async function resolveReadableFileForIpc(
   return { realPath, resolvedPath, stat }
 }
 
+async function readFileForDataUrlIpc(
+  filePath: string,
+  options: { purpose?: 'attachment'; fs?: typeof fs } = {}
+) {
+  const fsImpl = options.fs || fs
+  const purpose = options.purpose === 'attachment' ? 'File attachment' : 'File preview'
+  const { resolvedPath, realPath, stat } = await resolveReadableFileForIpc(filePath, {
+    purpose,
+    fs: fsImpl
+  })
+  const isStep = (value: string) => ['.stp', '.step'].includes(path.extname(value).toLowerCase())
+  const maxBytes = options.purpose === 'attachment' && isStep(resolvedPath) && isStep(realPath)
+    ? STEP_ATTACHMENT_MAX_BYTES
+    : DATA_URL_READ_MAX_BYTES
+  const checkSize = (size: number) => {
+    if (size > maxBytes) {
+      throw ipcPathError('EFBIG', `${purpose} failed: file is too large (${size} bytes; limit ${maxBytes} bytes).`)
+    }
+  }
+
+  checkSize(stat.size)
+  const data = await fsImpl.promises.readFile(resolvedPath)
+  // The file can grow between stat and read; never encode an oversized buffer.
+  checkSize(data.length)
+  return { resolvedPath, data }
+}
+
 export {
   DATA_URL_READ_MAX_BYTES,
+  STEP_ATTACHMENT_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret,
   rejectUnsafePathSyntax,
+  readFileForDataUrlIpc,
   resolveDirectoryForIpc,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,

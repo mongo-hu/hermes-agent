@@ -2,6 +2,9 @@ import { atom } from 'nanostores'
 
 import { triggerHaptic } from '@/lib/haptics'
 
+// Object spreads retain this identity, while JSON persistence omits symbol keys.
+export const ATTACHMENT_UPLOAD_TOKEN = Symbol('attachment-upload-token')
+
 export interface ComposerAttachment {
   id: string
   kind: 'image' | 'file' | 'folder' | 'terminal' | 'url'
@@ -11,6 +14,8 @@ export interface ComposerAttachment {
   previewUrl?: string
   path?: string
   attachedSessionId?: string
+  /** In-memory identity for this attachment instance; retained by draft clones. */
+  [ATTACHMENT_UPLOAD_TOKEN]?: string
   /** Set while the file/image bytes are being staged into the session
    * workspace (remote upload or local stage), and 'error' if that failed.
    * Drives the spinner / error state on the composer attachment card. */
@@ -135,7 +140,10 @@ export function clearComposerDraft() {
 
 export function addComposerAttachment(attachment: ComposerAttachment) {
   const previous = $composerAttachments.get()
-  const next = upsertAttachment(previous, attachment)
+  const next = upsertAttachment(previous, {
+    ...attachment,
+    [ATTACHMENT_UPLOAD_TOKEN]: crypto.randomUUID()
+  })
   $composerAttachments.set(next)
 
   if (next.length > previous.length && attachment.kind !== 'url') {
@@ -155,9 +163,13 @@ export function removeComposerAttachment(id: string): ComposerAttachment | null 
  * id is gone — e.g. the user removed the chip while an eager upload was still in
  * flight, so a late success must NOT resurrect it. Use this instead of
  * addComposerAttachment for async results that may land after a removal. */
-export function updateComposerAttachment(attachment: ComposerAttachment): boolean {
+export function updateComposerAttachment(attachment: ComposerAttachment, expectedUploadToken?: string): boolean {
   const current = $composerAttachments.get()
-  const index = current.findIndex(item => item.id === attachment.id)
+  const index = current.findIndex(
+    item =>
+      item.id === attachment.id &&
+      (expectedUploadToken === undefined || item[ATTACHMENT_UPLOAD_TOKEN] === expectedUploadToken)
+  )
 
   if (index < 0) {
     return false
@@ -170,8 +182,38 @@ export function updateComposerAttachment(attachment: ComposerAttachment): boolea
   return true
 }
 
-export function clearComposerAttachments() {
-  $composerAttachments.set([])
+/** Give legacy/externally supplied drafts an identity without replacing a newer chip with the same id. */
+export function ensureComposerAttachmentUploadToken(attachment: ComposerAttachment): ComposerAttachment {
+  if (attachment[ATTACHMENT_UPLOAD_TOKEN]) return attachment
+
+  const tracked = { ...attachment, [ATTACHMENT_UPLOAD_TOKEN]: crypto.randomUUID() }
+  const current = $composerAttachments.get()
+  const index = current.indexOf(attachment)
+
+  if (index >= 0) {
+    const next = [...current]
+    next[index] = tracked
+    $composerAttachments.set(next)
+  }
+
+  return tracked
+}
+
+export function clearComposerAttachments(sentAttachments?: ComposerAttachment[]) {
+  $composerAttachments.set(
+    sentAttachments
+      ? $composerAttachments
+          .get()
+          .filter(
+            current =>
+              !sentAttachments.some(sent =>
+                sent[ATTACHMENT_UPLOAD_TOKEN]
+                  ? sent.id === current.id && sent[ATTACHMENT_UPLOAD_TOKEN] === current[ATTACHMENT_UPLOAD_TOKEN]
+                  : sent === current
+              )
+          )
+      : []
+  )
 }
 
 /** Update only the upload state of an existing attachment (no-op if it's gone,
