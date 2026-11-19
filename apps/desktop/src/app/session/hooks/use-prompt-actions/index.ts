@@ -13,8 +13,11 @@ import { normalize } from '@/lib/text'
 import { clearClarifyRequest } from '@/store/clarify'
 import {
   $composerAttachments,
+  ATTACHMENT_UPLOAD_TOKEN,
   type ComposerAttachment,
-  setComposerAttachmentUploadState,
+  ensureComposerAttachmentUploadToken,
+  stashSessionDraft,
+  takeSessionDraft,
   updateComposerAttachment
 } from '@/store/composer'
 import { resetSessionBackground } from '@/store/composer-status'
@@ -58,6 +61,9 @@ interface HandoffResult {
   ok: boolean
   error?: string
 }
+
+// Keep only one large STEP data URL in flight, including eager and edit uploads.
+let stepUploadTail: Promise<void> = Promise.resolve()
 
 /**
  * Stage one file/image attachment into the session workspace and return the
@@ -118,38 +124,55 @@ export async function uploadComposerAttachment(
     }
   }
 
-  // Non-image file.
-  let dataUrl: string | null = null
+  const isStep = attachment.kind === 'file' && /\.(stp|step)$/i.test(path)
+  const uploadFile = async (): Promise<ComposerAttachment> => {
+    let dataUrl: string | null = null
 
-  if (remote) {
-    try {
-      dataUrl = await readFileDataUrlForAttach(path)
-    } catch (err) {
-      throw friendlyRemoteAttachError(err, label)
+    if (remote) {
+      try {
+        dataUrl = await readFileDataUrlForAttach(path)
+      } catch (err) {
+        throw friendlyRemoteAttachError(err, label)
+      }
+
+      if (!dataUrl) {
+        throw new Error(`Could not read ${label}`)
+      }
     }
 
-    if (!dataUrl) {
-      throw new Error(`Could not read ${label}`)
+    const params = {
+      name: label,
+      path,
+      session_id: sessionId,
+      ...(dataUrl ? { data_url: dataUrl } : {})
+    }
+    const result = isStep
+      ? await requestGateway<FileAttachResponse>('file.attach', params, 120_000)
+      : await requestGateway<FileAttachResponse>('file.attach', params)
+
+    if (!result.attached || !result.ref_text) {
+      throw new Error(result.message || `Could not attach ${label}`)
+    }
+
+    return {
+      ...attachment,
+      attachedSessionId: sessionId,
+      refText: result.ref_text,
+      uploadState: undefined
     }
   }
 
-  const result = await requestGateway<FileAttachResponse>('file.attach', {
-    name: label,
-    path,
-    session_id: sessionId,
-    ...(dataUrl ? { data_url: dataUrl } : {})
-  })
+  if (remote && isStep) {
+    const upload = stepUploadTail.then(uploadFile)
+    stepUploadTail = upload.then(
+      () => undefined,
+      () => undefined
+    )
 
-  if (!result.attached || !result.ref_text) {
-    throw new Error(result.message || `Could not attach ${label}`)
+    return upload
   }
 
-  return {
-    ...attachment,
-    attachedSessionId: sessionId,
-    refText: result.ref_text,
-    uploadState: undefined
-  }
+  return uploadFile()
 }
 
 interface PromptActionsOptions {
@@ -230,10 +253,34 @@ export function usePromptActions({
     [selectedStoredSessionIdRef, updateSessionState]
   )
 
-  // In-flight drop-time eager uploads, keyed by attachment id. Submit joins
+  // In-flight uploads belong to a session and attachment instance. Submit joins
   // these before re-uploading so a drop-then-immediately-Enter can't fire
   // file.attach twice and stage duplicate copies on the gateway.
-  const eagerUploadInFlight = useRef<Map<string, Promise<void>>>(new Map())
+  const eagerUploadInFlight = useRef<Map<string, Promise<ComposerAttachment>>>(new Map())
+  const uploadKey = (sessionId: string, attachment: ComposerAttachment) =>
+    JSON.stringify([sessionId, attachment[ATTACHMENT_UPLOAD_TOKEN]])
+
+  const updateUploadAttachment = useCallback(
+    (attachment: ComposerAttachment, scope: string) => {
+      if (!attachment[ATTACHMENT_UPLOAD_TOKEN]) return
+
+      const currentScope = selectedStoredSessionIdRef.current || activeSessionIdRef.current
+      if (currentScope === scope) {
+        updateComposerAttachment(attachment, attachment[ATTACHMENT_UPLOAD_TOKEN])
+        return
+      }
+
+      const draft = takeSessionDraft(scope)
+      const index = draft.attachments.findIndex(
+        item => item.id === attachment.id && item[ATTACHMENT_UPLOAD_TOKEN] === attachment[ATTACHMENT_UPLOAD_TOKEN]
+      )
+      if (index < 0) return
+
+      draft.attachments[index] = attachment
+      stashSessionDraft(scope, draft.text, draft.attachments)
+    },
+    [activeSessionIdRef, selectedStoredSessionIdRef]
+  )
 
   const syncAttachmentsForSubmit = useCallback(
     async (
@@ -244,20 +291,26 @@ export function usePromptActions({
       const updateComposerAttachments = options.updateComposerAttachments ?? true
       const remote = $connection.get()?.mode === 'remote'
       const synced: ComposerAttachment[] = []
+      const scope = selectedStoredSessionIdRef.current || sessionId
 
       for (const original of attachments) {
-        let attachment = original
+        let attachment =
+          original.path && (original.kind === 'file' || original.kind === 'image')
+            ? ensureComposerAttachmentUploadToken(original)
+            : original
 
         // Join a drop-time eager upload still in flight for this attachment
         // before deciding anything — otherwise submit and the eager task both
-        // call file.attach and stage duplicate files. After it settles, take the
-        // store's updated copy (its gateway ref, or its failure) over the stale
-        // pre-upload snapshot.
-        const inFlight = eagerUploadInFlight.current.get(attachment.id)
+        // call file.attach twice. Use that upload's result, never another
+        // session's current chip with a coincidentally matching display id.
+        const inFlight = eagerUploadInFlight.current.get(uploadKey(sessionId, attachment))
 
         if (inFlight) {
-          await inFlight
-          attachment = $composerAttachments.get().find(item => item.id === attachment.id) ?? attachment
+          try {
+            attachment = await inFlight
+          } catch {
+            // Eager failure was surfaced already; submit can retry the same file.
+          }
         }
 
         // Already-synced or pathless refs (terminal, url, etc.) pass through.
@@ -274,7 +327,7 @@ export function usePromptActions({
 
           // Update-only: never resurrect a chip the user removed mid-upload.
           if (updateComposerAttachments) {
-            updateComposerAttachment(nextAttachment)
+            updateUploadAttachment(nextAttachment, scope)
           }
 
           synced.push(nextAttachment)
@@ -287,7 +340,7 @@ export function usePromptActions({
 
       return synced
     },
-    [requestGateway]
+    [requestGateway, selectedStoredSessionIdRef, updateUploadAttachment]
   )
 
   // Stage a freshly dropped file as soon as it lands (when a session already
@@ -301,24 +354,27 @@ export function usePromptActions({
   // swapping `path` to a gateway path the local preview can't read. Images are
   // small and still byte-upload at submit via image.attach_bytes.
   const eagerlyUploadAttachment = useCallback(
-    async (sessionId: string, attachment: ComposerAttachment) => {
+    async (sessionId: string, attachment: ComposerAttachment, scope: string) => {
       const remote = $connection.get()?.mode === 'remote'
 
-      setComposerAttachmentUploadState(attachment.id, 'uploading')
+      updateUploadAttachment({ ...attachment, uploadState: 'uploading' }, scope)
 
       try {
         // Update-only: if the user removed the chip while this was uploading,
         // don't resurrect it — just drop the staged result on the floor.
-        updateComposerAttachment(await uploadComposerAttachment(attachment, { remote, requestGateway, sessionId }))
+        const uploaded = await uploadComposerAttachment(attachment, { remote, requestGateway, sessionId })
+        updateUploadAttachment(uploaded, scope)
+        return uploaded
       } catch (err) {
         // Leave the chip in place so submit-time sync can retry (or the user can
         // remove it) and flag the card; also toast so a hard failure (unreadable
         // file, gateway perms) isn't swallowed while the user keeps typing.
-        setComposerAttachmentUploadState(attachment.id, 'error')
+        updateUploadAttachment({ ...attachment, uploadState: 'error' }, scope)
         notifyError(err, copy.dropFiles)
+        throw err
       }
     },
-    [copy.dropFiles, requestGateway]
+    [copy.dropFiles, requestGateway, updateUploadAttachment]
   )
 
   const composerAttachments = useStore($composerAttachments)
@@ -333,20 +389,25 @@ export function usePromptActions({
         attachment.kind === 'file' &&
         Boolean(attachment.path) &&
         !attachment.attachedSessionId &&
-        !attachment.uploadState &&
-        !eagerUploadInFlight.current.has(attachment.id)
+        !attachment.uploadState
 
       if (!needsUpload) {
         continue
       }
 
-      const task = eagerlyUploadAttachment(activeSessionId, attachment).finally(() =>
-        eagerUploadInFlight.current.delete(attachment.id)
+      const tracked = ensureComposerAttachmentUploadToken(attachment)
+      const key = uploadKey(activeSessionId, tracked)
+      if (eagerUploadInFlight.current.has(key)) continue
+
+      const scope = selectedStoredSessionIdRef.current || activeSessionId
+      const task = eagerlyUploadAttachment(activeSessionId, tracked, scope).finally(() =>
+        eagerUploadInFlight.current.delete(key)
       )
 
-      eagerUploadInFlight.current.set(attachment.id, task)
+      eagerUploadInFlight.current.set(key, task)
+      void task.catch(() => undefined)
     }
-  }, [activeSessionId, composerAttachments, eagerlyUploadAttachment])
+  }, [activeSessionId, composerAttachments, eagerlyUploadAttachment, selectedStoredSessionIdRef])
 
   const submitPromptText = useSubmitPrompt({
     activeSessionId,

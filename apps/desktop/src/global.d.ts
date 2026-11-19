@@ -66,7 +66,7 @@ declare global {
       api: <T>(request: HermesApiRequest) => Promise<T>
       notify: (payload: HermesNotification) => Promise<boolean>
       requestMicrophoneAccess: () => Promise<boolean>
-      readFileDataUrl: (filePath: string) => Promise<string>
+      readFileDataUrl: (filePath: string, options?: { purpose?: 'attachment' }) => Promise<string>
       readFileText: (filePath: string) => Promise<HermesReadFileTextResult>
       readJsonFile?: (filePath: string) => Promise<unknown>
       selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>

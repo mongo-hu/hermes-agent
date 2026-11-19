@@ -4294,6 +4294,116 @@ def test_file_attach_uploads_remote_file_into_session_workspace(monkeypatch, tmp
         server._sessions.pop("sid", None)
 
 
+@pytest.fixture
+def remote_file_attachment(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setitem(server._sessions, "step-upload", _session(cwd=str(workspace)))
+    # Force the remote-upload branch even when tests run on the client's machine.
+    monkeypatch.setattr(server, "_resolve_gateway_attachment_path", lambda raw: None)
+
+    def attach(**params):
+        return server.handle_request({
+            "id": "step-upload",
+            "method": "file.attach",
+            "params": {"session_id": "step-upload", **params},
+        })
+
+    return workspace, attach
+
+
+def test_step_attachment_upload_limit_is_64_mib():
+    # Public upload policy; local path intake retains its separate DFM limit.
+    assert server._STEP_ATTACHMENT_MAX_BYTES == 64 * 1024 * 1024
+
+
+@pytest.mark.parametrize("name,path,data_url", [
+    ("model.STP", "client/model.txt", "data:application/step;base64,U1RFUA=="),
+    ("model.Step", "", "U1RFUA=="),
+    ("", "client/model.STEP", "  DATA:application/step;charset=utf-8;BASE64,U1RF\n UA== \t"),
+])
+def test_step_attachment_accepts_exact_limit_and_existing_base64_syntax(
+    monkeypatch, remote_file_attachment, name, path, data_url
+):
+    monkeypatch.setattr(server, "_STEP_ATTACHMENT_MAX_BYTES", 4)
+    workspace, attach = remote_file_attachment
+    response = attach(name=name, path=path, data_url=data_url)
+    assert response["result"]["uploaded"] is True
+    stored = Path(response["result"]["path"])
+    assert stored.parent == workspace / ".hermes" / "desktop-attachments"
+    assert stored.name == (name or "model.STEP")
+    assert stored.read_bytes() == b"STEP"
+
+
+def test_step_attachment_rejects_decoded_limit_plus_one_without_writing(
+    monkeypatch, remote_file_attachment
+):
+    import base64
+
+    monkeypatch.setattr(server, "_STEP_ATTACHMENT_MAX_BYTES", 4)
+    workspace, attach = remote_file_attachment
+    encoded = base64.b64encode(b"STEP!").decode("ascii")
+    assert len(encoded) == len(base64.b64encode(b"STEP"))
+    response = attach(name="model.step", path="client/model.txt", data_url=encoded)
+    assert response["error"]["code"] == 5028
+    assert response["error"]["message"].startswith("model.step: ")
+    assert "upload limit (4 bytes)" in response["error"]["message"]
+    assert list(workspace.iterdir()) == []
+
+
+def test_step_attachment_rejects_encoded_oversize_before_decode_or_writing(
+    monkeypatch, remote_file_attachment
+):
+    import base64
+
+    monkeypatch.setattr(server, "_STEP_ATTACHMENT_MAX_BYTES", 4)
+    workspace, attach = remote_file_attachment
+    encoded = base64.b64encode(b"STEP123").decode("ascii")
+    monkeypatch.setattr(base64, "b64decode", lambda *args, **kwargs: pytest.fail("oversize payload decoded"))
+    response = attach(name="model.stp", data_url=f"data:application/step;base64,{encoded}")
+    assert response["error"]["message"].startswith("model.stp: ")
+    assert "upload limit (4 bytes)" in response["error"]["message"]
+    assert list(workspace.iterdir()) == []
+
+
+def test_step_attachment_rejects_invalid_base64_without_writing(
+    monkeypatch, remote_file_attachment
+):
+    monkeypatch.setattr(server, "_STEP_ATTACHMENT_MAX_BYTES", 4)
+    workspace, attach = remote_file_attachment
+    response = attach(name="model.step", data_url="!!!!")
+    assert response["error"]["message"] == "model.step: invalid data_url payload"
+    assert list(workspace.iterdir()) == []
+
+
+def test_step_attachment_limit_follows_stored_name_not_client_path(
+    monkeypatch, remote_file_attachment
+):
+    monkeypatch.setattr(server, "_STEP_ATTACHMENT_MAX_BYTES", 4)
+    _workspace, attach = remote_file_attachment
+    response = attach(name="report.txt", path="client/model.step", data_url="aGVsbG8gd29ybGQ=")
+    assert response["result"]["name"] == "report.txt"
+    assert Path(response["result"]["path"]).read_bytes() == b"hello world"
+
+
+@pytest.mark.parametrize("data_url", ["", "not-used-local-path-takes-precedence"])
+def test_step_attachment_local_path_keeps_existing_intake_behavior(monkeypatch, tmp_path, data_url):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "local.step"
+    source.write_bytes(b"STEP123")
+    monkeypatch.setattr(server, "_STEP_ATTACHMENT_MAX_BYTES", 4)
+    monkeypatch.setattr(server, "_resolve_gateway_attachment_path", lambda raw: source)
+    monkeypatch.setattr(server, "_decode_attachment_data_url", lambda *args, **kwargs: pytest.fail("local path decoded"))
+    monkeypatch.setitem(server._sessions, "step-local", _session(cwd=str(workspace)))
+    response = server.handle_request({
+        "id": "step-local", "method": "file.attach",
+        "params": {"session_id": "step-local", "path": str(source), "data_url": data_url},
+    })
+    assert response["result"]["name"] == source.name
+    assert Path(response["result"]["path"]).read_bytes() == source.read_bytes()
+
+
 def test_file_attach_copies_gateway_visible_file_outside_workspace(monkeypatch, tmp_path):
     """Local case: gateway can see the file but it's outside the workspace → copy in."""
     workspace = tmp_path / "workspace"

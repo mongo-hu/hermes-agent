@@ -4,7 +4,18 @@ import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { textPart } from '@/lib/chat-messages'
-import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
+import {
+  $composerAttachments,
+  $composerDraft,
+  ATTACHMENT_UPLOAD_TOKEN,
+  addComposerAttachment,
+  clearSessionDraft,
+  type ComposerAttachment,
+  removeComposerAttachment,
+  setComposerDraft,
+  stashSessionDraft,
+  takeSessionDraft
+} from '@/store/composer'
 import { $busy, $connection, $messages, $sessions, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -75,13 +86,11 @@ function Harness({
   activeSessionId?: null | string
   createBackendSessionForSend?: () => Promise<null | string>
 }) {
-  const activeSessionIdRef: MutableRefObject<string | null> = {
-    current: activeSessionId === undefined ? RUNTIME_SESSION_ID : activeSessionId
-  }
+  const activeSessionIdRef = useRef<string | null>(null)
+  activeSessionIdRef.current = activeSessionId === undefined ? RUNTIME_SESSION_ID : activeSessionId
 
-  const selectedStoredSessionIdRef: MutableRefObject<string | null> = {
-    current: storedSessionId === undefined ? RUNTIME_SESSION_ID : storedSessionId
-  }
+  const selectedStoredSessionIdRef = useRef<string | null>(null)
+  selectedStoredSessionIdRef.current = storedSessionId === undefined ? RUNTIME_SESSION_ID : storedSessionId
 
   const localBusyRef = busyRef ?? { current: false }
 
@@ -988,7 +997,7 @@ describe('usePromptActions eager-upload races', () => {
     vi.restoreAllMocks()
   })
 
-  it('joins an in-flight eager upload at submit instead of staging the file twice', async () => {
+  it('joins an in-flight eager STEP upload at submit instead of staging the file twice', async () => {
     // Drop-then-immediately-Enter: the drop kicks off an eager file.attach; if
     // submit doesn't join it, both calls stage the file and leave a duplicate
     // under .hermes/desktop-attachments/. Submit must await the in-flight upload
@@ -1011,7 +1020,7 @@ describe('usePromptActions eager-upload races', () => {
           releaseAttach = resolve
         })
 
-        return { attached: true, ref_text: '@file:.hermes/desktop-attachments/doc.pdf', uploaded: true } as never
+        return { attached: true, ref_text: '@file:.hermes/desktop-attachments/doc.stp', uploaded: true } as never
       }
 
       return {} as never
@@ -1024,7 +1033,7 @@ describe('usePromptActions eager-upload races', () => {
     await waitFor(() => expect(handle).not.toBeNull())
 
     // Drop a file → the eager effect fires file.attach and blocks on it.
-    $composerAttachments.set([{ id: 'file:doc.pdf', kind: 'file', label: 'doc.pdf', path: '/Users/me/doc.pdf' }])
+    $composerAttachments.set([{ id: 'file:doc.stp', kind: 'file', label: 'doc.stp', path: '/Users/me/doc.stp' }])
     await waitFor(() => expect(methods.filter(m => m === 'file.attach').length).toBe(1))
 
     // Submit reads the store, sees the upload in flight, and joins it.
@@ -1035,6 +1044,209 @@ describe('usePromptActions eager-upload races', () => {
     // Exactly one file.attach (submit reused the eager result), then the send.
     expect(methods.filter(m => m === 'file.attach').length).toBe(1)
     expect(methods).toContain('prompt.submit')
+  })
+})
+
+describe('usePromptActions attachment ownership across sessions', () => {
+  beforeEach(() => {
+    $connection.set({ mode: 'remote' } as never)
+    $composerAttachments.set([])
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:application/step;base64,U1RFUA==') }
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    $composerAttachments.set([])
+    $connection.set(null)
+    $busy.set(false)
+    clearSessionDraft('stored-a')
+    clearSessionDraft('stored-b')
+    vi.restoreAllMocks()
+  })
+
+  const file = (path: string): ComposerAttachment => ({ id: 'file:model.stp', kind: 'file', label: 'model.stp', path })
+
+  it.each(['success', 'failure'])(
+    'keeps late %s in the original draft even when another session has the same id and token',
+    async outcome => {
+      let finishA: () => void = () => {}
+      const requestGateway = vi.fn(async (_method: string, params?: Record<string, unknown>) => {
+        if (params?.session_id === 'runtime-a') {
+          await new Promise<void>(resolve => {
+            finishA = resolve
+          })
+          if (outcome === 'failure') throw new Error('A upload failed')
+        }
+
+        return { attached: true, ref_text: `@file:${params?.session_id}/model.stp` } as never
+      })
+      addComposerAttachment(file('/a/model.stp'))
+      const { rerender } = render(
+        <Harness
+          activeSessionId="runtime-a"
+          storedSessionId="stored-a"
+          onReady={() => undefined}
+          refreshSessions={async () => undefined}
+          requestGateway={requestGateway}
+        />
+      )
+      await waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(1))
+      stashSessionDraft('stored-a', 'A draft', $composerAttachments.get())
+      const original = $composerAttachments.get()[0]!
+      // Even a cloned instance must be distinguished by its owning session.
+      $composerAttachments.set([{ ...original, path: '/b/model.stp', uploadState: undefined }])
+      rerender(
+        <Harness
+          activeSessionId="runtime-b"
+          storedSessionId="stored-b"
+          onReady={() => undefined}
+          refreshSessions={async () => undefined}
+          requestGateway={requestGateway}
+        />
+      )
+      finishA()
+
+      await waitFor(() => expect($composerAttachments.get()[0]?.attachedSessionId).toBe('runtime-b'))
+      expect($composerAttachments.get()[0]).toMatchObject({
+        path: '/b/model.stp',
+        refText: '@file:runtime-b/model.stp'
+      })
+      const restored = takeSessionDraft('stored-a')
+      expect(restored.text).toBe('A draft')
+      expect(restored.attachments[0]?.path).toBe('/a/model.stp')
+      expect(restored.attachments[0]?.uploadState).toBe(outcome === 'failure' ? 'error' : undefined)
+      expect(restored.attachments[0]?.attachedSessionId).toBe(outcome === 'success' ? 'runtime-a' : undefined)
+
+      $composerAttachments.set(restored.attachments)
+      rerender(
+        <Harness
+          activeSessionId="runtime-a"
+          storedSessionId="stored-a"
+          onReady={() => undefined}
+          refreshSessions={async () => undefined}
+          requestGateway={requestGateway}
+        />
+      )
+      await Promise.resolve()
+      expect(requestGateway).toHaveBeenCalledTimes(2)
+    }
+  )
+
+  it('does not apply an old result to a removed and re-added chip with the same path', async () => {
+    const releases: (() => void)[] = []
+    const requestGateway = vi.fn(async () => {
+      const number = releases.length + 1
+      await new Promise<void>(resolve => {
+        releases.push(resolve)
+      })
+      return { attached: true, ref_text: `@file:upload-${number}.stp` } as never
+    })
+    addComposerAttachment(file('/models/model.stp'))
+    render(
+      <Harness onReady={() => undefined} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+    await waitFor(() => expect(releases).toHaveLength(1))
+    const original = $composerAttachments.get()[0]!
+    removeComposerAttachment(original.id)
+    addComposerAttachment(file('/models/model.stp'))
+    const replacementToken = $composerAttachments.get()[0]![ATTACHMENT_UPLOAD_TOKEN]
+    expect(replacementToken).not.toBe(original[ATTACHMENT_UPLOAD_TOKEN])
+    releases[0]!()
+    await waitFor(() => expect(releases).toHaveLength(2))
+    expect($composerAttachments.get()[0]).toMatchObject({
+      [ATTACHMENT_UPLOAD_TOKEN]: replacementToken,
+      uploadState: 'uploading'
+    })
+    expect($composerAttachments.get()[0]?.refText).toBeUndefined()
+    releases[1]!()
+    await waitFor(() => expect($composerAttachments.get()[0]?.refText).toBe('@file:upload-2.stp'))
+  })
+
+  it('clears the sent attachment after successfully recovering the same stored session', async () => {
+    let attempts = 0
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit' && attempts++ === 0) throw new Error('session not found')
+      if (method === 'session.resume') return { session_id: 'recovered-runtime' } as never
+      return {} as never
+    })
+    addComposerAttachment({
+      ...file('/a/model.stp'),
+      attachedSessionId: RUNTIME_SESSION_ID,
+      refText: '@file:a/model.stp'
+    })
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        storedSessionId="stored-a"
+        onReady={value => {
+          handle = value
+        }}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+    expect(await handle!.submitText('read A')).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      { session_id: 'recovered-runtime', text: '@file:a/model.stp\n\nread A' },
+      1_800_000
+    )
+    expect($composerAttachments.get()).toEqual([])
+  })
+
+  it('submits the joined upload result to its original session without reading or clearing the next session chip', async () => {
+    let finishAttach: () => void = () => {}
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'file.attach') {
+        await new Promise<void>(resolve => {
+          finishAttach = resolve
+        })
+        return { attached: true, ref_text: '@file:a/model.stp' } as never
+      }
+      return {} as never
+    })
+    let handle: HarnessHandle | null = null
+    const onReady = (value: HarnessHandle) => {
+      handle = value
+    }
+    addComposerAttachment(file('/a/model.stp'))
+    const { rerender } = render(
+      <Harness
+        activeSessionId="runtime-a"
+        storedSessionId="stored-a"
+        onReady={onReady}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(1))
+    const submitting = handle!.submitText('read A')
+    stashSessionDraft('stored-a', 'A draft', $composerAttachments.get())
+    removeComposerAttachment('file:model.stp')
+    addComposerAttachment({ ...file('/b/model.stp'), attachedSessionId: 'runtime-b', refText: '@file:b/model.stp' })
+    const nextSessionAttachment = $composerAttachments.get()[0]!
+    rerender(
+      <Harness
+        activeSessionId="runtime-b"
+        storedSessionId="stored-b"
+        onReady={onReady}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+    finishAttach()
+
+    expect(await submitting).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      { session_id: 'runtime-a', text: '@file:a/model.stp\n\nread A' },
+      1_800_000
+    )
+    expect(requestGateway.mock.calls.filter(([method]) => method === 'file.attach')).toHaveLength(1)
+    expect($composerAttachments.get()).toEqual([nextSessionAttachment])
   })
 })
 
@@ -1363,7 +1575,7 @@ describe('usePromptActions eager attachment upload (drop-time)', () => {
     const chip = $composerAttachments.get()[0]!
     expect(chip.refText).toBe('@file:.hermes/desktop-attachments/DEVIS_signed.pdf')
     expect(chip.uploadState).toBeUndefined()
-    expect(readFileDataUrl).toHaveBeenCalledWith('/Users/mahmoud/Downloads/DEVIS_signed.pdf')
+    expect(readFileDataUrl).toHaveBeenCalledWith('/Users/mahmoud/Downloads/DEVIS_signed.pdf', { purpose: 'attachment' })
   })
 
   it('flags the chip uploadState=error when the eager upload fails, keeping the path so submit can retry', async () => {
@@ -1416,12 +1628,177 @@ describe('usePromptActions eager attachment upload (drop-time)', () => {
   })
 })
 
+describe('uploadComposerAttachment STEP queue', () => {
+  afterEach(() => {
+    cleanup()
+    $composerAttachments.set([])
+    $connection.set(null)
+    vi.restoreAllMocks()
+  })
+
+  function stepAttachment(name: string): ComposerAttachment {
+    return { id: `file:${name}`, kind: 'file', label: name, path: `/models/${name}` }
+  }
+
+  it('serializes the full read and RPC while retaining each attachment and session', async () => {
+    let finishRead: (data: string) => void = () => {}
+    let finishAttach: () => void = () => {}
+    const readFileDataUrl = vi.fn((path: string) =>
+      path.endsWith('first.stp')
+        ? new Promise<string>(resolve => {
+            finishRead = resolve
+          })
+        : Promise.resolve('data:application/octet-stream;base64,U1RFUA==')
+    )
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { readFileDataUrl } })
+    const requestGateway = vi.fn(async (_method: string, params?: Record<string, unknown>) => {
+      if (params?.name === 'first.stp') {
+        await new Promise<void>(resolve => {
+          finishAttach = resolve
+        })
+      }
+
+      return { attached: true, ref_text: `@file:${params?.session_id}/${params?.name}` } as never
+    })
+    const first = stepAttachment('first.stp')
+    const second = stepAttachment('second.STEP')
+    const uploadFirst = uploadComposerAttachment(first, { remote: true, requestGateway, sessionId: 'first-session' })
+    const uploadSecond = uploadComposerAttachment(second, { remote: true, requestGateway, sessionId: 'second-session' })
+
+    await waitFor(() => expect(readFileDataUrl).toHaveBeenCalledTimes(1))
+    expect(requestGateway).not.toHaveBeenCalled()
+    finishRead('data:application/octet-stream;base64,U1RFUA==')
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(1))
+    expect(readFileDataUrl).toHaveBeenCalledTimes(1)
+    finishAttach()
+
+    expect(await uploadFirst).toMatchObject({
+      ...first,
+      attachedSessionId: 'first-session',
+      refText: '@file:first-session/first.stp'
+    })
+    expect(await uploadSecond).toMatchObject({
+      ...second,
+      attachedSessionId: 'second-session',
+      refText: '@file:second-session/second.STEP'
+    })
+    expect(readFileDataUrl.mock.calls).toEqual([
+      ['/models/first.stp', { purpose: 'attachment' }],
+      ['/models/second.STEP', { purpose: 'attachment' }]
+    ])
+    expect(requestGateway).toHaveBeenNthCalledWith(
+      2,
+      'file.attach',
+      expect.objectContaining({ session_id: 'second-session' }),
+      120_000
+    )
+    expect(requestGateway).toHaveBeenNthCalledWith(
+      1,
+      'file.attach',
+      expect.objectContaining({ session_id: 'first-session' }),
+      120_000
+    )
+  })
+
+  it.each(['read', 'RPC'])('releases the next STEP after the first %s fails', async failureAt => {
+    let failFirst: () => void = () => {}
+    const failure = new Promise<never>((_resolve, reject) => {
+      failFirst = () => reject(new Error('upload failed'))
+    })
+    const readFileDataUrl = vi.fn(async (path: string) => {
+      if (failureAt === 'read' && path.endsWith('first.stp')) return failure
+
+      return 'data:application/octet-stream;base64,U1RFUA=='
+    })
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { readFileDataUrl } })
+    const requestGateway = vi.fn(async (_method: string, params?: Record<string, unknown>) => {
+      if (failureAt === 'RPC' && params?.name === 'first.stp') return failure
+
+      return { attached: true, ref_text: '@file:second.step' } as never
+    })
+    const failed = uploadComposerAttachment(stepAttachment('first.stp'), {
+      remote: true,
+      requestGateway,
+      sessionId: RUNTIME_SESSION_ID
+    })
+    const failureAssertion = expect(failed).rejects.toThrow('upload failed')
+    const next = uploadComposerAttachment(stepAttachment('second.step'), {
+      remote: true,
+      requestGateway,
+      sessionId: RUNTIME_SESSION_ID
+    })
+
+    await waitFor(() => expect(readFileDataUrl).toHaveBeenCalledTimes(1))
+    if (failureAt === 'RPC') await waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(1))
+    failFirst()
+    await failureAssertion
+    expect(await next).toMatchObject({ id: 'file:second.step', refText: '@file:second.step' })
+    expect(readFileDataUrl).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not restore a queued attachment removed before upload completes', async () => {
+    $connection.set({ mode: 'remote' } as never)
+    const readFileDataUrl = vi.fn(async () => 'data:application/octet-stream;base64,U1RFUA==')
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { readFileDataUrl } })
+    let finishFirst: () => void = () => {}
+    const requestGateway = vi.fn(async (_method: string, params?: Record<string, unknown>) => {
+      if (params?.name === 'first.stp') {
+        await new Promise<void>(resolve => {
+          finishFirst = resolve
+        })
+      }
+
+      return { attached: true, ref_text: `@file:${params?.name}` } as never
+    })
+    $composerAttachments.set([stepAttachment('first.stp'), stepAttachment('removed.stp')])
+    render(
+      <Harness onReady={() => undefined} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(1))
+    $composerAttachments.set($composerAttachments.get().filter(attachment => attachment.id !== 'file:removed.stp'))
+    finishFirst()
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect($composerAttachments.get()[0]?.attachedSessionId).toBe(RUNTIME_SESSION_ID))
+    expect($composerAttachments.get().map(attachment => attachment.id)).toEqual(['file:first.stp'])
+  })
+
+  it('retains the default RPC timeout and image read limit for other attachments', async () => {
+    const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,AAAA')
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { readFileDataUrl } })
+    const requestGateway = vi.fn(async () => ({ attached: true, ref_text: '@file:report.txt' }) as never)
+    await uploadComposerAttachment(
+      { id: 'file:report', kind: 'file', label: 'report.txt', path: '/files/report.txt' },
+      { remote: true, requestGateway, sessionId: RUNTIME_SESSION_ID }
+    )
+    await uploadComposerAttachment(
+      { id: 'image:picture', kind: 'image', label: 'picture.png', path: '/files/picture.png' },
+      { remote: true, requestGateway, sessionId: RUNTIME_SESSION_ID }
+    )
+
+    expect(readFileDataUrl.mock.calls).toEqual([
+      ['/files/report.txt', { purpose: 'attachment' }],
+      ['/files/picture.png']
+    ])
+    expect(requestGateway).toHaveBeenNthCalledWith(
+      1,
+      'file.attach',
+      expect.objectContaining({ path: '/files/report.txt' })
+    )
+    expect(requestGateway).toHaveBeenNthCalledWith(
+      2,
+      'image.attach_bytes',
+      expect.objectContaining({ filename: 'picture.png' })
+    )
+  })
+})
+
 describe('uploadComposerAttachment remote read failures', () => {
   afterEach(() => {
     vi.restoreAllMocks()
   })
 
-  it('turns the raw 16MB IPC cap error into a friendly remote-gateway message', async () => {
+  it('turns the raw 16 MiB IPC cap error into a friendly remote-gateway message', async () => {
     // electron/hardening.ts rejects the readFileDataUrl IPC with this exact
     // shape when a file exceeds DATA_URL_READ_MAX_BYTES.
     Object.defineProperty(window, 'hermesDesktop', {
@@ -1440,7 +1817,7 @@ describe('uploadComposerAttachment remote read failures', () => {
         { id: 'file:big', kind: 'file', label: 'huge.csv', path: '/abs/huge.csv' },
         { remote: true, requestGateway, sessionId: RUNTIME_SESSION_ID }
       )
-    ).rejects.toThrow('huge.csv is too large to upload to the remote gateway (max 16 MB).')
+    ).rejects.toThrow('huge.csv is too large to upload to the remote gateway (max 16 MiB).')
 
     // The cap is hit before any gateway round-trip.
     expect(requestGateway).not.toHaveBeenCalled()

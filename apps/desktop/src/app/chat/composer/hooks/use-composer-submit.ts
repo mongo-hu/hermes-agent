@@ -78,8 +78,10 @@ export function useComposerSubmit({
     const submittedAttachments = attachments ?? []
 
     const restore = () => {
-      loadIntoComposer(text, submittedAttachments)
-      stashAt(activeQueueSessionKeyRef.current, text, submittedAttachments)
+      if (activeQueueSessionKeyRef.current === submittedScope) {
+        loadIntoComposer(text, submittedAttachments)
+      }
+      stashAt(submittedScope, text, submittedAttachments)
     }
 
     void Promise.resolve(attachments ? onSubmit(text, { attachments }) : onSubmit(text))

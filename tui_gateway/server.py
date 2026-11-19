@@ -10064,7 +10064,10 @@ def _resolve_gateway_attachment_path(raw: str) -> Path | None:
     return Path(resolved).resolve() if resolved is not None else None
 
 
-def _decode_attachment_data_url(data_url: str) -> bytes:
+_STEP_ATTACHMENT_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _decode_attachment_data_url(data_url: str, *, max_bytes: int | None = None) -> bytes:
     """Decode a ``data:<any-mime>;base64,<b64>`` payload to bytes.
 
     Unlike ``_decode_attach_base64`` (image-mime-specific), this accepts any
@@ -10080,10 +10083,16 @@ def _decode_attachment_data_url(data_url: str) -> bytes:
     if m:
         cleaned = m.group(1)
     cleaned = _re.sub(r"\s+", "", cleaned)
+    limit_error = f"STEP attachment exceeds the upload limit ({max_bytes} bytes)."
+    if max_bytes is not None and len(cleaned) > 4 * ((max_bytes + 2) // 3):
+        raise ValueError(limit_error)
     try:
-        return _base64.b64decode(cleaned, validate=True)
+        payload = _base64.b64decode(cleaned, validate=True)
     except (ValueError, _binascii.Error) as exc:
         raise ValueError("invalid data_url payload") from exc
+    if max_bytes is not None and len(payload) > max_bytes:
+        raise ValueError(limit_error)
+    return payload
 
 
 def _stage_session_file_attachment(
@@ -10118,8 +10127,16 @@ def _stage_session_file_attachment(
     else:
         if not data_url:
             raise ValueError("file not found on gateway and no data_url provided")
-        payload = _decode_attachment_data_url(data_url)
         filename = _sanitize_attachment_name(name or Path(str(raw_path or "")).name)
+        is_step = Path(filename).suffix.lower() in {".stp", ".step"}
+        try:
+            payload = _decode_attachment_data_url(
+                data_url, max_bytes=_STEP_ATTACHMENT_MAX_BYTES if is_step else None,
+            )
+        except ValueError as exc:
+            if is_step:
+                raise ValueError(f"{filename}: {exc}") from exc
+            raise
 
     upload_dir = _desktop_attachment_dir(session)
     target = _unique_attachment_path(upload_dir, _sanitize_attachment_name(filename))

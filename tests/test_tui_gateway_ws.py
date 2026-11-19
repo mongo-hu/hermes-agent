@@ -162,3 +162,104 @@ def test_ws_write_loop_stall_does_not_latch_transport(monkeypatch):
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=2)
         loop.close()
+
+
+def test_ws_step_upload_boundary_keeps_connection_usable(monkeypatch, tmp_path):
+    """Exercise the real protocol and file.attach, without a model/LLM request."""
+    import base64
+    import hashlib
+    import json
+    import socket
+    from pathlib import Path
+
+    import uvicorn
+    import websockets
+    from starlette.applications import Starlette
+    from starlette.routing import WebSocketRoute
+
+    from hermes_cli import web_server
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "client-only" / "boundary.STP"
+    assert not source.exists()
+    monkeypatch.setattr(mcp_startup, "start_background_mcp_discovery", lambda **kwargs: None)
+    monkeypatch.setitem(server._sessions, "ws-step-boundary", {
+        "agent": object(), "session_key": "ws-step-boundary", "cwd": str(workspace),
+    })
+    application = Starlette(routes=[WebSocketRoute("/ws", ws_mod.handle_ws)])
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    instance = uvicorn.Server(uvicorn.Config(
+        application, host="127.0.0.1", port=port, lifespan="off", log_level="error",
+        ws="websockets", ws_max_size=web_server._WS_MAX_MESSAGE_BYTES,
+        ws_ping_interval=None, ws_ping_timeout=None,
+    ))
+
+    async def exercise():
+        running = asyncio.create_task(instance.serve(sockets=[listener]))
+        try:
+            for _ in range(500):
+                if instance.started:
+                    break
+                if running.done():
+                    await running
+                await asyncio.sleep(0.01)
+            assert instance.started
+            async with websockets.connect(
+                f"ws://127.0.0.1:{port}/ws", compression=None, ping_interval=None,
+            ) as connection:
+                ready = json.loads(await asyncio.wait_for(connection.recv(), timeout=10))
+                assert ready["params"]["type"] == "gateway.ready"
+                staged = workspace / ".hermes" / "desktop-attachments"
+                for extra in (0, 1):
+                    raw = b"x" * (server._STEP_ATTACHMENT_MAX_BYTES + extra)
+                    digest = hashlib.sha256(raw).hexdigest()
+                    encoded = base64.b64encode(raw).decode("ascii")
+                    del raw
+                    request = {
+                        "id": f"boundary-{extra}", "method": "file.attach",
+                        "params": {
+                            "session_id": "ws-step-boundary", "path": str(source),
+                            "name": "boundary.STP" if extra == 0 else "oversize.step",
+                            "data_url": f"data:application/step;base64,{encoded}",
+                        },
+                    }
+                    del encoded
+                    await connection.send(json.dumps(request))
+                    del request
+                    response = json.loads(await asyncio.wait_for(connection.recv(), timeout=30))
+                    assert response["id"] == f"boundary-{extra}"
+                    if extra == 0:
+                        assert response["result"]["uploaded"] is True
+                        stored = Path(response["result"]["path"])
+                        assert stored == staged / "boundary.STP"
+                        assert stored.stat().st_size == server._STEP_ATTACHMENT_MAX_BYTES
+                        with stored.open("rb") as stream:
+                            assert hashlib.file_digest(stream, "sha256").hexdigest() == digest
+                    else:
+                        assert response["error"]["code"] == 5028
+                        assert response["error"]["message"].startswith("oversize.step: ")
+                        assert "upload limit" in response["error"]["message"]
+                        assert list(staged.iterdir()) == [staged / "boundary.STP"]
+
+                await connection.send(json.dumps({
+                    "id": "after-rejection", "method": "file.attach",
+                    "params": {
+                        "session_id": "ws-step-boundary", "name": "after.txt",
+                        "data_url": "YWxpdmU=",
+                    },
+                }))
+                response = json.loads(await asyncio.wait_for(connection.recv(), timeout=10))
+                assert response["id"] == "after-rejection"
+                assert response["result"]["attached"] is True
+                assert (staged / "after.txt").read_bytes() == b"alive"
+        finally:
+            instance.should_exit = True
+            try:
+                await asyncio.wait_for(running, timeout=10)
+            finally:
+                listener.close()
+
+    asyncio.run(exercise())

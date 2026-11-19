@@ -51,7 +51,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   api: request => ipcRenderer.invoke('hermes:api', request),
   notify: payload => ipcRenderer.invoke('hermes:notify', payload),
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),
-  readFileDataUrl: filePath => ipcRenderer.invoke('hermes:readFileDataUrl', filePath),
+  readFileDataUrl: (filePath, options) => ipcRenderer.invoke('hermes:readFileDataUrl', filePath, options),
   readFileText: filePath => ipcRenderer.invoke('hermes:readFileText', filePath),
   readJsonFile: filePath => ipcRenderer.invoke('hermes:readJsonFile', filePath),
   selectPaths: options => ipcRenderer.invoke('hermes:selectPaths', options),
