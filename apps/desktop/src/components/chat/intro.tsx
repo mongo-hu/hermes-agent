@@ -10,7 +10,7 @@ export interface IntroProps {
 }
 
 const STEPS = [
-  { icon: 'file-binary', label: '导入 3D 模型', detail: '仅支持 STP 三维模型文件' },
+  { icon: 'file-binary', label: '导入 3D 模型', detail: '仅支持 STEP / STP 三维模型' },
   { icon: 'settings', label: '补充工艺参数', detail: '确认材料、工艺与关键约束' },
   { icon: 'checklist', label: '审阅并交付', detail: '定位问题、确认建议、导出报告' }
 ] as const
@@ -54,10 +54,10 @@ export function Intro({ onStartAnalysis }: IntroProps) {
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-(--ui-stroke-tertiary) pt-5">
-          <p className="text-xs text-(--ui-text-tertiary)">也可以将 .stp 模型直接拖入窗口，或在下方输入补充说明。</p>
+          <p className="text-xs text-(--ui-text-tertiary)">也可以将 .step 或 .stp 模型直接拖入窗口，每次提交模型都会开启独立分析。</p>
           <Button className="gap-2" onClick={onStartAnalysis} type="button">
             <Codicon name="folder-opened" size="0.95rem" />
-            选择 STP 模型并开始
+            选择 STEP / STP 模型并开始
           </Button>
         </div>
       </div>

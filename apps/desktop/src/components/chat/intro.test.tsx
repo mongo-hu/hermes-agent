@@ -16,7 +16,7 @@ describe('DFM analysis intro', () => {
     expect(screen.getByText('补充工艺参数')).toBeTruthy()
     expect(screen.getByText('审阅并交付')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: '选择 STP 模型并开始' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择 STEP / STP 模型并开始' }))
 
     expect(onStartAnalysis).toHaveBeenCalledOnce()
   })

@@ -43,9 +43,9 @@ export function ContextMenu({
 
   if (DFM_PRODUCT_MODE) {
     return (
-      <Tip label="添加 STP 模型" side="top">
+      <Tip label="添加 STEP / STP 模型" side="top">
         <Button
-          aria-label="添加 STP 模型"
+          aria-label="添加 STEP / STP 模型"
           className={GHOST_ICON_BTN}
           disabled={!state.tools.enabled || !onPickFiles}
           onClick={onPickFiles}

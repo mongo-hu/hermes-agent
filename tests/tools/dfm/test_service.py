@@ -128,6 +128,24 @@ def test_project_actions_create_add_input_status_confirm_and_list(service):
     assert listed["projects"][0]["project_id"] == created["project_id"]
 
 
+def test_same_step_can_be_registered_for_separate_analyses(service):
+    dfm, temp = service
+    source = temp / "part.step"
+    source.write_bytes(STEP_PAYLOAD)
+    first = dfm.project("create", name="First analysis")["project_id"]
+    first_input = dfm.project("add_input", project_id=first, path=str(source))["input"]
+    dfm.project("confirm_fact", project_id=first, fact_name="material", fact_value="ABS")
+
+    second = dfm.project("create", name="Repeat analysis")["project_id"]
+    second_input = dfm.project("add_input", project_id=second, path=str(source))["input"]
+
+    assert first != second
+    assert first_input["sha256"] == second_input["sha256"]
+    assert not dfm.project("status", project_id=second)["project"]["facts"]
+    assert any(fact["name"] == "material" and fact["value"] == "ABS"
+               for fact in dfm.project("status", project_id=first)["project"]["facts"])
+
+
 def test_interactive_dfm_fact_requires_real_response(service, monkeypatch):
     from tools.clarify_tool import clarify_tool
     from tools.dfm_tool import _call

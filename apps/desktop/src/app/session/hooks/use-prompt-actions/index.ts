@@ -9,6 +9,7 @@ import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from 
 import { pathLabel, SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { isDfmStepModelPath } from '@/lib/product-mode'
 import { normalize } from '@/lib/text'
 import { clearClarifyRequest } from '@/store/clarify'
 import {
@@ -124,7 +125,7 @@ export async function uploadComposerAttachment(
     }
   }
 
-  const isStep = attachment.kind === 'file' && /\.(stp|step)$/i.test(path)
+  const isStep = attachment.kind === 'file' && isDfmStepModelPath(path)
   const uploadFile = async (): Promise<ComposerAttachment> => {
     let dataUrl: string | null = null
 
@@ -182,6 +183,7 @@ interface PromptActionsOptions {
   branchCurrentSession: () => Promise<boolean>
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
   handleSkinCommand: (arg: string) => string
+  newAnalysisOnModelSubmit?: boolean
   openMemoryGraph: () => void
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
@@ -210,6 +212,7 @@ export function usePromptActions({
   branchCurrentSession,
   createBackendSessionForSend,
   handleSkinCommand,
+  newAnalysisOnModelSubmit = false,
   openMemoryGraph,
   refreshSessions,
   requestGateway,
@@ -385,6 +388,13 @@ export function usePromptActions({
     }
 
     for (const attachment of composerAttachments) {
+      // A DFM model will be submitted from a fresh analysis session. Do not
+      // stage it first against the old session, especially for large uploads.
+      if (newAnalysisOnModelSubmit && attachment.kind === 'file' &&
+        isDfmStepModelPath(attachment.path || attachment.label)) {
+        continue
+      }
+
       const needsUpload =
         attachment.kind === 'file' &&
         Boolean(attachment.path) &&
@@ -407,7 +417,7 @@ export function usePromptActions({
       eagerUploadInFlight.current.set(key, task)
       void task.catch(() => undefined)
     }
-  }, [activeSessionId, composerAttachments, eagerlyUploadAttachment, selectedStoredSessionIdRef])
+  }, [activeSessionId, composerAttachments, eagerlyUploadAttachment, newAnalysisOnModelSubmit, selectedStoredSessionIdRef])
 
   const submitPromptText = useSubmitPrompt({
     activeSessionId,
@@ -415,6 +425,7 @@ export function usePromptActions({
     busyRef,
     copy,
     createBackendSessionForSend,
+    newAnalysisOnModelSubmit,
     requestGateway,
     selectedStoredSessionIdRef,
     syncAttachmentsForSubmit,
