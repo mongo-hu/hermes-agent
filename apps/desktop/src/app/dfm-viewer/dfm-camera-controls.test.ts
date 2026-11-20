@@ -15,11 +15,13 @@ function viewport(initialWidth = 800, initialHeight = 600) {
   const element = document.createElement('canvas')
   let width = initialWidth
   let height = initialHeight
+  let left = 20
+  let top = 30
   Object.defineProperties(element, {
     clientWidth: { get: () => width },
     clientHeight: { get: () => height }
   })
-  element.getBoundingClientRect = () => new DOMRect(20, 30, width, height)
+  element.getBoundingClientRect = () => new DOMRect(left, top, width, height)
   // jsdom has no native pointer capture. Only these platform APIs are stubbed;
   // every control action below runs the installed Three implementation.
   element.setPointerCapture = () => undefined
@@ -27,7 +29,11 @@ function viewport(initialWidth = 800, initialHeight = 600) {
   document.body.appendChild(element)
   cleanups.push(() => element.remove())
 
-  return { element, resize: (nextWidth: number, nextHeight: number) => { width = nextWidth; height = nextHeight } }
+  return {
+    element,
+    resize: (nextWidth: number, nextHeight: number) => { width = nextWidth; height = nextHeight },
+    move: (nextLeft: number, nextTop: number) => { left = nextLeft; top = nextTop }
+  }
 }
 
 function pointer(element: HTMLElement, type: string, button: number, x: number, y: number) {
@@ -36,6 +42,17 @@ function pointer(element: HTMLElement, type: string, button: number, x: number, 
 
   Object.defineProperties(event, { pointerId: { value: 1 }, pointerType: { value: 'mouse' } })
   element.dispatchEvent(event)
+}
+
+function wheel(element: HTMLElement, deltaY: number, deltaMode = 0, point?: readonly number[]) {
+  const rect = element.getBoundingClientRect()
+  const [x, y] = point ?? [rect.width / 2, rect.height / 2]
+  const event = new WheelEvent('wheel', {
+    deltaY, deltaMode, clientX: rect.left + x, clientY: rect.top + y, cancelable: true
+  })
+  element.dispatchEvent(event)
+
+  return event
 }
 
 function drag(controls: TrackballControls, element: HTMLElement, button: number, dx: number, dy: number) {
@@ -217,14 +234,15 @@ describe('DFM free camera controls', () => {
   })
 
   it('continues consuming a held drag after wheel zoom emits its own end event', () => {
-    const { camera, controls, element, target } = setup('right')
+    const { camera, controls, element } = setup('right')
+    const target = controls.target.clone()
     const direction = camera.position.clone().sub(target).normalize()
     const rect = element.getBoundingClientRect()
     const x = rect.x + rect.width / 2
     const y = rect.y + rect.height / 3
     pointer(element, 'pointerdown', 0, x, y)
     pointer(element, 'pointermove', 0, x, y + rect.height / 72)
-    element.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, deltaMode: 0, cancelable: true }))
+    wheel(element, -120)
 
     for (let step = 2; step <= 12; step++) {
       pointer(element, 'pointermove', 0, x, y + rect.height * step / 72)
@@ -232,8 +250,8 @@ describe('DFM free camera controls', () => {
 
     pointer(element, 'pointerup', 0, x, y + rect.height / 6)
     controls.update()
-    expect(camera.position.clone().sub(target).normalize().dot(direction)).toBeCloseTo(Math.cos(Math.PI / 3), 8)
-    expect(controls.target.toArray()).toEqual(target.toArray())
+    expect(camera.position.clone().sub(controls.target).normalize().dot(direction)).toBeCloseTo(Math.cos(Math.PI / 3), 8)
+    expect(controls.target.distanceTo(target)).toBeLessThan(1e-10)
     expect(camera.zoom).toBeGreaterThan(1.7)
   })
 
@@ -281,16 +299,172 @@ describe('DFM free camera controls', () => {
   })
 
   it('keeps wheel zoom and stops immediately after its input', () => {
-    const { camera, controls, element, target } = setup()
+    const { camera, controls, element } = setup()
     const rotation = camera.quaternion.clone()
-    element.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, deltaMode: 0, cancelable: true }))
+    const position = camera.position.clone()
+    const target = controls.target.clone()
+    wheel(element, -120)
     controls.update()
     expect(camera.zoom).toBeGreaterThan(1.7)
     const zoom = camera.zoom
 
     for (let frame = 0; frame < 20; frame++) {controls.update()}
     expect(camera.zoom).toBe(zoom)
-    expect(controls.target.toArray()).toEqual(target.toArray())
+    expect(controls.target.distanceTo(target)).toBeLessThan(1e-10)
+    expect(camera.position.distanceTo(position)).toBeLessThan(1e-10)
     expect(camera.quaternion.angleTo(rotation)).toBeLessThan(1e-7)
+  })
+
+  it.each(['standard', 'oblique', 'rolled'] as const)(
+    'keeps the world point under the pointer fixed while zooming in and out in a %s pose', pose => {
+      const { camera, controls, element } = setup('front', pose === 'rolled' ? Math.PI / 3 : 0)
+
+      if (pose === 'oblique') {drag(controls, element, 0, 83, -61)}
+      const anchor = controls.target.clone().add(new Vector3(2, 3, -1))
+      const rotation = camera.quaternion.clone()
+      const eye = camera.position.clone().sub(controls.target)
+
+      for (const delta of [-120, 120]) {
+        const before = screenPoint(camera, anchor, element)
+        const zoom = camera.zoom
+        const event = wheel(element, delta, 0, before)
+        const after = screenPoint(camera, anchor, element)
+        expect(event.defaultPrevented).toBe(true)
+        expect(after[0]).toBeCloseTo(before[0], 8)
+        expect(after[1]).toBeCloseTo(before[1], 8)
+        expect(delta < 0 ? camera.zoom > zoom : camera.zoom < zoom).toBe(true)
+        expect(camera.quaternion.angleTo(rotation)).toBeLessThan(1e-7)
+        expect(camera.position.clone().sub(controls.target).distanceTo(eye)).toBeLessThan(1e-10)
+      }
+    }
+  )
+
+  it('uses the current canvas offset and size after a portrait resize', () => {
+    const { camera, controls, element, resize, move } = setup('front', Math.PI / 2)
+    const anchor = controls.target.clone().add(new Vector3(2, 0, 1))
+
+    for (const [width, height, left, top] of [[800, 600, 20, 30], [600, 1000, 173, 91]]) {
+      resize(width, height)
+      move(left, top)
+      resizeOrthographicCamera(camera, width / height)
+      resizeDfmCameraControls(controls, camera, element)
+      const before = screenPoint(camera, anchor, element)
+      wheel(element, -120, 0, before)
+      const after = screenPoint(camera, anchor, element)
+      expect(after[0]).toBeCloseTo(before[0], 8)
+      expect(after[1]).toBeCloseTo(before[1], 8)
+    }
+  })
+
+  it.each([[0, 120, 0.00025], [1, 3, 0.01], [2, 1.2, 0.025]])(
+    'preserves native wheel direction and zoomSpeed for deltaMode %s', (deltaMode, magnitude, scale) => {
+      const { camera, controls, element } = setup()
+
+      for (const speed of [controls.zoomSpeed, 2]) {
+        controls.zoomSpeed = speed
+
+        for (const delta of [-magnitude, magnitude]) {
+          const before = camera.zoom
+          wheel(element, delta, deltaMode)
+          expect(camera.zoom).toBeCloseTo(before / (1 + delta * scale * speed), 12)
+        }
+      }
+    }
+  )
+
+  it.each([[-120, 1.99, 2], [120, 1.01, 1]])(
+    'anchors the clamped zoom and does not drift at a zoom boundary for delta %s', (delta, start, limit) => {
+      const { camera, controls, element } = setup('front')
+      controls.minZoom = 1
+      controls.maxZoom = 2
+      camera.zoom = start
+      camera.updateProjectionMatrix()
+      const anchor = controls.target.clone().add(new Vector3(2, 0, -1))
+      const before = screenPoint(camera, anchor, element)
+      wheel(element, delta, 0, before)
+      expect(camera.zoom).toBe(limit)
+      const after = screenPoint(camera, anchor, element)
+      expect(after[0]).toBeCloseTo(before[0], 8)
+      expect(after[1]).toBeCloseTo(before[1], 8)
+      const target = controls.target.clone()
+      const position = camera.position.clone()
+      wheel(element, delta, 0, before)
+      expect(camera.zoom).toBe(limit)
+      expect(controls.target.distanceTo(target)).toBeLessThan(1e-10)
+      expect(camera.position.distanceTo(position)).toBeLessThan(1e-10)
+      wheel(element, -delta, 0, before)
+      expect(camera.zoom).not.toBe(limit)
+      const reversed = screenPoint(camera, anchor, element)
+      expect(reversed[0]).toBeCloseTo(before[0], 8)
+      expect(reversed[1]).toBeCloseTo(before[1], 8)
+    }
+  )
+
+  it('consumes each wheel anchor without waiting for a frame or replaying it later', () => {
+    const { camera, controls, element } = setup('front', Math.PI / 3)
+
+    for (const [dx, dy, dz, delta] of [[2, 0, -1, -120], [-3, 1, 2, -80], [1, -2, 3, 100]]) {
+      const anchor = controls.target.clone().add(new Vector3(dx, dy, dz))
+      const before = screenPoint(camera, anchor, element)
+      const zoom = camera.zoom
+      wheel(element, delta, 0, before)
+      const after = screenPoint(camera, anchor, element)
+      expect(camera.zoom).not.toBe(zoom)
+      expect(after[0]).toBeCloseTo(before[0], 8)
+      expect(after[1]).toBeCloseTo(before[1], 8)
+    }
+
+    const target = controls.target.clone()
+    const position = camera.position.clone()
+    const zoom = camera.zoom
+
+    for (let frame = 0; frame < 20; frame++) {controls.update()}
+    expect(camera.zoom).toBe(zoom)
+    expect(controls.target.distanceTo(target)).toBeLessThan(1e-10)
+    expect(camera.position.distanceTo(position)).toBeLessThan(1e-10)
+  })
+
+  it.each(['disabled', 'noZoom', 'disposed'] as const)('does not consume wheel input when %s', state => {
+    const { camera, controls, element } = setup()
+
+    if (state === 'disabled') {controls.enabled = false}
+    if (state === 'noZoom') {controls.noZoom = true}
+    if (state === 'disposed') {controls.dispose()}
+    // A leaked update listener would reset this deliberate external rotation.
+    camera.rotateZ(0.3)
+    const rotation = camera.quaternion.clone()
+    const position = camera.position.clone()
+    const target = controls.target.clone()
+    const zoom = camera.zoom
+    const event = wheel(element, -120, 0, [100, 150])
+    expect(event.defaultPrevented).toBe(false)
+    expect(camera.zoom).toBe(zoom)
+    expect(camera.position.toArray()).toEqual(position.toArray())
+    expect(controls.target.toArray()).toEqual(target.toArray())
+    expect(camera.quaternion.toArray()).toEqual(rotation.toArray())
+  })
+
+  it('continues a held middle drag after cursor-anchored wheel zoom', () => {
+    const { camera, controls, element } = setup('front', Math.PI / 3)
+    const rect = element.getBoundingClientRect()
+    const x = rect.left + rect.width / 2
+    const y = rect.top + rect.height / 2
+    pointer(element, 'pointerdown', 1, x, y)
+    pointer(element, 'pointermove', 1, x + 31, y - 17)
+    const anchor = controls.target.clone().add(new Vector3(2, 0, -1))
+    const before = screenPoint(camera, anchor, element)
+    wheel(element, -120, 0, before)
+    const afterWheel = screenPoint(camera, anchor, element)
+    expect(afterWheel[0]).toBeCloseTo(before[0], 8)
+    expect(afterWheel[1]).toBeCloseTo(before[1], 8)
+    pointer(element, 'pointermove', 1, x + 45, y - 26)
+    const afterDrag = screenPoint(camera, anchor, element)
+    expect(afterDrag[0] - afterWheel[0]).toBeCloseTo(14, 8)
+    expect(afterDrag[1] - afterWheel[1]).toBeCloseTo(-9, 8)
+    pointer(element, 'pointerup', 1, x + 45, y - 26)
+    controls.update()
+    const afterEnd = screenPoint(camera, anchor, element)
+    expect(afterEnd[0]).toBeCloseTo(afterDrag[0], 8)
+    expect(afterEnd[1]).toBeCloseTo(afterDrag[1], 8)
   })
 })

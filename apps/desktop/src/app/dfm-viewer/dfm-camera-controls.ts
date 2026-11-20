@@ -1,4 +1,4 @@
-import { MOUSE, type OrthographicCamera, type Vector3 } from 'three'
+import { MOUSE, type OrthographicCamera, Vector3 } from 'three'
 import { TrackballControls } from 'three/addons/controls/TrackballControls.js'
 
 /** Keep screen-space drag distances independent of orthographic camera depth. */
@@ -79,10 +79,38 @@ export function createDfmCameraControls(camera: OrthographicCamera, element: HTM
     element.addEventListener('lostpointercapture', finishPointer)
   }
 
+  const zoomAtPointer = (event: WheelEvent) => {
+    if (!controls.enabled || controls.noZoom) {return}
+    const rect = element.getBoundingClientRect()
+
+    if (rect.width <= 0 || rect.height <= 0) {return}
+    const pointer = new Vector3(
+      (event.clientX - rect.left) / rect.width * 2 - 1,
+      1 - (event.clientY - rect.top) / rect.height * 2,
+      0
+    )
+    camera.updateMatrixWorld()
+    const anchor = pointer.clone().unproject(camera)
+    const zoom = camera.zoom
+    // Trackball's earlier wheel listener queues the native zoom delta. Consume
+    // it per event so each delta keeps its own pointer, speed and zoom limits.
+    controls.update()
+
+    if (camera.zoom === zoom) {return}
+    camera.updateMatrixWorld()
+    // Orthographic rays are parallel: the screen-plane correction works at any
+    // depth, including empty background, without querying the model geometry.
+    const offset = anchor.sub(pointer.unproject(camera))
+    camera.position.add(offset)
+    controls.target.add(offset)
+    camera.updateMatrixWorld()
+  }
+
   resize()
   // Clipping may retreat the camera after rotation. Recalibrate before the next
   // actual input so that its new depth cannot change the apparent pan speed.
   element.addEventListener('pointerdown', beginPointer)
+  element.addEventListener('wheel', zoomAtPointer)
   controls.addEventListener('start', startMovement)
   controls.addEventListener('end', endMovement)
   const dispose = controls.dispose.bind(controls)
@@ -91,6 +119,7 @@ export function createDfmCameraControls(camera: OrthographicCamera, element: HTM
     controls.removeEventListener('start', startMovement)
     controls.removeEventListener('end', endMovement)
     element.removeEventListener('pointerdown', beginPointer)
+    element.removeEventListener('wheel', zoomAtPointer)
     activePointers.clear()
     stopMovement()
     dispose()
