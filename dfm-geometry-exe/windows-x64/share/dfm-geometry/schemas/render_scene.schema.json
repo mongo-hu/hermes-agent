@@ -14,6 +14,17 @@
     "unit": {"type": "string", "minLength": 1},
     "topology_snapshot_ref": {"type": "string", "minLength": 1},
     "render_mesh_snapshot": {"$ref": "#/$defs/renderMeshSnapshot"},
+    "edge_polylines": {
+      "type": "array",
+      "description": "Optional display curves bound to original topology edges; independent of the face triangle mesh hash.",
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["geometry_ref", "points"],
+        "properties": {
+          "geometry_ref": {"allOf": [{"$ref": "https://hermes.local/dfm/geometry/common.schema.json#/$defs/geometryRef"}, {"properties": {"kind": {"const": "edge"}}}]},
+          "points": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/point3"}}
+        }
+      }
+    },
     "primitives": {
       "type": "array",
       "minItems": 1,

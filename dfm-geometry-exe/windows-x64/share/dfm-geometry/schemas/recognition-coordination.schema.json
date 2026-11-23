@@ -1,0 +1,610 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes.local/dfm/geometry/recognition-coordination-v1.schema.json",
+  "$defs": {
+    "feature": {
+      "type": "object",
+      "required": [
+        "policy_version",
+        "raw_candidate_id",
+        "state",
+        "locked",
+        "unresolved_face_indices",
+        "conflicts",
+        "anchor_face_indices",
+        "removed_face_indices",
+        "shell_components"
+      ],
+      "properties": {
+        "policy_version": {
+          "enum": [
+            "role-evidence-coordinator/1",
+            "role-evidence-coordinator/2",
+            "role-evidence-coordinator/3",
+            "role-evidence-coordinator/4",
+            "role-evidence-coordinator/5"
+          ]
+        },
+        "raw_candidate_id": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "retained",
+            "split",
+            "unresolved"
+          ]
+        },
+        "locked": {
+          "type": "boolean"
+        },
+        "unresolved_face_indices": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "anchor_face_indices": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "support_verification": {
+          "type": "object",
+          "required": [
+            "status",
+            "reason",
+            "anchor_face_indices",
+            "anchor_feature_ids"
+          ],
+          "properties": {
+            "status": {
+              "enum": [
+                "verified",
+                "unverified"
+              ]
+            },
+            "reason": {
+              "type": "string"
+            },
+            "anchor_face_indices": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "anchor_feature_ids": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "removed_face_indices": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "shell_components": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "candidates",
+              "face_indices",
+              "reason"
+            ],
+            "properties": {
+              "candidates": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "face_indices": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "reason": {
+                "enum": [
+                  "ROLE_CONFLICT_UNRESOLVED",
+                  "USER_CONSTRAINT_CONFLICT"
+                ]
+              }
+            }
+          }
+        },
+        "shared_memberships": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sharedMembership"
+          }
+        },
+        "ownership_decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ownershipDecision"
+          }
+        }
+      }
+    },
+    "snapshot": {
+      "type": "object",
+      "required": [
+        "policy_version",
+        "status",
+        "anchors",
+        "conflicts",
+        "decisions",
+        "suppressed",
+        "component_fingerprints",
+        "recomputed_components",
+        "reused_components"
+      ],
+      "properties": {
+        "policy_version": {
+          "enum": [
+            "role-evidence-coordinator/1",
+            "role-evidence-coordinator/2",
+            "role-evidence-coordinator/3",
+            "role-evidence-coordinator/4",
+            "role-evidence-coordinator/5"
+          ]
+        },
+        "status": {
+          "enum": [
+            "consistent",
+            "unresolved"
+          ]
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "candidates",
+              "face_indices",
+              "reason"
+            ],
+            "properties": {
+              "candidates": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "face_indices": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "reason": {
+                "enum": [
+                  "ROLE_CONFLICT_UNRESOLVED",
+                  "USER_CONSTRAINT_CONFLICT"
+                ]
+              }
+            }
+          }
+        },
+        "anchors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "feature_id",
+              "face_indices",
+              "local_wall_pairs",
+              "scope"
+            ]
+          }
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "winner",
+              "loser",
+              "face_indices",
+              "reason"
+            ]
+          }
+        },
+        "suppressed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "feature_id",
+              "reason",
+              "original_geometry_refs"
+            ]
+          }
+        },
+        "component_fingerprints": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "excluded_candidate_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "recomputed_components": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reused_components": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "main_wall_direction_review": {
+          "type": "object",
+          "required": [
+            "policy_version",
+            "rounds",
+            "recomputed_tasks",
+            "reused_tasks",
+            "tasks"
+          ],
+          "properties": {
+            "policy_version": {
+              "const": "main-wall-direction-review/2"
+            },
+            "rounds": {
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "recomputed_tasks": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "reused_tasks": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "tasks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "feature_id",
+                  "input_fingerprint",
+                  "result"
+                ],
+                "properties": {
+                  "feature_id": {
+                    "type": "string"
+                  },
+                  "input_fingerprint": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "result": {
+                    "$ref": "#/$defs/mainWallDirectionReview"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "shared_memberships": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sharedMembership"
+          }
+        },
+        "ownership_decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ownershipDecision"
+          }
+        },
+        "stale_ownership_decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ownershipDecision"
+          }
+        }
+      }
+    },
+    "mainWallDirectionReview": {
+      "type": "object",
+      "required": [
+        "policy_version",
+        "status",
+        "target_face_indices",
+        "added_face_indices",
+        "remaining_face_indices",
+        "evaluated_face_indices",
+        "scope_reviews",
+        "validated_extensions",
+        "query_count",
+        "processing",
+        "work_plan"
+      ],
+      "properties": {
+        "policy_version": {
+          "const": "main-wall-direction-review/2"
+        },
+        "status": {
+          "enum": [
+            "not_needed",
+            "no_new_evidence",
+            "no_verified_anchor",
+            "no_local_anchor",
+            "manual_constraint",
+            "awaiting_confirmed_main_direction",
+            "extended"
+          ]
+        },
+        "target_face_indices": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "added_face_indices": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "remaining_face_indices": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "evaluated_face_indices": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "scope_reviews": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "forming_scope_id",
+              "draw_direction",
+              "faces"
+            ]
+          }
+        },
+        "validated_extensions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "first_face",
+              "second_face",
+              "forming_scope_id",
+              "local_anchor_thickness_mm",
+              "thickness_mm",
+              "path_node_id",
+              "component_id"
+            ]
+          }
+        },
+        "query_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reason": {
+          "type": "string"
+        },
+        "processing": {
+          "type": "object",
+          "required": [
+            "state",
+            "completed_target_face_indices"
+          ],
+          "properties": {
+            "state": {
+              "enum": [
+                "complete",
+                "deferred"
+              ]
+            },
+            "completed_target_face_indices": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        },
+        "work_plan": {
+          "type": "object",
+          "required": [
+            "sample_grid",
+            "maximum_queries_per_sample",
+            "planned_queries",
+            "component_count",
+            "path_solver"
+          ],
+          "properties": {
+            "sample_grid": {
+              "const": 5
+            },
+            "maximum_queries_per_sample": {
+              "const": 2
+            },
+            "planned_queries": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "component_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "path_solver": {
+              "const": "bilateral_pair_graph"
+            }
+          }
+        }
+      }
+    },
+    "sharedMembership": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidates",
+        "face_indices",
+        "scope",
+        "source",
+        "reason"
+      ],
+      "properties": {
+        "candidates": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "face_indices": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "scope": {
+          "const": "whole_face"
+        },
+        "source": {
+          "enum": [
+            "coordinator",
+            "user_confirmed"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "EXPLICIT_SHARED_BOUNDARY",
+            "VALIDATED_RIB_JUNCTION",
+            "VALIDATED_SHARED_CARRIER_SIDE",
+            "VALIDATED_SHARED_WALL_CARRIER",
+            "COMPATIBLE_BOUNDARY_ROLES"
+          ]
+        }
+      }
+    },
+    "ownershipDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_id",
+        "face_index",
+        "candidates",
+        "decision",
+        "owner_feature_id",
+        "scope",
+        "source",
+        "bindings"
+      ],
+      "properties": {
+        "decision_id": {
+          "type": "string"
+        },
+        "face_index": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "candidates": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "decision": {
+          "enum": [
+            "shared",
+            "exclusive",
+            "unresolved"
+          ]
+        },
+        "owner_feature_id": {
+          "type": "string"
+        },
+        "scope": {
+          "const": "whole_face"
+        },
+        "source": {
+          "const": "user_confirmed"
+        },
+        "bindings": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    }
+  }
+}

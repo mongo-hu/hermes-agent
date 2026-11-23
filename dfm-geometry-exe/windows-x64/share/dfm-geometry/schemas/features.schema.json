@@ -58,7 +58,12 @@
       }
     },
     "diagnostics": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "recognition_coordination": {
+          "$ref": "https://hermes.local/dfm/geometry/recognition-coordination-v1.schema.json#/$defs/snapshot"
+        }
+      }
     }
   },
   "$defs": {
@@ -86,14 +91,8 @@
         },
         "kind": {
           "enum": [
-            "drilled_hole",
             "blend",
-            "shaft",
-            "cavity",
-            "convex_hull",
             "isolated",
-            "canonical_surface",
-            "surface_probe",
             "hollow_boss",
             "solid_boss",
             "chamfer",
@@ -154,7 +153,15 @@
           "type": "object"
         },
         "diagnostics": {
-          "type": "object"
+          "type": "object",
+          "properties": {
+            "coordination": {
+              "$ref": "https://hermes.local/dfm/geometry/recognition-coordination-v1.schema.json#/$defs/feature"
+            },
+            "directional_review": {
+              "$ref": "https://hermes.local/dfm/geometry/recognition-coordination-v1.schema.json#/$defs/mainWallDirectionReview"
+            }
+          }
         }
       }
     },

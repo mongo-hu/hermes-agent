@@ -41,6 +41,76 @@
           "surface_normal": {"$ref": "https://hermes.local/dfm/geometry/common.schema.json#/$defs/vector3"},
           "value": {"type": "number"},
           "geometry_ref": {"$ref": "https://hermes.local/dfm/geometry/common.schema.json#/$defs/faceGeometryRef"},
+          "membership_state": {
+            "enum": [
+              "selected",
+              "unresolved"
+            ]
+          },
+          "physical_evidence": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "method",
+              "point",
+              "thickness_mm",
+              "sphere_center",
+              "contact_tolerance_mm",
+              "contacts",
+              "status",
+              "semantic_classification",
+              "representation"
+            ],
+            "properties": {
+              "method": {
+                "const": "triangulated_shrinking_sphere"
+              },
+              "point": {
+                "$ref": "https://hermes.local/dfm/geometry/common.schema.json#/$defs/vector3"
+              },
+              "sphere_center": {
+                "$ref": "https://hermes.local/dfm/geometry/common.schema.json#/$defs/vector3"
+              },
+              "thickness_mm": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "contact_tolerance_mm": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "contacts": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "geometry_ref",
+                    "point"
+                  ],
+                  "properties": {
+                    "geometry_ref": {
+                      "$ref": "https://hermes.local/dfm/geometry/common.schema.json#/$defs/faceGeometryRef"
+                    },
+                    "point": {
+                      "$ref": "https://hermes.local/dfm/geometry/common.schema.json#/$defs/vector3"
+                    }
+                  }
+                }
+              },
+              "status": {
+                "enum": [
+                  "validated_mesh_contacts",
+                  "contact_unresolved"
+                ]
+              },
+              "semantic_classification": {
+                "const": "not_inferred"
+              },
+              "representation": {
+                "const": "representative_physical_sample"
+              }
+            }
+          },
           "mesh_vertex_ref": {
             "oneOf": [
               {"$ref": "https://hermes.local/dfm/geometry/common.schema.json#/$defs/meshVertexRef"},

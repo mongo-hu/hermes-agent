@@ -271,6 +271,12 @@ class EvaluationEngine:
                 item for item in matched if not item.rule_selection["is_default"]
             ] or matched
             if not preferred:
+                if appearance is not None and appearance["outcome"] == "selected":
+                    unresolved.append((sorted(candidates, key=lambda item: item.rule_id)[0], {
+                        **appearance,
+                        "outcome": "indeterminate",
+                        "reason_codes": ["factor_combination_uncovered"],
+                    }))
                 continue
             preferred.sort(
                 key=lambda item: (
@@ -1204,6 +1210,10 @@ class EvaluationEngine:
                 and math.isfinite(float(value))
                 for value in (actual, expected)
             ):
+                # Zero marks a distinct geometric state; a nonzero value must
+                # not enter the zero branch through absolute tolerance.
+                if operation_name in {"==", "!="} and expected == 0:
+                    return bool(comparison(actual, expected))
                 close = math.isclose(
                     actual,
                     expected,

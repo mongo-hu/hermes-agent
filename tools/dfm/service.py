@@ -57,6 +57,7 @@ from .feature_exclusions import (
     fragment_uses_excluded_feature, retire_excluded_fragments,
 )
 from .ontology import BackgroundOntologySync, LocalOntologyStore, OntologySynchronizer
+from .ontology.catalog_contract import catalog_feature_kind
 from .project.inputs import InputRegistrar
 from .project.manifest import ManifestStore
 from .project.geometry_edits import GeometryEdit, geometry_identity
@@ -3535,6 +3536,24 @@ class DFMService:
     ):
         """Bind public G operands to immutable Worker feature identities."""
 
+        # A rule without a matching Factor branch is a coverage gap only when
+        # its published Feature actually exists in this discovery scope.
+        available = active_features(manifest, snapshot.feature_refs)
+        scoped_skips = []
+        for skipped in process_plan.skipped_checks:
+            context = self.ontology_store.check_context(skipped.check_id)
+            kinds = {
+                catalog_feature_kind(relation["object"].get("properties_json",
+                    relation["object"].get("properties", {})))
+                for relation in context["relations"]
+                if relation["predicate"] == "APPLIES_TO_FEATURE"
+            }
+            feature_refs = sorted(feature.feature_id for feature in available if feature.kind in kinds)
+            if feature_refs:
+                scoped_skips.append(replace(skipped, details={
+                    **skipped.details, "feature_refs": feature_refs,
+                }))
+        process_plan = replace(process_plan, skipped_checks=scoped_skips)
         if not process_plan.rule_bindings:
             return process_plan
         operands = [
@@ -3559,7 +3578,6 @@ class DFMService:
                     "The confirmed Discovery snapshot is not bound to a live Worker snapshot.",
                     {"discovery_snapshot_id": snapshot.snapshot_id},
                 )
-            available = active_features(manifest, snapshot.feature_refs)
             geometric_capabilities = geometry_binding_index(
                 self.occt_geometry_capability or {}
             )
@@ -5183,6 +5201,15 @@ class DFMService:
                     process_plan = replace(
                         process_plan,
                         rule_bindings=bindings,
+                        skipped_checks=[
+                            replace(skipped, details={**skipped.details, "feature_refs": refs})
+                            for plan, allowed in [
+                                (process_plan, set(discovery_snapshot.feature_refs) - set(plans_by_feature)),
+                                *((plan, {feature_id}) for feature_id, plan in plans_by_feature.items()),
+                            ]
+                            for skipped in plan.skipped_checks
+                            if (refs := sorted(set(skipped.details.get("feature_refs", [])) & allowed))
+                        ],
                         operations=(
                             []
                             if any(
@@ -5199,6 +5226,13 @@ class DFMService:
                 exclusion_replan = any(fragment_uses_excluded_feature(fragment, excluded_ids)
                     for previous in manifest.plans if previous.plan_id == params.get("base_plan_id")
                     for fragment in previous.active_plan_fragments())
+                skipped_coverage = [{
+                    "check_id": item.check_id,
+                    "feature_refs": item.details["feature_refs"],
+                    "status": "missing_input" if item.reason == "required_factor_missing" else "unsupported",
+                    "reason": item.reason,
+                    "details": item.details,
+                } for item in process_plan.skipped_checks]
                 if (
                     str(analyzer_key) == "occt_cpp"
                     and process == "injection"
@@ -5212,12 +5246,17 @@ class DFMService:
                     return {
                         "ok": True,
                         "project_id": project_id,
-                        "status": "no_applicable_checks",
+                        "status": "unsupported_checks" if skipped_coverage else "no_applicable_checks",
                         "phase": "analysis",
                         "requires_user_response": False,
                         "next_action": "complete",
-                        "reason_code": "no_applicable_supported_rules",
+                        "reason_code": "applicable_checks_skipped" if skipped_coverage else "no_applicable_supported_rules",
+                        "coverage_gaps": skipped_coverage,
                         "message": (
+                            "Discovered Features have checks that could not be evaluated; "
+                            "the coverage gaps distinguish missing Factors, uncovered Factor "
+                            "combinations, and unsupported geometry. This is not a pass."
+                        ) if skipped_coverage else (
                             "No released rule could be bound for the confirmed facts, "
                             "discovered features, and available geometry capabilities. "
                             "This result alone does not establish that an OCCT algorithm "
@@ -5287,6 +5326,13 @@ class DFMService:
             active_inputs = self._active_inputs(manifest)
             now = _utc_now()
             plan_fragments: list[PlanFragmentRecord] = []
+            coverage_gaps = [{
+                "check_id": item.check_id,
+                "feature_refs": item.details.get("feature_refs", []),
+                "status": "missing_input" if item.reason == "required_factor_missing" else "unsupported",
+                "reason": item.reason,
+                "details": item.details,
+            } for item in process_plan.skipped_checks] if process_plan else []
             if geometric_plan:
                 capability_index = geometry_binding_index(
                     self.occt_geometry_capability or {}
@@ -5303,7 +5349,6 @@ class DFMService:
                 blocking_by_group: dict[
                     tuple[str, str, str, str, str], list[dict[str, Any]]
                 ] = {}
-                coverage_gaps: list[dict[str, Any]] = []
                 features_by_id = {item.feature_id: item for item in active_features(manifest, discovery_snapshot.feature_refs)}
                 active_groups = [
                     item
@@ -5734,7 +5779,7 @@ class DFMService:
                     if item.region_id in discovery_snapshot.region_refs
                 ],
                 plan_fragments=plan_fragments,
-                coverage_gaps=coverage_gaps if geometric_plan else [],
+                coverage_gaps=coverage_gaps,
                 pending_inputs=[{
                     **item.to_dict(),
                     **dict(zip(("fact_name", "check_id", "feature_id"), self._fact_scope_reference(
@@ -5758,6 +5803,7 @@ class DFMService:
             unchanged = parent_plan is not None and (
                 plan.plan_fragments == parent_plan.plan_fragments
                 and plan.pending_inputs == parent_plan.pending_inputs
+                and plan.coverage_gaps == parent_plan.coverage_gaps
             )
             if unchanged:
                 plan = parent_plan
