@@ -26,6 +26,8 @@ Desktop 的审核端点继续提供完整几何，供选面和编辑使用。Age
 
 普通结构确认后，先执行 `next_call` 中的业务澄清。未完成局部方案保持待审；准备就绪的计算继续遵循已有依赖规则。已经启动的 Run 继续原 Run，不因重复确认新建项目。
 
+Desktop 的 Discovery 提问在正常确认成功或已确认后再次进入时，若权威下一步为分析参数澄清，直接在同一次工具调用内打开现有批量表单，不依赖 Agent 再调用一次 `clarify`。用户取消、确认失败、保存阻断或无待答参数时不自动续接；不支持批量上下文的回调仍返回原有 `next_call`。表单到达时刷新对应项目的 Viewer；提交沿用现有参数校验和保存，成功后以最新审核状态返回续接指令，避免填表期间的审核变动被忽略。不会自动确认局部方案或启动分析。右侧“补充信息”计数表示当前活动表单的题数，不代表项目全部未答参数的数量。
+
 ## 保存失败的分类
 
 | 阶段 | 结果 | 是否建立保存阻断 |
@@ -43,7 +45,8 @@ Desktop 的审核端点继续提供完整几何，供选面和编辑使用。Age
 
 - `test_review_state_contract.py`：485 组大结果、完整分页、检查点落后、版本变化、历史阻断恢复条件。
 - `test_native_review_continuation.py`：真实 Worker 的确认、重复提交、版本拒绝、写入故障和提交后视图故障。
-- `test_desktop_agent_review_continuation.py`：真实 Electron 页面、Gateway、AIAgent、工具和 Worker。只有外部模型提供方使用本地确定性响应；下一次调用从真实工具结果读取。断言页面提交后业务输入显示、界面确认计数更新、无截断和错误保存阻断。
+- `test_clarify_tool.py`：审核后直接批量提问、已确认重入、取消/异常、未答参数保留、填表期间审核变化和旧回调兼容。
+- `test_desktop_agent_review_continuation.py`：真实 Electron 页面、Gateway、AIAgent、工具和 Worker。只有外部模型提供方使用本地确定性响应；模型不再追加工具调用也能打开参数表单。覆盖正常确认和已确认重入，断言业务输入显示、界面确认计数更新、实际填写提交及审核数据保留。
 
 Python 测试统一通过 `scripts/run_tests.sh`。桌面验收需设置 `DFM_DESKTOP_E2E=1` 和 `DFM_GEOMETRY_E2E_EXECUTABLE`，并预先构建 Desktop。
 
