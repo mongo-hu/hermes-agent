@@ -285,11 +285,8 @@
         "rib",
         "solid_boss",
         "hollow_boss",
-        "drilled_hole",
         "blend",
         "chamfer",
-        "shaft",
-        "cavity",
         "isolated"
       ]
     },
@@ -336,7 +333,7 @@
         },
         "revisions": {
           "type": "array",
-          "minItems": 1,
+          "minItems": 0,
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -361,6 +358,47 @@
                     "geometry_refs"
                   ]
                 }
+              },
+              {
+                "if": {
+                  "required": [
+                    "action"
+                  ],
+                  "properties": {
+                    "action": {
+                      "enum": [
+                        "delete",
+                        "unlock"
+                      ]
+                    }
+                  }
+                },
+                "then": {
+                  "not": {
+                    "anyOf": [
+                      {
+                        "required": [
+                          "kind"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "geometry_refs"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "parts"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "parameters"
+                        ]
+                      }
+                    ]
+                  }
+                }
               }
             ],
             "properties": {
@@ -370,7 +408,9 @@
               "action": {
                 "enum": [
                   "create",
-                  "update"
+                  "update",
+                  "delete",
+                  "unlock"
                 ]
               },
               "kind": {
@@ -399,8 +439,146 @@
           "items": {
             "type": "object"
           }
+        },
+        "ownership_decisions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "face_index"
+            ],
+            "properties": {
+              "face_index": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "action": {
+                "enum": [
+                  "set",
+                  "clear"
+                ]
+              },
+              "decision": {
+                "enum": [
+                  "shared",
+                  "exclusive",
+                  "unresolved"
+                ]
+              },
+              "candidates": {
+                "type": "array",
+                "minItems": 2,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "owner_feature_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "required": [
+                    "action"
+                  ],
+                  "properties": {
+                    "action": {
+                      "const": "clear"
+                    }
+                  }
+                },
+                "then": {
+                  "not": {
+                    "anyOf": [
+                      {
+                        "required": [
+                          "decision"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "candidates"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "owner_feature_id"
+                        ]
+                      }
+                    ]
+                  }
+                },
+                "else": {
+                  "required": [
+                    "decision",
+                    "candidates"
+                  ],
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "decision": {
+                            "const": "exclusive"
+                          }
+                        }
+                      },
+                      "then": {
+                        "required": [
+                          "owner_feature_id"
+                        ]
+                      },
+                      "else": {
+                        "not": {
+                          "required": [
+                            "owner_feature_id"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
         }
-      }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "revisions"
+          ],
+          "properties": {
+            "revisions": {
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "required": [
+            "relationships"
+          ],
+          "properties": {
+            "relationships": {
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "required": [
+            "ownership_decisions"
+          ],
+          "properties": {
+            "ownership_decisions": {
+              "minItems": 1
+            }
+          }
+        }
+      ]
     },
     "analyzeFormingScopeParams": {
       "type": "object",

@@ -25,10 +25,14 @@ This project incorporates components from the projects listed below.
 
 The native engine links the source-built `asiAlgo` and `asiActiveData`
 libraries. Its feature-recognition path uses `asiAlgo_AAG`,
-`asiAlgo_RecognizeDrillHoles`, `asiAlgo_RecognizeBlends`,
+`asiAlgo_RecognizeDrillHoles`,
 `asiAlgo_RecognizeShafts`, `asiAlgo_RecognizeCavities`,
 `asiAlgo_RecognizeConvexHull`, `asiAlgo_RecognizeIsolated`,
 `asiAlgo_RecognizeProbes`, and `asiAlgo_RecognizeCanonical`.
+
+Blend, chamfer and sharp-edge recognition use first-party OCCT implementations
+with trimmed support and section evidence. The vendored blend SDK remains part
+of Analysis Situs but is no longer the engine's blend-recognition entry point.
 
 The DFM metric implementations are clean-room C++ ports whose algorithmic
 provenance was reviewed against the project references `draft_analyzer.py`,

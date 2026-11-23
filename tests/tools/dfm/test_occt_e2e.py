@@ -716,8 +716,14 @@ def test_one_persistent_model_serves_discovery_and_direct_g_computation(tmp_path
         for local_candidate in analyzed_scope["forming_scopes"]:
             if local_candidate["mode"] == "local":
                 assert local_candidate["kind"] == "undercut"
-                assert local_candidate["draw_direction"] is None
-                assert local_candidate["direction_source"] is None
+                assert local_candidate["status"] == "candidate"
+                assert local_candidate["direction_source"] == (
+                    "inferred" if local_candidate["draw_direction"] is not None else None
+                )
+                coverage = next(row for row in analyzed_scope["coverage"]
+                                if row.get("forming_scope_id") == local_candidate["forming_scope_id"])
+                assert coverage["status"] == "partial"
+                assert coverage["diagnostics"]["requires_user_input"] is True
                 assert local_candidate["geometry_refs"]
         confirmed_scope = pool.call(
             "project-v2",
@@ -1289,7 +1295,10 @@ def _confirm_service_scopes(service, project_id, scope):
         if local_candidate["mode"] != "local":
             continue
         scope_id = local_candidate["forming_scope_id"]
-        assert local_candidate["draw_direction"] is None
+        assert local_candidate["status"] == "candidate"
+        assert local_candidate["direction_source"] == (
+            "inferred" if local_candidate["draw_direction"] is not None else None
+        )
         context = service.analysis("review_context", project_id=project_id)
         service.analysis("stage_forming_direction", project_id=project_id,
             forming_scope={**local_candidate, "draw_direction": [0, 1, 0], "mechanism_kind": "slider"},
