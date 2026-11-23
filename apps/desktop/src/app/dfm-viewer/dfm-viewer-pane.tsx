@@ -785,11 +785,17 @@ export function DfmViewerPane({ embedded = false, showPopout = embedded, target 
       : null
 
   const clarificationRequestId = clarificationRequest?.requestId
+  const refreshedClarificationRequest = useRef<string | undefined>(undefined)
   const analysisCompleted = manifest?.status === 'completed'
 
   useEffect(() => {
     if (clarificationRequestId) {
       setReviewPaneTab('clarifications')
+      if (refreshedClarificationRequest.current !== clarificationRequestId) {
+        refreshedClarificationRequest.current = clarificationRequestId
+        // Review can finish before this same tool call's parameter form closes.
+        setReloadRequest(current => current + 1)
+      }
     }
   }, [clarificationRequestId])
 
@@ -1820,7 +1826,7 @@ export function DfmViewerPane({ embedded = false, showPopout = embedded, target 
                 />
               ) : (
                 <div className="rounded-lg border border-cyan-400/15 bg-cyan-500/[0.06] p-3 text-xs leading-5 text-cyan-100">
-                  当前没有待补充的信息。
+                  当前没有正在等待填写的补充信息表单。
                 </div>
               )
             ) : (

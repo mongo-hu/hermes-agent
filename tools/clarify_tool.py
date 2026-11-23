@@ -141,6 +141,41 @@ def _dfm_continuation(service, project_id: str, next_action: object) -> dict:
     return {}
 
 
+def _dfm_review_followup(service, project_id, state, callback, session_id):
+    """Open analysis questions in the same desktop call after Discovery review."""
+    if (
+        state.get("next_action") != "clarify"
+        or callback is None
+        or not _supports_clarify_context(callback)
+    ):
+        return None
+    next_call = state.get("next_call") or {}
+    arguments = next_call.get("arguments") or {}
+    fact_name = arguments.get("dfm_fact_name")
+    if (
+        next_call.get("tool") != "clarify"
+        or arguments.get("dfm_project_id") != project_id
+        or not fact_name
+        or f"clarification_{fact_name}" in _DFM_STARTUP_CLARIFICATIONS
+    ):
+        return None
+
+    # Reuse the existing batch validation and persistence; never execute an
+    # analysis here or rely on another model turn to display the input form.
+    result = json.loads(clarify_tool(
+        "", callback=callback, dfm_project_id=project_id,
+        dfm_fact_name=fact_name, session_id=session_id,
+    ))
+    state = service.review_state(project_id)
+    result["dfm_discovery_review"] = state
+    if "error" not in result:
+        for key in ("next_action", "next_call", "continuation_required", "instruction"):
+            result[key] = state[key]
+    if state.get("viewer_manifest"):
+        result["viewer_manifest"] = state["viewer_manifest"]
+    return result
+
+
 def _flatten_choice(c) -> str:
     """Coerce a single choice into its user-facing display string.
 
@@ -261,6 +296,11 @@ def clarify_tool(
             review = project.get("capabilities", {}).get("discovery_review", {})
             if review.get("status") != "pending":
                 state = dfm_service.review_state(dfm_project_id)
+                followup = _dfm_review_followup(
+                    dfm_service, dfm_project_id, state, callback, session_id
+                )
+                if followup is not None:
+                    return json.dumps(followup, ensure_ascii=False)
                 return json.dumps({"dfm_discovery_review": state, **{
                     key: state[key] for key in ("next_action", "next_call", "continuation_required", "instruction")
                 }}, ensure_ascii=False)
@@ -366,6 +406,13 @@ def clarify_tool(
                 "confirm_discovery", project_id=dfm_project_id
             )
             discovery_review = dfm_service.review_state(dfm_project_id)
+            followup = _dfm_review_followup(
+                dfm_service, dfm_project_id, discovery_review, callback, session_id
+            )
+            if followup is not None:
+                if confirmation.get("viewer_manifest"):
+                    followup.setdefault("viewer_manifest", confirmation["viewer_manifest"])
+                return json.dumps(followup, ensure_ascii=False)
         except DFMError as exc:
             return json.dumps(exc.to_dict(), ensure_ascii=False)
         confirmed = None

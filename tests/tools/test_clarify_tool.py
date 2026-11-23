@@ -14,6 +14,195 @@ from tools.clarify_tool import (
 )
 
 
+@pytest.fixture
+def reviewed_dfm(monkeypatch):
+    """A review with project-wide and feature-scoped analysis questions."""
+    from types import SimpleNamespace
+
+    class Service:
+        config = SimpleNamespace(default_process="injection")
+        review_pending = False
+        blocked_action = None
+        confirmations = 0
+        pending = [
+            {"clarification_id": "clarification_material", "question": "Material?"},
+            {"clarification_id": "clarification_finish#wall", "question": "Wall finish?"},
+        ]
+        facts = []
+
+        def project(self, action, **kwargs):
+            assert kwargs["project_id"] == "dfm_test"
+            if action == "status":
+                return {"project": {
+                    "process": "injection", "open_clarifications": self.pending,
+                    "capabilities": {"discovery_review": {
+                        "status": "pending" if self.review_pending else "confirmed",
+                    }},
+                }}
+            assert action == "confirm_fact"
+            self.facts.append({"name": kwargs["fact_name"], "value": kwargs["fact_value"]})
+            self.pending.pop(0)
+            return {"fact": self.facts[-1], "next_action": "clarify" if self.pending else "plan"}
+
+        def analysis(self, action, **kwargs):
+            assert action == "confirm_discovery"
+            assert kwargs["project_id"] == "dfm_test"
+            self.confirmations += 1
+            self.review_pending = False
+            return {"viewer_manifest": "viewer.json"}
+
+        def review_state(self, project_id):
+            assert project_id == "dfm_test"
+            action = self.blocked_action or ("clarify" if self.pending else "plan")
+            call = None
+            if action == "clarify":
+                call = {"tool": "clarify", "arguments": {
+                    "dfm_project_id": project_id,
+                    "dfm_fact_name": self.pending[0]["clarification_id"].removeprefix("clarification_"),
+                }}
+            elif action == "plan":
+                call = {"tool": "dfm_analysis", "arguments": {"action": "plan", "project_id": project_id}}
+            return {
+                "next_action": action, "next_call": call, "continuation_required": call is not None,
+                "instruction": "Follow next_call.", "open_clarification_count": len(self.pending),
+                "pending_review_group_count": 1,  # An incomplete local forming scope may remain.
+                "viewer_manifest": "viewer.json",
+            }
+
+        @staticmethod
+        def _canonical_fact_name(name):
+            return name
+
+        @staticmethod
+        def clarification_choices(_process, _name):
+            return ["yes", "no"]
+
+        @staticmethod
+        def clarification_feature_refs(_project_id, name):
+            return ["wall"] if "#wall" in name else []
+
+    service = Service()
+    monkeypatch.setattr("tools.dfm.service.get_dfm_service", lambda: service)
+    return service
+
+
+class TestDiscoveryQuestionHandoff:
+    @pytest.mark.parametrize("review_pending", [False, True])
+    def test_review_opens_batch_without_another_model_call(self, reviewed_dfm, review_pending):
+        reviewed_dfm.review_pending = review_pending
+        shown = []
+
+        def desktop(question, choices, context=None):
+            shown.append(context)
+            if context is None:
+                return choices[0]
+            assert context["mode"] == "dfm_analysis_batch"
+            assert context["project_id"] == "dfm_test"
+            assert context["items"][1]["feature_refs"] == ["wall"]
+            return json.dumps({"answers": [
+                {"fact_name": item["fact_name"], "value": "yes"} for item in context["items"]
+            ]})
+
+        result = json.loads(clarify_tool(
+            "", callback=desktop, dfm_project_id="dfm_test", dfm_discovery_review=True,
+        ))
+        assert len(shown) == (2 if review_pending else 1)
+        assert reviewed_dfm.confirmations == int(review_pending)
+        assert [fact["name"] for fact in reviewed_dfm.facts] == ["material", "finish#wall"]
+        assert result["dfm_facts"] == reviewed_dfm.facts
+        assert result["viewer_manifest"] == "viewer.json"
+        assert result["dfm_discovery_review"]["open_clarification_count"] == 0
+        assert result["next_call"]["arguments"]["action"] == "plan"
+        assert result["next_action"] == "plan"
+
+    @pytest.mark.parametrize("action", ["confirm_discovery", "wait_review_save", "retry_review_save"])
+    def test_changes_during_input_use_latest_review_continuation(self, reviewed_dfm, action):
+        def desktop(_question, _choices, context=None):
+            reviewed_dfm.blocked_action = action
+            return json.dumps({"answers": [
+                {"fact_name": item["fact_name"], "value": "yes"} for item in context["items"]
+            ]})
+
+        result = json.loads(clarify_tool(
+            "", callback=desktop, dfm_project_id="dfm_test", dfm_discovery_review=True,
+        ))
+        assert "error" not in result
+        assert len(result["dfm_facts"]) == 2
+        for key in ("next_action", "next_call", "continuation_required", "instruction"):
+            assert result[key] == result["dfm_discovery_review"][key]
+        assert result["next_action"] == action
+        assert reviewed_dfm.confirmations == 0
+
+    @pytest.mark.parametrize("review_pending", [False, True])
+    def test_two_argument_callbacks_keep_existing_continuation(self, reviewed_dfm, review_pending):
+        reviewed_dfm.review_pending = review_pending
+        shown = []
+        result = json.loads(clarify_tool(
+            "", callback=lambda question, choices: shown.append(question) or choices[0],
+            dfm_project_id="dfm_test", dfm_discovery_review=True,
+        ))
+        assert len(shown) == int(review_pending)
+        assert result["next_call"]["arguments"]["dfm_fact_name"] == "material"
+        assert not reviewed_dfm.facts
+
+    @pytest.mark.parametrize("action", ["confirm_discovery", "wait_review_save", "retry_review_save", "plan"])
+    def test_other_next_actions_are_not_automatically_executed(self, reviewed_dfm, action):
+        reviewed_dfm.blocked_action = action
+
+        def desktop(_question, _choices, _context=None):
+            pytest.fail("No input should be opened for this review state")
+
+        result = json.loads(clarify_tool(
+            "", callback=desktop, dfm_project_id="dfm_test", dfm_discovery_review=True,
+        ))
+        assert result["next_action"] == action
+        assert reviewed_dfm.confirmations == 0
+        assert not reviewed_dfm.facts
+
+    def test_no_open_questions_returns_plan_without_opening_form(self, reviewed_dfm):
+        reviewed_dfm.pending.clear()
+        result = json.loads(clarify_tool(
+            "", callback=lambda q, c, context=None: pytest.fail("No questions"),
+            dfm_project_id="dfm_test", dfm_discovery_review=True,
+        ))
+        assert result["next_action"] == "plan"
+        assert not reviewed_dfm.facts
+
+    @pytest.mark.parametrize("answer", ["", "cancel", RuntimeError("input closed")])
+    def test_incomplete_review_never_opens_parameters(self, reviewed_dfm, answer):
+        reviewed_dfm.review_pending = True
+
+        def desktop(_question, _choices, context=None):
+            assert context is None
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        result = json.loads(clarify_tool(
+            "", callback=desktop, dfm_project_id="dfm_test", dfm_discovery_review=True,
+        ))
+        assert "error" in result
+        assert reviewed_dfm.confirmations == 0
+        assert not reviewed_dfm.facts
+
+    @pytest.mark.parametrize("answer", ["", '{"answers": []}', RuntimeError("input closed")])
+    def test_unanswered_batch_keeps_review_and_questions(self, reviewed_dfm, answer):
+        def desktop(_question, _choices, context=None):
+            assert context["mode"] == "dfm_analysis_batch"
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        result = json.loads(clarify_tool(
+            "", callback=desktop, dfm_project_id="dfm_test", dfm_discovery_review=True,
+        ))
+        assert "error" in result
+        assert "dfm_facts" not in result
+        assert result["dfm_discovery_review"]["open_clarification_count"] == 2
+        assert reviewed_dfm.confirmations == 0
+        assert not reviewed_dfm.facts
+
+
 class TestClarifyToolBasics:
     """Basic functionality tests for clarify_tool."""
 
