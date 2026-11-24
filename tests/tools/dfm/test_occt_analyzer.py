@@ -5,6 +5,7 @@ import threading
 
 import pytest
 from jsonschema import Draft202012Validator
+from referencing import Registry, Resource
 
 from tools.dfm.analyzers import occt as occt_module
 from tools.dfm.analyzers.base import AnalyzerContext, CancellationToken
@@ -624,10 +625,19 @@ def test_scalar_field_accepts_only_feature_g_context_identity():
 def test_native_capability_schema_validates_real_executable():
     root = Path(__file__).resolve().parents[3]
     configured_schema_root = os.environ.get("DFM_GEOMETRY_SCHEMA_ROOT")
+    executable = os.environ.get("DFM_GEOMETRY_E2E_EXECUTABLE")
     schema_candidates = [
         *(
             [Path(configured_schema_root).expanduser()]
             if configured_schema_root
+            else []
+        ),
+        *(
+            [
+                Path(executable).resolve().parent / "share/dfm-geometry/schemas",
+                Path(executable).resolve().parent.parent / "share/dfm-geometry/schemas",
+            ]
+            if executable
             else []
         ),
         root / "dfm-geometry" / "schemas",
@@ -638,7 +648,6 @@ def test_native_capability_schema_validates_real_executable():
     schema_dir = next(
         (item.resolve() for item in schema_candidates if item.is_dir()), None
     )
-    executable = os.environ.get("DFM_GEOMETRY_E2E_EXECUTABLE")
     if schema_dir is None or not executable:
         pytest.skip("external DFMAnalysis_OCCT checkout is not available")
     schema = json.loads(
@@ -646,6 +655,10 @@ def test_native_capability_schema_validates_real_executable():
     )
     Draft202012Validator.check_schema(schema)
 
-    Draft202012Validator(schema).validate(
+    resources = [json.loads(path.read_text(encoding="utf-8")) for path in schema_dir.glob("*.schema.json")]
+    registry = Registry().with_resources(
+        (item["$id"], Resource.from_contents(item)) for item in resources if "$id" in item
+    )
+    Draft202012Validator(schema, registry=registry).validate(
         occt_module.probe_geometry_executable(executable)
     )

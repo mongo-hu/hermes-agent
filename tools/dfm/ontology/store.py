@@ -899,6 +899,10 @@ class LocalOntologyStore:
                         comparison_rows, check_facts, check_id, instance_appearance=check_id in instance_appearance_checks
                     )
                     if not candidates:
+                        skipped.append(self._unmatched_factor_check(
+                            comparison_rows, check_facts, check_id,
+                            instance_appearance=check_id in instance_appearance_checks,
+                        ))
                         continue
                     operand_rows = connection.execute(
                         """
@@ -1750,6 +1754,27 @@ class LocalOntologyStore:
             return candidates, True
         selected = cls._select_rule(candidates, facts, check_id)
         return ([selected] if selected is not None else []), False
+
+    @classmethod
+    def _unmatched_factor_check(cls, rows, facts, check_id, *, instance_appearance=False):
+        """Keep missing inputs distinct from an uncovered, known Factor combination."""
+        missing = set()
+        for row in rows:
+            conditions = [item for item in _load_json(row["conditions_json"], [])
+                          if "factor_id" in item and not (
+                              instance_appearance and item["factor_id"] == "F_APPR_REGION_REQ")]
+            absent = {item["factor_id"] for item in conditions
+                      if facts.get(item["factor_id"]) is None}
+            if absent and all(cls._condition_matches(item, facts) for item in conditions
+                              if item["factor_id"] not in absent):
+                missing.update(absent)
+        reason = "required_factor_missing" if missing else "factor_combination_uncovered"
+        details = {"rule_ids": sorted(row["rule_id"] for row in rows)}
+        if missing:
+            details["missing_factor_ids"] = sorted(missing)
+        if rows and "comparison_operand_alias" in rows[0].keys() and rows[0]["comparison_operand_alias"] is not None:
+            details["comparison_operand_alias"] = rows[0]["comparison_operand_alias"]
+        return SkippedCheck(check_id=check_id, reason=reason, details=details)
 
     @classmethod
     def _select_rule(
