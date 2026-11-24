@@ -14,5 +14,5 @@ export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: Us
     return reconnecting ? t.composer.placeholderReconnecting : t.composer.placeholderStarting
   }
 
-  return sessionId ? '补充参数、提出修改意见或继续审阅 DFM 结果…' : '描述分析要求，或点击“+”添加 STP 模型…'
+  return sessionId ? '补充参数、提出修改意见或继续审阅 DFM 结果…' : '描述分析要求，或点击“+”添加 STEP / STP 模型…'
 }

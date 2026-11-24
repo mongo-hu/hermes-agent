@@ -1,23 +1,24 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  dfmStpPickerOptions,
+  dfmStepPickerOptions,
   isDfmSessionSummary,
-  isDfmStpModelPath,
+  isDfmStepModelPath,
   optimisticSessionPreviewForProduct,
   sanitizeDfmDisplayText
 } from './product-mode'
 
 describe('DFM model intake', () => {
-  it('accepts only .stp paths and configures the native picker accordingly', () => {
-    expect(isDfmStpModelPath('D:\\parts\\housing.stp')).toBe(true)
-    expect(isDfmStpModelPath('housing.STP')).toBe(true)
-    expect(isDfmStpModelPath('housing.step')).toBe(false)
-    expect(isDfmStpModelPath('drawing.pdf')).toBe(false)
-    expect(dfmStpPickerOptions()).toEqual({
-      filters: [{ extensions: ['stp'], name: 'STP 三维模型' }],
+  it('accepts only STEP model extensions and configures the native picker accordingly', () => {
+    expect(isDfmStepModelPath('D:\\parts\\housing.stp')).toBe(true)
+    expect(isDfmStepModelPath('housing.STP')).toBe(true)
+    expect(isDfmStepModelPath('housing.step')).toBe(true)
+    expect(isDfmStepModelPath('housing.STEP')).toBe(true)
+    expect(isDfmStepModelPath('drawing.pdf')).toBe(false)
+    expect(dfmStepPickerOptions()).toEqual({
+      filters: [{ extensions: ['step', 'stp'], name: 'STEP / STP 三维模型' }],
       multiple: false,
-      title: '选择 STP 三维模型'
+      title: '选择 STEP / STP 三维模型'
     })
   })
 })

@@ -6,16 +6,16 @@
 export const DFM_PRODUCT_MODE = true
 
 /** The dedicated client accepts one native STEP/STP model format at intake. */
-export function isDfmStpModelPath(value: string): boolean {
-  return /\.stp$/i.test(value.trim())
+export function isDfmStepModelPath(value: string): boolean {
+  return /\.(?:step|stp)$/i.test(value.trim())
 }
 
 /** Shared by the welcome CTA and the composer "+" control. */
-export function dfmStpPickerOptions() {
+export function dfmStepPickerOptions() {
   return {
-    filters: [{ extensions: ['stp'], name: 'STP 三维模型' }],
+    filters: [{ extensions: ['step', 'stp'], name: 'STEP / STP 三维模型' }],
     multiple: false,
-    title: '选择 STP 三维模型'
+    title: '选择 STEP / STP 三维模型'
   }
 }
 

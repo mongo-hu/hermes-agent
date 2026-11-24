@@ -72,7 +72,8 @@ function Harness({
   seedMessages,
   storedSessionId,
   activeSessionId,
-  createBackendSessionForSend
+  createBackendSessionForSend,
+  newAnalysisOnModelSubmit
 }: {
   busyRef?: MutableRefObject<boolean>
   onReady: (handle: HarnessHandle) => void
@@ -85,6 +86,7 @@ function Harness({
   storedSessionId?: null | string
   activeSessionId?: null | string
   createBackendSessionForSend?: () => Promise<null | string>
+  newAnalysisOnModelSubmit?: boolean
 }) {
   const activeSessionIdRef = useRef<string | null>(null)
   activeSessionIdRef.current = activeSessionId === undefined ? RUNTIME_SESSION_ID : activeSessionId
@@ -107,6 +109,7 @@ function Harness({
     branchCurrentSession: async () => true,
     busyRef: localBusyRef,
     createBackendSessionForSend: createBackendSessionForSend ?? (async () => RUNTIME_SESSION_ID),
+    newAnalysisOnModelSubmit,
     handleSkinCommand: () => '',
     openMemoryGraph: openMemoryGraph ?? (() => undefined),
     refreshSessions,
@@ -1247,6 +1250,42 @@ describe('usePromptActions attachment ownership across sessions', () => {
     )
     expect(requestGateway.mock.calls.filter(([method]) => method === 'file.attach')).toHaveLength(1)
     expect($composerAttachments.get()).toEqual([nextSessionAttachment])
+  })
+})
+
+describe('DFM model submissions', () => {
+  afterEach(() => {
+    cleanup()
+    $connection.set(null)
+    $busy.set(false)
+  })
+
+  it('submits the same STEP file twice to distinct new analysis sessions', async () => {
+    $connection.set(null)
+    const file: ComposerAttachment = { id: 'model', kind: 'file', label: 'part.step', path: 'D:/model/part.step' }
+    const busyRef = { current: false }
+    const createSession = vi.fn().mockResolvedValueOnce('analysis-1').mockResolvedValueOnce('analysis-2')
+    const requestGateway = vi.fn(async (method: string) => (method === 'file.attach'
+      ? { attached: true, ref_text: '@file:D:/model/part.step' }
+      : {}) as never)
+    let handle: HarnessHandle | null = null
+    render(<Harness busyRef={busyRef} createBackendSessionForSend={createSession} newAnalysisOnModelSubmit
+      onReady={value => { handle = value }} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+
+    expect(await handle!.submitText('分析', { attachments: [file] })).toBe(true)
+    busyRef.current = false // The first turn has settled.
+    expect(await handle!.submitText('用另一种材料再分析', { attachments: [file] })).toBe(true)
+
+    expect(createSession).toHaveBeenCalledTimes(2)
+    for (const session_id of ['analysis-1', 'analysis-2']) {
+      expect(requestGateway).toHaveBeenCalledWith('file.attach', { name: file.label, path: file.path, session_id }, 120_000)
+      expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
+        session_id, text: expect.stringMatching(/@file:D:\/model\/part\.step[\s\S]*新建 DFM 项目/)
+      }, expect.any(Number))
+    }
+    expect(requestGateway.mock.calls.map(([method]) => method)).toEqual([
+      'file.attach', 'prompt.submit', 'file.attach', 'prompt.submit'
+    ])
   })
 })
 

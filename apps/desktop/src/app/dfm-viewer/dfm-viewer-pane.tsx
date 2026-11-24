@@ -124,6 +124,23 @@ async function readJson<T>(filePath: string): Promise<T> {
 }
 
 
+function isMaterialQuestion(item: DfmClarificationItem): boolean {
+  return /^(?:material(?:_|$)|mat_family$)/i.test(item.runtimeKey)
+}
+
+function isInferredQuestion(item: DfmClarificationItem): boolean {
+  return !isMaterialQuestion(item) && item.impactScope.startsWith('非前置')
+}
+
+function isInstanceQuestion(item: DfmClarificationItem): boolean {
+  return Boolean(!isMaterialQuestion(item) && item.featureId && item.impactScope === '特征实例级')
+}
+
+function hasFillableDefault(item: DfmClarificationItem): item is DfmClarificationItem & { defaultValue: string } {
+  return !isMaterialQuestion(item) && item.hasDefault && item.defaultValue !== null &&
+    (!item.choices.length || item.choices.includes(item.defaultValue))
+}
+
 export function DfmClarificationPanel({
   features,
   onFeaturesHighlight,
@@ -149,16 +166,15 @@ export function DfmClarificationPanel({
     [features]
   )
 
-  const wholeItems = useMemo(
+  // Unmatched scope metadata must not leave an unanswerable item in the batch.
+  const generalItems = useMemo(
     () =>
-      context.items.filter(
-        item => !item.featureId && item.impactScope !== '特征实例级' && !item.impactScope.startsWith('非前置')
-      ),
+      context.items.filter(item => !isInferredQuestion(item) && !isInstanceQuestion(item)),
     [context.items]
   )
 
   const inferredItems = useMemo(
-    () => context.items.filter(item => item.impactScope.startsWith('非前置')),
+    () => context.items.filter(isInferredQuestion),
     [context.items]
   )
 
@@ -169,7 +185,7 @@ export function DfmClarificationPanel({
     >()
 
     for (const item of context.items) {
-      if (item.impactScope !== '特征实例级' || !item.featureId) {
+      if (!isInstanceQuestion(item) || !item.featureId) {
         continue
       }
 
@@ -233,7 +249,7 @@ export function DfmClarificationPanel({
   const allAnswered = answeredCount === context.items.length
 
   const pendingDefaults = context.items.filter(
-    item => item.hasDefault && item.defaultValue !== null && !answers[item.clarificationId]?.trim()
+    item => hasFillableDefault(item) && !answers[item.clarificationId]?.trim()
   ).length
 
   const fillAllDefaults = useCallback(() => {
@@ -241,7 +257,7 @@ export function DfmClarificationPanel({
       const next = { ...current }
 
       for (const item of context.items) {
-        if (item.hasDefault && item.defaultValue !== null && !next[item.clarificationId]?.trim()) {
+        if (hasFillableDefault(item) && !next[item.clarificationId]?.trim()) {
           next[item.clarificationId] = item.defaultValue
         }
       }
@@ -300,7 +316,7 @@ export function DfmClarificationPanel({
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault()
 
-      if (!gateway || !allAnswered) {
+      if (!gateway || !allAnswered || submitting) {
         return
       }
 
@@ -308,7 +324,7 @@ export function DfmClarificationPanel({
       setError('')
 
       try {
-        await gateway.request<{ ok?: boolean }>('clarify.respond', {
+        const response = await gateway.request<{ ok?: boolean }>('clarify.respond', {
           answer: JSON.stringify({
             answers: context.items.map(item => ({
               fact_name: item.factName,
@@ -318,18 +334,22 @@ export function DfmClarificationPanel({
           }),
           request_id: request.requestId
         })
+        if (response?.ok === false) {
+          throw new Error('补充信息未提交，请重试。')
+        }
         clearClarifyRequest(request.requestId, request.sessionId)
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause))
         setSubmitting(false)
       }
     },
-    [allAnswered, answers, context.items, gateway, request.requestId, request.sessionId]
+    [allAnswered, answers, context.items, gateway, request.requestId, request.sessionId, submitting]
   )
 
   const renderQuestion = (item: DfmClarificationItem) => {
     const answered = Boolean(answers[item.clarificationId]?.trim())
     const question = item.question.replace(/^(?:【[^】]+】)+/, '')
+    const requiresMaterialSelection = isMaterialQuestion(item)
 
     return (
       <label
@@ -342,7 +362,9 @@ export function DfmClarificationPanel({
       >
         <span className="flex items-start justify-between gap-2 text-[10px] leading-4 text-slate-200">
           <span>{question}</span>
-          {item.hasDefault && item.defaultValue !== null && (
+          {requiresMaterialSelection ? (
+            <span className="shrink-0 text-[9px] text-amber-200">请按实际材料选择</span>
+          ) : hasFillableDefault(item) && (
             <span className="shrink-0 text-[9px] text-slate-500">默认：{item.defaultValue}</span>
           )}
         </span>
@@ -353,7 +375,7 @@ export function DfmClarificationPanel({
             onChange={event => setAnswers(current => ({ ...current, [item.clarificationId]: event.target.value }))}
             value={answers[item.clarificationId] ?? ''}
           >
-            <option value="">请选择</option>
+            <option value="">{requiresMaterialSelection ? '请选择材料' : '请选择'}</option>
             {item.choices.map(choice => (
               <option key={choice} value={choice}>
                 {choice}
@@ -379,7 +401,7 @@ export function DfmClarificationPanel({
         <div className="flex items-center justify-between gap-3 text-[10px]">
           <div className="grid gap-0.5">
             <span className="text-cyan-100">请补充分析条件</span>
-            <span className="text-slate-500">默认值只填充空项</span>
+            <span className="text-slate-500">默认值只填充空项，材料需单独确认</span>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-slate-400">
@@ -412,13 +434,13 @@ export function DfmClarificationPanel({
           </div>
 
           <div className="grid gap-2 p-2">
-            {wholeItems.length > 0 && (
+            {generalItems.length > 0 && (
               <section className="overflow-hidden rounded-lg border border-white/10 bg-white/[0.025]">
                 <div className="border-b border-white/10 px-2.5 py-2">
-                  <div className="text-[11px] font-medium text-slate-100">整件级</div>
-                  <div className="mt-0.5 text-[9px] text-slate-500">答案对当前零件整体生效</div>
+                  <div className="text-[11px] font-medium text-slate-100">通用分析条件</div>
+                  <div className="mt-0.5 text-[9px] text-slate-500">请根据题目所示范围填写</div>
                 </div>
-                <div className="grid gap-1.5 p-2">{wholeItems.map(renderQuestion)}</div>
+                <div className="grid gap-1.5 p-2">{generalItems.map(renderQuestion)}</div>
               </section>
             )}
 
@@ -555,10 +577,11 @@ export function DfmClarificationPanel({
       </div>
 
       <div className="border-t border-white/10 pt-2">
-        {error && <p className="mb-2 text-[10px] text-red-200">{error}</p>}
+        {error && <p className="mb-2 text-[10px] text-red-200" role="alert">{error}</p>}
+        {!gateway && <p className="mb-2 text-[10px] text-amber-200" role="status">分析服务尚未连接，连接后可提交。</p>}
         <button
           className="w-full rounded-md bg-cyan-500/20 px-3 py-2 text-[11px] font-medium text-cyan-50 hover:bg-cyan-500/30 disabled:cursor-not-allowed disabled:opacity-40"
-          disabled={!allAnswered || submitting}
+          disabled={!gateway || !allAnswered || submitting}
           type="submit"
         >
           {submitting ? '提交中…' : `提交全部并继续分析（${answeredCount}/${context.items.length}）`}
@@ -762,11 +785,17 @@ export function DfmViewerPane({ embedded = false, showPopout = embedded, target 
       : null
 
   const clarificationRequestId = clarificationRequest?.requestId
+  const refreshedClarificationRequest = useRef<string | undefined>(undefined)
   const analysisCompleted = manifest?.status === 'completed'
 
   useEffect(() => {
     if (clarificationRequestId) {
       setReviewPaneTab('clarifications')
+      if (refreshedClarificationRequest.current !== clarificationRequestId) {
+        refreshedClarificationRequest.current = clarificationRequestId
+        // Review can finish before this same tool call's parameter form closes.
+        setReloadRequest(current => current + 1)
+      }
     }
   }, [clarificationRequestId])
 
@@ -1797,7 +1826,7 @@ export function DfmViewerPane({ embedded = false, showPopout = embedded, target 
                 />
               ) : (
                 <div className="rounded-lg border border-cyan-400/15 bg-cyan-500/[0.06] p-3 text-xs leading-5 text-cyan-100">
-                  当前没有待补充的信息。
+                  当前没有正在等待填写的补充信息表单。
                 </div>
               )
             ) : (

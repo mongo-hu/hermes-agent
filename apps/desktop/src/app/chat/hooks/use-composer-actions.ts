@@ -14,7 +14,7 @@ import {
   setComposerTerminalSelection
 } from '@/store/composer'
 import { notify, notifyError } from '@/store/notifications'
-import { DFM_PRODUCT_MODE, isDfmStpModelPath } from '@/lib/product-mode'
+import { DFM_PRODUCT_MODE, isDfmStepModelPath } from '@/lib/product-mode'
 
 import type { ImageDetachResponse } from '../../types'
 
@@ -319,8 +319,8 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
       }
 
       for (const path of paths) {
-        if (DFM_PRODUCT_MODE && (kind !== 'file' || !isDfmStpModelPath(path))) {
-          notify({ kind: 'warning', title: '仅支持 STP 模型', message: '请选择扩展名为 .stp 的三维模型文件。' })
+        if (DFM_PRODUCT_MODE && (kind !== 'file' || !isDfmStepModelPath(path))) {
+          notify({ kind: 'warning', title: '仅支持 STEP / STP 模型', message: '请选择 .step 或 .stp 三维模型文件。' })
 
           continue
         }
@@ -533,8 +533,8 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         const { file, isDirectory, path: knownPath } = candidate
         const candidateName = knownPath || file?.name || ''
 
-        if (DFM_PRODUCT_MODE && (isDirectory || !isDfmStpModelPath(candidateName))) {
-          lastFailure = 'DFM 分析仅支持扩展名为 .stp 的三维模型文件。'
+        if (DFM_PRODUCT_MODE && (isDirectory || !isDfmStepModelPath(candidateName))) {
+          lastFailure = 'DFM 分析仅支持 .step 或 .stp 三维模型文件。'
 
           continue
         }

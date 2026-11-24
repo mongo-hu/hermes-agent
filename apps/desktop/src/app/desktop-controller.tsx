@@ -17,7 +17,7 @@ import { useSkinCommand } from '@/themes/use-skin-command'
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getSessionMessages, type SessionMessage, triggerCronJob } from '../hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
-import { DFM_PRODUCT_MODE, dfmStpPickerOptions, isDfmSessionSummary } from '../lib/product-mode'
+import { DFM_PRODUCT_MODE, dfmStepPickerOptions, isDfmSessionSummary } from '../lib/product-mode'
 import { storedSessionIdForNotification } from '../lib/session-ids'
 import { isMessagingSource } from '../lib/session-source'
 import { latestSessionTodos } from '../lib/todos'
@@ -841,6 +841,7 @@ export function DesktopController() {
     busyRef,
     createBackendSessionForSend,
     handleSkinCommand,
+    newAnalysisOnModelSubmit: DFM_PRODUCT_MODE,
     openMemoryGraph: openStarmap,
     refreshSessions,
     requestGateway,
@@ -1183,7 +1184,7 @@ export function DesktopController() {
       onDismissError={dismissError}
       onEdit={editMessage}
       onPasteClipboardImage={opts => composer.pasteClipboardImage(opts)}
-      onPickFiles={() => void composer.pickContextPaths('file', DFM_PRODUCT_MODE ? dfmStpPickerOptions() : undefined)}
+      onPickFiles={() => void composer.pickContextPaths('file', DFM_PRODUCT_MODE ? dfmStepPickerOptions() : undefined)}
       onPickFolders={() => void composer.pickContextPaths('folder')}
       onPickImages={() => void composer.pickImages()}
       onReload={reloadFromMessage}

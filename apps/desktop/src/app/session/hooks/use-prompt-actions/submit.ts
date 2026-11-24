@@ -5,6 +5,7 @@ import type { Translations } from '@/i18n'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { optimisticAttachmentRef } from '@/lib/chat-runtime'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { isDfmStepModelPath } from '@/lib/product-mode'
 import {
   $composerAttachments,
   clearComposerAttachments,
@@ -35,6 +36,7 @@ interface SubmitPromptDeps {
   busyRef: MutableRefObject<boolean>
   copy: Translations['desktop']
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
+  newAnalysisOnModelSubmit: boolean
   requestGateway: GatewayRequest
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   syncAttachmentsForSubmit: (
@@ -49,6 +51,9 @@ interface SubmitPromptDeps {
   ) => ClientSessionState
 }
 
+const DFM_NEW_ANALYSIS_INSTRUCTION =
+  '为本次附带的 STEP 模型执行一次独立的 DFM 分析。即使文件与历史任务相同，也须新建 DFM 项目、登记本次附件并重新确认适用条件；不要沿用旧项目、材料或运行结果。'
+
 /** The prompt submit pipeline, extracted from usePromptActions. */
 export function useSubmitPrompt(deps: SubmitPromptDeps) {
   const {
@@ -57,6 +62,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
     busyRef,
     copy,
     createBackendSessionForSend,
+    newAnalysisOnModelSubmit,
     requestGateway,
     selectedStoredSessionIdRef,
     syncAttachmentsForSubmit,
@@ -76,6 +82,12 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       const attachments = (options?.attachments ?? $composerAttachments.get()).filter((a): a is ComposerAttachment =>
         Boolean(a)
       )
+      const dfmModel = newAnalysisOnModelSubmit
+        ? attachments.find(
+            attachment => attachment.kind === 'file' && isDfmStepModelPath(attachment.path || attachment.label)
+          )
+        : undefined
+      const startSeparateAnalysis = Boolean(dfmModel && (activeSessionId || selectedStoredSessionIdRef.current))
 
       const terminalContextBlocks = terminalContextBlocksFromDraft(rawText).join('\n\n')
       const hasImage = attachments.some(a => a.kind === 'image')
@@ -98,7 +110,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           .join('\n')
 
         return (
-          [contextRefs, terminalContextBlocks, visibleText].filter(Boolean).join('\n\n') ||
+          [contextRefs, terminalContextBlocks, visibleText, dfmModel && DFM_NEW_ANALYSIS_INSTRUCTION]
+            .filter(Boolean)
+            .join('\n\n') ||
           (present.some(a => a.kind === 'image') ? 'What do you see in this image?' : '')
         )
       }
@@ -206,15 +220,15 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       setAwaitingResponse(true)
       clearNotifications()
 
-      let sessionId: null | string = activeSessionId
+      let sessionId: null | string = startSeparateAnalysis ? null : activeSessionId
 
       if (sessionId) {
         seedOptimistic(sessionId)
-      } else {
+      } else if (!startSeparateAnalysis) {
         setMessages(current => [...current, buildUserMessage()])
       }
 
-      if (!sessionId && selectedStoredSessionIdRef.current) {
+      if (!startSeparateAnalysis && !sessionId && selectedStoredSessionIdRef.current) {
         // A stored session is SELECTED but its runtime binding is gone (the
         // live session was orphan-reaped, or a timeout/reconnect cleared
         // activeSessionId). Continuing the selected conversation must mean
@@ -244,7 +258,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       if (!sessionId) {
         try {
-          sessionId = await createBackendSessionForSend(visibleText)
+          sessionId = await createBackendSessionForSend(dfmModel ? `DFM · ${dfmModel.label}` : visibleText)
         } catch (err) {
           dropOptimistic(null)
           releaseBusy()
@@ -376,6 +390,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       busyRef,
       copy,
       createBackendSessionForSend,
+      newAnalysisOnModelSubmit,
       requestGateway,
       selectedStoredSessionIdRef,
       syncAttachmentsForSubmit,
