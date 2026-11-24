@@ -90,6 +90,25 @@ function mount(initial: ReviewContext, next = initial, props: Partial<ComponentP
 }
 
 describe('DFM grouped review interaction', () => {
+  it('emits continuation eligibility only after a successful explicit save, never on refresh or conflict', async () => {
+    const initial = { ...context(), snapshot_id: 'snapshot-current' }
+    const next = { ...initial, revision: 8, review_groups: initial.review_groups.map(group => ({ ...group, status: 'confirmed' as const })) }
+    const onSaved = vi.fn()
+    const { api } = mount(initial, next, { onSaved })
+    await screen.findByText(/带孔 BOSS 柱/)
+    expect(onSaved).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '刷新' }))
+    await waitFor(() => expect(api).toHaveBeenCalledTimes(2))
+    expect(onSaved).not.toHaveBeenCalled()
+    openBucket(/带孔 BOSS 柱/)
+    const card = document.querySelector('[data-review-object="BOSS_2"]') as HTMLElement
+    api.mockRejectedValueOnce(new Error('geometry_edit_conflict'))
+    fireEvent.click(within(card).getByRole('button', { name: '确认' }))
+    await screen.findByRole('alert')
+    expect(onSaved).not.toHaveBeenCalled()
+    fireEvent.click(within(card).getByRole('button', { name: '确认' }))
+    await waitFor(() => expect(onSaved).toHaveBeenCalledExactlyOnceWith(next))
+  })
   it('confirms only the card group and preserves another checked group', async () => {
     const initial = { ...context(), snapshot_id: 'snapshot-current' }
     initial.features[1].confidence = 0.726

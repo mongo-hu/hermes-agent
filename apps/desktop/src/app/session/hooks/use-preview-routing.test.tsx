@@ -7,6 +7,9 @@ import {
   $previewTarget,
   clearSessionPreviewRegistry,
   type PreviewTarget,
+  registerDfmReport,
+  getSessionDfmReportRecord,
+  setPreviewTarget,
   registerSessionPreview
 } from '@/store/preview'
 import { $currentCwd, $messages } from '@/store/session'
@@ -171,6 +174,22 @@ describe('usePreviewRouting', () => {
     act(() => handleEvent({ payload: { path: './dist/index.html' }, session_id: 'session-1', type: 'tool.complete' }))
 
     expect($previewTarget.get()).toBeNull()
-    expect(window.localStorage.getItem('hermes.desktop.sessionPreviews.v1')).toBeNull()
+    expect(JSON.parse(window.localStorage.getItem('hermes.desktop.sessionPreviews.v1') || '{}')).toEqual({})
+  })
+
+  it('restores report availability without opening it and clears it when switching sessions', () => {
+    const target = previewTarget('/work/report.html')
+    registerDfmReport('stored-1', { path: target.source, projectId: 'dfm-1', runId: 'run-1' }, target)
+    const { rerender } = render(<PreviewRoutingHarness selectedStoredSessionId="stored-1" onEvent={() => undefined} />)
+    expect($previewTarget.get()).toBeNull()
+    const report = getSessionDfmReportRecord('stored-1')!
+    act(() => setPreviewTarget(report.normalized))
+    // An unrelated completed report cannot steal focus or close the selected report.
+    act(() => registerDfmReport('stored-2', { path: target.source, projectId: 'dfm-2', runId: 'run-2' }, target))
+    expect($previewTarget.get()?.dfmReport?.sessionId).toBe('stored-1')
+    rerender(<PreviewRoutingHarness selectedStoredSessionId="stored-2" onEvent={() => undefined} />)
+    expect($previewTarget.get()).toBeNull()
+    expect(getSessionDfmReportRecord('stored-1')).not.toBeNull()
+    expect(getSessionDfmReportRecord('stored-2')).not.toBeNull()
   })
 })

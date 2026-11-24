@@ -92,6 +92,59 @@ def test_confirmed_structures_continue_to_questions_while_local_review_remains(l
     assert result["pending_review_group_count"] == 1
 
 
+@pytest.mark.parametrize("status", ["succeeded", "failed", "cancelled", "blocked"])
+def test_terminal_run_for_current_discovery_never_replans(large_review, status):
+    from tools.dfm.contracts import RunRecord, RunStatus
+    service, store, manifest = large_review
+    run = RunRecord("run-finished", "occt_cpp", "test", RunStatus(status), "now", "now",
+                    plan_snapshot={"discovery_snapshot_refs": ["snapshot-current"]})
+    store.update(lambda current: replace(current, runs=[run],
+        review_groups=[replace(row, status="confirmed") for row in current.review_groups]))
+    state = service.review_state(manifest.project_id)
+    assert state["next_call"]["arguments"] == {
+        "action": "result", "project_id": manifest.project_id, "run_id": "run-finished"}
+    assert state["workflow_run"]["status"] == status
+
+
+def test_completed_different_snapshot_does_not_claim_current_discovery(large_review):
+    from tools.dfm.contracts import RunRecord, RunStatus
+    service, store, manifest = large_review
+    run = RunRecord("old-run", "occt_cpp", "test", RunStatus.SUCCEEDED, "now", "now",
+                    plan_snapshot={"discovery_snapshot_refs": ["old-snapshot"]})
+    store.update(lambda current: replace(current, runs=[run],
+        review_groups=[replace(row, status="confirmed") for row in current.review_groups]))
+    state = service.review_state(manifest.project_id)
+    assert state["next_action"] == "plan"
+    assert "workflow_run" not in state
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_current_plan_invalidation_releases_old_completion_even_on_same_snapshot(large_review, pending):
+    from tools.dfm.contracts import PlanRecord, RunRecord, RunStatus
+    service, store, manifest = large_review
+    plan = PlanRecord("plan-old", "step", ["occt_cpp"], "ready", "now",
+                      discovery_snapshot_refs=["snapshot-current"])
+    run = RunRecord("run-old", "occt_cpp", "test", RunStatus.SUCCEEDED, "now", "now",
+                    plan_id=plan.plan_id, plan_snapshot=plan.to_dict())
+    store.update(lambda current: replace(current, runs=[run],
+        plans=[replace(plan, status="invalidated", invalidated_by="forming_scope:MAIN")],
+        review_groups=[replace(row, status="pending_review" if pending else "confirmed") for row in current.review_groups]))
+    state = service.review_state(manifest.project_id)
+    assert state["next_action"] == ("confirm_discovery" if pending else "plan")
+    assert "workflow_run" not in state
+
+
+def test_pending_review_is_never_hidden_by_old_terminal_run(large_review):
+    from tools.dfm.contracts import RunRecord, RunStatus
+    service, store, manifest = large_review
+    run = RunRecord("run-old", "occt_cpp", "test", RunStatus.SUCCEEDED, "now", "now",
+                    plan_snapshot={"discovery_snapshot_refs": ["snapshot-current"]})
+    store.update(lambda current: replace(current, runs=[run]))
+    state = service.review_state(manifest.project_id)
+    assert state["next_action"] == "confirm_discovery"
+    assert "workflow_run" not in state
+
+
 @pytest.mark.parametrize("category,pending_edit,recover", [(None, False, True), ("save_failed", False, False), (None, True, False)])
 def test_legacy_failure_recovery_requires_proof_of_committed_confirmation(large_review, category, pending_edit, recover):
     _, store, manifest = large_review

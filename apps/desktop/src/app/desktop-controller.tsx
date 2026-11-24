@@ -17,7 +17,7 @@ import { useSkinCommand } from '@/themes/use-skin-command'
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getSessionMessages, type SessionMessage, triggerCronJob } from '../hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
-import { DFM_PRODUCT_MODE, dfmStepPickerOptions, isDfmSessionSummary } from '../lib/product-mode'
+import { DFM_PRODUCT_MODE, dfmStepPickerOptions, isKnownNonDfmSession } from '../lib/product-mode'
 import { storedSessionIdForNotification } from '../lib/session-ids'
 import { isMessagingSource } from '../lib/session-source'
 import { latestSessionTodos } from '../lib/todos'
@@ -47,7 +47,8 @@ import {
   setPetOverlayScaleHandler,
   setPetOverlaySubmitHandler
 } from '../store/pet-overlay'
-import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
+import { $dfmReportRecord, $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
+import { DFM_CONTINUATION_TEXT } from '@/lib/dfm-continuation'
 import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '../store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd, resolveNewSessionCwd } from '../store/projects'
 import { $reviewOpen, REVIEW_PANE_ID } from '../store/review'
@@ -198,6 +199,7 @@ export function DesktopController() {
   const filePreviewTarget = useStore($filePreviewTarget)
   const previewTarget = useStore($previewTarget)
   const dfmViewerTarget = useStore($dfmViewerTarget)
+  const dfmReportRecord = useStore($dfmReportRecord)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const sessions = useStore($sessions)
   const messagingSessions = useStore($messagingSessions)
@@ -294,7 +296,7 @@ export function DesktopController() {
 
     const routedSession = sessions.find(session => sessionMatchesStoredId(session, routedSessionId))
 
-    if (!routedSession || isDfmSessionSummary(routedSession)) {
+    if (!routedSession || !isKnownNonDfmSession(routedSession)) {
       return
     }
 
@@ -1200,7 +1202,8 @@ export function DesktopController() {
   )
 
   const primaryChatView =
-    DFM_PRODUCT_MODE && dfmViewerTarget ? <DfmWorkbench analysisView={chatView} target={dfmViewerTarget} /> : chatView
+    DFM_PRODUCT_MODE && (dfmViewerTarget || dfmReportRecord) ? <DfmWorkbench analysisView={chatView} target={dfmViewerTarget}
+      onContinueAnalysis={input => submitText(DFM_CONTINUATION_TEXT, { attachments: [], dfmContinuation: input })} /> : chatView
 
   // Flipped layout mirrors the default: sessions sidebar → right, file
   // browser + preview rail → left. Same panes, swapped sides.

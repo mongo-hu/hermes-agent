@@ -52,8 +52,8 @@ export function usePreviewRouting({
   const previewSessionId = activePreviewSessionId(activeSessionIdRef, routedSessionId, selectedStoredSessionId)
 
   // Restore the latest registered preview when its session becomes active.
-  // Most tool results remain opt-in through their inline preview card; the DFM
-  // completion path deliberately registers its final HTML report for auto-open.
+  // DFM reports are available on demand; completion and history restoration
+  // must never replace the model the user is currently reviewing.
   useEffect(() => {
     if (currentView !== 'chat' || !previewSessionId) {
       setPreviewTarget(null)
@@ -68,6 +68,10 @@ export function usePreviewRouting({
     const record =
       getSessionPreviewRecord(previewSessionId) ??
       (runtimeSessionId && runtimeSessionId !== previewSessionId ? getSessionPreviewRecord(runtimeSessionId) : null)
+
+    const currentReport = $previewTarget.get()?.dfmReport
+
+    if (currentReport?.sessionId === previewSessionId) return
 
     setPreviewTarget(record?.normalized ?? null)
   }, [activeSessionIdRef, currentView, previewRegistry, previewSessionId])

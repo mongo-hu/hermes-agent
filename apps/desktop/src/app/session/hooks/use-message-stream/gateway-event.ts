@@ -8,12 +8,13 @@ import { translateNow } from '@/i18n'
 import { type GatewayEventPayload, textPart } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
-import { dfmHtmlReportPathFromToolComplete, dfmViewerTargetFromToolComplete } from '@/lib/dfm-viewer-events'
+import { dfmHtmlReportFromToolComplete, dfmHtmlReportPathFromToolComplete, dfmViewerTargetFromToolComplete } from '@/lib/dfm-viewer-events'
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
+import { DFM_PRODUCT_MODE } from '@/lib/product-mode'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
-import { clearClarifyRequest, readDfmClarificationBatch, setClarifyRequest } from '@/store/clarify'
+import { clearClarifyRequest, readDfmClarificationContext, setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { readDfmViewerTarget, showDfmViewer } from '@/store/dfm-viewer'
@@ -22,12 +23,13 @@ import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
-import { registerSessionPreview, setCurrentSessionPreviewTarget } from '@/store/preview'
+import { registerDfmReport, registerSessionPreview, setSessionPreviewTarget } from '@/store/preview'
 import { recordPreviewArtifact } from '@/store/preview-status'
 import { followActiveSessionCwd } from '@/store/projects'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
   $currentCwd,
+  $selectedStoredSessionId,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentFastMode,
@@ -417,7 +419,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           showDfmViewer(sessionId, dfmViewerTarget, { activate: isActiveEvent })
         }
 
-        const dfmHtmlReportPath = dfmHtmlReportPathFromToolComplete(payload)
+        const dfmReport = dfmHtmlReportFromToolComplete(payload)
+        const dfmHtmlReportPath = DFM_PRODUCT_MODE ? dfmReport?.path : dfmHtmlReportPathFromToolComplete(payload)
 
         if (sessionId && dfmHtmlReportPath) {
           // Keep an explicit artifact row in the composer after the preview is
@@ -426,6 +429,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           // Composer status is keyed by the runtime session id (the same id
           // carried by gateway events), not the persisted history id.
           recordPreviewArtifact(sessionId, dfmHtmlReportPath, $currentCwd.get() || '')
+          // Capture ownership before asynchronous normalization: switching chats
+          // must not register the completed report under the newly selected chat.
+          const reportSessionId = isActiveEvent ? $selectedStoredSessionId.get() || sessionId : sessionId
 
           // The DFM HTML is already a complete local artifact and can be tens
           // of megabytes. In localhost remote-gateway mode, remote enrichment
@@ -437,14 +443,12 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
               return
             }
 
-            if (sessionId === activeSessionIdRef.current) {
-              // Gateway events are keyed by the ephemeral runtime id, while
-              // preview restoration prefers the selected persisted-session
-              // id. Register the active report through the current-session
-              // resolver so the restore effect cannot immediately clear it.
-              setCurrentSessionPreviewTarget(target, 'tool-result', dfmHtmlReportPath)
+            if (DFM_PRODUCT_MODE && dfmReport) {
+              registerDfmReport(reportSessionId, dfmReport, target)
+            } else if (sessionId === activeSessionIdRef.current) {
+              setSessionPreviewTarget(reportSessionId, target, 'tool-result', dfmHtmlReportPath)
             } else {
-              registerSessionPreview(sessionId, target, 'tool-result', dfmHtmlReportPath)
+              registerSessionPreview(reportSessionId, target, 'tool-result', dfmHtmlReportPath)
             }
           })
         }
@@ -478,7 +482,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (requestId && question) {
           setClarifyRequest({
-            context: readDfmClarificationBatch(payload?.context),
+            context: readDfmClarificationContext(payload?.context),
             requestId,
             question,
             choices: Array.isArray(payload?.choices) ? payload!.choices!.filter(c => typeof c === 'string') : null,

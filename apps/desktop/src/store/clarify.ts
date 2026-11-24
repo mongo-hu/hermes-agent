@@ -21,10 +21,19 @@ export interface DfmClarificationBatchContext {
   items: DfmClarificationItem[]
   mode: 'dfm_analysis_batch'
   projectId: string
+  snapshotId?: string
+  revision?: number
+}
+
+export interface DfmDiscoveryReviewContext {
+  mode: 'dfm_discovery_review'
+  projectId: string
+  snapshotId: string
+  revision: number
 }
 
 export interface ClarifyRequest {
-  context?: DfmClarificationBatchContext | null
+  context?: DfmClarificationBatchContext | DfmDiscoveryReviewContext | null
   requestId: string
   question: string
   choices: string[] | null
@@ -106,7 +115,39 @@ export function readDfmClarificationBatch(value: unknown): DfmClarificationBatch
     ]
   })
 
-  return items.length > 0 ? { items, mode: row.mode, projectId: row.project_id } : null
+  return items.length > 0 ? {
+    items, mode: row.mode, projectId: row.project_id,
+    ...(typeof row.snapshot_id === 'string' ? { snapshotId: row.snapshot_id } : {}),
+    ...(typeof row.revision === 'number' ? { revision: row.revision } : {})
+  } : null
+}
+
+export function readDfmClarificationContext(value: unknown): ClarifyRequest['context'] {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const row = value as Record<string, unknown>
+    if (row.mode === 'dfm_discovery_review' && typeof row.project_id === 'string' &&
+      typeof row.snapshot_id === 'string' && Number.isInteger(row.revision)) {
+      return { mode: row.mode, projectId: row.project_id, snapshotId: row.snapshot_id, revision: row.revision as number }
+    }
+  }
+  return readDfmClarificationBatch(value)
+}
+
+/** Restore the server's existing wait; never manufacture a second request on reconnect. */
+export function restorePendingClarify(value: unknown, sessionId: string, expected?: ClarifyRequest | null): void {
+  // A newer socket event outranks the snapshot taken at RPC start.
+  if (expected !== undefined && ($clarifyRequests.get()[sessionId] ?? null) !== expected) {return}
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    clearClarifyRequest(undefined, sessionId)
+    return
+  }
+  const row = value as Record<string, unknown>
+  if (row.session_id !== sessionId || typeof row.request_id !== 'string' || typeof row.question !== 'string') {return}
+  setClarifyRequest({
+    requestId: row.request_id, question: row.question, sessionId,
+    context: readDfmClarificationContext(row.context),
+    choices: Array.isArray(row.choices) ? row.choices.filter((choice): choice is string => typeof choice === 'string') : null
+  })
 }
 
 // Pending clarify requests keyed by the runtime session id that raised them.

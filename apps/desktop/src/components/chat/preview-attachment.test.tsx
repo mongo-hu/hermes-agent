@@ -1,12 +1,16 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n/context'
-import { $previewTarget, clearSessionPreviewRegistry, type PreviewTarget } from '@/store/preview'
+import { $previewTarget, clearSessionPreviewRegistry, registerDfmReport, type PreviewTarget } from '@/store/preview'
+import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 
 import { PreviewAttachment } from './preview-attachment'
 
 const reportPath = 'D:\\results\\report.html'
+const { readDesktopFileText } = vi.hoisted(() => ({ readDesktopFileText: vi.fn() }))
+
+vi.mock('@/lib/desktop-fs', () => ({ isDesktopFsRemoteMode: () => true, readDesktopFileText }))
 
 function reportTarget(): PreviewTarget {
   return {
@@ -35,6 +39,9 @@ describe('PreviewAttachment link', () => {
     $previewTarget.set(null)
     window.localStorage.clear()
     clearSessionPreviewRegistry()
+    $activeSessionId.set('runtime-1')
+    $selectedStoredSessionId.set('stored-1')
+    readDesktopFileText.mockClear()
     normalizePreviewTarget.mockClear()
     openPreviewInBrowser.mockClear()
 
@@ -49,6 +56,8 @@ describe('PreviewAttachment link', () => {
     $previewTarget.set(null)
     window.localStorage.clear()
     clearSessionPreviewRegistry()
+    $activeSessionId.set(null)
+    $selectedStoredSessionId.set(null)
     vi.restoreAllMocks()
   })
 
@@ -72,5 +81,38 @@ describe('PreviewAttachment link', () => {
       expect(openPreviewInBrowser).toHaveBeenCalledWith('file:///D:/results/report.html')
     })
     expect($previewTarget.get()).toBeNull()
+  })
+
+  it('retains structured report ownership without downloading large HTML as text', async () => {
+    registerDfmReport('stored-1', { path: reportPath, projectId: 'dfm-1', runId: 'run-1' }, reportTarget())
+    renderLink()
+    fireEvent.click(screen.getByRole('link', { name: 'Open report.html' }))
+    await waitFor(() =>
+      expect($previewTarget.get()?.dfmReport).toEqual({
+        sessionId: 'stored-1',
+        path: reportPath,
+        projectId: 'dfm-1',
+        runId: 'run-1'
+      })
+    )
+    expect(readDesktopFileText).not.toHaveBeenCalled()
+    expect(openPreviewInBrowser).not.toHaveBeenCalled()
+  })
+
+  it('does not complete an asynchronous report click into a different session', async () => {
+    let finish!: (target: PreviewTarget) => void
+    normalizePreviewTarget.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          finish = resolve
+        })
+    )
+    registerDfmReport('stored-1', { path: reportPath, projectId: 'dfm-1', runId: 'run-1' }, reportTarget())
+    renderLink()
+    fireEvent.click(screen.getByRole('link', { name: 'Open report.html' }))
+    act(() => $selectedStoredSessionId.set('stored-2'))
+    await act(async () => finish(reportTarget()))
+    expect($previewTarget.get()).toBeNull()
+    expect(readDesktopFileText).not.toHaveBeenCalled()
   })
 })

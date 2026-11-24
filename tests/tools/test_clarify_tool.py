@@ -63,9 +63,10 @@ def reviewed_dfm(monkeypatch):
             elif action == "plan":
                 call = {"tool": "dfm_analysis", "arguments": {"action": "plan", "project_id": project_id}}
             return {
+                "snapshot_id": "snapshot-reviewed", "revision": 7,
                 "next_action": action, "next_call": call, "continuation_required": call is not None,
                 "instruction": "Follow next_call.", "open_clarification_count": len(self.pending),
-                "pending_review_group_count": 1,  # An incomplete local forming scope may remain.
+                "pending_review_group_count": int(self.review_pending),
                 "viewer_manifest": "viewer.json",
             }
 
@@ -94,7 +95,10 @@ class TestDiscoveryQuestionHandoff:
 
         def desktop(question, choices, context=None):
             shown.append(context)
-            if context is None:
+            if context["mode"] == "dfm_discovery_review":
+                assert context["snapshot_id"] == "snapshot-reviewed"
+                assert context["revision"] == 7
+                reviewed_dfm.review_pending = False  # The right-side save committed first.
                 return choices[0]
             assert context["mode"] == "dfm_analysis_batch"
             assert context["project_id"] == "dfm_test"
@@ -102,12 +106,13 @@ class TestDiscoveryQuestionHandoff:
             return json.dumps({"answers": [
                 {"fact_name": item["fact_name"], "value": "yes"} for item in context["items"]
             ]})
+        desktop.supports_dfm_review_context = lambda: True
 
         result = json.loads(clarify_tool(
             "", callback=desktop, dfm_project_id="dfm_test", dfm_discovery_review=True,
         ))
         assert len(shown) == (2 if review_pending else 1)
-        assert reviewed_dfm.confirmations == int(review_pending)
+        assert reviewed_dfm.confirmations == 0
         assert [fact["name"] for fact in reviewed_dfm.facts] == ["material", "finish#wall"]
         assert result["dfm_facts"] == reviewed_dfm.facts
         assert result["viewer_manifest"] == "viewer.json"
@@ -168,15 +173,33 @@ class TestDiscoveryQuestionHandoff:
         assert result["next_action"] == "plan"
         assert not reviewed_dfm.facts
 
+    @pytest.mark.parametrize("changed", ["pending", "revision"])
+    def test_desktop_response_never_confirms_new_edits_after_gateway_acceptance(self, reviewed_dfm, changed):
+        reviewed_dfm.review_pending = True
+
+        def desktop(_question, choices, context):
+            reviewed_dfm.review_pending = changed == "pending"
+            context["_accepted_state"] = {"snapshot_id": "snapshot-reviewed", "revision": 6 if changed == "revision" else 7}
+            return choices[0]
+        desktop.supports_dfm_review_context = lambda: True
+
+        result = json.loads(clarify_tool(
+            "", callback=desktop, dfm_project_id="dfm_test", dfm_discovery_review=True,
+        ))
+        assert "error" in result
+        assert reviewed_dfm.confirmations == 0
+        assert not reviewed_dfm.facts
+
     @pytest.mark.parametrize("answer", ["", "cancel", RuntimeError("input closed")])
     def test_incomplete_review_never_opens_parameters(self, reviewed_dfm, answer):
         reviewed_dfm.review_pending = True
 
         def desktop(_question, _choices, context=None):
-            assert context is None
+            assert context["mode"] == "dfm_discovery_review"
             if isinstance(answer, Exception):
                 raise answer
             return answer
+        desktop.supports_dfm_review_context = lambda: True
 
         result = json.loads(clarify_tool(
             "", callback=desktop, dfm_project_id="dfm_test", dfm_discovery_review=True,
@@ -492,6 +515,10 @@ class TestClarifyToolChoicesValidation:
 
         class FakeService:
             config = SimpleNamespace(default_process="injection")
+
+            @staticmethod
+            def review_state(_project_id):
+                return {"snapshot_id": "snapshot-current", "revision": 4}
 
             @staticmethod
             def _canonical_fact_name(name):

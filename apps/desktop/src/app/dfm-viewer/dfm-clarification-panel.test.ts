@@ -46,6 +46,7 @@ describe('DFM clarification panel', () => {
     fireEvent.click(screen.getByRole('button', { name: '提交全部并继续分析（2/2）' }))
     await waitFor(() => expect(respond).toHaveBeenCalledWith('clarify.respond', {
       request_id: 'test-material',
+      session_id: 'session-1',
       answer: JSON.stringify({ answers: [
         { fact_name: 'material', feature_id: null, value: 'PC' },
         { fact_name: 'finish', feature_id: null, value: '普通' }

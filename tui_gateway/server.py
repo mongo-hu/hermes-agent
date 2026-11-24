@@ -755,6 +755,10 @@ def _close_session_by_id(sid: str, *, end_reason: str = "tui_close") -> bool:
     # (e.g. _finalize_session's per-session async-delegation interrupt) can't
     # recover its live id by scanning the dict — stamp it on the record.
     session["_sid"] = sid
+    with session.get("history_lock", _sessions_lock):
+        session["_turn_cancel_requested"] = True
+        session["_dfm_stopped"] = True
+    _clear_pending(sid)
     _teardown_session(session, end_reason=end_reason)
     return True
 
@@ -2040,22 +2044,47 @@ def _enable_gateway_prompts() -> None:
 # ── Blocking prompt factory ──────────────────────────────────────────
 
 
-def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
+def _block(event: str, sid: str, payload: dict, timeout: int | None = 300) -> str:
+    from tui_gateway.dfm_continuation import dfm_context
+
     rid = uuid.uuid4().hex[:8]
     ev = threading.Event()
-    with _prompt_lock:
-        _pending[rid] = (sid, ev)
-        payload["request_id"] = rid
-        _pending_prompt_payloads[rid] = (event, dict(payload))
+    session = _sessions.get(sid)
+    requested_context = dfm_context(payload) if event == "clarify.request" else None
+    if requested_context and session is None:
+        return ""
+    context = requested_context if _session_source(session) == "desktop" else None
+    def register():
+        with _prompt_lock:
+            _pending[rid] = (sid, ev)
+            payload["request_id"] = rid
+            _pending_prompt_payloads[rid] = (event, dict(payload))
+
+    if context:
+        with session["history_lock"]:
+            if _sessions.get(sid) is not session:
+                return ""
+            session["_dfm_project_id"] = context.get("project_id")
+            if session.get("_turn_cancel_requested") or session.get("_dfm_stopped"):
+                return ""
+            register()
+    else:
+        register()
     try:
         _emit(event, sid, payload)
-        ev.wait(timeout=timeout)
+        answered = ev.wait(timeout=timeout)
     finally:
         with _prompt_lock:
             _pending.pop(rid, None)
             _pending_prompt_payloads.pop(rid, None)
     with _prompt_lock:
-        return _answers.pop(rid, "")
+        answer = _answers.pop(rid, "")
+    if context and session is not None:
+        with session["history_lock"]:
+            session["_dfm_wait_outcome"] = {
+                **context, "reason": "answered" if answer else "cancelled" if answered else "timeout",
+            }
+    return answer
 
 
 def _clear_pending(sid: str | None = None) -> None:
@@ -3965,10 +3994,17 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
 
 def _agent_cbs(sid: str) -> dict:
     def clarify_callback(question, choices, context=None):
+        from tui_gateway.dfm_continuation import dfm_context
+
         payload = {"question": question, "choices": choices}
         if context is not None:
             payload["context"] = context
-        return _block("clarify.request", sid, payload)
+        # CAD review and its dynamic parameter form are human-paced. Stop and
+        # session close still release the Event; ordinary questions keep 300s.
+        return _block("clarify.request", sid, payload,
+                      timeout=None if dfm_context(payload) and _session_source(_sessions.get(sid)) == "desktop" else 300)
+
+    clarify_callback.supports_dfm_review_context = lambda: _session_source(_sessions.get(sid)) == "desktop"
 
     return {
         "tool_start_callback": lambda tc_id, name, args: _on_tool_start(
@@ -6140,6 +6176,18 @@ def _fallback_session_info(session: dict) -> dict:
     }
 
 
+def _pending_dfm_clarify(sid):
+    from tui_gateway.dfm_continuation import dfm_context
+    with _prompt_lock:
+        return next((
+            {**prompt, "session_id": sid}
+            for request_id, (owner, event) in _pending.items()
+            for kind, prompt in [_pending_prompt_payloads.get(request_id, ("", {}))]
+            if owner == sid and kind == "clarify.request" and dfm_context(prompt)
+            and not event.is_set()
+        ), None)
+
+
 def _live_session_payload(
     sid: str,
     session: dict,
@@ -6172,6 +6220,7 @@ def _live_session_payload(
     }
     if inflight:
         payload["inflight"] = inflight
+    payload["pending_clarify"] = _pending_dfm_clarify(sid)
     return payload
 
 
@@ -6603,6 +6652,7 @@ def _(rid, params: dict) -> dict:
             usage["credits_lines"] = credits
     except Exception:
         pass
+    usage["pending_clarify"] = _pending_dfm_clarify(params.get("session_id", ""))
     return _ok(rid, usage)
 
 
@@ -8238,6 +8288,7 @@ def _(rid, params: dict) -> dict:
         session["agent"].interrupt()
     with session["history_lock"]:
         session["_turn_cancel_requested"] = True
+        session["_dfm_stopped"] = True
         session["queued_prompt"] = None
     if not run_thread_alive:
         with session["history_lock"]:
@@ -8538,6 +8589,39 @@ def _(rid, params: dict) -> dict:
     if (t := current_transport()) is not None:
         session["transport"] = t
     with session["history_lock"]:
+        if "dfm_continuation" in params:
+            from tui_gateway.dfm_continuation import ContinuationError, prepare_continuation
+            from tools.dfm.service import get_dfm_service
+
+            request = params["dfm_continuation"]
+            if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+                return _dfm_continuation_error(rid, "dfm_session_busy", "The child conversation is still running.")
+            expected_key = request.get("expected_session_key") if isinstance(request, dict) else None
+            actual_key = session.get("session_key")
+            if expected_key != actual_key and isinstance(expected_key, str):
+                db = session.get("session_db") or _get_db()
+                if db is not None:
+                    expected_key = db.resolve_resume_session_id(expected_key)
+            if not expected_key or expected_key != actual_key:
+                return _dfm_continuation_error(rid, "dfm_session_mismatch", "The conversation changed; refresh before continuing.")
+            if truncate_user_ordinal is not None:
+                return _dfm_continuation_error(rid, "dfm_continuation_invalid", "DFM continuation cannot rewrite conversation history.")
+            home_token = set_hermes_home_override(session["profile_home"]) if session.get("profile_home") else None
+            try:
+                result, continuation_text = prepare_continuation(
+                    session, request, get_dfm_service(), has_pending=bool(_session_pending_kind(sid)))
+            except ContinuationError as exc:
+                return _dfm_continuation_error(rid, exc.reason, str(exc))
+            except Exception as exc:
+                return _dfm_continuation_error(rid, "dfm_continuation_unavailable", str(exc))
+            finally:
+                if home_token is not None:
+                    reset_hermes_home_override(home_token)
+            if result is not None:
+                return _ok(rid, result)
+            text = continuation_text
+        elif not session.get("running"):
+            session.pop("_dfm_continuation_action", None)
         if session.get("running"):
             # Don't reject a mid-turn prompt — queue it (and, by default,
             # interrupt the live turn) so it runs as the next turn. See
@@ -8575,6 +8659,7 @@ def _(rid, params: dict) -> dict:
                     print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
         session["running"] = True
         session["_turn_cancel_requested"] = False
+        session["_dfm_stopped"] = False
         session["last_active"] = time.time()
         _start_inflight_turn(session, text)
 
@@ -8599,6 +8684,9 @@ def _(rid, params: dict) -> dict:
             )
             with session["history_lock"]:
                 session["running"] = False
+                if "dfm_continuation" in params:
+                    session.get("_dfm_continuation_receipts", {}).pop(request["action_key"], None)
+                    session.pop("_dfm_continuation_action", None)
                 _clear_inflight_turn(session)
             return
         with session["history_lock"]:
@@ -9124,8 +9212,11 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
-        images = list(session.get("attached_images", []))
-        session["attached_images"] = []
+        continuation = session.pop("_dfm_continuation_action", None)
+        dfm_continuation = isinstance(continuation, dict) and continuation.get("text") == text
+        images = [] if dfm_continuation else list(session.get("attached_images", []))
+        if not dfm_continuation:
+            session["attached_images"] = []
         if not isinstance(session.get("inflight_turn"), dict):
             _start_inflight_turn(session, text)
     agent = session["agent"]
@@ -10420,16 +10511,75 @@ def _(rid, params: dict) -> dict:
 # ── Methods: respond ─────────────────────────────────────────────────
 
 
+def _dfm_continuation_error(rid, reason, message):
+    result = _err(rid, 4009, message)
+    result["error"]["data"] = {"reason_code": reason}
+    return result
+
+
+def _respond_dfm(rid, params, request_id, owner, event, payload):
+    from tui_gateway.dfm_continuation import ContinuationError, bound_project, checked_state
+    from tools.dfm.service import get_dfm_service
+
+    session = _sessions.get(owner)
+    if params.get("session_id") != owner or session is None:
+        return _dfm_continuation_error(rid, "dfm_session_mismatch", "This DFM question belongs to another conversation.")
+    context = payload["context"]
+    submitted = params.get("dfm_context")
+    if (not isinstance(submitted, dict) or submitted.get("project_id") != context.get("project_id")
+            or (context["mode"] == "dfm_analysis_batch" and submitted.get("snapshot_id") != context.get("snapshot_id"))
+            or (type(context.get("revision")) is int and type(submitted.get("expected_revision")) is int
+                and submitted["expected_revision"] < context["revision"])):
+        return _dfm_continuation_error(rid, "dfm_review_stale", "Refresh the DFM form before submitting.")
+    with session["history_lock"]:
+        if session.get("_turn_cancel_requested") or session.get("_dfm_stopped"):
+            return _dfm_continuation_error(rid, "dfm_continuation_stopped", "Analysis was stopped; this question is no longer active.")
+        if bound_project(session) != context.get("project_id"):
+            return _dfm_continuation_error(rid, "dfm_session_mismatch", "The conversation now belongs to another DFM project.")
+        home_token = set_hermes_home_override(session["profile_home"]) if session.get("profile_home") else None
+        try:
+            state = checked_state(get_dfm_service(), submitted)
+        except ContinuationError as exc:
+            return _dfm_continuation_error(rid, exc.reason, str(exc))
+        except Exception as exc:
+            return _dfm_continuation_error(rid, "dfm_continuation_unavailable", str(exc))
+        finally:
+            if home_token is not None:
+                reset_hermes_home_override(home_token)
+        if state.get("workflow_run", {}).get("status") in {"succeeded", "failed", "cancelled", "blocked"}:
+            return _dfm_continuation_error(rid, "dfm_run_terminal", "This analysis has ended; open its result instead.")
+        if context["mode"] == "dfm_discovery_review" and state.get("pending_review_group_count"):
+            return _dfm_continuation_error(rid, "dfm_review_incomplete", "Finish the remaining review before continuing.")
+        with _prompt_lock:
+            if _pending.get(request_id) != (owner, event):
+                return _dfm_continuation_error(rid, "dfm_request_expired", "This DFM question is no longer waiting.")
+            if event.is_set():
+                return _ok(rid, {"status": "duplicate"})
+            context["_accepted_state"] = {key: state[key] for key in ("snapshot_id", "revision")}
+            _answers[request_id] = params.get("answer", "")
+            event.set()
+    return _ok(rid, {"status": "ok"})
+
+
 def _respond(rid, params, key):
+    from tui_gateway.dfm_continuation import dfm_context
+
     r = params.get("request_id", "")
     with _prompt_lock:
         entry = _pending.get(r)
         if not entry:
             return _err(rid, 4009, f"no pending {key} request")
-        _, ev = entry
-        _answers[r] = params.get(key, "")
-        ev.set()
-    return _ok(rid, {"status": "ok"})
+        owner, ev = entry
+        _, payload = _pending_prompt_payloads.get(r, ("", {}))
+        if key == "answer" and dfm_context(payload) and _session_source(_sessions.get(owner)) == "desktop":
+            # Validate outside _prompt_lock: session.interrupt takes history_lock
+            # first, and must always be able to release this wait.
+            pass
+        else:
+            _answers[r] = params.get(key, "")
+            ev.set()
+            return _ok(rid, {"status": "ok"})
+    return _respond_dfm(rid, params, r, owner, ev, payload)
 
 
 @method("clarify.respond")

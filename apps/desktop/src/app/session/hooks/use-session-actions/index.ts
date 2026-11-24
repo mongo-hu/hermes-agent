@@ -5,9 +5,12 @@ import type { NavigateFunction } from 'react-router-dom'
 import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
-import { dfmViewerTargetFromSessionMessages } from '@/lib/dfm-viewer-events'
+import { dfmHtmlReportFromSessionMessages, dfmViewerTargetFromSessionMessages } from '@/lib/dfm-viewer-events'
+import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
+import { getSessionDfmReportRecord, registerDfmReport } from '@/store/preview'
 import { optimisticSessionPreviewForProduct } from '@/lib/product-mode'
 import { setSessionYolo } from '@/lib/yolo-session'
+import { $clarifyRequests, restorePendingClarify } from '@/store/clarify'
 import { clearQueuedPrompts } from '@/store/composer-queue'
 import { restoreDfmViewer, showDfmViewer } from '@/store/dfm-viewer'
 import { $pinnedSessionIds } from '@/store/layout'
@@ -397,7 +400,8 @@ export function useSessionActions({
           restoreDfmViewer(storedSessionId)
 
           try {
-            const usage = await requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
+            const pendingBeforeUsage = $clarifyRequests.get()[cachedRuntimeId] ?? null
+            const usage = await requestGateway<UsageStats & { pending_clarify?: unknown }>('session.usage', { session_id: cachedRuntimeId })
 
             if (!isCurrentResume()) {
               return
@@ -405,6 +409,7 @@ export function useSessionActions({
 
             if (usage) {
               setCurrentUsage(current => ({ ...current, ...usage }))
+              if ('pending_clarify' in usage) {restorePendingClarify(usage.pending_clarify, cachedRuntimeId, pendingBeforeUsage)}
             }
 
             return
@@ -457,6 +462,17 @@ export function useSessionActions({
         if (target) {
           showDfmViewer(storedSessionId, target)
         }
+        const report = dfmHtmlReportFromSessionMessages(messages)
+        if (report) {
+          const existing = getSessionDfmReportRecord(storedSessionId)
+          void normalizeOrLocalPreviewTarget(report.path, undefined, { enrichRemote: false })
+            .then(preview => {
+              if (preview && isCurrentResume() && getSessionDfmReportRecord(storedSessionId) === existing) {
+                registerDfmReport(storedSessionId, report, preview)
+              }
+            })
+            .catch(() => undefined)
+        }
       }
 
       try {
@@ -470,6 +486,7 @@ export function useSessionActions({
         // Watch windows skip the prefetch — lazy resume attaches the live mirror.
         const prefetchPromise = watchWindow ? null : getSessionMessages(storedSessionId, sessionProfile)
 
+        const pendingBeforeResume = $clarifyRequests.get()
         const resumePromise = requestGateway<SessionResumeResponse>('session.resume', {
           session_id: storedSessionId,
           cols: 96,
@@ -550,6 +567,9 @@ export function useSessionActions({
 
         setActiveSessionId(resumed.session_id)
         activeSessionIdRef.current = resumed.session_id
+        if ('pending_clarify' in resumed) {
+          restorePendingClarify(resumed.pending_clarify, resumed.session_id, pendingBeforeResume[resumed.session_id] ?? null)
+        }
         const runtimeInfo = applyRuntimeInfo(resumed.info)
 
         patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd)

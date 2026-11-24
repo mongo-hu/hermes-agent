@@ -14,7 +14,8 @@ import {
 } from '@/store/composer'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
-import { setAwaitingResponse, setBusy, setMessages } from '@/store/session'
+import { setActiveSessionId, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
+import { $clarifyRequests, restorePendingClarify } from '@/store/clarify'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -71,6 +72,75 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
   return useCallback(
     async (rawText: string, options?: SubmitTextOptions) => {
+      // Review recovery is an idle-only continuation of the original session.
+      // Keep it outside the composer/new-session/interrupt-and-queue pipeline.
+      if (options?.dfmContinuation) {
+        const continuation = options.dfmContinuation
+        const owner = continuation.expected_session_key
+        const currentOwner = () => selectedStoredSessionIdRef.current || activeSessionIdRef.current
+        if (currentOwner() !== owner) {throw new Error('会话已切换，请返回原工程后继续。')}
+        if (_submitInFlight.has(owner) || busyRef.current) {throw new Error('当前会话正在执行，请完成后重试继续。')}
+        _submitInFlight.add(owner)
+        try {
+          let sid = activeSessionIdRef.current
+          if (!sid) {
+            const pendingBeforeResume = $clarifyRequests.get()
+            const resumed = await requestGateway<{ session_id: string; pending_clarify?: unknown }>('session.resume', {
+              session_id: owner, source: 'desktop'
+            })
+            if (currentOwner() !== owner) {throw new Error('会话已切换，请返回原工程后继续。')}
+            if (!resumed?.session_id) {throw new Error('无法恢复原会话，请重试继续。')}
+            sid = resumed.session_id
+            activeSessionIdRef.current = sid
+            setActiveSessionId(sid)
+            if ('pending_clarify' in resumed) {restorePendingClarify(resumed.pending_clarify, sid, pendingBeforeResume[sid] ?? null)}
+          }
+          if (currentOwner() !== owner) {throw new Error('会话已切换，请返回原工程后继续。')}
+          let previous!: ClientSessionState
+          const optimistic = updateSessionState(sid, state => {
+            previous = state
+            return {
+              ...state, busy: true, awaitingResponse: true, interrupted: false, needsInput: false,
+              messages: state.messages.some(message => message.id === continuation.action_key) ? state.messages :
+                [...state.messages, { id: continuation.action_key, role: 'user', parts: [textPart(rawText)], attachmentRefs: [] }]
+            }
+          }, owner)
+          const undoOptimistic = () => updateSessionState(sid, state => {
+            // The session cache passes a shallow copy to each updater. Compare
+            // only this turn's state, preserving unrelated usage/cache updates.
+            const untouched = state.messages === optimistic.messages && state.busy === optimistic.busy &&
+              state.awaitingResponse === optimistic.awaitingResponse && state.needsInput === optimistic.needsInput &&
+              state.interrupted === optimistic.interrupted
+            return {
+              ...state,
+              ...(untouched ? { busy: previous.busy, awaitingResponse: previous.awaitingResponse,
+                needsInput: previous.needsInput, interrupted: previous.interrupted } : {}),
+              messages: previous.messages.some(message => message.id === continuation.action_key) ? state.messages :
+                state.messages.filter(message => message.id !== continuation.action_key)
+            }
+          }, owner)
+          try {
+            const result = await requestGateway<{ status?: string; running?: boolean }>('prompt.submit', {
+              session_id: sid, text: rawText, attachments: [], dfm_continuation: continuation
+            }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+            if (result.status === 'completed' || result.status === 'active_run' || result.status === 'duplicate') {
+              undoOptimistic()
+            }
+            // Streaming events can precede this ACK. Never replace their busy,
+            // needs-input or completed state with an older submit state.
+          } catch (error) {
+            undoOptimistic()
+            if (isSessionNotFoundError(error) && currentOwner() === owner && activeSessionIdRef.current === sid) {
+              activeSessionIdRef.current = null
+              setActiveSessionId(null)
+            }
+            throw error
+          }
+          return true
+        } finally {
+          _submitInFlight.delete(owner)
+        }
+      }
       const visibleText = rawText.trim()
       const usingComposerAttachments = !options?.attachments
 

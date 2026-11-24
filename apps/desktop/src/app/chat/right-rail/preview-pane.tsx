@@ -455,14 +455,12 @@ export function PreviewPane({
 
     lastReloadRequestRef.current = reloadRequest
 
-    if (target.kind !== 'url') {
-      return
+    if (target.kind === 'url') {
+      appendConsoleEntry({
+        level: 1,
+        message: copy.workspaceReloading
+      })
     }
-
-    appendConsoleEntry({
-      level: 1,
-      message: copy.workspaceReloading
-    })
     reloadPreview()
   }, [appendConsoleEntry, copy.workspaceReloading, reloadPreview, reloadRequest, target.kind])
 

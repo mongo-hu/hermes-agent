@@ -154,6 +154,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
   const respond = useCallback(
     async (answer: string) => {
+      if (matchingRequest?.context) {return}
       if (!ready || !matchingRequest) {
         notifyError(new Error(copy.notReady), copy.sendFailed)
 
@@ -171,6 +172,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
       try {
         await gateway.request<{ ok?: boolean }>('clarify.respond', {
           request_id: matchingRequest.requestId,
+          session_id: matchingRequest.sessionId,
           answer
         })
         triggerHaptic('submit')
@@ -236,7 +238,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   // field is focused (you're typing, not navigating) so it never eats keystrokes
   // meant for the composer or the Other box.
   useEffect(() => {
-    if (!ready || !hasChoices || submitting) {
+    if (!ready || !hasChoices || submitting || matchingRequest?.context) {
       return
     }
 
@@ -276,7 +278,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
     window.addEventListener('keydown', onKeyDown)
 
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [choices, hasChoices, pendingAnswer, ready, selectChoice, submitAnswer, submitting])
+  }, [choices, hasChoices, pendingAnswer, ready, selectChoice, submitAnswer, submitting, matchingRequest?.context])
 
   if (loading) {
     return (
@@ -286,6 +288,17 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         role="status"
       >
         <Loader2 aria-hidden className="size-4 animate-spin text-(--ui-text-tertiary)" />
+      </ClarifyShell>
+    )
+  }
+
+  if (matchingRequest?.context?.mode === 'dfm_discovery_review') {
+    return (
+      <ClarifyShell className="flex items-start gap-2 px-2.5 py-2">
+        <span className="flex-1 leading-(--conversation-line-height)">
+          请在右侧完成特征与出模审核。全部保存成功后会自动打开补充信息并继续分析。
+        </span>
+        <MessageQuestion aria-hidden className="mt-px size-4 shrink-0 text-(--ui-text-tertiary)" />
       </ClarifyShell>
     )
   }

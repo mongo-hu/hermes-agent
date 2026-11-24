@@ -385,6 +385,7 @@ export interface SessionMessagesResponse {
 }
 
 export interface SessionResumeResponse {
+  pending_clarify?: unknown
   info?: SessionRuntimeInfo
   message_count: number
   messages: SessionMessage[]

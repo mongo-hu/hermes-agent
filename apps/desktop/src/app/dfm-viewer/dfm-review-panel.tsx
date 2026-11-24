@@ -53,6 +53,7 @@ interface DfmReviewPanelProps {
   projectId: string
   revision: number | null
   onChanged: (context: ReviewContext) => void
+  onSaved?: (context: ReviewContext) => void
   onRefreshed?: (context: ReviewContext) => void
   onHighlight: (refs: GeometryReference[], selection?: DfmHighlightSelection, force?: boolean) => void
   highlightSelection?: DfmHighlightSelection | null
@@ -77,6 +78,7 @@ export function DfmReviewPanel({
   projectId,
   revision,
   onChanged,
+  onSaved,
   onRefreshed,
   onHighlight,
   highlightSelection,
@@ -333,6 +335,7 @@ export function DfmReviewPanel({
         group => group.review_group_id === id && group.status === 'pending_review'
       )))
       onChanged(next)
+      onSaved?.(next)
 
       const remaining = next.review_groups.filter(group => group.status === 'pending_review' &&
         (!localBatch || group.kind === 'forming_scope')).length

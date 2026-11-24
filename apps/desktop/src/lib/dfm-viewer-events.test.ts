@@ -2,9 +2,84 @@ import { describe, expect, it } from 'vitest'
 
 import {
   dfmHtmlReportPathFromToolComplete,
+  dfmHtmlReportFromToolComplete,
+  dfmHtmlReportFromSessionMessages,
   dfmViewerTargetFromSessionMessages,
   dfmViewerTargetFromToolComplete
 } from './dfm-viewer-events'
+
+describe('owned DFM reports', () => {
+  const report = { path: 'D:/project/run_1/report.html', projectId: 'dfm_1', runId: 'run_1' }
+
+  it('binds a successful background report to its project and run', () => {
+    expect(
+      dfmHtmlReportFromToolComplete({
+        name: 'dfm_analysis',
+        status: 'succeeded',
+        report_html: report.path,
+        project_id: report.projectId,
+        run_id: report.runId
+      })
+    ).toEqual(report)
+  })
+
+  it('recovers a report from structured run artifacts and persisted call arguments', () => {
+    expect(
+      dfmHtmlReportFromSessionMessages([
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            {
+              id: 'render',
+              function: {
+                name: 'dfm_analysis',
+                arguments: JSON.stringify({ project_id: report.projectId, run_id: report.runId })
+              }
+            }
+          ]
+        },
+        {
+          role: 'tool',
+          tool_name: 'dfm_analysis',
+          tool_call_id: 'render',
+          content: JSON.stringify({
+            run: { status: 'succeeded', artifacts: [{ kind: 'report_html', path: report.path }] }
+          })
+        },
+        { role: 'assistant', content: 'MEDIA:D:/another-project/report.html' }
+      ])
+    ).toEqual(report)
+  })
+
+  it.each(['reporting', 'failed', 'running'])('ignores %s reports', status => {
+    expect(
+      dfmHtmlReportFromToolComplete({
+        name: 'dfm_analysis',
+        status,
+        report_html: report.path,
+        project_id: report.projectId,
+        run_id: report.runId
+      })
+    ).toBeNull()
+  })
+
+  it('does not claim a path without a complete structured identity', () => {
+    expect(
+      dfmHtmlReportFromToolComplete({ name: 'dfm_analysis', status: 'succeeded', report_html: report.path })
+    ).toBeNull()
+    expect(dfmHtmlReportFromSessionMessages([{ role: 'assistant', content: `MEDIA:${report.path}` }])).toBeNull()
+  })
+
+  it('rejects conflicting project or run identities instead of choosing one', () => {
+    for (const args of [{ project_id: 'other-project' }, { run_id: 'other-run' }]) {
+      expect(dfmHtmlReportFromToolComplete({
+        name: 'dfm_analysis', status: 'succeeded', report_html: report.path,
+        project_id: report.projectId, run_id: report.runId, args
+      })).toBeNull()
+    }
+  })
+})
 
 describe('dfmViewerTargetFromToolComplete', () => {
   it('clears a historical review failure after an authoritative review read', () => {

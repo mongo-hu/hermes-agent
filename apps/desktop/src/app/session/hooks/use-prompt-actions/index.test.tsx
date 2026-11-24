@@ -20,6 +20,7 @@ import { $busy, $connection, $messages, $sessions, setSessions } from '@/store/s
 import type { SessionInfo } from '@/types/hermes'
 
 import { uploadComposerAttachment, usePromptActions } from '.'
+import type { SubmitTextOptions } from './utils'
 
 vi.mock('@/hermes', () => ({
   getProfiles: vi.fn(async () => ({ profiles: [] })),
@@ -58,7 +59,7 @@ interface HarnessHandle {
   cancelRun: () => Promise<void>
   restoreToMessage: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
   steerPrompt: (text: string) => Promise<boolean>
-  submitText: (text: string, options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }) => Promise<boolean>
+  submitText: (text: string, options?: SubmitTextOptions) => Promise<boolean>
 }
 
 function Harness({
@@ -1490,7 +1491,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
 
     expect(ok).toBe(true)
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
-    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID })
+    expect(calls[1]?.params).toMatchObject({ session_id: STORED_SESSION_ID })
     expect(calls[2]?.params).toEqual({
       session_id: RECOVERED_SESSION_ID,
       text: 'message during starved loop'
@@ -1564,6 +1565,68 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(ok).toBe(true)
     expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
     expect(calls).not.toContain('session.resume')
+  })
+})
+
+describe('DFM idle-only continuation', () => {
+  const dfmContinuation = { project_id: 'p', snapshot_id: 's', expected_revision: 7,
+    action_key: 'review:p:s:7', expected_session_key: 'stored', manual_resume: true }
+  afterEach(() => {cleanup(); $composerAttachments.set([]); setComposerDraft(''); vi.restoreAllMocks()})
+
+  it('does not create a session or consume a draft when resuming the original fails', async () => {
+    const create = vi.fn()
+    const requestGateway = vi.fn().mockRejectedValue(new Error('resume unavailable'))
+    let handle: HarnessHandle | null = null
+    setComposerDraft('unfinished draft')
+    render(<Harness activeSessionId={null} storedSessionId="stored" createBackendSessionForSend={create}
+      onReady={h => (handle = h)} requestGateway={requestGateway} refreshSessions={async () => undefined} />)
+    await expect(handle!.submitText('continue', { attachments: [], dfmContinuation })).rejects.toThrow('resume unavailable')
+    expect(create).not.toHaveBeenCalled()
+    expect($composerDraft.get()).toBe('unfinished draft')
+    expect(requestGateway.mock.calls.map(([method]) => method)).toEqual(['session.resume'])
+  })
+
+  it('sends no attachment, preserves the draft and never interrupts another busy turn', async () => {
+    const requestGateway = vi.fn().mockResolvedValue({ status: 'streaming' })
+    const busyRef = { current: false }
+    let handle: HarnessHandle | null = null
+    render(<Harness storedSessionId="stored" busyRef={busyRef} newAnalysisOnModelSubmit
+      onReady={h => (handle = h)} requestGateway={requestGateway} refreshSessions={async () => undefined} />)
+    setComposerDraft('unfinished draft')
+    const attachment: ComposerAttachment = { id: 'draft', kind: 'file', label: 'future.stp', path: 'D:/future.stp' }
+    $composerAttachments.set([attachment])
+    expect(await handle!.submitText('continue', { attachments: [], dfmContinuation })).toBe(true)
+    expect(requestGateway).toHaveBeenCalledExactlyOnceWith('prompt.submit', {
+      session_id: RUNTIME_SESSION_ID, text: 'continue', attachments: [], dfm_continuation: dfmContinuation
+    }, 1_800_000)
+    expect($composerAttachments.get()).toEqual([attachment])
+    expect($composerDraft.get()).toBe('unfinished draft')
+    busyRef.current = true
+    await expect(handle!.submitText('continue', { attachments: [], dfmContinuation })).rejects.toThrow('正在执行')
+    expect(requestGateway).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves no new running turn for duplicate, active or completed run responses', async () => {
+    const state = vi.fn()
+    const requestGateway = vi.fn()
+    let handle: HarnessHandle | null = null
+    render(<Harness storedSessionId="stored" onReady={h => (handle = h)} onSeedState={state}
+      requestGateway={requestGateway} refreshSessions={async () => undefined} />)
+    for (const status of ['duplicate', 'active_run', 'completed']) {
+      requestGateway.mockResolvedValueOnce({ status })
+      expect(await handle!.submitText('continue', { attachments: [], dfmContinuation })).toBe(true)
+      expect(state).toHaveBeenLastCalledWith(expect.objectContaining({ messages: [], busy: false,
+        awaitingResponse: false, interrupted: true }))
+    }
+  })
+
+  it('rejects a continuation belonging to a different selected session', async () => {
+    const requestGateway = vi.fn()
+    let handle: HarnessHandle | null = null
+    render(<Harness storedSessionId="other" onReady={h => (handle = h)}
+      requestGateway={requestGateway} refreshSessions={async () => undefined} />)
+    await expect(handle!.submitText('continue', { attachments: [], dfmContinuation })).rejects.toThrow('会话已切换')
+    expect(requestGateway).not.toHaveBeenCalled()
   })
 })
 
