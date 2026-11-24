@@ -1,6 +1,7 @@
 import { atom, computed } from 'nanostores'
 
 import { persistentAtom } from '@/lib/persisted'
+import type { DfmHtmlReport } from '@/lib/dfm-viewer-events'
 import { normalize } from '@/lib/text'
 
 import { $dfmViewerTarget, clearDfmViewers, dismissDfmViewer } from './dfm-viewer'
@@ -16,6 +17,8 @@ import { setPaneOpen } from './panes'
 import { $activeSessionId, $selectedStoredSessionId } from './session'
 
 export interface PreviewTarget {
+  /** Present only after a structured, successful DFM run has claimed this report. */
+  dfmReport?: DfmHtmlReport & { sessionId: string }
   binary?: boolean
   byteSize?: number
   /** Inline image bytes (a `data:` URL) when the renderer already holds them —
@@ -101,6 +104,11 @@ export const $previewServerRestart = atom<PreviewServerRestart | null>(null)
 export const $previewServerRestartStatus = computed($previewServerRestart, restart => restart?.status ?? 'idle')
 export const $sessionPreviewRegistry = atom<SessionPreviewRegistry>(loadSessionPreviewRegistry())
 
+export const $dfmReportRecord = computed(
+  [$sessionPreviewRegistry, $selectedStoredSessionId, $activeSessionId],
+  (_registry, storedId, runtimeId) => getSessionDfmReportRecord(storedId || runtimeId)
+)
+
 $sessionPreviewRegistry.subscribe(persistSessionPreviewRegistry)
 
 function isSamePreviewTarget(a: PreviewTarget | null, b: PreviewTarget | null): boolean {
@@ -116,6 +124,9 @@ function isSamePreviewTarget(a: PreviewTarget | null, b: PreviewTarget | null): 
     a.kind === b.kind &&
     a.label === b.label &&
     a.renderMode === b.renderMode &&
+    a.dfmReport?.sessionId === b.dfmReport?.sessionId &&
+    a.dfmReport?.projectId === b.dfmReport?.projectId &&
+    a.dfmReport?.runId === b.dfmReport?.runId &&
     a.source === b.source &&
     a.url === b.url
   )
@@ -192,7 +203,17 @@ function isPreviewTarget(value: unknown): value is PreviewTarget {
     (r.kind === 'file' || r.kind === 'url') &&
     typeof r.label === 'string' &&
     typeof r.source === 'string' &&
-    typeof r.url === 'string'
+    typeof r.url === 'string' &&
+    (r.dfmReport === undefined || isDfmReportIdentity(r.dfmReport))
+  )
+}
+
+function isDfmReportIdentity(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false
+  const report = value as Record<string, unknown>
+
+  return ['sessionId', 'projectId', 'runId', 'path'].every(
+    key => typeof report[key] === 'string' && Boolean(report[key])
   )
 }
 
@@ -318,7 +339,7 @@ export function registerSessionPreview(
   const normalized = previewTargetForSource(target, source)
 
   const nextRecord: SessionPreviewRecord = {
-    autoOpen: true,
+    autoOpen: !normalized.dfmReport,
     createdAt: now,
     id: existing?.id || recordId(id, target),
     normalized,
@@ -335,6 +356,37 @@ export function registerSessionPreview(
   )
 
   return nextRecord
+}
+
+/** Register an available report without changing the selected model/report view. */
+export function registerDfmReport(
+  sessionId: string,
+  report: DfmHtmlReport,
+  target: PreviewTarget
+): SessionPreviewRecord | null {
+  const id = sessionId.trim()
+
+  if (!id || target.kind !== 'file' || target.previewKind !== 'html') return null
+
+  const normalized: PreviewTarget = {
+    ...target,
+    dfmReport: { ...report, sessionId: id },
+    renderMode: 'preview'
+  }
+  const existing = getSessionDfmReportRecord(id)
+
+  if (existing && JSON.stringify(existing.normalized) === JSON.stringify(normalized)) return existing
+
+  return registerSessionPreview(id, normalized, 'tool-result', report.path)
+}
+
+export function getSessionDfmReportRecord(sessionId: string | null | undefined): SessionPreviewRecord | null {
+  if (!sessionId) return null
+
+  return (
+    $sessionPreviewRegistry.get()[sessionId]?.find(record => record.normalized.dfmReport?.sessionId === sessionId) ??
+    null
+  )
 }
 
 export function setSessionPreviewTarget(
@@ -369,7 +421,11 @@ export function getSessionPreviewRecord(sessionId: string | null | undefined): S
     return null
   }
 
-  return $sessionPreviewRegistry.get()[id]?.find(record => !record.dismissedAt && record.autoOpen !== false) ?? null
+  return (
+    $sessionPreviewRegistry
+      .get()
+      [id]?.find(record => !record.normalized.dfmReport && !record.dismissedAt && record.autoOpen !== false) ?? null
+  )
 }
 
 export function dismissSessionPreview(sessionId: string | null | undefined, url?: string) {

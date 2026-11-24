@@ -12,6 +12,7 @@ import { $rightRailActiveTabId, PREVIEW_PANE_ID, RIGHT_RAIL_DFM_TAB_ID, RIGHT_RA
 import { $paneOpen } from './panes'
 import {
   $filePreviewTabs,
+  $dfmReportRecord,
   $filePreviewTarget,
   $previewServerRestart,
   $previewServerRestartStatus,
@@ -22,6 +23,9 @@ import {
   closeActiveRightRailTab,
   dismissPreviewTarget,
   getSessionPreviewRecord,
+  getSessionDfmReportRecord,
+  registerDfmReport,
+  setPreviewTarget,
   type PreviewTarget,
   progressPreviewServerRestart,
   setCurrentSessionPreviewTarget
@@ -60,6 +64,35 @@ describe('preview store', () => {
     window.localStorage.clear()
     clearSessionPreviewRegistry()
     clearDfmViewers()
+  })
+
+  it('persists owned reports as available without auto-opening and keeps them available after closing', () => {
+    $selectedStoredSessionId.set('stored-1')
+    const path = '/work/report.html'
+    const report = registerDfmReport('stored-1', { path, projectId: 'dfm-1', runId: 'run-1' }, previewTarget(path))!
+    expect($previewTarget.get()).toBeNull()
+    expect(report.autoOpen).toBe(false)
+    expect(getSessionPreviewRecord('stored-1')).toBeNull()
+    expect($dfmReportRecord.get()).toBe(report)
+    expect(
+      JSON.parse(window.localStorage.getItem('hermes.desktop.sessionPreviews.v1')!)['stored-1'][0].normalized.dfmReport
+    ).toEqual({ sessionId: 'stored-1', projectId: 'dfm-1', runId: 'run-1', path })
+    setPreviewTarget(report.normalized)
+    dismissPreviewTarget()
+    expect($previewTarget.get()).toBeNull()
+    expect(getSessionDfmReportRecord('stored-1')?.normalized).toEqual(report.normalized)
+    $selectedStoredSessionId.set('stored-2')
+    expect($dfmReportRecord.get()).toBeNull()
+  })
+
+  it('does not consider identical file paths from different sessions the same active report', () => {
+    const path = '/work/report.html'
+    const report = { path, projectId: 'dfm-1', runId: 'run-1' }
+    const first = registerDfmReport('stored-1', report, previewTarget(path))!
+    const second = registerDfmReport('stored-2', report, previewTarget(path))!
+    setPreviewTarget(first.normalized)
+    setPreviewTarget(second.normalized)
+    expect($previewTarget.get()?.dfmReport?.sessionId).toBe('stored-2')
   })
 
   it('does not notify status subscribers for restart progress text', () => {

@@ -174,3 +174,69 @@ export function dfmHtmlReportPathFromToolComplete(payload?: GatewayEventPayload)
 
   return path
 }
+
+export interface DfmHtmlReport {
+  path: string
+  projectId: string
+  runId: string
+}
+
+/** A report is owned by a successful run, never inferred from assistant prose. */
+export function dfmHtmlReportFromToolComplete(payload?: GatewayEventPayload): DfmHtmlReport | null {
+  if (payload?.name !== 'dfm_analysis') {
+    return null
+  }
+
+  const result = record(payload.result)
+  const run = record(result.run)
+  const args = record(payload.args ?? payload.arguments ?? payload.input)
+  const report = record(result.report)
+  const artifact = Array.isArray(run.artifacts)
+    ? run.artifacts.map(record).find(item => item.kind === 'report_html')
+    : undefined
+  const status = stringField(run.status, result.status, payload.status)
+  const path = stringField(payload.report_html, report.kind === 'report_html' ? report.path : undefined, artifact?.path)
+  const projectId = stringField(payload.project_id, result.project_id, run.project_id, args.project_id)
+  const runId = stringField(payload.run_id, result.run_id, run.run_id, args.run_id)
+  const consistent = (values: unknown[]) =>
+    new Set(values.map(value => stringField(value)).filter(Boolean)).size <= 1
+
+  if (
+    result.ok === false || status !== 'succeeded' || !path || !projectId || !runId || !/\.html?$/i.test(path) ||
+    !consistent([payload.project_id, result.project_id, run.project_id, args.project_id]) ||
+    !consistent([payload.run_id, result.run_id, run.run_id, args.run_id])
+  ) {
+    return null
+  }
+
+  return { path, projectId, runId }
+}
+
+export function dfmHtmlReportFromSessionMessages(messages: SessionMessage[]): DfmHtmlReport | null {
+  let report: DfmHtmlReport | null = null
+  const argumentsByCall = new Map<string, unknown>()
+
+  for (const message of messages) {
+    if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
+      for (const entry of message.tool_calls) {
+        const call = record(entry)
+        const id = stringField(call.id)
+
+        if (id) {
+          argumentsByCall.set(id, record(call.function).arguments ?? call.arguments)
+        }
+      }
+    }
+
+    if (message.role === 'tool') {
+      report =
+        dfmHtmlReportFromToolComplete({
+          name: message.tool_name || message.name,
+          args: argumentsByCall.get(message.tool_call_id || ''),
+          result: message.content ?? message.text ?? message.context
+        }) ?? report
+    }
+  }
+
+  return report
+}

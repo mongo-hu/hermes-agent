@@ -2,9 +2,11 @@ import { useStore } from '@nanostores/react'
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { openDfmViewerWindow } from '@/lib/dfm-viewer-window'
-import { $clarifyRequest, type ClarifyRequest, clearClarifyRequest, type DfmClarificationItem } from '@/store/clarify'
+import { continueDfmReview, type DfmContinuationInput, reviewReadyForContinuation } from '@/lib/dfm-continuation'
+import { $clarifyRequest, type ClarifyRequest, clearClarifyRequest, type DfmClarificationBatchContext, type DfmClarificationItem } from '@/store/clarify'
 import type { DfmViewerTarget } from '@/store/dfm-viewer'
 import { $gateway } from '@/store/gateway'
+import { $activeSessionId, $busy, $selectedStoredSessionId } from '@/store/session'
 
 import { DfmAnnotationEditor } from './dfm-annotation-editor'
 import type { CanvasMenuPoint } from './dfm-canvas-menus'
@@ -153,7 +155,7 @@ export function DfmClarificationPanel({
   request: ClarifyRequest
 }) {
   const gateway = useStore($gateway)
-  const context = request.context!
+  const context = request.context as DfmClarificationBatchContext
   const [answers, setAnswers] = useState<Record<string, string>>({})
   const [inheritedFeatureIds, setInheritedFeatureIds] = useState<Set<string>>(new Set())
   const [openFeatureKinds, setOpenFeatureKinds] = useState<Set<string>>(new Set())
@@ -332,7 +334,11 @@ export function DfmClarificationPanel({
               value: answers[item.clarificationId].trim()
             }))
           }),
-          request_id: request.requestId
+          request_id: request.requestId,
+          session_id: request.sessionId,
+          ...(context.snapshotId && context.revision !== undefined ? {
+            dfm_context: { project_id: context.projectId, snapshot_id: context.snapshotId, expected_revision: context.revision }
+          } : {})
         })
         if (response?.ok === false) {
           throw new Error('补充信息未提交，请重试。')
@@ -343,7 +349,7 @@ export function DfmClarificationPanel({
         setSubmitting(false)
       }
     },
-    [allAnswered, answers, context.items, gateway, request.requestId, request.sessionId, submitting]
+    [allAnswered, answers, context, gateway, request.requestId, request.sessionId, submitting]
   )
 
   const renderQuestion = (item: DfmClarificationItem) => {
@@ -591,13 +597,24 @@ export function DfmClarificationPanel({
   )
 }
 
-export function DfmViewerPane({ embedded = false, showPopout = embedded, target }: { embedded?: boolean; showPopout?: boolean; target: DfmViewerTarget }) {
+export function DfmViewerPane({ embedded = false, showPopout = embedded, target, onContinueAnalysis }: {
+  embedded?: boolean; showPopout?: boolean; target: DfmViewerTarget
+  onContinueAnalysis?: (input: DfmContinuationInput) => Promise<boolean>
+}) {
   const reviewActions = useRef<DfmReviewPanelActions>(null)
   const [reviewBusy, setReviewBusy] = useState(false)
   const [objectMenu, setObjectMenu] = useState<{ point: CanvasMenuPoint; candidates: FaceCandidate[]; target: FaceCandidate | null; faceIndex: number } | null>(null)
   const dismissObjectMenu = useCallback(() => setObjectMenu(null), [])
   const activeFeatureElementRef = useRef<HTMLDivElement | null>(null)
   const clarifyRequest = useStore($clarifyRequest)
+  const activeSessionId = useStore($activeSessionId)
+  const storedSessionId = useStore($selectedStoredSessionId)
+  const sessionBusy = useStore($busy)
+  const gateway = useStore($gateway)
+  const [continuationError, setContinuationError] = useState('')
+  const [continuing, setContinuing] = useState(false)
+  const continuationInFlight = useRef(false)
+  const savedReviewForContinuation = useRef<{ context: ReviewContext; owner: string } | null>(null)
   const [manifest, setManifest] = useState<ViewerManifest | null>(null)
   const projectId = target.projectId ?? manifest?.project_id
   const [scene, setScene] = useState<RenderSceneDocument | null>(null)
@@ -787,6 +804,63 @@ export function DfmViewerPane({ embedded = false, showPopout = embedded, target 
   const clarificationRequestId = clarificationRequest?.requestId
   const refreshedClarificationRequest = useRef<string | undefined>(undefined)
   const analysisCompleted = manifest?.status === 'completed'
+
+  useEffect(() => {
+    savedReviewForContinuation.current = null
+    setContinuationError('')
+    setContinuing(false)
+  }, [projectId, storedSessionId])
+
+  const continueAfterReview = useCallback(async (context: ReviewContext, manual = false) => {
+    if (analysisCompleted || target.status === 'completed' || target.failure || !reviewReadyForContinuation(context) || continuationInFlight.current) {return}
+    const owner = storedSessionId || activeSessionId || ''
+    const stillCurrent = () => currentProjectId.current === context.project_id &&
+      ($selectedStoredSessionId.get() || $activeSessionId.get()) === owner
+    if (!stillCurrent()) {return}
+    continuationInFlight.current = true
+    setContinuing(true)
+    setContinuationError('')
+    try {
+      if (!gateway) {throw new Error('分析服务尚未连接，请重试继续。')}
+      await continueDfmReview({
+        context, sessionKey: owner, runtimeSessionId: activeSessionId, request: $clarifyRequest.get(), manual,
+        respond: params => {
+          if (!stillCurrent()) {throw new Error('会话已切换，请返回原工程后继续。')}
+          return gateway.request('clarify.respond', params)
+        },
+        submit: input => {
+          if (!stillCurrent() || !onContinueAnalysis) {throw new Error('请回到原会话的分析工作台后继续。')}
+          return onContinueAnalysis(input)
+        }
+      })
+      if (stillCurrent()) {setReviewPaneTab('clarifications')}
+    } catch (cause) {
+      if (stillCurrent()) {setContinuationError(cause instanceof Error ? cause.message : String(cause))}
+    } finally {
+      continuationInFlight.current = false
+      if (stillCurrent()) {setContinuing(false)}
+    }
+  }, [analysisCompleted, target.status, target.failure, storedSessionId, activeSessionId, gateway, onContinueAnalysis])
+
+  const reviewSaved = useCallback((context: ReviewContext) => {
+    savedReviewForContinuation.current = !$clarifyRequest.get() && sessionBusy
+      ? { context, owner: storedSessionId || activeSessionId || '' } : null
+    void continueAfterReview(context)
+  }, [storedSessionId, activeSessionId, sessionBusy, continueAfterReview])
+
+  // The tool may register its wait immediately after the save completes. Only
+  // replay this explicit user save, never an ordinary refresh/history read.
+  useEffect(() => {
+    if (!sessionBusy && !continuing) {savedReviewForContinuation.current = null}
+    const saved = savedReviewForContinuation.current
+    const waiting = clarifyRequest?.context
+    if (!continuing && saved && waiting?.mode === 'dfm_discovery_review' &&
+      saved.owner === (storedSessionId || activeSessionId || '') &&
+      waiting.projectId === saved.context.project_id && waiting.revision <= saved.context.revision) {
+      savedReviewForContinuation.current = null
+      void continueAfterReview(saved.context)
+    }
+  }, [clarifyRequest, continuing, sessionBusy, storedSessionId, activeSessionId, continueAfterReview])
 
   useEffect(() => {
     if (clarificationRequestId) {
@@ -1378,6 +1452,7 @@ export function DfmViewerPane({ embedded = false, showPopout = embedded, target 
       editBase.current = null
       setEditConflict(false)
       setReviewNotice(context.direction_status === 'forming_direction_unchanged' ? '方案内容未改变，保留原确认和计算结果。' : context.direction_status === 'forming_direction_staged' ? '方案草稿已保存。请核对倒扣面、成型面、机构和方向，再确认完整方案。' : directionDraft.scope.mode === 'local' ? '方案已整体确认，相关计算按依赖继续。' : '主出模方向已更新，原报告保留为历史结果。')
+      if (action === 'confirm') {reviewSaved(context)}
     } catch (cause) {
       if (currentProjectId.current === projectId) {setDirectionError(cause instanceof Error ? cause.message : String(cause))}
     } finally {
@@ -1757,6 +1832,7 @@ export function DfmViewerPane({ embedded = false, showPopout = embedded, target 
             embedded ? 'border-t border-white/10' : 'border-l border-white/10'
           }`}
         >
+          <div className="grid gap-2">
           <div className="grid grid-cols-3 rounded-lg border border-white/10 bg-black/15 p-1" role="tablist">
             <button
               aria-selected={reviewPaneTab === 'features'}
@@ -1787,7 +1863,7 @@ export function DfmViewerPane({ embedded = false, showPopout = embedded, target 
             >
               补充信息
               <span className="rounded-full bg-cyan-500/15 px-1.5 py-0.5 text-[9px] text-cyan-100">
-                {clarificationRequest?.context?.items.length ?? 0}
+                {clarificationRequest?.context?.mode === 'dfm_analysis_batch' ? clarificationRequest.context.items.length : 0}
               </span>
             </button>
             <button
@@ -1806,6 +1882,20 @@ export function DfmViewerPane({ embedded = false, showPopout = embedded, target 
                 {manifest.issue_count}
               </span>
             </button>
+          </div>
+          {!analysisCompleted && target.status !== 'completed' && !target.failure && latestReviewContext &&
+            reviewReadyForContinuation(latestReviewContext) && !clarificationRequest && (
+            <div className="rounded-md border border-cyan-400/20 p-2 text-xs text-cyan-100" role="status">
+              {continuationError && <p role="alert">{continuationError}</p>}
+              {continuing ? '审核已保存，正在继续…' : (
+                <button type="button" className="rounded bg-cyan-500/20 px-3 py-2 disabled:opacity-40"
+                  disabled={!gateway || (sessionBusy && clarifyRequest?.context?.mode !== 'dfm_discovery_review')}
+                  onClick={() => void continueAfterReview(latestReviewContext, true)}>
+                  {continuationError ? '重试继续' : '继续分析'}
+                </button>
+              )}
+            </div>
+          )}
           </div>
           <section
             className={
@@ -1950,6 +2040,7 @@ export function DfmViewerPane({ embedded = false, showPopout = embedded, target 
                 navigation={reviewNavigation}
                 onBusyChange={setReviewBusy}
                 onChanged={applyReviewContext}
+                onSaved={reviewSaved}
                 onCreateAnnotation={createAnnotation}
                 onEditAnnotation={startAnnotationEdit}
                 onEditDirection={startDirectionEdit}

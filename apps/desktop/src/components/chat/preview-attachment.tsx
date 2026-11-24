@@ -5,14 +5,16 @@ import { useI18n } from '@/i18n'
 import { MonitorPlay } from '@/lib/icons'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { previewName } from '@/lib/preview-targets'
+import { DFM_PRODUCT_MODE } from '@/lib/product-mode'
 import { notifyError } from '@/store/notifications'
 import {
   $previewTarget,
   dismissPreviewTarget,
+  getSessionDfmReportRecord,
   type PreviewRecordSource,
-  setCurrentSessionPreviewTarget
+  setSessionPreviewTarget
 } from '@/store/preview'
-import { $currentCwd } from '@/store/session'
+import { $activeSessionId, $currentCwd, $selectedStoredSessionId } from '@/store/session'
 
 interface PreviewAttachmentProps {
   label?: string
@@ -21,14 +23,12 @@ interface PreviewAttachmentProps {
   variant?: 'card' | 'link'
 }
 
-export function PreviewAttachment({
-  label,
-  source = 'manual',
-  target,
-  variant = 'card'
-}: PreviewAttachmentProps) {
+export function PreviewAttachment({ label, source = 'manual', target, variant = 'card' }: PreviewAttachmentProps) {
   const { t } = useI18n()
   const cwd = useStore($currentCwd)
+  const storedSessionId = useStore($selectedStoredSessionId)
+  const runtimeSessionId = useStore($activeSessionId)
+  const sessionId = storedSessionId || runtimeSessionId || ''
   const activePreview = useStore($previewTarget)
   const [opening, setOpening] = useState(false)
   const activePreviewRef = useRef(activePreview)
@@ -36,12 +36,14 @@ export function PreviewAttachment({
   const mountedRef = useRef(false)
   const requestTokenRef = useRef(0)
   const targetRef = useRef(target)
+  const sessionIdRef = useRef(sessionId)
   const name = previewName(target)
   const isActive = activePreview?.source === target
 
   activePreviewRef.current = activePreview
   cwdRef.current = cwd
   targetRef.current = target
+  sessionIdRef.current = sessionId
 
   useEffect(() => {
     mountedRef.current = true
@@ -55,7 +57,7 @@ export function PreviewAttachment({
   useEffect(() => {
     requestTokenRef.current += 1
     setOpening(false)
-  }, [cwd, target])
+  }, [cwd, target, sessionId])
 
   async function openPreview(external = false) {
     if (opening) {
@@ -65,17 +67,24 @@ export function PreviewAttachment({
     const requestToken = ++requestTokenRef.current
     const requestTarget = target
     const requestCwd = cwd
+    const requestSessionId = sessionId
 
     setOpening(true)
 
     try {
-      const preview = await normalizeOrLocalPreviewTarget(requestTarget, requestCwd || undefined)
+      const htmlReport = DFM_PRODUCT_MODE && /\.html?(?:$|[?#])/i.test(requestTarget)
+      const preview = await normalizeOrLocalPreviewTarget(
+        requestTarget,
+        requestCwd || undefined,
+        htmlReport ? { enrichRemote: false } : undefined
+      )
 
       if (
         !mountedRef.current ||
         requestTokenRef.current !== requestToken ||
         targetRef.current !== requestTarget ||
-        cwdRef.current !== requestCwd
+        cwdRef.current !== requestCwd ||
+        sessionIdRef.current !== requestSessionId
       ) {
         return
       }
@@ -96,23 +105,28 @@ export function PreviewAttachment({
         return
       }
 
+      const reportRecord = htmlReport ? getSessionDfmReportRecord(requestSessionId) : null
+      const ownedReport = reportRecord?.normalized.url === preview.url ? reportRecord.normalized : null
+
+      const nextPreview = ownedReport ?? preview
       const currentPreview = activePreviewRef.current
 
       if (currentPreview?.source === preview.source && currentPreview.url === preview.url) {
         // Re-select the Preview tab when the same report is already loaded but
         // another right-rail tab (for example DFM) is currently in front.
-        setCurrentSessionPreviewTarget(preview, source, requestTarget)
+        setSessionPreviewTarget(requestSessionId, nextPreview, source, requestTarget)
 
         return
       }
 
-      setCurrentSessionPreviewTarget(preview, source, requestTarget)
+      setSessionPreviewTarget(requestSessionId, nextPreview, source, requestTarget)
     } catch (error) {
       if (
         !mountedRef.current ||
         requestTokenRef.current !== requestToken ||
         targetRef.current !== requestTarget ||
-        cwdRef.current !== requestCwd
+        cwdRef.current !== requestCwd ||
+        sessionIdRef.current !== requestSessionId
       ) {
         return
       }

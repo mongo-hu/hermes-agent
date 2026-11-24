@@ -15,6 +15,24 @@ REVIEW_PAGE_SIZE = 8
 REVIEW_STATE_MAX_CHARS = 6500
 
 
+def current_analysis_run(manifest, snapshot_id):
+    """Match a Run to this Discovery, never infer completion from another model."""
+    plans = {plan.plan_id: plan for plan in manifest.plans}
+    for run in reversed(manifest.runs):
+        saved = run.plan_snapshot or {}
+        plan = plans.get(run.plan_id)
+        if run.plan_id and plan is None:
+            continue
+        if plan is not None and (plan.phase != "analysis" or plan.status == "invalidated" or plan.invalidated_by):
+            continue
+        if saved.get("status") == "invalidated" or saved.get("phase", "analysis") != "analysis":
+            continue
+        refs = saved.get("discovery_snapshot_refs") or getattr(plan, "discovery_snapshot_refs", [])
+        if snapshot_id in refs:
+            return run
+    return None
+
+
 def review_state(manifest, snapshot, groups, clarifications, *, cursor=None,
                  status="pending_review", group_ids=None):
     if status not in {"pending_review", "confirmed", "all"}:
@@ -43,7 +61,12 @@ def review_state(manifest, snapshot, groups, clarifications, *, cursor=None,
     ordinary_pending = any(group.kind == "ordinary_structure" for group in pending)
     failure = manifest.capabilities.get("review_save_failure")
     saving = any(edit.get("status") == "pending" for edit in manifest.geometry_edits)
-    run = next((run for run in reversed(manifest.runs) if run.status.value in {"queued", "running"}), None)
+    current_run = current_analysis_run(manifest, snapshot.snapshot_id)
+    terminal_run = current_run if current_run and current_run.status.value in {
+        "succeeded", "failed", "cancelled", "blocked"
+    } else None
+    run = current_run or next((run for run in reversed(manifest.runs)
+                              if run.status.value in {"queued", "running", "reporting"}), None)
     next_call = None
     if failure or saving:
         next_action = "retry_review_save" if failure else "wait_review_save"
@@ -56,6 +79,14 @@ def review_state(manifest, snapshot, groups, clarifications, *, cursor=None,
         next_call = {"tool": "clarify", "arguments": {
             "dfm_project_id": manifest.project_id,
             "dfm_fact_name": clarifications[0].clarification_id.removeprefix("clarification_")}}
+    elif terminal_run and not pending:
+        next_action = "result"
+        next_call = {"tool": "dfm_analysis", "arguments": {
+            "action": "result", "project_id": manifest.project_id, "run_id": terminal_run.run_id}}
+    elif terminal_run:
+        next_action = "confirm_discovery"
+        next_call = {"tool": "clarify", "arguments": {
+            "dfm_project_id": manifest.project_id, "dfm_discovery_review": True}}
     elif run:
         next_action = "report_context" if run.analyzer_key in {"occt_cpp", "step"} else "status"
         next_call = {"tool": "dfm_analysis", "arguments": {
@@ -91,6 +122,12 @@ def review_state(manifest, snapshot, groups, clarifications, *, cursor=None,
         "instruction": "Follow next_call. Read current state only through review_context; project_manifest.json is an internal checkpoint, not current state. Never reconfirm confirmed groups or infer missing engineering inputs.",
         "review_groups": [],
     }
+    if current_run and not (terminal_run and (pending or clarifications)):
+        result["workflow_run"] = {
+            "run_id": current_run.run_id, "status": current_run.status.value,
+            "artifacts": [artifact.to_dict() for artifact in current_run.artifacts
+                          if artifact.kind in {"report_html", "report_html_runtime"}],
+        }
     if failure:
         result["save_failure"] = {key: failure.get(key) for key in ("reason", "failure_category")}
     viewer_manifest = manifest.capabilities.get("discovery_review", {}).get("viewer_manifest")

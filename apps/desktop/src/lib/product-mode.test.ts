@@ -4,6 +4,7 @@ import {
   dfmStepPickerOptions,
   isDfmSessionSummary,
   isDfmStepModelPath,
+  isKnownNonDfmSession,
   optimisticSessionPreviewForProduct,
   sanitizeDfmDisplayText
 } from './product-mode'
@@ -24,6 +25,15 @@ describe('DFM model intake', () => {
 })
 
 describe('isDfmSessionSummary', () => {
+  it('does not reject an incomplete cold-resume summary while review is waiting', () => {
+    expect(isKnownNonDfmSession({ title: null })).toBe(false)
+    expect(isKnownNonDfmSession({ title: ' ', preview: '' })).toBe(false)
+    expect(isKnownNonDfmSession({ title: null, preview: '审核 DFM 模型' })).toBe(false)
+    expect(isKnownNonDfmSession({ title: '上盖审核' })).toBe(false)
+    expect(isKnownNonDfmSession({ title: '上盖审核', preview: 'housing.step' })).toBe(false)
+    expect(isKnownNonDfmSession({ title: 'Browser Access Request', preview: null })).toBe(true)
+    expect(isDfmSessionSummary({ title: null })).toBe(false)
+  })
   it('keeps DFM analysis sessions and manufacturing-model attachments', () => {
     expect(isDfmSessionSummary({ title: '注塑模具 DFM 分析报告' })).toBe(true)
     expect(isDfmSessionSummary({ preview: 'Attached model: product-housing.step' })).toBe(true)

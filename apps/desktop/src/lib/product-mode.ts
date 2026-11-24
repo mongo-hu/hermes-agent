@@ -38,6 +38,11 @@ export function isDfmSessionSummary(session: SessionSummary): boolean {
   return DFM_SESSION_MARKER.test(`${session.title ?? ''}\n${session.preview ?? ''}`)
 }
 
+/** A by-id response can precede the list's preview while a first turn waits. */
+export function isKnownNonDfmSession(session: SessionSummary): boolean {
+  return 'preview' in session && Boolean(session.title?.trim() || session.preview?.trim()) && !isDfmSessionSummary(session)
+}
+
 /**
  * Keep a session created inside the dedicated DFM client routable while the
  * backend has not persisted its attachment-aware preview yet. The server's

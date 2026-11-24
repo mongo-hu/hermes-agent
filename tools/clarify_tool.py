@@ -84,9 +84,12 @@ def _dfm_analysis_batch_context(service, project_id: str, project: dict) -> dict
         })
     if not items:
         return None
+    state = service.review_state(project_id)
     return {
         "mode": "dfm_analysis_batch",
         "project_id": project_id,
+        "snapshot_id": state.get("snapshot_id"),
+        "revision": state.get("revision"),
         "items": items,
     }
 
@@ -247,6 +250,7 @@ def clarify_tool(
 
     dfm_service = None
     dfm_batch_context = None
+    dfm_review_context = None
     if not dfm_project_id and not dfm_fact_name and session_id:
         from tools.dfm.errors import DFMError
         from tools.dfm.service import get_dfm_service
@@ -306,6 +310,13 @@ def clarify_tool(
                 }}, ensure_ascii=False)
             question = "请在右侧三维模型中核对识别到的特征区域；如需调整，请先编辑并保存，然后继续。"
             choices = ["确认最终特征区域并继续"]
+            if (callback is not None and _supports_clarify_context(callback)
+                    and getattr(callback, "supports_dfm_review_context", lambda: False)()):
+                state = dfm_service.review_state(dfm_project_id)
+                dfm_review_context = {
+                    "mode": "dfm_discovery_review", "project_id": dfm_project_id,
+                    "snapshot_id": state.get("snapshot_id"), "revision": state.get("revision"),
+                }
         except DFMError as exc:
             return json.dumps(exc.to_dict(), ensure_ascii=False)
     elif dfm_project_id or dfm_fact_name:
@@ -379,9 +390,10 @@ def clarify_tool(
         )
 
     try:
+        context = dfm_batch_context or dfm_review_context
         user_response = (
-            callback(question, choices, dfm_batch_context)
-            if dfm_batch_context is not None
+            callback(question, choices, context)
+            if context is not None
             else callback(question, choices)
         )
     except Exception as exc:
@@ -402,9 +414,22 @@ def clarify_tool(
                 ensure_ascii=False,
             )
         try:
-            confirmation = dfm_service.analysis(
-                "confirm_discovery", project_id=dfm_project_id
-            )
+            saved_review = dfm_service.review_state(dfm_project_id)
+            if dfm_review_context is not None:
+                # Desktop confirmation is already committed by the review API.
+                # Never confirm-all here: another edit may have arrived after
+                # the gateway accepted the answer but before this thread woke.
+                accepted = dfm_review_context.get("_accepted_state") or {}
+                if (saved_review.get("pending_review_group_count") != 0
+                        or (accepted and any(saved_review.get(key) != accepted.get(key)
+                                             for key in ("snapshot_id", "revision")))):
+                    return json.dumps({
+                        "error": "DFM review changed after confirmation; review the current saved state.",
+                        "dfm_discovery_review": saved_review,
+                    }, ensure_ascii=False)
+                confirmation = {}
+            else:
+                confirmation = dfm_service.analysis("confirm_discovery", project_id=dfm_project_id)
             discovery_review = dfm_service.review_state(dfm_project_id)
             followup = _dfm_review_followup(
                 dfm_service, dfm_project_id, discovery_review, callback, session_id
