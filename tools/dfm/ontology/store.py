@@ -22,6 +22,8 @@ import sqlite3
 from typing import Any, Iterator, Mapping, Sequence
 from uuid import uuid4
 
+from jsonschema import Draft202012Validator
+
 from ..contracts import (
     EffectiveRule,
     GeometricRuleBinding,
@@ -1271,6 +1273,16 @@ class LocalOntologyStore:
                         "A USES_OPERAND relation requires alias and aggregation.",
                         {"relation_id": relation["relation_id"]},
                     )
+                if "measurement_context" in qualifiers and not isinstance(qualifiers["measurement_context"], dict):
+                    cls._invalid(
+                        "A measurement context must be an object of declared Worker options.",
+                        {"relation_id": relation["relation_id"]},
+                    )
+                minimum_bundle = qualifiers.get("minimum_schema_bundle_version")
+                if minimum_bundle is not None and (not isinstance(minimum_bundle, str)
+                    or re.fullmatch(r"\d+\.\d+\.\d+", minimum_bundle) is None):
+                    cls._invalid("A minimum Worker schema bundle must be a numeric release version.",
+                                 {"relation_id": relation["relation_id"]})
                 if schema_version >= 2 and _LEGACY_OPERAND_SELECTOR_KEYS.intersection(
                     qualifiers
                 ):
@@ -1959,6 +1971,33 @@ class LocalOntologyStore:
                     "reason": "geometric_id_unsupported",
                     "geometric_id": published_geometric_id,
                 }
+            measurement_context = qualifiers.get("measurement_context", {})
+            capability = (geometric_bindings or {}).get(published_geometric_id, {})
+            minimum_bundle = qualifiers.get("minimum_schema_bundle_version")
+            actual_bundle = capability.get("schema_bundle_version", "")
+            if minimum_bundle is not None and (
+                not isinstance(actual_bundle, str)
+                or re.fullmatch(r"\d+\.\d+\.\d+", actual_bundle) is None
+                or tuple(map(int, actual_bundle.split("."))) < tuple(map(int, minimum_bundle.split(".")))
+            ):
+                return None, {
+                    "check_id": check_id,
+                    "reason": "geometric_semantics_unsupported",
+                    "geometric_id": published_geometric_id,
+                    "operand_alias": qualifiers["alias"],
+                    "minimum_schema_bundle_version": minimum_bundle,
+                    "actual_schema_bundle_version": actual_bundle,
+                }
+            if measurement_context and not cls._supported_measurement_context(
+                measurement_context,
+                capability.get("context_schema", {}),
+            ):
+                return None, {
+                    "check_id": check_id,
+                    "reason": "geometric_context_unsupported",
+                    "geometric_id": published_geometric_id,
+                    "operand_alias": qualifiers["alias"],
+                }
             target = cls._resolve_operand_target(
                 connection, check_id, row, geometric_bindings
             )
@@ -1969,6 +2008,7 @@ class LocalOntologyStore:
                     alias=alias,
                     geometric_id=geometric_id,
                     aggregation=str(qualifiers.get("aggregation") or "identity"),
+                    context=dict(measurement_context),
                 )
             else:
                 metric_id = target["metric_id"]
@@ -2044,6 +2084,7 @@ class LocalOntologyStore:
                 )
             binding = GeometricRuleBinding(
                 geometric_id=primary.geometric_id,
+                context=dict(primary.context),
                 **common,
             )
         else:
@@ -2060,6 +2101,23 @@ class LocalOntologyStore:
             )
         binding.validate()
         return binding, selectors
+
+    @staticmethod
+    def _supported_measurement_context(context, schema) -> bool:
+        """Only declared measurement options may be frozen by a publication.
+
+        Directions and scope ownership are always supplied from the user's
+        reviewed snapshot, never overridden by ontology authoring metadata.
+        """
+        reserved = {"forming_scope_id", "draw_direction", "coordinate_system", "direction_source", "feature_role"}
+        if not isinstance(context, dict) or reserved.intersection(context) or not isinstance(schema, Mapping):
+            return False
+        properties = schema.get("properties", {})
+        if not isinstance(properties, Mapping) or set(context) - set(properties):
+            return False
+        # Required runtime fields may be populated later from reviewed scopes.
+        option_schema = {**schema, "required": [], "additionalProperties": False}
+        return Draft202012Validator(option_schema).is_valid(context)
 
     @classmethod
     def _resolve_operand_target(
@@ -2123,6 +2181,8 @@ class LocalOntologyStore:
                     capability_binding["requires_complete_inventory"]
                 ),
                 "context_schema": dict(capability_binding["context_schema"]),
+                **({"measurement_context": dict(qualifiers["measurement_context"])}
+                   if qualifiers.get("measurement_context") else {}),
             }
         if "worker_geometric_id" in metric_properties:
             feature_rows = connection.execute(

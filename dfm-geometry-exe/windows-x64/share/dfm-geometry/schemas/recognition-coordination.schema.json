@@ -22,7 +22,8 @@
             "role-evidence-coordinator/2",
             "role-evidence-coordinator/3",
             "role-evidence-coordinator/4",
-            "role-evidence-coordinator/5"
+            "role-evidence-coordinator/5",
+            "role-evidence-coordinator/6"
           ]
         },
         "raw_candidate_id": {
@@ -179,7 +180,8 @@
             "role-evidence-coordinator/2",
             "role-evidence-coordinator/3",
             "role-evidence-coordinator/4",
-            "role-evidence-coordinator/5"
+            "role-evidence-coordinator/5",
+            "role-evidence-coordinator/6"
           ]
         },
         "status": {
@@ -545,6 +547,7 @@
             "VALIDATED_RIB_JUNCTION",
             "VALIDATED_SHARED_CARRIER_SIDE",
             "VALIDATED_SHARED_WALL_CARRIER",
+            "VALIDATED_SHARED_BOSS_BOTTOM_CARRIER",
             "COMPATIBLE_BOUNDARY_ROLES"
           ]
         }

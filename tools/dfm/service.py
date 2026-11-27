@@ -3609,11 +3609,12 @@ class DFMService:
 
             def context_choices(geometric_id, feature, selector=None):
                 declaration = geometric_capabilities.get(geometric_id, {})
+                measurement_context = dict((selector or {}).get("measurement_context", {}))
                 required = set(
                     declaration.get("context_schema", {}).get("required", [])
                 )
                 if not required:
-                    return [{}]
+                    return [measurement_context]
                 supported_modes = set(declaration.get("direction_modes", []))
                 feature_refs = geometry_keys(feature)
                 matching = []
@@ -3642,7 +3643,7 @@ class DFMService:
                 if "feature_role" in required:
                     for choice in matching:
                         choice["feature_role"] = (selector or {}).get("feature_role", "body")
-                return matching or [{}]
+                return [{**measurement_context, **choice} for choice in matching] or [measurement_context]
 
             def candidates(selector):
                 feature_kind = str(selector.get("feature_kind") or "")

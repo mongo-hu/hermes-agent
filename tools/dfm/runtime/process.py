@@ -34,7 +34,7 @@ from .events import parse_worker_event
 
 
 SESSION_CONTRACT = "dfm.geometry/v2"
-SESSION_SCHEMA_BUNDLE_VERSION = "2.11.0"
+SESSION_SCHEMA_BUNDLE_VERSION = "2.13.0"
 SUPPORTED_SESSION_SCHEMA_BUNDLE_VERSIONS = frozenset({"2.11.0", SESSION_SCHEMA_BUNDLE_VERSION})
 TERMINAL_JOB_STATES = frozenset({"completed", "failed", "cancelled"})
 _RECOVERABLE_SNAPSHOT_METHODS = frozenset({

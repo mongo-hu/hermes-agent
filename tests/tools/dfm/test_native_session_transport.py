@@ -1,6 +1,7 @@
 """Actual compiled Worker, stdio transport and public evidence consumer."""
 
 import hashlib
+from functools import partial
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ import time
 
 import pytest
 from jsonschema import Draft202012Validator
+from referencing import Registry, Resource
 
 from tools.dfm.analyzers.occt import _validate_scalar_field
 from tools.dfm.runtime.process import GeometrySession, GeometrySessionPool
@@ -19,6 +21,62 @@ from tools.dfm.feature_recognition.occt_cpp import OCCTCppFeatureRecognitionProv
 from tools.dfm.processes.occt_injection import geometry_binding_index
 from tools.dfm.config import DFMConfig
 from tools.dfm.service import DFMService
+from tools.dfm.ontology import LocalOntologyStore
+
+
+def _material_draft_fixture(tmp_path):
+    """Exercise deferred rules using a supported G instead of unavailable bootstrap thickness."""
+    path = Path(__file__).resolve().parents[3] / "tools/dfm/scopes/injection/ontology_snapshot_v2.json"
+    package = json.loads(path.read_text(encoding="utf-8"))
+    package.pop("content_sha256", None)
+    package["snapshot_id"] = "fixture.native-material-draft@1.0.0"
+    package["rule_set"]["rule_set_code"] = "fixture.native-material-draft"
+    # Only this isolated test publication changes; the released catalog does not.
+    package["concepts"] = [concept for concept in package["concepts"]
+                           if concept["concept_id"] != "G_WALL_THK_MIN"]
+    for relation in package["relations"]:
+        if relation["object_id"] == "G_WALL_THK_MIN":
+            relation["object_id"] = "G_WALL_IN_DRAFT"
+    for rule in package["rules"]:
+        rule["result_unit"] = "degree"
+    package["content_sha256"] = hashlib.sha256(json.dumps(
+        package, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    return LocalOntologyStore.from_package(package, database_path=tmp_path / "fixture-ontology.sqlite3")
+
+
+def _schema_validator(schema_root, name):
+    # Bundle 2.13 shares definitions by canonical $id; resolve only shipped files.
+    documents = [json.loads(path.read_text(encoding="utf-8"))
+                 for path in Path(schema_root).glob("*.schema.json")]
+    registry = Registry().with_resources((document["$id"], Resource.from_contents(document))
+                                         for document in documents if "$id" in document)
+    return Draft202012Validator(json.loads((Path(schema_root) / name).read_text(encoding="utf-8")),
+                                registry=registry)
+
+
+def _reviewed_native_wall(call, snapshot, wall, created=None, non_appearance_refs=None):
+    scoped = call("forming_scopes.revise", {
+        "snapshot_id": snapshot["snapshot_id"], "scopes": [{
+            "forming_scope_id": "MAIN", "kind": "main_forming", "mode": "main", "mechanism_kind": "none",
+            "geometry_refs": wall["geometry_refs"], "draw_direction": [0, 0, 1],
+            "coordinate_system": "model", "direction_source": "user_confirmed", "status": "confirmed",
+        }],
+    })
+    selected = wall["geometry_refs"] if non_appearance_refs is None else non_appearance_refs
+    annotations = [{
+            "annotation_id": "native-non-appearance", "kind": "appearance", "value": "non_appearance",
+            "geometry_refs": selected,
+        }]
+    remaining = [ref for ref in wall["geometry_refs"] if ref not in selected]
+    if remaining:
+        annotations.append({"annotation_id": "native-appearance", "kind": "appearance", "value": "appearance",
+                            "geometry_refs": remaining})
+    reviewed = call("annotations.revise", {
+        "snapshot_id": scoped["snapshot_id"], "annotations": annotations,
+    })
+    if created is not None:
+        created.extend([scoped["snapshot_id"], reviewed["snapshot_id"]])
+    return reviewed
 
 
 @pytest.mark.skipif(
@@ -37,7 +95,9 @@ def test_native_stdio_keeps_the_model_and_returns_consumable_g_evidence(tmp_path
         os.environ["DFM_GEOMETRY_E2E_EXECUTABLE"], request_timeout_seconds=30
     )
     try:
-        assert "G_WALL_THK_LOCAL" in geometry_binding_index(session.capability)
+        # The current Worker does not advertise G_WALL_THK_LOCAL. Draft
+        # still exercises native scalar-field transport, cache and provenance.
+        assert "G_WALL_IN_DRAFT" in geometry_binding_index(session.capability)
         opened = session.call(
             "snapshots.open",
             {
@@ -65,6 +125,7 @@ def test_native_stdio_keeps_the_model_and_returns_consumable_g_evidence(tmp_path
         wall = next(
             item for item in discovered["features"] if item["kind"] == "main_wall"
         )
+        discovered = _reviewed_native_wall(session.call, discovered, wall)
         assert {
             "annotations",
             "relationships",
@@ -76,7 +137,7 @@ def test_native_stdio_keeps_the_model_and_returns_consumable_g_evidence(tmp_path
             "items": [
                 {
                     "feature_id": wall["feature_id"],
-                    "geometric_ids": ["G_WALL_THK_LOCAL"],
+                    "geometric_ids": ["G_WALL_IN_DRAFT"],
                     "context": {},
                 }
             ],
@@ -104,7 +165,7 @@ def test_native_stdio_keeps_the_model_and_returns_consumable_g_evidence(tmp_path
                 artifact_id=artifact["artifact_id"],
                 snapshot_id=discovered["snapshot_id"],
                 input_sha256=digest,
-                submitted_keys={(wall["feature_id"], "G_WALL_THK_LOCAL", "{}")},
+                submitted_keys={(wall["feature_id"], "G_WALL_IN_DRAFT", "{}")},
             )
             assert (
                 field["scene_ref"]
@@ -190,12 +251,7 @@ def test_native_first_round_requires_direction_and_merges_structure_with_forming
         }
         schema_root = os.environ.get("DFM_GEOMETRY_SCHEMA_ROOT")
         if schema_root:
-            schema = json.loads(
-                (Path(schema_root) / "session-v2.schema.json").read_text(
-                    encoding="utf-8"
-                )
-            )
-            Draft202012Validator(schema).validate(
+            _schema_validator(schema_root, "session-v2.schema.json").validate(
                 pool.acquire(project_dir.name).session.capability
             )
     finally:
@@ -251,7 +307,11 @@ def test_native_service_uses_confirmed_direction_without_an_extra_main_review(tm
             "confirm_discovery",
             project_id=project_id,
             expected_revision=context["revision"],
-            review_group_ids=[wall_group["review_group_id"]],
+            # OUT/IN draft now consumes per-face appearance annotations.
+            review_group_ids=[wall_group["review_group_id"], *[
+                group["review_group_id"] for group in context["review_groups"]
+                if group["status"] == "pending_review" and group["kind"] == "surface_attribute"
+            ]],
         )
         planned = service.analysis("plan", project_id=project_id)
         assert "plan" in planned, planned
@@ -339,6 +399,7 @@ def test_native_missing_rule_factor_keeps_a_run_waiting_then_resumes_on_user_inp
             geometry_timeout_seconds=120,
             geometry_job_poll_interval_ms=20,
         ),
+        ontology_store=_material_draft_fixture(tmp_path),
         reconcile_jobs=False,
     )
     try:
@@ -360,7 +421,7 @@ def test_native_missing_rule_factor_keeps_a_run_waiting_then_resumes_on_user_inp
             group["review_group_id"]
             for group in context["review_groups"]
             if group["status"] == "pending_review"
-            and group["kind"] in {"ordinary_structure", "product_forming"}
+            and group["kind"] in {"ordinary_structure", "product_forming", "surface_attribute"}
         ]
         service.analysis(
             "confirm_discovery",
@@ -460,7 +521,6 @@ def test_native_missing_rule_factor_keeps_a_run_waiting_then_resumes_on_user_inp
 
 @pytest.mark.skipif(not os.environ.get("DFM_GEOMETRY_E2E_EXECUTABLE"), reason="native Worker not configured")
 def test_more_than_256_native_g_results_and_check_evaluations_survive_all_batches(tmp_path):
-    import math
     from tools.dfm.analyzers.base import AnalyzerContext, CancellationToken
     from tools.dfm.analyzers.occt import OcctAnalyzer
     from tools.dfm.contracts import EffectiveRule, GeometricRequest, GeometricRuleBinding, PlanFragmentRecord
@@ -484,19 +544,22 @@ def test_more_than_256_native_g_results_and_check_evaluations_survive_all_batche
         discovery = OCCTCppFeatureRecognitionProvider(executable, session_pool=pool).recognize(
             input_record, process="injection", facts={"pull_dir": [0, 0, 1]}, project_dir=project_dir)
         wall = next(row for row in discovery.features if row.kind == "main_wall")
-        refs = wall.properties["geometry_refs"]
-        scopes, contexts = [], []
-        for index in range(300):
-            angle = index * 0.01
-            scale = math.sqrt(0.5)
-            context = {"forming_scope_id": f"CAPACITY_{index}",
-                       "draw_direction": [scale * math.cos(angle), scale * math.sin(angle), scale],
-                       "coordinate_system": "model", "direction_source": "user_confirmed"}
-            scopes.append({**context, "kind": "main_forming", "mode": "main", "mechanism_kind": "none",
-                           "geometry_refs": refs, "status": "confirmed"})
-            contexts.append(context)
-        scoped = pool.call(project_dir.name, "forming_scopes.revise",
-                           {"snapshot_id": discovery.worker_snapshot_id, "scopes": scopes})
+        call = partial(pool.call, project_dir.name)
+        # One selected face per request keeps this a transport-capacity test;
+        # multi-face evidence is exercised separately above.
+        selected_refs = [next(ref for ref in wall.properties["geometry_refs"] if ref["kind"] == "face")]
+        scoped = _reviewed_native_wall(call, {"snapshot_id": discovery.worker_snapshot_id},
+                                      {"geometry_refs": wall.properties["geometry_refs"]},
+                                      non_appearance_refs=selected_refs)
+        # More than 256 legal request keys: one MAIN and equivalent local scopes.
+        # Different directions on overlapping faces would correctly be rejected.
+        contexts = [{"forming_scope_id": f"CAPACITY_{index}", "draw_direction": [0.0, 0.0, 1.0],
+                     "coordinate_system": "model", "direction_source": "user_confirmed"}
+                    for index in range(300)]
+        scopes = [{**context, "kind": "undercut", "mode": "local", "mechanism_kind": "slider",
+                   "geometry_refs": wall.properties["geometry_refs"], "status": "confirmed"}
+                  for context in contexts]
+        scoped = call("forming_scopes.revise", {"snapshot_id": scoped["snapshot_id"], "scopes": scopes})
         capability = pool.acquire(project_dir.name).session.capability
         identity = geometry_capability_identity(capability)
         g = "G_WALL_IN_DRAFT"
@@ -527,15 +590,21 @@ def test_more_than_256_native_g_results_and_check_evaluations_survive_all_batche
         path = project_dir / result_artifact.relative_path
         clear_result_document_cache()
         results = read_result_document(path, "geometric_results")["results"]
-        assert len(results) == len(contexts)
+        # OUT/IN draft returns one independent measurement per selected face.
+        selected_faces = {ref["index"] for ref in selected_refs}
+        assert selected_faces
+        assert len(results) == len(contexts) * len(selected_faces)
         assert all(row["status"] == "ok" for row in results)
-        assert {row["context"]["forming_scope_id"] for row in results} == {row["forming_scope_id"] for row in scopes}
-        assert len({row["result_id"] for row in results}) == len(contexts)
+        assert {json.dumps(row["context"], sort_keys=True) for row in results} == {
+            json.dumps(context, sort_keys=True) for context in contexts}
+        for context in contexts:
+            assert {row["quality"]["face_index"] for row in results if row["context"] == context} == selected_faces
+        assert len({row["result_id"] for row in results}) == len(results)
         assert len([row for row in artifacts if row.kind == "geometric_batch"]) == 1
         evaluated = EvaluationEngine().materialize(project_dir, run_id, plan, [result_artifact])
         clear_result_document_cache()
         evaluations = read_result_document(project_dir / evaluated.relative_path, "evaluations")["evaluations"]
-        assert len(evaluations) == len(contexts)
+        assert len(evaluations) == len(results)
         assert {row["rule_id"] for row in evaluations} == set(rules)
         assert all(row["outcome"] in {"pass", "fail"} for row in evaluations)
         after = pool.call(project_dir.name, "snapshots.get", {"snapshot_id": scoped["snapshot_id"]})
@@ -550,7 +619,6 @@ def test_more_than_256_native_g_results_and_check_evaluations_survive_all_batche
 
 @pytest.mark.skipif(not os.environ.get("DFM_GEOMETRY_E2E_EXECUTABLE"), reason="native Worker not configured")
 def test_native_job_capacity_keeps_controls_live_and_releases_terminal_job_models(tmp_path):
-    import math
     from concurrent.futures import ThreadPoolExecutor
 
     session = GeometrySession(os.environ["DFM_GEOMETRY_E2E_EXECUTABLE"], request_timeout_seconds=120)
@@ -568,16 +636,17 @@ def test_native_job_capacity_keeps_controls_live_and_releases_terminal_job_model
             {"snapshot_id": opened["snapshot_id"], "feature_kinds": ["main_wall"], "context": {}})
         discovery = session.wait_job(submitted["job_id"], timeout_seconds=120, poll_interval_seconds=0.01)
         feature = next(row for row in discovery["features"] if row["kind"] == "main_wall")
+        review_snapshots = []
+        reviewed = _reviewed_native_wall(session.call, discovery, feature, review_snapshots)
         scopes, items = [], []
         for index in range(300):
-            angle, scale = index * 0.01, math.sqrt(0.5)
             context = {"forming_scope_id": f"QUEUE_{index}",
-                       "draw_direction": [scale * math.cos(angle), scale * math.sin(angle), scale],
+                       "draw_direction": [0.0, 0.0, 1.0],
                        "coordinate_system": "model", "direction_source": "user_confirmed"}
-            scopes.append({**context, "kind": "main_forming", "mode": "main", "mechanism_kind": "none",
+            scopes.append({**context, "kind": "undercut", "mode": "local", "mechanism_kind": "slider",
                            "geometry_refs": feature["geometry_refs"], "status": "confirmed"})
             items.append({"feature_id": feature["feature_id"], "geometric_ids": ["G_WALL_IN_DRAFT"], "context": context})
-        scoped = session.call("forming_scopes.revise", {"snapshot_id": discovery["snapshot_id"], "scopes": scopes})
+        scoped = session.call("forming_scopes.revise", {"snapshot_id": reviewed["snapshot_id"], "scopes": scopes})
         held = session.call("geometrics.compute", {"snapshot_id": scoped["snapshot_id"], "items": items})
         held_params = {"job_id": held["job_id"]}
         deadline = time.monotonic() + 10
@@ -618,7 +687,7 @@ def test_native_job_capacity_keeps_controls_live_and_releases_terminal_job_model
             if isinstance(result, dict) and result.get("snapshot_id") not in {
                 opened["snapshot_id"], discovery["snapshot_id"], scoped["snapshot_id"], models[1][1]["snapshot_id"]}:
                 session.call("snapshots.close", {"snapshot_id": result["snapshot_id"]})
-        for identity in (opened["snapshot_id"], discovery["snapshot_id"], scoped["snapshot_id"], models[1][1]["snapshot_id"]):
+        for identity in (opened["snapshot_id"], discovery["snapshot_id"], *review_snapshots, scoped["snapshot_id"], models[1][1]["snapshot_id"]):
             session.call("snapshots.close", {"snapshot_id": identity})
         # Terminal Job history keeps JSON evidence, never a live prepared-model closure.
         reopened = session.call("snapshots.open", models[0][0])

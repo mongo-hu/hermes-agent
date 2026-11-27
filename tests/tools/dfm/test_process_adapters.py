@@ -269,6 +269,7 @@ def test_occt_scope_projects_worker_binding_from_geometric_id_only():
     binding = geometry_binding_index(_occt_geometric_scope())["G_WALL_THK_MIN"]
 
     assert binding == {
+        "schema_bundle_version": _occt_geometric_scope()["schema_bundle_version"],
         "feature_kind": "main_wall",
         "scope_modes": ["feature"],
         "direction_modes": ["none"],
