@@ -25,7 +25,8 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "pull_direction": {"$ref": "https://hermes.local/dfm/geometry/common.schema.json#/$defs/vector3"}
+        "pull_direction": {"$ref": "https://hermes.local/dfm/geometry/common.schema.json#/$defs/vector3"},
+        "forming_plan_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     },
     "samples": {

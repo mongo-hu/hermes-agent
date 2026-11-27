@@ -8,7 +8,7 @@
   "properties": {
     "contract_version": {"const": "dfm.geometry/v2"},
     "job_id": {"type": "string", "minLength": 1},
-    "method": {"enum": ["features.discover", "forming_scopes.analyze", "geometrics.compute", "fields.prepare"]},
+    "method": {"enum": ["features.discover", "forming_scopes.analyze", "geometrics.compute", "fields.prepare", "snapshots.open", "features.revise", "annotations.revise", "forming_scopes.revise", "snapshots.merge"]},
     "status": {"enum": ["queued", "running", "completed", "failed", "cancelled"]},
     "progress": {
       "type": "object",

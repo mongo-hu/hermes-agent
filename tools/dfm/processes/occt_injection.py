@@ -71,6 +71,7 @@ def geometry_binding_index(scope: Mapping[str, Any]) -> dict[str, dict[str, Any]
                 {"geometric_id": geometric_id},
             )
         result[geometric_id] = {
+            "schema_bundle_version": str(scope.get("schema_bundle_version") or ""),
             "feature_kind": feature_kind,
             "scope_modes": [str(value) for value in scope_modes],
             "direction_modes": [str(value) for value in direction_modes],

@@ -27,7 +27,7 @@
       "const": "dfm.geometry/v2"
     },
     "schema_bundle_version": {
-      "const": "2.11.0"
+      "const": "2.13.0"
     },
     "engine_version": {
       "type": "string",
@@ -49,6 +49,11 @@
     },
     "analysis_situs_commit": {
       "const": "aa5958932c8c85c068566ab685f2b99c0436b926"
+    },
+    "optional_job_methods": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"enum": ["snapshots.open", "features.revise", "annotations.revise", "forming_scopes.revise", "snapshots.merge"]}
     },
     "transport": {
       "const": "stdio-jsonrpc"
